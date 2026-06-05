@@ -1,0 +1,8 @@
+interface:
+  display_name: "Agent Workbench"
+  short_description: "Structured memory for coding-agent work"
+  default_prompt: "Use $agent-workbench to initialize structured memory and manage tasks, decisions, reviews, and handoffs for this project."
+
+policy:
+  allow_implicit_invocation: true
+
