@@ -255,6 +255,7 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     let project_id = project_id(&tx)?;
     let plan = load_review_plan(&tx, project_id, input.review_plan_id)?;
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
+    validate_run_type_purpose(input.run_type, input.run_purpose)?;
     enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
@@ -545,12 +546,14 @@ pub fn add_finding_verification(
         select 1
         from closures c
         join findings f on f.id = c.finding_id
-        join review_runs r on r.id = ?1 and r.project_id = ?5
+        join review_runs verifier on verifier.id = ?1 and verifier.project_id = ?5
+        join review_runs source_run on source_run.id = f.review_run_id
         where c.id = ?2
           and c.finding_id = ?3
           and c.project_id = ?5
           and f.project_id = ?5
           and f.id = ?3
+          and source_run.review_plan_id = verifier.review_plan_id
           and ?4 in ('verified', 'not_fixed', 'needs_evidence', 'out_of_scope')
         "#,
         params![
@@ -930,6 +933,15 @@ fn agent_role_for_review_type(review_type: &str) -> Result<&'static str> {
         "implementation_review" => Ok("implementation_review"),
         "general" => Ok("general"),
         _ => bail!("invalid review type"),
+    }
+}
+
+fn validate_run_type_purpose(run_type: &str, run_purpose: &str) -> Result<()> {
+    match (run_type, run_purpose) {
+        ("fresh", "new_unbiased_review")
+        | ("resume", "finding_fix_verification")
+        | ("coverage", "coverage_audit") => Ok(()),
+        _ => bail!("invalid review run type and purpose combination"),
     }
 }
 

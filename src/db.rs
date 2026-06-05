@@ -1474,7 +1474,12 @@ create table if not exists review_runs (
     carried_findings_checked integer not null default 0,
     clean_run integer not null default 0 check (clean_run in (0, 1)),
     status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
-    created_at text not null
+    created_at text not null,
+    check (
+        (run_type = 'fresh' and run_purpose = 'new_unbiased_review')
+        or (run_type = 'resume' and run_purpose = 'finding_fix_verification')
+        or (run_type = 'coverage' and run_purpose = 'coverage_audit')
+    )
 );
 
 create table if not exists review_agent_invocations (
@@ -1611,6 +1616,14 @@ when new.project_id != (select project_id from review_runs where id = new.review
   or new.project_id != (select project_id from findings where id = new.finding_id)
   or new.project_id != (select project_id from closures where id = new.closure_id)
   or new.finding_id != (select finding_id from closures where id = new.closure_id)
+  or (select run_type from review_runs where id = new.review_run_id) != 'resume'
+  or (select run_purpose from review_runs where id = new.review_run_id) != 'finding_fix_verification'
+  or (select review_plan_id from review_runs where id = new.review_run_id) != (
+      select source_run.review_plan_id
+      from findings f
+      join review_runs source_run on source_run.id = f.review_run_id
+      where f.id = new.finding_id
+  )
 begin
     select raise(abort, 'finding verification project_id must match referenced rows');
 end;
@@ -1664,4 +1677,36 @@ create table if not exists kpt_item_conversions (
         or (target_type = 'user_correction' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is not null)
     )
 );
+
+create trigger if not exists trg_kpt_item_conversion_project_insert
+before insert on kpt_item_conversions
+for each row
+when (new.target_type = 'task' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.target_type = 'command_profile' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from command_profiles where id = new.command_profile_id))
+  or (new.target_type = 'review_policy' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from review_policies where id = new.review_policy_id))
+  or (new.target_type = 'design_version' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from design_versions where id = new.design_version_id))
+  or (new.target_type = 'decision' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from decisions where id = new.decision_id))
+  or (new.target_type = 'user_correction' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from user_corrections where id = new.user_correction_id))
+begin
+    select raise(abort, 'kpt item conversion project_id must match target project_id');
+end;
+
+create trigger if not exists trg_kpt_item_conversion_project_update
+before update of kpt_item_id, target_type, task_id, command_profile_id, review_policy_id, design_version_id, decision_id, user_correction_id on kpt_item_conversions
+for each row
+when (new.target_type = 'task' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.target_type = 'command_profile' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from command_profiles where id = new.command_profile_id))
+  or (new.target_type = 'review_policy' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from review_policies where id = new.review_policy_id))
+  or (new.target_type = 'design_version' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from design_versions where id = new.design_version_id))
+  or (new.target_type = 'decision' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from decisions where id = new.decision_id))
+  or (new.target_type = 'user_correction' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from user_corrections where id = new.user_correction_id))
+begin
+    select raise(abort, 'kpt item conversion project_id must match target project_id');
+end;
 "#;
