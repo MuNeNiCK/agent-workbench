@@ -142,6 +142,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_acceptance_records(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
+    validate_review_required_links(conn)?;
     refresh_review_integrity_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
@@ -166,6 +167,30 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn validate_review_required_links(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "review_plans")? {
+        let missing_policy_count: i64 = conn.query_row(
+            "select count(*) from review_plans where review_policy_id is null",
+            [],
+            |row| row.get(0),
+        )?;
+        if missing_policy_count > 0 {
+            bail!("review_plans contains rows without review_policy_id");
+        }
+    }
+    if table_exists(conn, "review_runs")? {
+        let missing_plan_count: i64 = conn.query_row(
+            "select count(*) from review_runs where review_plan_id is null",
+            [],
+            |row| row.get(0),
+        )?;
+        if missing_plan_count > 0 {
+            bail!("review_runs contains rows without review_plan_id");
+        }
+    }
     Ok(())
 }
 

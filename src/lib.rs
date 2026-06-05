@@ -459,6 +459,131 @@ mod tests {
     }
 
     #[test]
+    fn init_rejects_legacy_review_rows_missing_required_links() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".agent-workbench")).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute_batch(
+            r#"
+            pragma foreign_keys = off;
+
+            create table projects (
+                id integer primary key,
+                name text not null,
+                root_path text not null unique,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table work_units (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                parent_work_unit_id integer references work_units(id),
+                title text not null,
+                status text not null default 'open' check (status in ('open', 'blocked', 'closed', 'abandoned')),
+                responsibility text,
+                in_scope text,
+                out_of_scope text,
+                interrupt_reason text,
+                selected_gate_id integer,
+                review_plan_status text,
+                started_at text not null,
+                closed_at text,
+                close_summary text
+            );
+
+            create table review_policies (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                name text not null,
+                review_type text not null check (review_type in ('design_review', 'design_implementation_diff', 'design_task_decomposition', 'implementation_review', 'general')),
+                max_fresh_agents integer not null default 1,
+                max_resume_agents integer not null default 1,
+                max_parallel_agents integer not null default 1,
+                required_consecutive_clean_fresh_runs integer not null default 1,
+                required_consecutive_clean_resume_runs integer not null default 1,
+                stop_on_severity text not null default 'none' check (stop_on_severity in ('critical', 'high', 'medium', 'low', 'none')),
+                allow_resume_review integer not null default 1 check (allow_resume_review in (0, 1)),
+                allow_fresh_review integer not null default 1 check (allow_fresh_review in (0, 1)),
+                allow_new_findings_in_resume integer not null default 0 check (allow_new_findings_in_resume in (0, 1)),
+                on_max_agents_exceeded text not null default 'block' check (on_max_agents_exceeded in ('block', 'accept_with_user_approval', 'mark_exhausted')),
+                run_count_scope text not null default 'review_plan' check (run_count_scope in ('review_plan', 'review_scope', 'work_unit')),
+                default_run_mode text not null default 'fresh' check (default_run_mode in ('fresh', 'resume')),
+                created_at text not null,
+                unique(project_id, name)
+            );
+
+            create table review_plans (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                work_unit_id integer not null references work_units(id) on delete cascade,
+                design_version_id integer references design_versions(id) on delete cascade,
+                review_type text not null check (review_type in ('design_review', 'design_implementation_diff', 'design_task_decomposition', 'implementation_review', 'general')),
+                required integer not null default 1 check (required in (0, 1)),
+                stage text not null check (stage in ('design-ready', 'implementation-ready', 'close-ready', 'resume-ready')),
+                scope text,
+                clean_condition text,
+                stop_condition text,
+                review_policy_id integer references review_policies(id),
+                review_scope_id integer references review_scopes(id),
+                status text not null default 'open' check (status in ('open', 'blocked', 'clean', 'accepted_exception', 'not_required', 'exhausted', 'needs_user_decision')),
+                created_at text not null
+            );
+
+            create table review_runs (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                review_scope_id integer references review_scopes(id),
+                review_plan_id integer references review_plans(id),
+                run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+                run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
+                target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
+                design_version_id integer references design_versions(id),
+                design_requirement_id integer references design_requirements(id),
+                task_id integer references tasks(id),
+                work_unit_id integer references work_units(id),
+                repository_snapshot_id integer,
+                target_ref text,
+                prompt_deviations text,
+                result_summary text,
+                new_findings_count integer not null default 0,
+                carried_findings_checked integer not null default 0,
+                clean_run integer not null default 0 check (clean_run in (0, 1)),
+                status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+                created_at text not null
+            );
+
+            insert into projects(name, root_path, created_at, updated_at)
+            values ('legacy', '/tmp/legacy-awb', current_timestamp, current_timestamp);
+
+            insert into work_units(project_id, title, status, started_at)
+            values (1, 'legacy work', 'open', current_timestamp);
+
+            insert into review_plans(
+                project_id, work_unit_id, review_type, required, stage,
+                review_policy_id, status, created_at
+            )
+            values (1, 1, 'implementation_review', 1, 'close-ready', null, 'open', current_timestamp);
+
+            insert into review_runs(
+                project_id, review_plan_id, run_type, run_purpose,
+                target_type, work_unit_id, target_ref,
+                new_findings_count, carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, null, 'resume', 'finding_fix_verification', 'work_unit', 1, 'work_unit:1', 1, 0, 0, 'completed', current_timestamp);
+
+            pragma foreign_keys = on;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = init_project(temp.path());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn status_reports_uninitialized_project() {
         let temp = tempfile::tempdir().unwrap();
 
