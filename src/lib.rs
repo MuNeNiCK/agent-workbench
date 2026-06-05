@@ -28,8 +28,9 @@ pub use kpt::{
     start_kpt_review,
 };
 pub use planning::{
-    DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskCloseOutcome, TaskListQuery,
-    TaskOutcome, TaskRecord, add_decision, add_task, close_task, list_decisions, list_tasks,
+    DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskAcceptanceOutcome, TaskCloseOutcome,
+    TaskListQuery, TaskOutcome, TaskRecord, accept_task_out_of_scope, add_decision, add_task,
+    close_task, list_decisions, list_tasks,
 };
 pub use records::{
     NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, WorkRecordEntry,
@@ -499,6 +500,30 @@ mod tests {
     }
 
     #[test]
+    fn accepted_out_of_scope_task_does_not_block_close() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "work with exception", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "not in scope",
+                priority: "medium",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+
+        accept_task_out_of_scope(temp.path(), task.task_id, "phase 2 exception").unwrap();
+        let closed = close_active_work(temp.path(), "done with exception", None).unwrap();
+
+        assert_eq!(closed.work_unit_id, task.work_unit_id.unwrap());
+    }
+
+    #[test]
     fn reopen_and_follow_up_create_active_work() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -586,6 +611,41 @@ mod tests {
         assert_eq!(
             rules[0].authority_event_id,
             Some(authority.authority_event_id)
+        );
+    }
+
+    #[test]
+    fn current_scope_rules_include_active_work_unit_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "scoped work", None).unwrap();
+        let scope = work.work_unit_id.to_string();
+        let correction = add_user_correction(
+            temp.path(),
+            NewUserCorrection {
+                scope: &scope,
+                correction_type: "process",
+                mistake_pattern: "skip scoped rule",
+                correction: "load active work rules",
+                applies_to: "current_work_unit",
+                severity: "medium",
+            },
+        )
+        .unwrap();
+
+        let rules = applicable_rules(
+            temp.path(),
+            RuleQuery {
+                scope_key: Some("current"),
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.user_correction_id == Some(correction.user_correction_id))
         );
     }
 

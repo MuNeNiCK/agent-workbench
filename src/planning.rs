@@ -120,6 +120,31 @@ pub fn close_task(root: &Path, task_id: i64, commit: Option<&str>) -> Result<Tas
     Ok(TaskCloseOutcome { task_id })
 }
 
+pub fn accept_task_out_of_scope(
+    root: &Path,
+    task_id: i64,
+    reason: &str,
+) -> Result<TaskAcceptanceOutcome> {
+    let conn = open_existing_project(root)?;
+    let changed = conn.execute(
+        r#"
+        update tasks
+        set status = 'accepted_out_of_scope',
+            details = case
+                when details is null or details = '' then ?1
+                else details || char(10) || 'accepted_out_of_scope: ' || ?1
+            end
+        where id = ?2 and status in ('open', 'blocked')
+        "#,
+        params![reason, task_id],
+    )?;
+    if changed == 0 {
+        bail!("task not found or not open for acceptance");
+    }
+
+    Ok(TaskAcceptanceOutcome { task_id })
+}
+
 pub fn add_decision(root: &Path, input: NewDecision<'_>) -> Result<DecisionOutcome> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
@@ -245,6 +270,11 @@ pub struct TaskRecord {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TaskCloseOutcome {
+    pub task_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TaskAcceptanceOutcome {
     pub task_id: i64,
 }
 

@@ -49,6 +49,7 @@ cargo run -- record export 1
 cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift
 cargo run -- task add "write parser tests" --priority high --source design
 cargo run -- task list --status open
+cargo run -- task accept-out-of-scope 1 --reason "not required for phase 2"
 cargo run -- decision add --topic database --decision "use one sqlite ledger per project"
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
 cargo run -- kpt start --scope project --summary "process review"

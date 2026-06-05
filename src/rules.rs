@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
-use crate::db::{open_existing_project, project_id};
+use crate::db::{active_activation, open_existing_project, project_id};
 
 pub fn add_user_correction(
     root: &Path,
@@ -97,7 +97,18 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut records = Vec::new();
-    let scope_key = input.scope_key.unwrap_or("project");
+    let active_work_unit_id = if matches!(input.scope_key, Some("current")) {
+        active_activation(&conn)?.map(|active| active.work_unit_id)
+    } else {
+        None
+    };
+    let work_unit_id = input.work_unit_id.or(active_work_unit_id);
+    let resolved_scope_key = match (input.scope_key, work_unit_id) {
+        (Some("current"), Some(work_unit_id)) => Some(work_unit_id.to_string()),
+        (Some(scope_key), _) => Some(scope_key.to_string()),
+        (None, _) => Some("project".to_string()),
+    };
+    let scope_key = resolved_scope_key.as_deref().unwrap_or("project");
 
     let mut stmt = conn.prepare(
         r#"
@@ -114,7 +125,7 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
         order by rb.precedence desc, rb.id asc
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, scope_key, input.work_unit_id], |row| {
+    let rows = stmt.query_map(params![project_id, scope_key, work_unit_id], |row| {
         Ok(RuleRecord {
             id: row.get(0)?,
             rule_source_type: row.get(1)?,

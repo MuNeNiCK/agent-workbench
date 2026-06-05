@@ -8,14 +8,15 @@ use agent_workbench::{
     CommandUsageListQuery, KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation,
     NewCommandProfile, NewCommandUsage, NewDecision, NewKptItem, NewKptReview, NewTask,
     NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource, add_authority_event,
-    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
-    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
-    export_work_record_markdown, fork_work, init_project, interrupt_work, list_authority_events,
-    list_command_profiles, list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews,
-    list_tasks, list_user_corrections, list_work_records, next_action, project_status, reopen_work,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
+    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
+    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
+    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
+    close_active_work, close_kpt_review, close_task, convert_kpt_item_to_task,
+    create_follow_up_work, create_work_record, export_work_record_markdown, fork_work,
+    init_project, interrupt_work, list_authority_events, list_command_profiles,
+    list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews, list_tasks,
+    list_user_corrections, list_work_records, next_action, project_status, reopen_work,
     resume_check_basic, resume_work, start_kpt_review, start_work, suspend_work,
 };
 
@@ -413,6 +414,7 @@ enum TaskCommand {
     Add(TaskAddArgs),
     List(TaskListArgs),
     Close(TaskCloseArgs),
+    AcceptOutOfScope(TaskAcceptOutOfScopeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -443,6 +445,13 @@ struct TaskCloseArgs {
     task_id: i64,
     #[arg(long)]
     commit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct TaskAcceptOutOfScopeArgs {
+    task_id: i64,
+    #[arg(long)]
+    reason: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -874,11 +883,10 @@ fn main() -> Result<()> {
         },
         Command::Rules { command } => match command {
             RulesCommand::Applicable(args) => {
-                let scope = args.scope.as_deref().filter(|scope| *scope != "current");
                 let records = applicable_rules(
                     &root,
                     RuleQuery {
-                        scope_key: scope,
+                        scope_key: args.scope.as_deref(),
                         work_unit_id: args.work_unit,
                     },
                 )?;
@@ -1026,6 +1034,11 @@ fn main() -> Result<()> {
             TaskCommand::Close(args) => {
                 let outcome = close_task(&root, args.task_id, args.commit.as_deref())?;
                 println!("closed task");
+                println!("task_id: {}", outcome.task_id);
+            }
+            TaskCommand::AcceptOutOfScope(args) => {
+                let outcome = accept_task_out_of_scope(&root, args.task_id, &args.reason)?;
+                println!("accepted task out of scope");
                 println!("task_id: {}", outcome.task_id);
             }
         },
