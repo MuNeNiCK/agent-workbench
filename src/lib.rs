@@ -85,6 +85,71 @@ mod tests {
     }
 
     #[test]
+    fn init_migrates_existing_acceptance_records_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger_dir = temp.path().join(".agent-workbench");
+        fs::create_dir_all(&ledger_dir).unwrap();
+        let ledger_path = ledger_dir.join("ledger.sqlite");
+        let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+        conn.execute_batch(
+            r#"
+            create table schema_migrations (
+                version integer primary key,
+                applied_at text not null
+            );
+            insert into schema_migrations(version, applied_at)
+            values (4, current_timestamp);
+
+            create table acceptance_records (
+                id integer primary key,
+                project_id integer not null,
+                target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template')),
+                task_id integer,
+                design_requirement_id integer,
+                validation_gate_template_id integer,
+                acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
+                reason text not null,
+                scope text,
+                created_by text not null,
+                status text not null default 'approved' check (status in ('approved', 'revoked')),
+                approved_by_authority_event_id integer,
+                approved_at text,
+                created_at text not null,
+                review_impact text,
+                check (
+                    (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null)
+                    or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null)
+                    or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null)
+                )
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, design_package_key, design_file_path,
+                acceptance_type, reason, created_by, status, created_at
+            )
+            values (
+                1, 'design_file', 'oversized-file', '01-introduction-goals.md',
+                'explicit_exception', 'oversized import guardrail', 'user',
+                'approved', current_timestamp
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+        let status = project_status(temp.path()).unwrap();
+
+        assert_eq!(status.schema_version, Some(SCHEMA_VERSION));
+    }
+
+    #[test]
     fn status_reports_uninitialized_project() {
         let temp = tempfile::tempdir().unwrap();
 
@@ -732,6 +797,38 @@ mod tests {
             .unwrap();
         assert_eq!(acceptance_status, "approved");
         assert_eq!(authority_count, 1);
+    }
+
+    #[test]
+    fn project_scoped_task_can_be_accepted_out_of_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "project scoped task",
+                priority: "medium",
+                source: "user",
+                work_unit_id: None,
+                details: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+
+        let acceptance =
+            accept_task_out_of_scope(temp.path(), task.task_id, "project scope exception").unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let scope: String = conn
+            .query_row(
+                "select scope from acceptance_records where id = ?1",
+                params![acceptance.acceptance_record_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(task.work_unit_id, None);
+        assert_eq!(scope, "project");
     }
 
     #[test]
@@ -1820,6 +1917,44 @@ Body.
                 temp.path(),
                 DesignPackageImport {
                     package_path: &bad_heading.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let bad_heading_level = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-heading-level",
+                title: "Bad Heading Level",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_heading_level
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            r#"### REQ-001: Wrong heading level
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+priority: high
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_heading_level.package_path,
                     status: "draft",
                 },
             )

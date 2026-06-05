@@ -137,8 +137,14 @@ pub(crate) fn open_existing_project(root: &Path) -> Result<Connection> {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
+    prepare_acceptance_records_for_schema(conn)?;
+    conn.execute_batch(SCHEMA)?;
+    migrate_acceptance_records(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
+    ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
+    ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
+    ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
 
     let current_version = conn
         .query_row(
@@ -159,13 +165,96 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "acceptance_records")? {
+        return Ok(());
+    }
+    ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
+    ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
+    ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
+    Ok(())
+}
+
+fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
+    let table_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'acceptance_records'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+    if table_sql.contains("'design_file'")
+        && table_sql.contains("'design_requirement_key'")
+        && table_has_column(conn, "acceptance_records", "design_package_key")?
+        && table_has_column(conn, "acceptance_records", "design_file_path")?
+        && table_has_column(conn, "acceptance_records", "design_requirement_key")?
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_acceptance_design_requirement_project_insert;
+        drop trigger if exists trg_acceptance_design_requirement_project_update;
+        drop trigger if exists trg_acceptance_task_project_insert;
+        drop trigger if exists trg_acceptance_task_project_update;
+        drop trigger if exists trg_acceptance_validation_gate_template_project_insert;
+        drop trigger if exists trg_acceptance_validation_gate_template_project_update;
+        alter table acceptance_records rename to acceptance_records_old;
+
+        create table acceptance_records (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key')),
+            task_id integer references tasks(id),
+            design_requirement_id integer references design_requirements(id),
+            validation_gate_template_id integer references validation_gate_templates(id),
+            design_package_key text,
+            design_file_path text,
+            design_requirement_key text,
+            acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
+            reason text not null,
+            scope text,
+            created_by text not null,
+            status text not null default 'approved' check (status in ('approved', 'revoked')),
+            approved_by_authority_event_id integer references authority_events(id),
+            approved_at text,
+            created_at text not null,
+            review_impact text,
+            check (
+                (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
+                or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
+            )
+        );
+
+        insert into acceptance_records(
+            id, project_id, target_type, task_id, design_requirement_id,
+            validation_gate_template_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        )
+        select
+            id, project_id, target_type, task_id, design_requirement_id,
+            validation_gate_template_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        from acceptance_records_old;
+
+        drop table acceptance_records_old;
+        "#,
+    )?;
+    Ok(())
+}
+
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
-    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    for existing in columns {
-        if existing? == column {
-            return Ok(());
-        }
+    if table_has_column(conn, table, column)? {
+        return Ok(());
     }
 
     conn.execute(
@@ -173,6 +262,29 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         [],
     )?;
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let exists = conn
+        .query_row(
+            "select 1 from sqlite_schema where type = 'table' and name = ?1",
+            params![table],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
 }
 
 fn ensure_project(conn: &Connection, root: &Path) -> Result<()> {
@@ -824,7 +936,7 @@ for each row
 when new.target_type = 'task'
  and new.project_id != coalesce(
      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
-     -1
+     (select id from projects order by id limit 1)
  )
 begin
     select raise(abort, 'acceptance project_id must match task project_id');
@@ -836,7 +948,7 @@ for each row
 when new.target_type = 'task'
  and new.project_id != coalesce(
      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
-     -1
+     (select id from projects order by id limit 1)
  )
 begin
     select raise(abort, 'acceptance project_id must match task project_id');

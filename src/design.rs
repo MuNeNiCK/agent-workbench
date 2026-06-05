@@ -1532,6 +1532,7 @@ fn reject_invalid_agent_blocks(
     key_prefix: &str,
 ) -> Result<()> {
     let lines: Vec<&str> = content.lines().collect();
+    reject_agent_workbench_blocks_without_level_two_heading(&lines, file)?;
     let mut index = 0usize;
     while index < lines.len() {
         let line = lines[index];
@@ -1582,6 +1583,33 @@ fn reject_invalid_agent_blocks(
             bail!("agent-workbench heading must start with metadata key");
         }
         index = fence_end + 1;
+    }
+    Ok(())
+}
+
+fn reject_agent_workbench_blocks_without_level_two_heading(
+    lines: &[&str],
+    file: &ImportedDesignFile,
+) -> Result<()> {
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim() != "```yaml agent-workbench" {
+            continue;
+        }
+        let Some(previous_line) = index
+            .checked_sub(1)
+            .and_then(|previous| lines.get(previous))
+        else {
+            bail!(
+                "yaml agent-workbench block in {} must follow a level-two heading",
+                file.relative_path
+            );
+        };
+        if !previous_line.starts_with("## ") {
+            bail!(
+                "yaml agent-workbench block in {} must follow a level-two heading",
+                file.relative_path
+            );
+        }
     }
     Ok(())
 }
