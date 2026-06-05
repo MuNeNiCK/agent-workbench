@@ -119,9 +119,10 @@ pub fn list_review_policies(root: &Path) -> Result<Vec<ReviewPolicyRecord>> {
 }
 
 pub fn add_review_plan(root: &Path, input: NewReviewPlan<'_>) -> Result<ReviewPlanOutcome> {
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    conn.query_row(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    tx.query_row(
         "select id from work_units where id = ?1 and project_id = ?2",
         params![input.work_unit_id, project_id],
         |row| row.get::<_, i64>(0),
@@ -131,12 +132,12 @@ pub fn add_review_plan(root: &Path, input: NewReviewPlan<'_>) -> Result<ReviewPl
     let review_policy_id = match input.review_policy_id {
         Some(id) => Some(id),
         None => Some(get_or_create_default_policy(
-            &conn,
+            &tx,
             project_id,
             input.review_type,
         )?),
     };
-    conn.execute(
+    tx.execute(
         r#"
         insert into review_plans(
             project_id, work_unit_id, design_version_id, review_type, required,
@@ -159,8 +160,26 @@ pub fn add_review_plan(root: &Path, input: NewReviewPlan<'_>) -> Result<ReviewPl
             input.review_scope_id,
         ],
     )?;
+    let review_plan_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into review_plan_targets(review_plan_id, target_type, work_unit_id)
+        values (?1, 'work_unit', ?2)
+        "#,
+        params![review_plan_id, input.work_unit_id],
+    )?;
+    if let Some(design_version_id) = input.design_version_id {
+        tx.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, design_version_id)
+            values (?1, 'design_version', ?2)
+            "#,
+            params![review_plan_id, design_version_id],
+        )?;
+    }
+    tx.commit()?;
     Ok(ReviewPlanOutcome {
-        review_plan_id: conn.last_insert_rowid(),
+        review_plan_id,
         review_policy_id,
     })
 }
@@ -195,13 +214,54 @@ pub fn list_review_plans(root: &Path) -> Result<Vec<ReviewPlanRecord>> {
     collect_rows(rows)
 }
 
+pub fn list_review_plan_targets(
+    root: &Path,
+    review_plan_id: i64,
+) -> Result<Vec<ReviewPlanTargetRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            t.id, t.review_plan_id, t.target_type, t.design_version_id,
+            t.design_requirement_id, t.task_id, t.work_unit_id,
+            t.repository_snapshot_id, t.file_path, t.symbol
+        from review_plan_targets t
+        join review_plans p on p.id = t.review_plan_id
+        where t.review_plan_id = ?1 and p.project_id = ?2
+        order by t.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![review_plan_id, project_id], |row| {
+        Ok(ReviewPlanTargetRecord {
+            id: row.get(0)?,
+            review_plan_id: row.get(1)?,
+            target_type: row.get(2)?,
+            design_version_id: row.get(3)?,
+            design_requirement_id: row.get(4)?,
+            task_id: row.get(5)?,
+            work_unit_id: row.get(6)?,
+            repository_snapshot_id: row.get(7)?,
+            file_path: row.get(8)?,
+            symbol: row.get(9)?,
+        })
+    })?;
+    collect_rows(rows)
+}
+
 pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
     let plan = load_review_plan(&tx, project_id, input.review_plan_id)?;
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
-    enforce_run_allowed(&tx, &policy, plan.id, input.run_type)?;
+    enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
+    if input.run_type == "resume"
+        && input.new_findings_count > 0
+        && !policy.allow_new_findings_in_resume
+    {
+        bail!("new findings are disabled for resume review by policy");
+    }
     let (target_type, design_version_id, work_unit_id, target_ref) =
         resolve_run_target(&plan, input.target_ref);
 
@@ -309,6 +369,28 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    let run = tx
+        .query_row(
+            r#"
+            select r.run_type, p.review_policy_id
+            from review_runs r
+            join review_plans p on p.id = r.review_plan_id
+            where r.id = ?1 and r.project_id = ?2
+            "#,
+            params![input.review_run_id, project_id],
+            |row| {
+                Ok(StoredReviewRunPolicy {
+                    run_type: row.get(0)?,
+                    review_policy_id: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .context("review run not found")?;
+    let policy = load_review_policy(&tx, project_id, run.review_policy_id)?;
+    if run.run_type == "resume" && !policy.allow_new_findings_in_resume {
+        bail!("new findings are disabled for resume review by policy");
+    }
     tx.query_row(
         "select id from review_runs where id = ?1 and project_id = ?2",
         params![input.review_run_id, project_id],
@@ -436,6 +518,30 @@ pub fn add_finding_verification(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    tx.query_row(
+        r#"
+        select 1
+        from closures c
+        join findings f on f.id = c.finding_id
+        join review_runs r on r.id = ?1 and r.project_id = ?5
+        where c.id = ?2
+          and c.finding_id = ?3
+          and c.project_id = ?5
+          and f.project_id = ?5
+          and f.id = ?3
+          and ?4 in ('verified', 'not_fixed', 'needs_evidence', 'out_of_scope')
+        "#,
+        params![
+            input.review_run_id,
+            input.closure_id,
+            input.finding_id,
+            input.result,
+            project_id,
+        ],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("finding verification target mismatch")?;
     tx.execute(
         r#"
         insert into finding_verifications(
@@ -517,9 +623,10 @@ fn evaluate_plan_status(
     review_plan_id: i64,
     policy: &StoredReviewPolicy,
 ) -> Result<String> {
-    let open_blocking_findings: i64 = conn.query_row(
+    let mut open_blocking_findings = 0;
+    let mut stmt = conn.prepare(
         r#"
-        select count(*)
+        select f.severity
         from findings f
         join review_runs r on r.id = f.review_run_id
         where r.review_plan_id = ?1
@@ -527,9 +634,15 @@ fn evaluate_plan_status(
           and f.status = 'open'
           and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
         "#,
-        params![review_plan_id, project_id],
-        |row| row.get(0),
     )?;
+    let rows = stmt.query_map(params![review_plan_id, project_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for row in rows {
+        if severity_blocks(&policy.stop_on_severity, &row?) {
+            open_blocking_findings += 1;
+        }
+    }
     let clean_fresh = consecutive_clean_runs(conn, review_plan_id, "fresh")?;
     let clean_resume = consecutive_clean_runs(conn, review_plan_id, "resume")?;
     let status = if open_blocking_findings > 0 {
@@ -561,7 +674,7 @@ fn evaluate_plan_status(
 fn enforce_run_allowed(
     conn: &rusqlite::Connection,
     policy: &StoredReviewPolicy,
-    review_plan_id: i64,
+    plan: &StoredReviewPlan,
     run_type: &str,
 ) -> Result<()> {
     if run_type == "fresh" && !policy.allow_fresh_review {
@@ -576,27 +689,27 @@ fn enforce_run_allowed(
         "coverage" => policy.max_fresh_agents,
         _ => bail!("invalid review run type"),
     };
-    let used = count_invocations(conn, review_plan_id, run_type, false)?;
+    let used = count_invocations(conn, policy, plan, run_type, false)?;
     if used >= limit {
         match policy.on_max_agents_exceeded.as_str() {
             "mark_exhausted" => {
                 conn.execute(
                     "update review_plans set status = 'exhausted' where id = ?1",
-                    params![review_plan_id],
+                    params![plan.id],
                 )?;
                 bail!("review agent limit exceeded; review plan marked exhausted");
             }
             "accept_with_user_approval" => {
                 conn.execute(
                     "update review_plans set status = 'needs_user_decision' where id = ?1",
-                    params![review_plan_id],
+                    params![plan.id],
                 )?;
                 bail!("review agent limit exceeded; user approval is required");
             }
             _ => bail!("review agent limit exceeded"),
         }
     }
-    let running = count_invocations(conn, review_plan_id, "", true)?;
+    let running = count_invocations(conn, policy, plan, "", true)?;
     if running >= policy.max_parallel_agents {
         bail!("max parallel review agents exceeded");
     }
@@ -632,12 +745,13 @@ fn consecutive_clean_runs(
 
 fn count_invocations(
     conn: &rusqlite::Connection,
-    review_plan_id: i64,
+    policy: &StoredReviewPolicy,
+    plan: &StoredReviewPlan,
     run_type: &str,
     active_only: bool,
 ) -> Result<i64> {
     let status_filter = if active_only {
-        "and status in ('requested', 'running')"
+        "and i.status in ('requested', 'running')"
     } else {
         ""
     };
@@ -646,10 +760,23 @@ fn count_invocations(
     } else {
         format!("and run_type = '{run_type}'")
     };
+    let (scope_sql, scope_id) = match policy.run_count_scope.as_str() {
+        "review_scope" => match plan.review_scope_id {
+            Some(review_scope_id) => ("p.review_scope_id = ?1", review_scope_id),
+            None => ("i.review_plan_id = ?1", plan.id),
+        },
+        "work_unit" => ("p.work_unit_id = ?1", plan.work_unit_id),
+        _ => ("i.review_plan_id = ?1", plan.id),
+    };
     let sql = format!(
-        "select count(*) from review_agent_invocations where review_plan_id = ?1 {run_type_filter} {status_filter}"
+        r#"
+        select count(*)
+        from review_agent_invocations i
+        join review_plans p on p.id = i.review_plan_id
+        where {scope_sql} {run_type_filter} {status_filter}
+        "#
     );
-    conn.query_row(&sql, params![review_plan_id], |row| row.get(0))
+    conn.query_row(&sql, params![scope_id], |row| row.get(0))
         .map_err(Into::into)
 }
 
@@ -722,7 +849,8 @@ fn load_review_policy(
             id, max_fresh_agents, max_resume_agents, max_parallel_agents,
             required_consecutive_clean_fresh_runs,
             required_consecutive_clean_resume_runs, allow_resume_review,
-            allow_fresh_review, on_max_agents_exceeded
+            allow_fresh_review, allow_new_findings_in_resume, stop_on_severity,
+            on_max_agents_exceeded, run_count_scope
         from review_policies
         where id = ?1 and project_id = ?2
         "#,
@@ -736,7 +864,10 @@ fn load_review_policy(
                 required_consecutive_clean_resume_runs: row.get(5)?,
                 allow_resume_review: row.get::<_, i64>(6)? == 1,
                 allow_fresh_review: row.get::<_, i64>(7)? == 1,
-                on_max_agents_exceeded: row.get(8)?,
+                allow_new_findings_in_resume: row.get::<_, i64>(8)? == 1,
+                stop_on_severity: row.get(9)?,
+                on_max_agents_exceeded: row.get(10)?,
+                run_count_scope: row.get(11)?,
             })
         },
     )
@@ -777,6 +908,24 @@ fn agent_role_for_review_type(review_type: &str) -> Result<&'static str> {
         "implementation_review" => Ok("implementation_review"),
         "general" => Ok("general"),
         _ => bail!("invalid review type"),
+    }
+}
+
+fn severity_blocks(threshold: &str, severity: &str) -> bool {
+    let Some(threshold_rank) = severity_rank(threshold) else {
+        return true;
+    };
+    severity_rank(severity).is_some_and(|rank| rank <= threshold_rank)
+}
+
+fn severity_rank(severity: &str) -> Option<i64> {
+    match severity {
+        "critical" => Some(1),
+        "high" => Some(2),
+        "medium" => Some(3),
+        "low" => Some(4),
+        "none" => None,
+        _ => None,
     }
 }
 
@@ -830,13 +979,21 @@ struct StoredReviewPolicy {
     required_consecutive_clean_resume_runs: i64,
     allow_resume_review: bool,
     allow_fresh_review: bool,
+    allow_new_findings_in_resume: bool,
+    stop_on_severity: String,
     on_max_agents_exceeded: String,
+    run_count_scope: String,
 }
 
 struct StoredFinding {
     id: i64,
     classification: String,
     status: String,
+}
+
+struct StoredReviewRunPolicy {
+    run_type: String,
+    review_policy_id: i64,
 }
 
 pub struct NewReviewScope<'a> {
@@ -1012,6 +1169,20 @@ pub struct ReviewPlanRecord {
     pub review_policy_id: Option<i64>,
     pub review_scope_id: Option<i64>,
     pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReviewPlanTargetRecord {
+    pub id: i64,
+    pub review_plan_id: i64,
+    pub target_type: String,
+    pub design_version_id: Option<i64>,
+    pub design_requirement_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+    pub repository_snapshot_id: Option<i64>,
+    pub file_path: Option<String>,
+    pub symbol: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

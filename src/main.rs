@@ -29,11 +29,11 @@ use agent_workbench::{
     interrupt_work, list_authority_events, list_command_profiles, list_command_usages,
     list_coverage_items, list_decisions, list_design_decisions, list_design_requirements,
     list_findings, list_implementation_evidence, list_kpt_items, list_kpt_reviews,
-    list_review_plans, list_review_policies, list_review_runs, list_review_scopes,
-    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
-    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
-    resume_work, select_validation_gate, start_kpt_review, start_review_scope, start_work,
-    suspend_work,
+    list_review_plan_targets, list_review_plans, list_review_policies, list_review_runs,
+    list_review_scopes, list_task_derivations, list_tasks, list_user_corrections,
+    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
+    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review,
+    start_review_scope, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -861,6 +861,7 @@ struct ReviewPolicyAddArgs {
 enum ReviewPlanCommand {
     Add(ReviewPlanAddArgs),
     List,
+    Context(ReviewPlanContextArgs),
 }
 
 #[derive(Debug, Args)]
@@ -881,6 +882,11 @@ struct ReviewPlanAddArgs {
     review_scope: Option<i64>,
     #[arg(long, default_value_t = true)]
     required: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReviewPlanContextArgs {
+    review_plan_id: i64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2148,6 +2154,21 @@ fn main() -> Result<()> {
                         );
                     }
                 }
+                ReviewPlanCommand::Context(args) => {
+                    let targets = list_review_plan_targets(&root, args.review_plan_id)?;
+                    println!("review_plan_id: {}", args.review_plan_id);
+                    if targets.is_empty() {
+                        println!("no review plan targets");
+                    }
+                    for target in targets {
+                        println!(
+                            "target {} [{}] {}",
+                            target.id,
+                            target.target_type,
+                            review_target_detail(&target)
+                        );
+                    }
+                }
             },
             ReviewCommand::Run { command } => match command {
                 ReviewRunCommand::Add(args) => {
@@ -2509,6 +2530,31 @@ fn print_decisions(records: Vec<agent_workbench::DecisionRecord>) {
             record.id, key, record.status, record.decision
         );
     }
+}
+
+fn review_target_detail(target: &agent_workbench::ReviewPlanTargetRecord) -> String {
+    if let Some(id) = target.design_version_id {
+        return format!("design_version_id={id}");
+    }
+    if let Some(id) = target.design_requirement_id {
+        return format!("design_requirement_id={id}");
+    }
+    if let Some(id) = target.task_id {
+        return format!("task_id={id}");
+    }
+    if let Some(id) = target.work_unit_id {
+        return format!("work_unit_id={id}");
+    }
+    if let Some(id) = target.repository_snapshot_id {
+        return format!("repository_snapshot_id={id}");
+    }
+    if let Some(path) = &target.file_path {
+        return format!("file_path={path}");
+    }
+    if let Some(symbol) = &target.symbol {
+        return format!("symbol={symbol}");
+    }
+    "-".to_string()
 }
 
 fn evidence_detail(record: &ImplementationEvidenceRecord) -> String {

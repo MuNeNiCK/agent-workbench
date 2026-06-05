@@ -940,6 +940,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "1",
         ],
     );
+    let context = ok(temp.path(), &["review", "plan", "context", "1"]);
     let fresh_run = ok(
         temp.path(),
         &[
@@ -1047,6 +1048,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
     assert!(policy.contains("review_policy_id: 1"));
     assert!(scope.contains("review_scope_id: 1"));
     assert!(plan.contains("review_plan_id: 1"));
+    assert!(context.contains("target 1 [work_unit] work_unit_id=1"));
     assert!(fresh_run.contains("plan_status: open"));
     assert!(finding.contains("finding_id: 1"));
     assert!(kpt.contains("generated_item_count: 1"));

@@ -279,7 +279,20 @@ fn migrate_kpt_items(conn: &Connection) -> Result<()> {
     let Some(table_sql) = table_sql else {
         return Ok(());
     };
-    if table_sql.contains("'converted'") {
+    let conversion_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'kpt_item_conversions'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let conversion_sql = conversion_sql.unwrap_or_default();
+    if table_sql.contains("'converted'")
+        && table_sql.contains("linked_review_finding_id integer references findings")
+        && conversion_sql.contains("review_policy_id integer references review_policies")
+        && conversion_sql.contains("design_version_id integer references design_versions")
+        && conversion_sql.contains("target_type = 'task'")
+    {
         return Ok(());
     }
 
@@ -299,7 +312,7 @@ fn migrate_kpt_items(conn: &Connection) -> Result<()> {
             severity text not null default 'medium' check (severity in ('critical', 'high', 'medium', 'low')),
             linked_user_correction_id integer references user_corrections(id),
             linked_command_profile_id integer references command_profiles(id),
-            linked_review_finding_id integer,
+            linked_review_finding_id integer references findings(id),
             linked_task_id integer references tasks(id),
             proposed_action text,
             status text not null default 'open' check (status in ('open', 'accepted', 'converted', 'converted_to_task', 'dismissed')),
@@ -323,11 +336,19 @@ fn migrate_kpt_items(conn: &Connection) -> Result<()> {
             target_type text not null check (target_type in ('task', 'command_profile', 'review_policy', 'design_version', 'decision', 'user_correction')),
             task_id integer references tasks(id),
             command_profile_id integer references command_profiles(id),
-            review_policy_id integer,
-            design_version_id integer,
+            review_policy_id integer references review_policies(id),
+            design_version_id integer references design_versions(id),
             decision_id integer references decisions(id),
             user_correction_id integer references user_corrections(id),
-            created_at text not null
+            created_at text not null,
+            check (
+                (target_type = 'task' and task_id is not null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is null)
+                or (target_type = 'command_profile' and task_id is null and command_profile_id is not null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is null)
+                or (target_type = 'review_policy' and task_id is null and command_profile_id is null and review_policy_id is not null and design_version_id is null and decision_id is null and user_correction_id is null)
+                or (target_type = 'design_version' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is not null and decision_id is null and user_correction_id is null)
+                or (target_type = 'decision' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is not null and user_correction_id is null)
+                or (target_type = 'user_correction' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is not null)
+            )
         );
 
         insert into kpt_item_conversions(
@@ -1559,6 +1580,7 @@ for each row
 when new.project_id != (select project_id from review_runs where id = new.review_run_id)
   or new.project_id != (select project_id from findings where id = new.finding_id)
   or new.project_id != (select project_id from closures where id = new.closure_id)
+  or new.finding_id != (select finding_id from closures where id = new.closure_id)
 begin
     select raise(abort, 'finding verification project_id must match referenced rows');
 end;
@@ -1585,7 +1607,7 @@ create table if not exists kpt_items (
     severity text not null default 'medium' check (severity in ('critical', 'high', 'medium', 'low')),
     linked_user_correction_id integer references user_corrections(id),
     linked_command_profile_id integer references command_profiles(id),
-    linked_review_finding_id integer,
+    linked_review_finding_id integer references findings(id),
     linked_task_id integer references tasks(id),
     proposed_action text,
     status text not null default 'open' check (status in ('open', 'accepted', 'converted', 'converted_to_task', 'dismissed')),
@@ -1598,10 +1620,18 @@ create table if not exists kpt_item_conversions (
     target_type text not null check (target_type in ('task', 'command_profile', 'review_policy', 'design_version', 'decision', 'user_correction')),
     task_id integer references tasks(id),
     command_profile_id integer references command_profiles(id),
-    review_policy_id integer,
-    design_version_id integer,
+    review_policy_id integer references review_policies(id),
+    design_version_id integer references design_versions(id),
     decision_id integer references decisions(id),
     user_correction_id integer references user_corrections(id),
-    created_at text not null
+    created_at text not null,
+    check (
+        (target_type = 'task' and task_id is not null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is null)
+        or (target_type = 'command_profile' and task_id is null and command_profile_id is not null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is null)
+        or (target_type = 'review_policy' and task_id is null and command_profile_id is null and review_policy_id is not null and design_version_id is null and decision_id is null and user_correction_id is null)
+        or (target_type = 'design_version' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is not null and decision_id is null and user_correction_id is null)
+        or (target_type = 'decision' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is not null and user_correction_id is null)
+        or (target_type = 'user_correction' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is not null)
+    )
 );
 "#;

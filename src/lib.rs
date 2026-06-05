@@ -62,10 +62,11 @@ pub use review::{
     ClosureOutcome, FindingClassificationOutcome, FindingOutcome, FindingRecord,
     FindingVerificationOutcome, NewClosure, NewFinding, NewFindingVerification, NewReviewPlan,
     NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome, ReviewPlanRecord,
-    ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome,
-    ReviewScopeRecord, add_closure, add_finding, add_finding_verification, add_review_plan,
-    add_review_policy, add_review_run, classify_finding, list_findings, list_review_plans,
-    list_review_policies, list_review_runs, list_review_scopes, start_review_scope,
+    ReviewPlanTargetRecord, ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome,
+    ReviewRunRecord, ReviewScopeOutcome, ReviewScopeRecord, add_closure, add_finding,
+    add_finding_verification, add_review_plan, add_review_policy, add_review_run, classify_finding,
+    list_findings, list_review_plan_targets, list_review_plans, list_review_policies,
+    list_review_runs, list_review_scopes, start_review_scope,
 };
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
@@ -636,6 +637,10 @@ This requirement describes changed cleanup behavior that must be implemented.
             },
         )
         .unwrap();
+        let targets = list_review_plan_targets(temp.path(), plan.review_plan_id).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target_type, "work_unit");
+        assert_eq!(targets[0].work_unit_id, Some(work.work_unit_id));
 
         let first = add_review_run(
             temp.path(),
@@ -883,6 +888,310 @@ This requirement describes changed cleanup behavior that must be implemented.
         let plans = list_review_plans(temp.path()).unwrap();
 
         assert_eq!(findings[0].status, "closed");
+        assert_eq!(plans[0].status, "clean");
+    }
+
+    #[test]
+    fn finding_verification_rejects_unrelated_closure() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "review two findings", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "closure-integrity",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "resume",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let fresh = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 2,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let first = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: fresh.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "first finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        let second = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: fresh.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "second finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        classify_finding(temp.path(), first.finding_id, "valid").unwrap();
+        classify_finding(temp.path(), second.finding_id, "valid").unwrap();
+        let first_closure = add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: first.finding_id,
+                design_invariant: "first invariant",
+                design_citations: None,
+                implementation_evidence: Some("abc123"),
+                affected_surfaces: None,
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: None,
+                tests_or_gates: None,
+                verification_plan: None,
+                closed_by_commit: None,
+            },
+        )
+        .unwrap();
+        let resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 0,
+                carried_findings_checked: 1,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+
+        let mismatch = add_finding_verification(
+            temp.path(),
+            NewFindingVerification {
+                review_run_id: resume.review_run_id,
+                finding_id: second.finding_id,
+                closure_id: first_closure.closure_id,
+                result: "verified",
+                notes: None,
+            },
+        );
+
+        assert!(mismatch.is_err());
+    }
+
+    #[test]
+    fn resume_policy_blocks_new_findings_when_disallowed() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "verify known finding only", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "resume-no-new",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 2,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "resume",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+
+        let resume_with_count = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        );
+        assert!(resume_with_count.is_err());
+
+        let resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let finding = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: resume.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "medium",
+                description: "new resume finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        );
+        assert!(finding.is_err());
+    }
+
+    #[test]
+    fn stop_on_severity_ignores_lower_severity_findings() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "severity threshold", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "high-only",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "high",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let run = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: run.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "low",
+                description: "low severity note",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+
+        let plans = list_review_plans(temp.path()).unwrap();
         assert_eq!(plans[0].status, "clean");
     }
 
@@ -4469,6 +4778,53 @@ Run the project test suite before implementation handoff.
             .unwrap();
         assert_eq!(conversion_count, 3);
         assert_eq!(converted_count, 3);
+    }
+
+    #[test]
+    fn kpt_item_conversions_enforce_typed_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let review = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("typed conversion"),
+                from: None,
+                period: None,
+            },
+        )
+        .unwrap();
+        let item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(review.kpt_review_id),
+                item_type: "try",
+                title: "typed target",
+                details: None,
+                severity: "medium",
+                proposed_action: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let missing_target = conn.execute(
+            r#"
+            insert into kpt_item_conversions(kpt_item_id, target_type, created_at)
+            values (?1, 'decision', current_timestamp)
+            "#,
+            params![item.kpt_item_id],
+        );
+        let wrong_target = conn.execute(
+            r#"
+            insert into kpt_item_conversions(kpt_item_id, target_type, task_id, decision_id, created_at)
+            values (?1, 'task', 1, 1, current_timestamp)
+            "#,
+            params![item.kpt_item_id],
+        );
+
+        assert!(missing_target.is_err());
+        assert!(wrong_target.is_err());
     }
 
     #[test]
