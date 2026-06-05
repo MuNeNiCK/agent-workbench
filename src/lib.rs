@@ -712,7 +712,7 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
     Ok(records)
 }
 
-pub fn create_handoff(root: &Path, input: NewHandoff<'_>) -> Result<HandoffOutcome> {
+pub fn create_work_record(root: &Path, input: NewWorkRecord<'_>) -> Result<WorkRecordOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let work_unit_id = match input.work_unit_id {
@@ -722,7 +722,7 @@ pub fn create_handoff(root: &Path, input: NewHandoff<'_>) -> Result<HandoffOutco
 
     tx.execute(
         r#"
-        insert into handoffs(
+        insert into work_records(
             work_unit_id, topic, work_performed, next_actions, notable_operations,
             export_path, created_at
         )
@@ -737,16 +737,16 @@ pub fn create_handoff(root: &Path, input: NewHandoff<'_>) -> Result<HandoffOutco
             input.export_path,
         ],
     )?;
-    let handoff_id = tx.last_insert_rowid();
+    let work_record_id = tx.last_insert_rowid();
     tx.commit()?;
 
-    Ok(HandoffOutcome {
-        handoff_id,
+    Ok(WorkRecordOutcome {
+        work_record_id,
         work_unit_id,
     })
 }
 
-pub fn list_handoffs(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<HandoffRecord>> {
+pub fn list_work_records(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<WorkRecordEntry>> {
     let conn = open_existing_project(root)?;
     let mut records = Vec::new();
 
@@ -755,12 +755,12 @@ pub fn list_handoffs(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<Hando
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, topic, work_performed, next_actions, created_at
-                from handoffs
+                from work_records
                 where work_unit_id = ?1
                 order by id
                 "#,
             )?;
-            let rows = stmt.query_map(params![work_unit_id], handoff_record)?;
+            let rows = stmt.query_map(params![work_unit_id], work_record_record)?;
             for row in rows {
                 records.push(row?);
             }
@@ -769,11 +769,11 @@ pub fn list_handoffs(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<Hando
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, topic, work_performed, next_actions, created_at
-                from handoffs
+                from work_records
                 order by id
                 "#,
             )?;
-            let rows = stmt.query_map([], handoff_record)?;
+            let rows = stmt.query_map([], work_record_record)?;
             for row in rows {
                 records.push(row?);
             }
@@ -783,21 +783,21 @@ pub fn list_handoffs(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<Hando
     Ok(records)
 }
 
-pub fn add_handoff_command(
+pub fn add_work_record_command(
     root: &Path,
-    input: NewHandoffCommand<'_>,
-) -> Result<HandoffLinkOutcome> {
+    input: NewWorkRecordCommand<'_>,
+) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
-    ensure_handoff_exists(&conn, input.handoff_id)?;
+    ensure_work_record_exists(&conn, input.work_record_id)?;
     conn.execute(
         r#"
-        insert into handoff_commands(
-            handoff_id, command_profile_id, command, result, log_path, note
+        insert into work_record_commands(
+            work_record_id, command_profile_id, command, result, log_path, note
         )
         values (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
         params![
-            input.handoff_id,
+            input.work_record_id,
             input.command_profile_id,
             input.command,
             input.result,
@@ -806,39 +806,50 @@ pub fn add_handoff_command(
         ],
     )?;
 
-    Ok(HandoffLinkOutcome {
+    Ok(WorkRecordLinkOutcome {
         link_id: conn.last_insert_rowid(),
     })
 }
 
-pub fn add_handoff_commit(root: &Path, input: NewHandoffCommit<'_>) -> Result<HandoffLinkOutcome> {
+pub fn add_work_record_commit(
+    root: &Path,
+    input: NewWorkRecordCommit<'_>,
+) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
-    ensure_handoff_exists(&conn, input.handoff_id)?;
+    ensure_work_record_exists(&conn, input.work_record_id)?;
     conn.execute(
         r#"
-        insert into handoff_commits(handoff_id, commit_sha, role, note)
+        insert into work_record_commits(work_record_id, commit_sha, role, note)
         values (?1, ?2, ?3, ?4)
         "#,
-        params![input.handoff_id, input.commit_sha, input.role, input.note],
+        params![
+            input.work_record_id,
+            input.commit_sha,
+            input.role,
+            input.note
+        ],
     )?;
 
-    Ok(HandoffLinkOutcome {
+    Ok(WorkRecordLinkOutcome {
         link_id: conn.last_insert_rowid(),
     })
 }
 
-pub fn add_handoff_file(root: &Path, input: NewHandoffFile<'_>) -> Result<HandoffLinkOutcome> {
+pub fn add_work_record_file(
+    root: &Path,
+    input: NewWorkRecordFile<'_>,
+) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
-    ensure_handoff_exists(&conn, input.handoff_id)?;
+    ensure_work_record_exists(&conn, input.work_record_id)?;
     conn.execute(
         r#"
-        insert into handoff_files(handoff_id, path, role, note)
+        insert into work_record_files(work_record_id, path, role, note)
         values (?1, ?2, ?3, ?4)
         "#,
-        params![input.handoff_id, input.path, input.role, input.note],
+        params![input.work_record_id, input.path, input.role, input.note],
     )?;
 
-    Ok(HandoffLinkOutcome {
+    Ok(WorkRecordLinkOutcome {
         link_id: conn.last_insert_rowid(),
     })
 }
@@ -1119,8 +1130,8 @@ fn command_profile_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandPr
     })
 }
 
-fn handoff_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<HandoffRecord> {
-    Ok(HandoffRecord {
+fn work_record_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRecordEntry> {
+    Ok(WorkRecordEntry {
         id: row.get(0)?,
         work_unit_id: row.get(1)?,
         topic: row.get(2)?,
@@ -1130,15 +1141,15 @@ fn handoff_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<HandoffRecord> {
     })
 }
 
-fn ensure_handoff_exists(conn: &Connection, handoff_id: i64) -> Result<()> {
+fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<()> {
     let exists = conn
         .query_row(
-            "select 1 from handoffs where id = ?1",
-            params![handoff_id],
+            "select 1 from work_records where id = ?1",
+            params![work_record_id],
             |_| Ok(()),
         )
         .optional()?;
-    exists.context("handoff not found")
+    exists.context("work record not found")
 }
 
 struct NewEvent<'a> {
@@ -1324,7 +1335,7 @@ pub struct RuleRecord {
     pub work_unit_id: Option<i64>,
 }
 
-pub struct NewHandoff<'a> {
+pub struct NewWorkRecord<'a> {
     pub work_unit_id: Option<i64>,
     pub topic: &'a str,
     pub work_performed: Option<&'a str>,
@@ -1334,13 +1345,13 @@ pub struct NewHandoff<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct HandoffOutcome {
-    pub handoff_id: i64,
+pub struct WorkRecordOutcome {
+    pub work_record_id: i64,
     pub work_unit_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct HandoffRecord {
+pub struct WorkRecordEntry {
     pub id: i64,
     pub work_unit_id: Option<i64>,
     pub topic: String,
@@ -1349,8 +1360,8 @@ pub struct HandoffRecord {
     pub created_at: String,
 }
 
-pub struct NewHandoffCommand<'a> {
-    pub handoff_id: i64,
+pub struct NewWorkRecordCommand<'a> {
+    pub work_record_id: i64,
     pub command_profile_id: Option<i64>,
     pub command: &'a str,
     pub result: Option<&'a str>,
@@ -1358,22 +1369,22 @@ pub struct NewHandoffCommand<'a> {
     pub note: Option<&'a str>,
 }
 
-pub struct NewHandoffCommit<'a> {
-    pub handoff_id: i64,
+pub struct NewWorkRecordCommit<'a> {
+    pub work_record_id: i64,
     pub commit_sha: &'a str,
     pub role: &'a str,
     pub note: Option<&'a str>,
 }
 
-pub struct NewHandoffFile<'a> {
-    pub handoff_id: i64,
+pub struct NewWorkRecordFile<'a> {
+    pub work_record_id: i64,
     pub path: &'a str,
     pub role: &'a str,
     pub note: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct HandoffLinkOutcome {
+pub struct WorkRecordLinkOutcome {
     pub link_id: i64,
 }
 
@@ -1536,7 +1547,7 @@ create table if not exists tasks (
     title text not null,
     priority text not null default 'medium' check (priority in ('critical', 'high', 'medium', 'low')),
     status text not null default 'open' check (status in ('open', 'blocked', 'closed', 'accepted_out_of_scope')),
-    source text not null default 'user' check (source in ('user', 'plan', 'review', 'coverage', 'design', 'handoff')),
+    source text not null default 'user' check (source in ('user', 'plan', 'review', 'coverage', 'design', 'work_record')),
     parent_task_id integer references tasks(id),
     details text,
     completion_condition text,
@@ -1633,7 +1644,7 @@ create table if not exists command_deviations (
     created_at text not null
 );
 
-create table if not exists handoffs (
+create table if not exists work_records (
     id integer primary key,
     work_unit_id integer references work_units(id) on delete cascade,
     topic text not null,
@@ -1644,9 +1655,9 @@ create table if not exists handoffs (
     created_at text not null
 );
 
-create table if not exists handoff_commands (
+create table if not exists work_record_commands (
     id integer primary key,
-    handoff_id integer not null references handoffs(id) on delete cascade,
+    work_record_id integer not null references work_records(id) on delete cascade,
     command_usage_id integer references command_usages(id),
     command_profile_id integer references command_profiles(id),
     command text,
@@ -1655,18 +1666,18 @@ create table if not exists handoff_commands (
     note text
 );
 
-create table if not exists handoff_commits (
+create table if not exists work_record_commits (
     id integer primary key,
-    handoff_id integer not null references handoffs(id) on delete cascade,
+    work_record_id integer not null references work_records(id) on delete cascade,
     git_commit_id integer,
     commit_sha text,
     role text not null default 'referenced' check (role in ('created', 'referenced', 'validation_base', 'rollback_point')),
     note text
 );
 
-create table if not exists handoff_files (
+create table if not exists work_record_files (
     id integer primary key,
-    handoff_id integer not null references handoffs(id) on delete cascade,
+    work_record_id integer not null references work_records(id) on delete cascade,
     git_file_change_id integer,
     repository_id integer,
     path text not null,
@@ -1679,7 +1690,7 @@ create table if not exists work_record_forks (
     project_id integer not null references projects(id) on delete cascade,
     source_work_unit_id integer references work_units(id),
     source_work_unit_activation_id integer references work_unit_activations(id),
-    source_handoff_id integer references handoffs(id),
+    source_work_record_id integer references work_records(id),
     source_repository_snapshot_id integer,
     source_git_commit_id integer,
     forked_work_unit_id integer references work_units(id),
@@ -1928,16 +1939,16 @@ mod tests {
     }
 
     #[test]
-    fn handoff_records_are_created_and_linked_separately() {
+    fn work_records_are_created_and_linked_separately() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
-        let started = start_work(temp.path(), "implement handoff ledger", None).unwrap();
+        let started = start_work(temp.path(), "implement work record ledger", None).unwrap();
 
-        let handoff = create_handoff(
+        let work_record = create_work_record(
             temp.path(),
-            NewHandoff {
+            NewWorkRecord {
                 work_unit_id: None,
-                topic: "handoff ledger",
+                topic: "work record ledger",
                 work_performed: Some("created structured records"),
                 next_actions: Some("export records"),
                 notable_operations: Some("cargo test"),
@@ -1945,10 +1956,10 @@ mod tests {
             },
         )
         .unwrap();
-        let command = add_handoff_command(
+        let command = add_work_record_command(
             temp.path(),
-            NewHandoffCommand {
-                handoff_id: handoff.handoff_id,
+            NewWorkRecordCommand {
+                work_record_id: work_record.work_record_id,
                 command_profile_id: None,
                 command: "cargo test",
                 result: Some("pass"),
@@ -1957,31 +1968,31 @@ mod tests {
             },
         )
         .unwrap();
-        let commit = add_handoff_commit(
+        let commit = add_work_record_commit(
             temp.path(),
-            NewHandoffCommit {
-                handoff_id: handoff.handoff_id,
+            NewWorkRecordCommit {
+                work_record_id: work_record.work_record_id,
                 commit_sha: "abc123",
                 role: "created",
                 note: None,
             },
         )
         .unwrap();
-        let file = add_handoff_file(
+        let file = add_work_record_file(
             temp.path(),
-            NewHandoffFile {
-                handoff_id: handoff.handoff_id,
+            NewWorkRecordFile {
+                work_record_id: work_record.work_record_id,
                 path: "src/lib.rs",
                 role: "changed",
                 note: None,
             },
         )
         .unwrap();
-        let handoffs = list_handoffs(temp.path(), Some(started.work_unit_id)).unwrap();
+        let work_records = list_work_records(temp.path(), Some(started.work_unit_id)).unwrap();
 
-        assert_eq!(handoff.work_unit_id, Some(started.work_unit_id));
-        assert_eq!(handoffs.len(), 1);
-        assert_eq!(handoffs[0].topic, "handoff ledger");
+        assert_eq!(work_record.work_unit_id, Some(started.work_unit_id));
+        assert_eq!(work_records.len(), 1);
+        assert_eq!(work_records[0].topic, "work record ledger");
         assert_eq!(command.link_id, 1);
         assert_eq!(commit.link_id, 1);
         assert_eq!(file.link_id, 1);

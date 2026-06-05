@@ -5,12 +5,12 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewCommandProfile, NewHandoff, NewHandoffCommand, NewHandoffCommit, NewHandoffFile,
-    NewUserCorrection, NextAction, RuleQuery, add_fixed_command, add_handoff_command,
-    add_handoff_commit, add_handoff_file, add_user_correction, applicable_rules, close_active_work,
-    create_handoff, init_project, interrupt_work, list_command_profiles, list_handoffs,
-    list_user_corrections, next_action, project_status, resume_check_basic, resume_work,
-    start_work, suspend_work,
+    NewCommandProfile, NewUserCorrection, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, add_fixed_command, add_user_correction,
+    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
+    close_active_work, create_work_record, init_project, interrupt_work, list_command_profiles,
+    list_user_corrections, list_work_records, next_action, project_status, resume_check_basic,
+    resume_work, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -54,10 +54,11 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
-    /// Record and link structured handoff evidence.
-    Handoff {
+    /// Record and link structured work records.
+    #[command(name = "record")]
+    WorkRecord {
         #[command(subcommand)]
-        command: HandoffCommand,
+        command: WorkRecordCommand,
     },
 }
 
@@ -195,25 +196,25 @@ struct RulesApplicableArgs {
 }
 
 #[derive(Debug, Subcommand)]
-enum HandoffCommand {
-    Create(HandoffCreateArgs),
-    List(HandoffListArgs),
+enum WorkRecordCommand {
+    Create(WorkRecordCreateArgs),
+    List(WorkRecordListArgs),
     Command {
         #[command(subcommand)]
-        command: HandoffCommandLinkCommand,
+        command: WorkRecordCommandLinkCommand,
     },
     Commit {
         #[command(subcommand)]
-        command: HandoffCommitCommand,
+        command: WorkRecordCommitCommand,
     },
     File {
         #[command(subcommand)]
-        command: HandoffFileCommand,
+        command: WorkRecordFileCommand,
     },
 }
 
 #[derive(Debug, Args)]
-struct HandoffCreateArgs {
+struct WorkRecordCreateArgs {
     #[arg(long)]
     topic: String,
     #[arg(long)]
@@ -229,19 +230,19 @@ struct HandoffCreateArgs {
 }
 
 #[derive(Debug, Args)]
-struct HandoffListArgs {
+struct WorkRecordListArgs {
     #[arg(long)]
     work_unit: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]
-enum HandoffCommandLinkCommand {
-    Add(HandoffCommandAddArgs),
+enum WorkRecordCommandLinkCommand {
+    Add(WorkRecordCommandAddArgs),
 }
 
 #[derive(Debug, Args)]
-struct HandoffCommandAddArgs {
-    handoff_id: i64,
+struct WorkRecordCommandAddArgs {
+    work_record_id: i64,
     #[arg(long)]
     command: String,
     #[arg(long)]
@@ -255,13 +256,13 @@ struct HandoffCommandAddArgs {
 }
 
 #[derive(Debug, Subcommand)]
-enum HandoffCommitCommand {
-    Add(HandoffCommitAddArgs),
+enum WorkRecordCommitCommand {
+    Add(WorkRecordCommitAddArgs),
 }
 
 #[derive(Debug, Args)]
-struct HandoffCommitAddArgs {
-    handoff_id: i64,
+struct WorkRecordCommitAddArgs {
+    work_record_id: i64,
     #[arg(long)]
     sha: String,
     #[arg(long, default_value = "referenced")]
@@ -271,13 +272,13 @@ struct HandoffCommitAddArgs {
 }
 
 #[derive(Debug, Subcommand)]
-enum HandoffFileCommand {
-    Add(HandoffFileAddArgs),
+enum WorkRecordFileCommand {
+    Add(WorkRecordFileAddArgs),
 }
 
 #[derive(Debug, Args)]
-struct HandoffFileAddArgs {
-    handoff_id: i64,
+struct WorkRecordFileAddArgs {
+    work_record_id: i64,
     #[arg(long)]
     path: String,
     #[arg(long, default_value = "changed")]
@@ -468,11 +469,11 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Command::Handoff { command } => match command {
-            HandoffCommand::Create(args) => {
-                let outcome = create_handoff(
+        Command::WorkRecord { command } => match command {
+            WorkRecordCommand::Create(args) => {
+                let outcome = create_work_record(
                     &root,
-                    NewHandoff {
+                    NewWorkRecord {
                         work_unit_id: args.work_unit,
                         topic: &args.topic,
                         work_performed: args.work_performed.as_deref(),
@@ -481,16 +482,16 @@ fn main() -> Result<()> {
                         export_path: args.export_path.as_deref(),
                     },
                 )?;
-                println!("created handoff");
-                println!("handoff_id: {}", outcome.handoff_id);
+                println!("created work record");
+                println!("work_record_id: {}", outcome.work_record_id);
                 if let Some(work_unit_id) = outcome.work_unit_id {
                     println!("work_unit_id: {work_unit_id}");
                 }
             }
-            HandoffCommand::List(args) => {
-                let records = list_handoffs(&root, args.work_unit)?;
+            WorkRecordCommand::List(args) => {
+                let records = list_work_records(&root, args.work_unit)?;
                 if records.is_empty() {
-                    println!("no handoffs");
+                    println!("no work records");
                 }
                 for record in records {
                     let work_unit = record
@@ -500,12 +501,12 @@ fn main() -> Result<()> {
                     println!("{} [work_unit={}] {}", record.id, work_unit, record.topic);
                 }
             }
-            HandoffCommand::Command { command } => match command {
-                HandoffCommandLinkCommand::Add(args) => {
-                    let outcome = add_handoff_command(
+            WorkRecordCommand::Command { command } => match command {
+                WorkRecordCommandLinkCommand::Add(args) => {
+                    let outcome = add_work_record_command(
                         &root,
-                        NewHandoffCommand {
-                            handoff_id: args.handoff_id,
+                        NewWorkRecordCommand {
+                            work_record_id: args.work_record_id,
                             command_profile_id: args.profile,
                             command: &args.command,
                             result: args.result.as_deref(),
@@ -513,38 +514,38 @@ fn main() -> Result<()> {
                             note: args.note.as_deref(),
                         },
                     )?;
-                    println!("linked handoff command");
-                    println!("handoff_command_id: {}", outcome.link_id);
+                    println!("linked work record command");
+                    println!("work_record_command_id: {}", outcome.link_id);
                 }
             },
-            HandoffCommand::Commit { command } => match command {
-                HandoffCommitCommand::Add(args) => {
-                    let outcome = add_handoff_commit(
+            WorkRecordCommand::Commit { command } => match command {
+                WorkRecordCommitCommand::Add(args) => {
+                    let outcome = add_work_record_commit(
                         &root,
-                        NewHandoffCommit {
-                            handoff_id: args.handoff_id,
+                        NewWorkRecordCommit {
+                            work_record_id: args.work_record_id,
                             commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
                         },
                     )?;
-                    println!("linked handoff commit");
-                    println!("handoff_commit_id: {}", outcome.link_id);
+                    println!("linked work record commit");
+                    println!("work_record_commit_id: {}", outcome.link_id);
                 }
             },
-            HandoffCommand::File { command } => match command {
-                HandoffFileCommand::Add(args) => {
-                    let outcome = add_handoff_file(
+            WorkRecordCommand::File { command } => match command {
+                WorkRecordFileCommand::Add(args) => {
+                    let outcome = add_work_record_file(
                         &root,
-                        NewHandoffFile {
-                            handoff_id: args.handoff_id,
+                        NewWorkRecordFile {
+                            work_record_id: args.work_record_id,
                             path: &args.path,
                             role: &args.role,
                             note: args.note.as_deref(),
                         },
                     )?;
-                    println!("linked handoff file");
-                    println!("handoff_file_id: {}", outcome.link_id);
+                    println!("linked work record file");
+                    println!("work_record_file_id: {}", outcome.link_id);
                 }
             },
         },
