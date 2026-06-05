@@ -12,10 +12,10 @@ use agent_workbench::{
     add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
     add_task, add_user_correction, add_work_record_command, add_work_record_commit,
     add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_work_record, fork_work, init_project, interrupt_work,
-    list_authority_events, list_command_profiles, list_decisions, list_tasks,
-    list_user_corrections, list_work_records, next_action, project_status, resume_check_basic,
-    resume_work, start_kpt_review, start_work, suspend_work,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record, fork_work, init_project,
+    interrupt_work, list_authority_events, list_command_profiles, list_decisions, list_tasks,
+    list_user_corrections, list_work_records, next_action, project_status, reopen_work,
+    resume_check_basic, resume_work, start_kpt_review, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -101,6 +101,10 @@ enum WorkCommand {
     Close(WorkCloseArgs),
     /// Fork work from a prior record, activation, or commit.
     Fork(WorkForkArgs),
+    /// Reopen a closed or abandoned work unit.
+    Reopen(WorkReopenArgs),
+    /// Create follow-up work linked to a closed or abandoned work unit.
+    FollowUp(WorkFollowUpArgs),
 }
 
 #[derive(Debug, Args)]
@@ -152,6 +156,21 @@ struct WorkForkArgs {
     reason: String,
     #[arg(long, default_value = "keep_history")]
     discard_policy: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkReopenArgs {
+    work_unit_id: i64,
+    #[arg(long)]
+    reason: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkFollowUpArgs {
+    source_work_unit_id: i64,
+    title: String,
+    #[arg(long)]
+    reason: String,
 }
 
 #[derive(Debug, Args)]
@@ -658,6 +677,24 @@ fn main() -> Result<()> {
                 )?;
                 println!("forked work");
                 println!("fork_id: {}", outcome.fork_id);
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+            WorkCommand::Reopen(args) => {
+                let outcome = reopen_work(&root, args.work_unit_id, &args.reason)?;
+                println!("reopened work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+            WorkCommand::FollowUp(args) => {
+                let outcome = create_follow_up_work(
+                    &root,
+                    args.source_work_unit_id,
+                    &args.title,
+                    &args.reason,
+                )?;
+                println!("created follow-up work unit");
+                println!("source_work_unit_id: {}", outcome.source_work_unit_id);
                 println!("work_unit_id: {}", outcome.work_unit_id);
                 println!("activation_id: {}", outcome.activation_id);
             }

@@ -154,6 +154,14 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let active = active_activation(&tx)?.context("no active activation to close")?;
+    let open_tasks = tx.query_row(
+        "select count(*) from tasks where work_unit_id = ?1 and status in ('open', 'blocked')",
+        params![active.work_unit_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if open_tasks > 0 {
+        bail!("cannot close work unit with open or blocked tasks");
+    }
     let close_summary = match commit {
         Some(commit) => format!("{summary}\ncommit: {commit}"),
         None => summary.to_string(),
@@ -410,6 +418,141 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
     })
 }
 
+pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot reopen work while another activation is active");
+    }
+
+    let status = tx
+        .query_row(
+            "select status from work_units where id = ?1 and project_id = ?2",
+            params![work_unit_id, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("work unit not found")?;
+    if status != "closed" && status != "abandoned" {
+        bail!("only closed or abandoned work units can be reopened");
+    }
+
+    tx.execute(
+        "update work_units set status = 'open', closed_at = null where id = ?1",
+        params![work_unit_id],
+    )?;
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+        )
+        values (?1, ?2, 0, 'active', 'reopen', current_timestamp)
+        "#,
+        params![project_id, work_unit_id],
+    )?;
+    let activation_id = tx.last_insert_rowid();
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id,
+            activation_id: Some(activation_id),
+            related_activation_id: None,
+            event_type: "reopened",
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: Some(&status),
+            next_status: Some("open"),
+        },
+    )?;
+    tx.commit()?;
+
+    Ok(WorkOutcome {
+        work_unit_id,
+        activation_id,
+    })
+}
+
+pub fn create_follow_up_work(
+    root: &Path,
+    source_work_unit_id: i64,
+    title: &str,
+    reason: &str,
+) -> Result<FollowUpOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot create follow-up work while another activation is active");
+    }
+
+    let source_status = tx
+        .query_row(
+            "select status from work_units where id = ?1 and project_id = ?2",
+            params![source_work_unit_id, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("source work unit not found")?;
+    if source_status != "closed" && source_status != "abandoned" {
+        bail!("follow-up source must be closed or abandoned");
+    }
+
+    tx.execute(
+        r#"
+        insert into work_units(
+            project_id, parent_work_unit_id, title, status, responsibility,
+            interrupt_reason, started_at
+        )
+        values (?1, ?2, ?3, 'open', 'follow-up work', ?4, current_timestamp)
+        "#,
+        params![project_id, source_work_unit_id, title, reason],
+    )?;
+    let follow_up_work_unit_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+        )
+        values (?1, ?2, 0, 'active', 'follow_up', current_timestamp)
+        "#,
+        params![project_id, follow_up_work_unit_id],
+    )?;
+    let activation_id = tx.last_insert_rowid();
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: follow_up_work_unit_id,
+            activation_id: Some(activation_id),
+            related_activation_id: None,
+            event_type: "follow_up_created",
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: None,
+            next_status: Some("open"),
+        },
+    )?;
+    tx.execute(
+        r#"
+        insert into work_unit_dependencies(
+            work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+            status, created_at
+        )
+        values (?1, ?2, 'follow_up_of', ?3, 'resolved', current_timestamp)
+        "#,
+        params![follow_up_work_unit_id, source_work_unit_id, reason],
+    )?;
+    tx.commit()?;
+
+    Ok(FollowUpOutcome {
+        source_work_unit_id,
+        work_unit_id: follow_up_work_unit_id,
+        activation_id,
+    })
+}
+
 pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
@@ -633,6 +776,13 @@ pub struct InterruptOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CloseOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FollowUpOutcome {
+    pub source_work_unit_id: i64,
     pub work_unit_id: i64,
     pub activation_id: i64,
 }

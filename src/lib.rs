@@ -39,9 +39,10 @@ pub use rules::{
     add_user_correction, applicable_rules, list_user_corrections,
 };
 pub use work::{
-    CloseOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome, ResumeOutcome, SuspendOutcome,
-    WorkForkOutcome, WorkForkSource, WorkOutcome, close_active_work, fork_work, interrupt_work,
-    resume_check_basic, resume_work, start_work, suspend_work,
+    CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
+    ResumeOutcome, SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, close_active_work,
+    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check_basic, resume_work,
+    start_work, suspend_work,
 };
 
 #[cfg(test)]
@@ -452,6 +453,61 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "write task support");
         assert_eq!(tasks[0].closed_by_commit.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn close_work_refuses_open_tasks() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "work with task", None).unwrap();
+        add_task(
+            temp.path(),
+            NewTask {
+                title: "must finish",
+                priority: "medium",
+                source: "user",
+                work_unit_id: None,
+                details: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+
+        let closed = close_active_work(temp.path(), "done", None);
+
+        assert!(closed.is_err());
+    }
+
+    #[test]
+    fn reopen_and_follow_up_create_active_work() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let original = start_work(temp.path(), "closed work", None).unwrap();
+        close_active_work(temp.path(), "closed", None).unwrap();
+
+        let reopened = reopen_work(temp.path(), original.work_unit_id, "closure invalid").unwrap();
+        assert_eq!(reopened.work_unit_id, original.work_unit_id);
+        close_active_work(temp.path(), "closed again", None).unwrap();
+
+        let follow_up = create_follow_up_work(
+            temp.path(),
+            original.work_unit_id,
+            "related follow-up",
+            "new related issue",
+        )
+        .unwrap();
+
+        assert_ne!(follow_up.work_unit_id, original.work_unit_id);
+        assert_eq!(follow_up.source_work_unit_id, original.work_unit_id);
+        assert_eq!(
+            next_action(temp.path()).unwrap(),
+            NextAction::ContinueActive {
+                work_unit: ActiveWorkUnit {
+                    id: follow_up.work_unit_id,
+                    title: "related follow-up".to_string(),
+                }
+            }
+        );
     }
 
     #[test]
