@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub const LEDGER_DIR: &str = ".agent-workbench";
 pub const LEDGER_FILE: &str = "ledger.sqlite";
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -516,6 +516,22 @@ create table if not exists decisions (
     status text not null default 'accepted' check (status in ('accepted', 'rejected', 'superseded')),
     authority_refs text,
     created_at text not null
+);
+
+create table if not exists acceptance_records (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    target_type text not null check (target_type in ('task')),
+    task_id integer references tasks(id),
+    acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
+    reason text not null,
+    scope text,
+    created_by text not null check (created_by in ('user', 'agent', 'system')),
+    status text not null check (status in ('proposed', 'approved', 'rejected', 'expired')),
+    approved_by_authority_event_id integer references authority_events(id),
+    approved_at text,
+    created_at text not null,
+    review_impact text
 );
 
 create table if not exists rule_bindings (

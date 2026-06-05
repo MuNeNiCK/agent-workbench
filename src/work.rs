@@ -211,9 +211,13 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
 }
 
 pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
+    resume_check(root, "basic")
+}
+
+pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
-    let evaluation = evaluate_resume_ready_basic(&tx)?;
+    let evaluation = evaluate_resume_ready(&tx, maturity)?;
 
     tx.execute(
         r#"
@@ -228,10 +232,10 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
             evaluation.work_unit_id,
             evaluation.activation_id,
             evaluation.suspend_snapshot_id,
-            evaluation.result,
+            evaluation.resume_result,
             evaluation.authority_high_watermark,
             evaluation.activation_stack_revision,
-            if evaluation.result == "allowed" {
+            if evaluation.resume_result == "allowed" {
                 evaluation.allowed_next_action.as_deref()
             } else {
                 None
@@ -263,22 +267,55 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
 
     Ok(ResumeCheckOutcome {
         resume_check_id,
-        result: evaluation.result,
+        result: evaluation.resume_result,
         blocking_reason: evaluation.blocking_reason,
     })
 }
 
 pub fn resume_ready_basic(root: &Path) -> Result<ResumeReadyOutcome> {
-    let conn = open_existing_project(root)?;
-    let evaluation = evaluate_resume_ready_basic(&conn)?;
+    resume_ready(root, "basic")
+}
 
-    Ok(ResumeReadyOutcome {
-        work_unit_id: evaluation.work_unit_id,
-        activation_id: evaluation.activation_id,
-        result: evaluation.result,
-        blocking_reason: evaluation.blocking_reason,
-        items: evaluation.items,
-    })
+pub fn resume_ready(root: &Path, maturity: &str) -> Result<ResumeReadyOutcome> {
+    let conn = open_existing_project(root)?;
+    match evaluate_resume_ready(&conn, maturity) {
+        Ok(evaluation) => Ok(ResumeReadyOutcome {
+            work_unit_id: Some(evaluation.work_unit_id),
+            activation_id: Some(evaluation.activation_id),
+            result: gate_result_for(&evaluation),
+            blocking_reason: evaluation.blocking_reason,
+            items: evaluation.items,
+        }),
+        Err(error) if is_no_resume_target_error(&error) => Ok(ResumeReadyOutcome {
+            work_unit_id: None,
+            activation_id: None,
+            result: "blocked".to_string(),
+            blocking_reason: Some("no suspended activation to resume".to_string()),
+            items: vec![ResumeReadyItem {
+                name: "resume_target_suspended".to_string(),
+                result: "fail".to_string(),
+                blocking_action: Some(
+                    "suspend or complete current work before resuming".to_string(),
+                ),
+                details: "no suspended activation to resume".to_string(),
+            }],
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+fn gate_result_for(evaluation: &ResumeGateEvaluation) -> String {
+    if evaluation.resume_result == "allowed" {
+        "pass".to_string()
+    } else {
+        "blocked".to_string()
+    }
+}
+
+fn is_no_resume_target_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == "no suspended activation to resume")
 }
 
 pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
@@ -369,10 +406,6 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
 
-    if active_activation(&tx)?.is_some() {
-        bail!("cannot reopen work while another activation is active");
-    }
-
     let status = tx
         .query_row(
             "select status from work_units where id = ?1 and project_id = ?2",
@@ -385,6 +418,12 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
         bail!("only closed or abandoned work units can be reopened");
     }
 
+    let parent = prepare_parent_frame(
+        &tx,
+        reason,
+        &format!("resume after reopening work unit {work_unit_id}"),
+    )?;
+
     tx.execute(
         "update work_units set status = 'open', closed_at = null where id = ?1",
         params![work_unit_id],
@@ -392,19 +431,34 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
     tx.execute(
         r#"
         insert into work_unit_activations(
-            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+            project_id, work_unit_id, parent_activation_id, stack_depth, status,
+            activation_reason, opened_at
         )
-        values (?1, ?2, 0, 'active', 'reopen', current_timestamp)
+        values (?1, ?2, ?3, ?4, 'active', 'reopen', current_timestamp)
         "#,
-        params![project_id, work_unit_id],
+        params![
+            project_id,
+            work_unit_id,
+            parent.as_ref().map(|activation| activation.activation_id),
+            parent
+                .as_ref()
+                .map(|activation| activation.stack_depth + 1)
+                .unwrap_or(0)
+        ],
     )?;
     let activation_id = tx.last_insert_rowid();
+    if let Some(parent) = &parent {
+        tx.execute(
+            "update work_unit_activations set suspended_by_activation_id = ?1 where id = ?2",
+            params![activation_id, parent.activation_id],
+        )?;
+    }
     insert_event(
         &tx,
         NewEvent {
             work_unit_id,
             activation_id: Some(activation_id),
-            related_activation_id: None,
+            related_activation_id: parent.as_ref().map(|activation| activation.activation_id),
             event_type: "reopened",
             reason: Some(reason),
             status_domain: "work_unit",
@@ -430,10 +484,6 @@ pub fn create_follow_up_work(
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
 
-    if active_activation(&tx)?.is_some() {
-        bail!("cannot create follow-up work while another activation is active");
-    }
-
     let source_status = tx
         .query_row(
             "select status from work_units where id = ?1 and project_id = ?2",
@@ -445,6 +495,12 @@ pub fn create_follow_up_work(
     if source_status != "closed" && source_status != "abandoned" {
         bail!("follow-up source must be closed or abandoned");
     }
+
+    let parent = prepare_parent_frame(
+        &tx,
+        reason,
+        &format!("resume after follow-up for work unit {source_work_unit_id}"),
+    )?;
 
     tx.execute(
         r#"
@@ -460,20 +516,48 @@ pub fn create_follow_up_work(
     tx.execute(
         r#"
         insert into work_unit_activations(
-            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+            project_id, work_unit_id, parent_activation_id, stack_depth, status,
+            activation_reason, opened_at
         )
-        values (?1, ?2, 0, 'active', 'follow_up', current_timestamp)
+        values (?1, ?2, ?3, ?4, 'active', 'follow_up', current_timestamp)
         "#,
-        params![project_id, follow_up_work_unit_id],
+        params![
+            project_id,
+            follow_up_work_unit_id,
+            parent.as_ref().map(|activation| activation.activation_id),
+            parent
+                .as_ref()
+                .map(|activation| activation.stack_depth + 1)
+                .unwrap_or(0)
+        ],
     )?;
     let activation_id = tx.last_insert_rowid();
+    if let Some(parent) = &parent {
+        tx.execute(
+            "update work_unit_activations set suspended_by_activation_id = ?1 where id = ?2",
+            params![activation_id, parent.activation_id],
+        )?;
+    }
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: source_work_unit_id,
+            activation_id: None,
+            related_activation_id: Some(activation_id),
+            event_type: "follow_up_created",
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: Some(&source_status),
+            next_status: Some(&source_status),
+        },
+    )?;
     insert_event(
         &tx,
         NewEvent {
             work_unit_id: follow_up_work_unit_id,
             activation_id: Some(activation_id),
-            related_activation_id: None,
-            event_type: "follow_up_created",
+            related_activation_id: parent.as_ref().map(|activation| activation.activation_id),
+            event_type: "opened",
             reason: Some(reason),
             status_domain: "work_unit",
             previous_status: None,
@@ -635,6 +719,19 @@ fn suspend_active_activation(
     Ok(snapshot_id)
 }
 
+fn prepare_parent_frame(
+    conn: &Connection,
+    reason: &str,
+    next_action: &str,
+) -> Result<Option<StoredActivation>> {
+    if let Some(active) = active_activation(conn)? {
+        suspend_active_activation(conn, &active, reason, next_action)?;
+        return Ok(Some(active));
+    }
+
+    suspended_activation(conn)
+}
+
 fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<StoredForkSource> {
     match source {
         WorkForkSource::Record(work_record_id) => {
@@ -680,7 +777,10 @@ fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<
     }
 }
 
-fn evaluate_resume_ready_basic(conn: &Connection) -> Result<ResumeGateEvaluation> {
+fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGateEvaluation> {
+    if !matches!(maturity, "basic" | "trace-aware" | "repo-aware") {
+        bail!("unsupported maturity; use basic, trace-aware, or repo-aware");
+    }
     let target = suspended_activation(conn)?.context("no suspended activation to resume")?;
     let snapshot = suspend_snapshot(conn, target.activation_id)?;
     let stack_revision = max_id(conn, "work_unit_events")?;
@@ -741,11 +841,11 @@ fn evaluate_resume_ready_basic(conn: &Connection) -> Result<ResumeGateEvaluation
             "blocking dependencies must be resolved",
         ),
     ];
-    let allowed = checks.iter().all(|(_, pass, _)| *pass);
-    let blocking_reason = checks
+    let basic_allowed = checks.iter().all(|(_, pass, _)| *pass);
+    let mut blocking_reason = checks
         .iter()
         .find_map(|(_, pass, message)| (!pass).then_some((*message).to_string()));
-    let items = checks
+    let mut items: Vec<_> = checks
         .into_iter()
         .map(|(name, pass, message)| ResumeReadyItem {
             name: name.to_string(),
@@ -755,11 +855,57 @@ fn evaluate_resume_ready_basic(conn: &Connection) -> Result<ResumeGateEvaluation
         })
         .collect();
 
+    let later_items = [
+        (
+            "design_version_current",
+            "trace-aware design version check is not implemented in phase 2",
+        ),
+        (
+            "task_derivation_current",
+            "trace-aware task derivation check is not implemented in phase 2",
+        ),
+        (
+            "checklist_current",
+            "trace-aware checklist check is not implemented in phase 2",
+        ),
+        (
+            "selected_gate_current",
+            "trace-aware validation gate check is not implemented in phase 2",
+        ),
+        (
+            "review_plan_current",
+            "trace-aware review plan check is not implemented in phase 2",
+        ),
+        (
+            "repository_state_current",
+            "repo-aware repository state check is not implemented in phase 2",
+        ),
+        (
+            "assumptions_current",
+            "repo-aware assumptions check is not implemented in phase 2",
+        ),
+    ];
+    items.extend(
+        later_items
+            .into_iter()
+            .map(|(name, details)| ResumeReadyItem {
+                name: name.to_string(),
+                result: "not_checked".to_string(),
+                blocking_action: None,
+                details: details.to_string(),
+            }),
+    );
+
+    if maturity != "basic" {
+        blocking_reason
+            .get_or_insert_with(|| format!("{maturity} checks are not implemented in phase 2"));
+    }
+    let allowed = basic_allowed && maturity == "basic";
     Ok(ResumeGateEvaluation {
         work_unit_id: target.work_unit_id,
         activation_id: target.activation_id,
         suspend_snapshot_id: snapshot.id,
-        result: if allowed { "allowed" } else { "blocked" }.to_string(),
+        resume_result: if allowed { "allowed" } else { "blocked" }.to_string(),
         blocking_reason,
         allowed_next_action: Some(snapshot.next_action),
         authority_high_watermark,
@@ -783,7 +929,7 @@ struct ResumeGateEvaluation {
     work_unit_id: i64,
     activation_id: i64,
     suspend_snapshot_id: i64,
-    result: String,
+    resume_result: String,
     blocking_reason: Option<String>,
     allowed_next_action: Option<String>,
     authority_high_watermark: i64,
@@ -842,8 +988,8 @@ pub struct ResumeCheckOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ResumeReadyOutcome {
-    pub work_unit_id: i64,
-    pub activation_id: i64,
+    pub work_unit_id: Option<i64>,
+    pub activation_id: Option<i64>,
     pub result: String,
     pub blocking_reason: Option<String>,
     pub items: Vec<ResumeReadyItem>,

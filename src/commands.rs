@@ -191,6 +191,10 @@ pub fn add_command_deviation(
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let command_profile_id = resolve_command_profile(&conn, project_id, input.profile)?;
+    ensure_fixed_profile(&conn, command_profile_id)?;
+    if let Some(command_usage_id) = input.command_usage_id {
+        ensure_usage_matches_profile(&conn, command_usage_id, command_profile_id)?;
+    }
     let active = active_activation(&conn)?;
     let work_unit_id = active.as_ref().map(|active| active.work_unit_id);
 
@@ -250,6 +254,40 @@ fn command_for_profile(conn: &rusqlite::Connection, command_profile_id: i64) -> 
     )
     .optional()?
     .context("command profile not found")
+}
+
+fn ensure_fixed_profile(conn: &rusqlite::Connection, command_profile_id: i64) -> Result<()> {
+    let status = conn
+        .query_row(
+            "select status from command_profiles where id = ?1",
+            params![command_profile_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("command profile not found")?;
+    if status != "fixed" {
+        bail!("command deviation requires a fixed command profile");
+    }
+    Ok(())
+}
+
+fn ensure_usage_matches_profile(
+    conn: &rusqlite::Connection,
+    command_usage_id: i64,
+    command_profile_id: i64,
+) -> Result<()> {
+    let usage_profile_id = conn
+        .query_row(
+            "select command_profile_id from command_usages where id = ?1",
+            params![command_usage_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .context("command usage not found")?;
+    if usage_profile_id != Some(command_profile_id) {
+        bail!("command usage does not belong to the fixed command profile");
+    }
+    Ok(())
 }
 
 fn command_profile_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandProfileRecord> {

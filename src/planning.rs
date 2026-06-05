@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use anyhow::{Result, bail};
-use rusqlite::params;
+use anyhow::{Context, Result, bail};
+use rusqlite::{OptionalExtension, params};
 
 use crate::db::{active_activation, open_existing_project, project_id};
 
@@ -125,8 +125,60 @@ pub fn accept_task_out_of_scope(
     task_id: i64,
     reason: &str,
 ) -> Result<TaskAcceptanceOutcome> {
-    let conn = open_existing_project(root)?;
-    let changed = conn.execute(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let work_unit_id = tx
+        .query_row(
+            "select work_unit_id from tasks where id = ?1 and status in ('open', 'blocked')",
+            params![task_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .context("task not found or not open for acceptance")?;
+
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id, event_type, source, text_or_summary, scope, precedence,
+            status, created_at
+        )
+        values (?1, 'user_instruction', 'task accept-out-of-scope', ?2, ?3, 100, 'active', current_timestamp)
+        "#,
+        params![
+            project_id,
+            format!("accepted task {task_id} out of scope: {reason}"),
+            work_unit_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "project".to_string()),
+        ],
+    )?;
+    let authority_event_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, task_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        )
+        values (
+            ?1, 'task', ?2, 'accepted_out_of_scope', ?3, ?4,
+            'user', 'approved', ?5, current_timestamp, current_timestamp,
+            'task accepted out of scope for phase scope'
+        )
+        "#,
+        params![
+            project_id,
+            task_id,
+            reason,
+            work_unit_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "project".to_string()),
+            authority_event_id,
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+    let changed = tx.execute(
         r#"
         update tasks
         set status = 'accepted_out_of_scope',
@@ -141,8 +193,13 @@ pub fn accept_task_out_of_scope(
     if changed == 0 {
         bail!("task not found or not open for acceptance");
     }
+    tx.commit()?;
 
-    Ok(TaskAcceptanceOutcome { task_id })
+    Ok(TaskAcceptanceOutcome {
+        task_id,
+        acceptance_record_id,
+        authority_event_id,
+    })
 }
 
 pub fn add_decision(root: &Path, input: NewDecision<'_>) -> Result<DecisionOutcome> {
@@ -276,6 +333,8 @@ pub struct TaskCloseOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct TaskAcceptanceOutcome {
     pub task_id: i64,
+    pub acceptance_record_id: i64,
+    pub authority_event_id: i64,
 }
 
 pub struct NewDecision<'a> {

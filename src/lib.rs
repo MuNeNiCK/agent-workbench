@@ -45,8 +45,8 @@ pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
     ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome, SuspendOutcome, WorkForkOutcome,
     WorkForkSource, WorkOutcome, close_active_work, create_follow_up_work, fork_work,
-    interrupt_work, reopen_work, resume_check_basic, resume_ready_basic, resume_work, start_work,
-    suspend_work,
+    interrupt_work, reopen_work, resume_check, resume_check_basic, resume_ready,
+    resume_ready_basic, resume_work, start_work, suspend_work,
 };
 
 #[cfg(test)]
@@ -154,13 +154,67 @@ mod tests {
 
         let outcome = resume_ready_basic(temp.path()).unwrap();
 
-        assert_eq!(outcome.result, "allowed");
-        assert!(outcome.items.iter().all(|item| item.result == "pass"));
+        assert_eq!(outcome.result, "pass");
+        assert!(
+            outcome
+                .items
+                .iter()
+                .filter(|item| item.result == "pass")
+                .count()
+                >= 6
+        );
+        assert!(
+            outcome
+                .items
+                .iter()
+                .any(|item| item.result == "not_checked")
+        );
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
         let count: i64 = conn
             .query_row("select count(*) from resume_checks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn resume_ready_without_target_returns_blocked_gate_result() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let outcome = resume_ready_basic(temp.path()).unwrap();
+
+        assert_eq!(outcome.result, "blocked");
+        assert_eq!(
+            outcome.blocking_reason.as_deref(),
+            Some("no suspended activation to resume")
+        );
+        assert_eq!(outcome.work_unit_id, None);
+        assert_eq!(outcome.activation_id, None);
+    }
+
+    #[test]
+    fn trace_aware_resume_check_records_not_checked_items() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement trace gate", None).unwrap();
+        suspend_work(temp.path(), "need trace-aware check", "resume trace work").unwrap();
+
+        let check = resume_check(temp.path(), "trace-aware").unwrap();
+
+        assert_eq!(check.result, "blocked");
+        assert_eq!(
+            check.blocking_reason.as_deref(),
+            Some("trace-aware checks are not implemented in phase 2")
+        );
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let not_checked: i64 = conn
+            .query_row(
+                "select count(*) from resume_check_items where resume_check_id = ?1 and result = 'not_checked'",
+                params![check.resume_check_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(not_checked > 0);
     }
 
     #[test]
@@ -316,6 +370,58 @@ mod tests {
         .unwrap();
         assert_eq!(usages.len(), 1);
         assert_eq!(usages[0].command, "cargo test");
+    }
+
+    #[test]
+    fn command_deviation_rejects_usage_from_another_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_fixed_command(
+            temp.path(),
+            NewCommandProfile {
+                name: "unit-tests",
+                command_type: "test",
+                scope: "project",
+                command: "cargo test",
+                timeout: None,
+                expected_result: None,
+            },
+        )
+        .unwrap();
+        add_fixed_command(
+            temp.path(),
+            NewCommandProfile {
+                name: "format",
+                command_type: "format",
+                scope: "project",
+                command: "cargo fmt",
+                timeout: None,
+                expected_result: None,
+            },
+        )
+        .unwrap();
+        let usage = add_command_usage(
+            temp.path(),
+            NewCommandUsage {
+                profile: Some("format"),
+                command: None,
+                result: "pass",
+                log_path: None,
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+
+        let deviation = add_command_deviation(
+            temp.path(),
+            NewCommandDeviation {
+                profile: "unit-tests",
+                command_usage_id: Some(usage.command_usage_id),
+                reason: "wrong profile",
+            },
+        );
+
+        assert!(deviation.is_err());
     }
 
     #[test]
@@ -563,10 +669,28 @@ mod tests {
         )
         .unwrap();
 
-        accept_task_out_of_scope(temp.path(), task.task_id, "phase 2 exception").unwrap();
+        let acceptance =
+            accept_task_out_of_scope(temp.path(), task.task_id, "phase 2 exception").unwrap();
         let closed = close_active_work(temp.path(), "done with exception", None).unwrap();
 
         assert_eq!(closed.work_unit_id, task.work_unit_id.unwrap());
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let acceptance_status: String = conn
+            .query_row(
+                "select status from acceptance_records where id = ?1 and task_id = ?2",
+                params![acceptance.acceptance_record_id, task.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let authority_count: i64 = conn
+            .query_row(
+                "select count(*) from authority_events where id = ?1 and event_type = 'user_instruction'",
+                params![acceptance.authority_event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(acceptance_status, "approved");
+        assert_eq!(authority_count, 1);
     }
 
     #[test]
@@ -599,6 +723,63 @@ mod tests {
                 }
             }
         );
+    }
+
+    #[test]
+    fn follow_up_suspends_active_work_and_records_source_event() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let source = start_work(temp.path(), "source", None).unwrap();
+        close_active_work(temp.path(), "source done", None).unwrap();
+        let parent = start_work(temp.path(), "mainline", None).unwrap();
+
+        let follow_up =
+            create_follow_up_work(temp.path(), source.work_unit_id, "follow-up", "new issue")
+                .unwrap();
+
+        assert_eq!(
+            next_action(temp.path()).unwrap(),
+            NextAction::ContinueActive {
+                work_unit: ActiveWorkUnit {
+                    id: follow_up.work_unit_id,
+                    title: "follow-up".to_string(),
+                }
+            }
+        );
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let parent_status: String = conn
+            .query_row(
+                "select status from work_unit_activations where id = ?1",
+                params![parent.activation_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let child_frame: (Option<i64>, i64) = conn
+            .query_row(
+                "select parent_activation_id, stack_depth from work_unit_activations where id = ?1",
+                params![follow_up.activation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let source_follow_up_events: i64 = conn
+            .query_row(
+                "select count(*) from work_unit_events where work_unit_id = ?1 and event_type = 'follow_up_created'",
+                params![source.work_unit_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let follow_up_opened_events: i64 = conn
+            .query_row(
+                "select count(*) from work_unit_events where work_unit_id = ?1 and event_type = 'opened'",
+                params![follow_up.work_unit_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(parent_status, "suspended");
+        assert_eq!(child_frame, (Some(parent.activation_id), 1));
+        assert_eq!(source_follow_up_events, 1);
+        assert_eq!(follow_up_opened_events, 1);
     }
 
     #[test]
