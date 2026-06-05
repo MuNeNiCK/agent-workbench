@@ -407,7 +407,7 @@ enum WorkRecordCommitCommand {
 #[derive(Debug, Args)]
 struct WorkRecordCommitAddArgs {
     work_record_id: i64,
-    #[arg(long)]
+    #[arg(long, alias = "commit")]
     sha: String,
     #[arg(long, default_value = "referenced")]
     role: String,
