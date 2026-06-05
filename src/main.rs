@@ -5,15 +5,16 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    CommandUsageListQuery, DesignPackageImport, KptItemTaskConversion, NewAuthorityEvent,
-    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage,
-    NewKptItem, NewKptReview, NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord,
-    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
-    TaskListQuery, WorkForkSource, accept_task_out_of_scope, add_authority_event,
-    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
-    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    CommandUsageListQuery, DesignPackageImport, DesignReadyCheck, DesignVersionApproval,
+    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
+    NewCommandUsage, NewDecision, NewDesignPackage, NewKptItem, NewKptReview, NewTask,
+    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
+    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
+    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
+    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
+    approve_design_version, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record, design_ready,
     export_work_record_markdown, fork_work, import_design_package, init_design_package,
     init_project, interrupt_work, list_authority_events, list_command_profiles,
     list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews, list_tasks,
@@ -196,12 +197,22 @@ struct ResumeCheckArgs {
 enum GateCommand {
     /// Check whether a suspended activation can resume without writing ledger rows.
     ResumeReady(GateResumeReadyArgs),
+    /// Check whether an imported design version is ready for implementation planning.
+    DesignReady(GateDesignReadyArgs),
 }
 
 #[derive(Debug, Args)]
 struct GateResumeReadyArgs {
     #[arg(long, default_value = "basic")]
     maturity: String,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct GateDesignReadyArgs {
+    #[arg(long)]
+    design_version: Option<i64>,
     #[arg(long)]
     dry_run: bool,
 }
@@ -519,6 +530,7 @@ struct DecisionSearchArgs {
 enum DesignCommand {
     Init(DesignInitArgs),
     Import(DesignImportArgs),
+    Approve(DesignApproveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -533,6 +545,13 @@ struct DesignImportArgs {
     package_path: PathBuf,
     #[arg(long, default_value = "draft")]
     status: String,
+}
+
+#[derive(Debug, Args)]
+struct DesignApproveArgs {
+    design_version_id: i64,
+    #[arg(long)]
+    summary: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -826,6 +845,35 @@ fn main() -> Result<()> {
                         None => {
                             println!("{}: {}", item.name, item.result);
                         }
+                    }
+                }
+            }
+            GateCommand::DesignReady(args) => {
+                if !args.dry_run {
+                    anyhow::bail!("gate design-ready is read-only; pass --dry-run");
+                }
+                let outcome = design_ready(
+                    &root,
+                    DesignReadyCheck {
+                        design_version_id: args.design_version,
+                    },
+                )?;
+                println!("gate: design-ready");
+                println!("dry_run: true");
+                if let Some(design_package_id) = outcome.design_package_id {
+                    println!("design_package_id: {design_package_id}");
+                }
+                if let Some(design_version_id) = outcome.design_version_id {
+                    println!("design_version_id: {design_version_id}");
+                }
+                println!("result: {}", outcome.result);
+                if let Some(reason) = outcome.blocking_reason {
+                    println!("blocking_reason: {reason}");
+                }
+                for item in outcome.items {
+                    match item.detail {
+                        Some(detail) => println!("{}: {} ({})", item.name, item.result, detail),
+                        None => println!("{}: {}", item.name, item.result),
                     }
                 }
             }
@@ -1174,6 +1222,19 @@ fn main() -> Result<()> {
                 println!("version_number: {}", outcome.version_number);
                 println!("file_count: {}", outcome.file_count);
                 println!("content_hash: {}", outcome.content_hash);
+            }
+            DesignCommand::Approve(args) => {
+                let outcome = approve_design_version(
+                    &root,
+                    DesignVersionApproval {
+                        design_version_id: args.design_version_id,
+                        summary: args.summary.as_deref(),
+                    },
+                )?;
+                println!("approved design version");
+                println!("design_package_id: {}", outcome.design_package_id);
+                println!("design_version_id: {}", outcome.design_version_id);
+                println!("authority_event_id: {}", outcome.authority_event_id);
             }
         },
         Command::Authority { command } => match command {

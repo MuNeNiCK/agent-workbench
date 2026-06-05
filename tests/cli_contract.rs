@@ -132,6 +132,70 @@ fn design_import_records_design_version() {
 }
 
 #[test]
+fn design_approve_allows_design_ready_gate_to_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let blocked = ok(
+        temp.path(),
+        &["gate", "design-ready", "--design-version", "1", "--dry-run"],
+    );
+    assert!(blocked.contains("gate: design-ready"));
+    assert!(blocked.contains("result: blocked"));
+    assert!(blocked.contains("design_version_approved: fail"));
+
+    let approved = ok(
+        temp.path(),
+        &[
+            "design",
+            "approve",
+            "1",
+            "--summary",
+            "design passed document checks",
+        ],
+    );
+    assert!(approved.contains("approved design version"));
+    assert!(approved.contains("authority_event_id: 1"));
+
+    let passed = ok(
+        temp.path(),
+        &["gate", "design-ready", "--design-version", "1", "--dry-run"],
+    );
+    assert!(passed.contains("result: pass"));
+    assert!(passed.contains("design_version_approved: pass"));
+
+    let conn = conn(temp.path());
+    let approved_by: i64 = conn
+        .query_row(
+            "select approved_by_authority_event_id from design_versions where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(approved_by, 1);
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

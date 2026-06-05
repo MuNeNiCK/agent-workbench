@@ -24,8 +24,10 @@ pub use db::{
     project_status,
 };
 pub use design::{
-    DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, NewDesignPackage,
-    import_design_package, init_design_package,
+    DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, DesignReadyCheck,
+    DesignReadyItem, DesignReadyOutcome, DesignVersionApproval, DesignVersionApprovalOutcome,
+    NewDesignPackage, approve_design_version, design_ready, import_design_package,
+    init_design_package,
 };
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
@@ -1029,6 +1031,125 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn design_approval_marks_current_version_and_creates_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        let approval = approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import.design_version_id,
+                summary: Some("design passed document checks"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(approval.design_version_id, import.design_version_id);
+        assert_eq!(approval.design_package_id, import.design_package_id);
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let approved: (String, i64) = conn
+            .query_row(
+                "select status, approved_by_authority_event_id from design_versions where id = ?1",
+                params![import.design_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let package_status: String = conn
+            .query_row(
+                "select status from design_packages where id = ?1",
+                params![import.design_package_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let authority: (String, String) = conn
+            .query_row(
+                "select event_type, text_or_summary from authority_events where id = ?1",
+                params![approval.authority_event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            approved,
+            ("approved".to_string(), approval.authority_event_id)
+        );
+        assert_eq!(package_status, "approved");
+        assert_eq!(authority.0, "design_doc");
+        assert_eq!(authority.1, "design passed document checks");
+    }
+
+    #[test]
+    fn design_ready_blocks_until_current_version_is_approved() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        let blocked = design_ready(
+            temp.path(),
+            DesignReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        let passed = design_ready(
+            temp.path(),
+            DesignReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocked.result, "blocked");
+        assert!(
+            blocked
+                .items
+                .iter()
+                .any(|item| item.name == "design_version_approved" && item.result == "fail")
+        );
+        assert_eq!(passed.result, "pass");
+        assert!(passed.items.iter().all(|item| item.result == "pass"));
     }
 
     #[test]
