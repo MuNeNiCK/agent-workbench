@@ -6,6 +6,7 @@ mod design;
 mod kpt;
 mod planning;
 mod records;
+mod review;
 mod rules;
 mod traceability;
 mod work;
@@ -53,6 +54,15 @@ pub use records::{
     NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, WorkRecordEntry,
     WorkRecordLinkOutcome, WorkRecordOutcome, add_work_record_command, add_work_record_commit,
     add_work_record_file, create_work_record, export_work_record_markdown, list_work_records,
+};
+pub use review::{
+    ClosureOutcome, FindingClassificationOutcome, FindingOutcome, FindingRecord,
+    FindingVerificationOutcome, NewClosure, NewFinding, NewFindingVerification, NewReviewPlan,
+    NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome, ReviewPlanRecord,
+    ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome,
+    ReviewScopeRecord, add_closure, add_finding, add_finding_verification, add_review_plan,
+    add_review_policy, add_review_run, classify_finding, list_findings, list_review_plans,
+    list_review_policies, list_review_runs, list_review_scopes, start_review_scope,
 };
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
@@ -484,6 +494,311 @@ This requirement describes changed cleanup behavior that must be implemented.
             )
             .unwrap();
         assert_eq!(design_current_result, "fail");
+    }
+
+    #[test]
+    fn review_policy_clean_run_stop_condition_is_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "review storage design", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "strict-design",
+                review_type: "design_review",
+                max_fresh_agents: 3,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 2,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let scope = start_review_scope(
+            temp.path(),
+            NewReviewScope {
+                name: "storage-design",
+                review_type: "design_review",
+                scope: "storage design document",
+                allowed_inputs: None,
+                forbidden_judgments: None,
+                expected_output_type: None,
+                exclusions: None,
+                prompt_template_ref: None,
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "design_review",
+                required: true,
+                stage: "design-ready",
+                scope: Some("storage design document"),
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: Some(scope.review_scope_id),
+            },
+        )
+        .unwrap();
+
+        let first = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("clean"),
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: true,
+                status: "completed",
+                agent_label: Some("agent-a"),
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let second = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("clean"),
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: true,
+                status: "completed",
+                agent_label: Some("agent-b"),
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let plans = list_review_plans(temp.path()).unwrap();
+
+        assert_eq!(first.plan_status, "open");
+        assert_eq!(second.plan_status, "clean");
+        assert_eq!(plans[0].status, "clean");
+    }
+
+    #[test]
+    fn review_agent_launch_limit_blocks_extra_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "review implementation", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "single-pass",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 1,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+
+        let extra = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        );
+
+        assert!(extra.is_err());
+    }
+
+    #[test]
+    fn resume_verification_closes_valid_findings() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "review finding fix", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "resume-required",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 2,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 1,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "resume",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let fresh = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("found issue"),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let finding = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: fresh.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "missing error handling",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+        let closure = add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: finding.finding_id,
+                design_invariant: "errors are surfaced",
+                design_citations: None,
+                implementation_evidence: Some("abc123"),
+                affected_surfaces: Some("cli"),
+                same_invariant_search: Some("checked"),
+                other_violations_found: Some("none"),
+                fix_plan: Some("return errors"),
+                tests_or_gates: Some("cargo test"),
+                verification_plan: Some("resume review"),
+                closed_by_commit: Some("abc123"),
+            },
+        )
+        .unwrap();
+        let resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("verified"),
+                new_findings_count: 0,
+                carried_findings_checked: 1,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding_verification(
+            temp.path(),
+            NewFindingVerification {
+                review_run_id: resume.review_run_id,
+                finding_id: finding.finding_id,
+                closure_id: closure.closure_id,
+                result: "verified",
+                notes: None,
+            },
+        )
+        .unwrap();
+        let findings = list_findings(temp.path(), None).unwrap();
+        let plans = list_review_plans(temp.path()).unwrap();
+
+        assert_eq!(findings[0].status, "closed");
+        assert_eq!(plans[0].status, "clean");
     }
 
     #[test]

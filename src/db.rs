@@ -1273,6 +1273,214 @@ begin
     select raise(abort, 'acceptance project_id must match coverage item project_id');
 end;
 
+create table if not exists review_policies (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    name text not null,
+    review_type text not null check (review_type in ('design_review', 'design_implementation_diff', 'design_task_decomposition', 'implementation_review', 'general')),
+    max_fresh_agents integer not null default 1,
+    max_resume_agents integer not null default 1,
+    max_parallel_agents integer not null default 1,
+    required_consecutive_clean_fresh_runs integer not null default 1,
+    required_consecutive_clean_resume_runs integer not null default 1,
+    stop_on_severity text not null default 'none' check (stop_on_severity in ('critical', 'high', 'medium', 'low', 'none')),
+    allow_resume_review integer not null default 1 check (allow_resume_review in (0, 1)),
+    allow_fresh_review integer not null default 1 check (allow_fresh_review in (0, 1)),
+    allow_new_findings_in_resume integer not null default 0 check (allow_new_findings_in_resume in (0, 1)),
+    on_max_agents_exceeded text not null default 'block' check (on_max_agents_exceeded in ('block', 'accept_with_user_approval', 'mark_exhausted')),
+    run_count_scope text not null default 'review_plan' check (run_count_scope in ('review_plan', 'review_scope', 'work_unit')),
+    default_run_mode text not null default 'fresh' check (default_run_mode in ('fresh', 'resume')),
+    created_at text not null,
+    unique(project_id, name)
+);
+
+create table if not exists review_scopes (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    name text not null,
+    review_type text not null check (review_type in ('design_review', 'design_implementation_diff', 'design_task_decomposition', 'implementation_review', 'general')),
+    agent_role text not null check (agent_role in ('general', 'design_document_review', 'design_task_decomposition', 'design_implementation_diff_review', 'implementation_review')),
+    user_declared_scope text not null,
+    allowed_inputs text,
+    forbidden_judgments text,
+    expected_output_type text,
+    exclusions text,
+    prompt_template_ref text,
+    status text not null default 'open' check (status in ('open', 'blocked', 'clean', 'closed')),
+    no_findings_streak integer not null default 0,
+    created_at text not null,
+    unique(project_id, name)
+);
+
+create table if not exists review_plans (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    work_unit_id integer not null references work_units(id) on delete cascade,
+    design_version_id integer references design_versions(id) on delete cascade,
+    review_type text not null check (review_type in ('design_review', 'design_implementation_diff', 'design_task_decomposition', 'implementation_review', 'general')),
+    required integer not null default 1 check (required in (0, 1)),
+    stage text not null check (stage in ('design-ready', 'implementation-ready', 'close-ready', 'resume-ready')),
+    scope text,
+    clean_condition text,
+    stop_condition text,
+    review_policy_id integer references review_policies(id),
+    review_scope_id integer references review_scopes(id),
+    status text not null default 'open' check (status in ('open', 'blocked', 'clean', 'accepted_exception', 'not_required', 'exhausted', 'needs_user_decision')),
+    created_at text not null
+);
+
+create table if not exists review_plan_targets (
+    id integer primary key,
+    review_plan_id integer not null references review_plans(id) on delete cascade,
+    target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
+    design_version_id integer references design_versions(id),
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    work_unit_id integer references work_units(id),
+    repository_snapshot_id integer,
+    file_path text,
+    symbol text,
+    check (
+        (target_type = 'design_version' and design_version_id is not null and design_requirement_id is null and task_id is null and work_unit_id is null and repository_snapshot_id is null and file_path is null and symbol is null)
+        or (target_type = 'design_requirement' and design_version_id is null and design_requirement_id is not null and task_id is null and work_unit_id is null and repository_snapshot_id is null and file_path is null and symbol is null)
+        or (target_type = 'task' and design_version_id is null and design_requirement_id is null and task_id is not null and work_unit_id is null and repository_snapshot_id is null and file_path is null and symbol is null)
+        or (target_type = 'work_unit' and design_version_id is null and design_requirement_id is null and task_id is null and work_unit_id is not null and repository_snapshot_id is null and file_path is null and symbol is null)
+        or (target_type = 'repository_snapshot' and design_version_id is null and design_requirement_id is null and task_id is null and work_unit_id is null and repository_snapshot_id is not null and file_path is null and symbol is null)
+        or (target_type = 'file' and design_version_id is null and design_requirement_id is null and task_id is null and work_unit_id is null and repository_snapshot_id is null and file_path is not null and symbol is null)
+        or (target_type = 'symbol' and design_version_id is null and design_requirement_id is null and task_id is null and work_unit_id is null and repository_snapshot_id is null and file_path is null and symbol is not null)
+    )
+);
+
+create table if not exists review_runs (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_scope_id integer references review_scopes(id),
+    review_plan_id integer references review_plans(id),
+    run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+    run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
+    target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
+    design_version_id integer references design_versions(id),
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    work_unit_id integer references work_units(id),
+    repository_snapshot_id integer,
+    target_ref text,
+    prompt_deviations text,
+    result_summary text,
+    new_findings_count integer not null default 0,
+    carried_findings_checked integer not null default 0,
+    clean_run integer not null default 0 check (clean_run in (0, 1)),
+    status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+    created_at text not null
+);
+
+create table if not exists review_agent_invocations (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_plan_id integer references review_plans(id),
+    review_run_id integer references review_runs(id),
+    run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+    agent_label text,
+    external_agent_id text,
+    status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+    started_at text,
+    finished_at text
+);
+
+create table if not exists findings (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_run_id integer not null references review_runs(id) on delete cascade,
+    finding_type text not null check (finding_type in ('design_finding', 'design_implementation_drift', 'design_task_gap', 'implementation_finding', 'coverage_finding')),
+    severity text not null check (severity in ('critical', 'high', 'medium', 'low')),
+    description text not null,
+    classification text not null default 'unclassified' check (classification in ('unclassified', 'valid', 'invalid', 'design_conflict', 'needs_evidence')),
+    status text not null default 'open' check (status in ('open', 'closed', 'accepted_out_of_scope')),
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    created_at text not null
+);
+
+create table if not exists closures (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    finding_id integer not null references findings(id) on delete cascade,
+    design_invariant text not null,
+    design_citations text,
+    implementation_evidence text,
+    affected_surfaces text,
+    same_invariant_search text,
+    other_violations_found text,
+    fix_plan text,
+    tests_or_gates text,
+    verification_plan text,
+    closed_by_commit text,
+    created_at text not null
+);
+
+create table if not exists finding_verifications (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_run_id integer not null references review_runs(id) on delete cascade,
+    finding_id integer not null references findings(id) on delete cascade,
+    closure_id integer not null references closures(id) on delete cascade,
+    result text not null check (result in ('verified', 'not_fixed', 'needs_evidence', 'out_of_scope')),
+    notes text,
+    created_at text not null,
+    unique(review_run_id, finding_id, closure_id)
+);
+
+create trigger if not exists trg_review_plan_project_insert
+before insert on review_plans
+for each row
+when new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  or (new.design_version_id is not null and new.project_id != (select project_id from design_versions where id = new.design_version_id))
+  or (new.review_policy_id is not null and new.project_id != (select project_id from review_policies where id = new.review_policy_id))
+  or (new.review_scope_id is not null and new.project_id != (select project_id from review_scopes where id = new.review_scope_id))
+begin
+    select raise(abort, 'review plan project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_run_project_insert
+before insert on review_runs
+for each row
+when (new.review_scope_id is not null and new.project_id != (select project_id from review_scopes where id = new.review_scope_id))
+  or (new.review_plan_id is not null and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
+begin
+    select raise(abort, 'review run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_finding_project_insert
+before insert on findings
+for each row
+when new.project_id != (select project_id from review_runs where id = new.review_run_id)
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+begin
+    select raise(abort, 'finding project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_closure_project_insert
+before insert on closures
+for each row
+when new.project_id != (select project_id from findings where id = new.finding_id)
+begin
+    select raise(abort, 'closure project_id must match finding project_id');
+end;
+
+create trigger if not exists trg_finding_verification_project_insert
+before insert on finding_verifications
+for each row
+when new.project_id != (select project_id from review_runs where id = new.review_run_id)
+  or new.project_id != (select project_id from findings where id = new.finding_id)
+  or new.project_id != (select project_id from closures where id = new.closure_id)
+begin
+    select raise(abort, 'finding verification project_id must match referenced rows');
+end;
+
 create table if not exists kpt_reviews (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,

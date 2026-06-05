@@ -882,3 +882,166 @@ fn task_accept_out_of_scope_creates_acceptance_record() {
         .unwrap();
     assert_eq!(status, "approved");
 }
+
+#[test]
+fn review_flow_records_policy_runs_findings_and_verification() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "reviewed work"]);
+
+    let policy = ok(
+        temp.path(),
+        &[
+            "review",
+            "policy",
+            "add",
+            "--name",
+            "strict-impl",
+            "--type",
+            "implementation_review",
+            "--fresh-clean",
+            "0",
+            "--resume-clean",
+            "1",
+            "--max-fresh-agents",
+            "1",
+            "--max-resume-agents",
+            "2",
+        ],
+    );
+    let scope = ok(
+        temp.path(),
+        &[
+            "review",
+            "scope",
+            "start",
+            "impl-scope",
+            "--type",
+            "implementation_review",
+            "--scope",
+            "implementation quality",
+        ],
+    );
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "implementation_review",
+            "--stage",
+            "close-ready",
+            "--policy",
+            "1",
+            "--review-scope",
+            "1",
+        ],
+    );
+    let fresh_run = ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "HEAD",
+            "--new-findings",
+            "1",
+            "--summary",
+            "found issue",
+        ],
+    );
+    let finding = ok(
+        temp.path(),
+        &[
+            "finding",
+            "add",
+            "--run",
+            "1",
+            "--type",
+            "implementation_finding",
+            "--severity",
+            "high",
+            "--description",
+            "missing error handling",
+        ],
+    );
+    let classified = ok(
+        temp.path(),
+        &["finding", "classify", "1", "--classification", "valid"],
+    );
+    let closure = ok(
+        temp.path(),
+        &[
+            "closure",
+            "add",
+            "--finding",
+            "1",
+            "--invariant",
+            "errors are surfaced",
+            "--evidence",
+            "abc123",
+            "--tests",
+            "cargo test",
+        ],
+    );
+    let resume_run = ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "resume",
+            "--purpose",
+            "finding_fix_verification",
+            "--target",
+            "HEAD",
+            "--clean",
+            "--carried-findings",
+            "1",
+            "--summary",
+            "verified",
+        ],
+    );
+    let verification = ok(
+        temp.path(),
+        &[
+            "finding",
+            "verify",
+            "--run",
+            "2",
+            "--finding",
+            "1",
+            "--closure",
+            "1",
+            "--result",
+            "verified",
+        ],
+    );
+    let plans = ok(temp.path(), &["review", "plan", "list"]);
+    let findings = ok(temp.path(), &["finding", "list"]);
+
+    assert!(policy.contains("review_policy_id: 1"));
+    assert!(scope.contains("review_scope_id: 1"));
+    assert!(plan.contains("review_plan_id: 1"));
+    assert!(fresh_run.contains("plan_status: open"));
+    assert!(finding.contains("finding_id: 1"));
+    assert!(classified.contains("classified finding"));
+    assert!(closure.contains("closure_id: 1"));
+    assert!(resume_run.contains("review_run_id: 2"));
+    assert!(verification.contains("finding_verification_id: 1"));
+    assert!(plans.contains("1 [implementation_review:clean required=true]"));
+    assert!(findings.contains("1 [run=1 implementation_finding:high closed]"));
+}

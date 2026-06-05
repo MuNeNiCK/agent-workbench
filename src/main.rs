@@ -8,26 +8,29 @@ use agent_workbench::{
     CommandUsageListQuery, CoverageItemListQuery, DesignDecisionListQuery, DesignPackageImport,
     DesignReadyCheck, DesignRequirementListQuery, DesignVersionApproval,
     ImplementationEvidenceListQuery, ImplementationEvidenceRecord, ImplementationReadyCheck,
-    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
+    KptItemTaskConversion, NewAuthorityEvent, NewClosure, NewCommandDeviation, NewCommandProfile,
     NewCommandUsage, NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage,
-    NewImplementationEvidence, NewKptItem, NewKptReview, NewTask, NewTaskDerivation,
+    NewFinding, NewFindingVerification, NewImplementationEvidence, NewKptItem, NewKptReview,
+    NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation,
     NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
     NewWorkRecordFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
     ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
-    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_command_deviation,
-    add_command_usage, add_coverage_item, add_decision, add_fixed_command,
-    add_implementation_evidence, add_kpt_item, add_task, add_user_correction,
+    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
+    add_command_deviation, add_command_usage, add_coverage_item, add_decision, add_finding,
+    add_finding_verification, add_fixed_command, add_implementation_evidence, add_kpt_item,
+    add_review_plan, add_review_policy, add_review_run, add_task, add_user_correction,
     add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    approve_design_version, close_active_work, close_kpt_review, close_task,
+    approve_design_version, classify_finding, close_active_work, close_kpt_review, close_task,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
     derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
     implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
     list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
-    list_decisions, list_design_decisions, list_design_requirements, list_implementation_evidence,
-    list_kpt_items, list_kpt_reviews, list_task_derivations, list_tasks, list_user_corrections,
-    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
-    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review, start_work,
-    suspend_work,
+    list_decisions, list_design_decisions, list_design_requirements, list_findings,
+    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_review_plans,
+    list_review_policies, list_review_runs, list_review_scopes, list_task_derivations, list_tasks,
+    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
+    project_status, reopen_work, resume_check, resume_ready, resume_work, select_validation_gate,
+    start_kpt_review, start_review_scope, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -127,6 +130,21 @@ enum Command {
     Coverage {
         #[command(subcommand)]
         command: CoverageCommand,
+    },
+    /// Manage review scopes, policies, plans, and runs.
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
+    /// Manage findings recorded from review runs.
+    Finding {
+        #[command(subcommand)]
+        command: FindingCommand,
+    },
+    /// Manage finding closure records.
+    Closure {
+        #[command(subcommand)]
+        command: ClosureCommand,
     },
     /// Accept explicit design exceptions.
     Acceptance {
@@ -771,6 +789,215 @@ struct CoverageListArgs {
     design: i64,
     #[arg(long)]
     status: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewCommand {
+    Scope {
+        #[command(subcommand)]
+        command: ReviewScopeCommand,
+    },
+    Policy {
+        #[command(subcommand)]
+        command: ReviewPolicyCommand,
+    },
+    Plan {
+        #[command(subcommand)]
+        command: ReviewPlanCommand,
+    },
+    Run {
+        #[command(subcommand)]
+        command: ReviewRunCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewScopeCommand {
+    Start(ReviewScopeStartArgs),
+    List,
+}
+
+#[derive(Debug, Args)]
+struct ReviewScopeStartArgs {
+    name: String,
+    #[arg(long = "type", default_value = "general")]
+    review_type: String,
+    #[arg(long)]
+    scope: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewPolicyCommand {
+    Add(ReviewPolicyAddArgs),
+    List,
+}
+
+#[derive(Debug, Args)]
+struct ReviewPolicyAddArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long = "type")]
+    review_type: String,
+    #[arg(long, default_value_t = 1)]
+    fresh_clean: i64,
+    #[arg(long, default_value_t = 0)]
+    resume_clean: i64,
+    #[arg(long, default_value_t = 1)]
+    max_fresh_agents: i64,
+    #[arg(long, default_value_t = 1)]
+    max_resume_agents: i64,
+    #[arg(long, default_value_t = 1)]
+    max_parallel_agents: i64,
+    #[arg(long, default_value = "none")]
+    stop_on_severity: String,
+    #[arg(long, default_value = "block")]
+    on_max_agents_exceeded: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewPlanCommand {
+    Add(ReviewPlanAddArgs),
+    List,
+}
+
+#[derive(Debug, Args)]
+struct ReviewPlanAddArgs {
+    #[arg(long)]
+    work_unit: i64,
+    #[arg(long = "type")]
+    review_type: String,
+    #[arg(long)]
+    stage: String,
+    #[arg(long)]
+    design_version: Option<i64>,
+    #[arg(long)]
+    scope: Option<String>,
+    #[arg(long)]
+    policy: Option<i64>,
+    #[arg(long)]
+    review_scope: Option<i64>,
+    #[arg(long, default_value_t = true)]
+    required: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewRunCommand {
+    Add(ReviewRunAddArgs),
+    List(ReviewRunListArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReviewRunAddArgs {
+    #[arg(long)]
+    plan: i64,
+    #[arg(long = "type")]
+    run_type: String,
+    #[arg(long)]
+    purpose: String,
+    #[arg(long)]
+    target: Option<String>,
+    #[arg(long, default_value = "completed")]
+    status: String,
+    #[arg(long)]
+    clean: bool,
+    #[arg(long, default_value_t = 0)]
+    new_findings: i64,
+    #[arg(long, default_value_t = 0)]
+    carried_findings: i64,
+    #[arg(long)]
+    summary: Option<String>,
+    #[arg(long)]
+    agent_label: Option<String>,
+    #[arg(long)]
+    external_agent_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ReviewRunListArgs {
+    #[arg(long)]
+    plan: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum FindingCommand {
+    Add(FindingAddArgs),
+    Classify(FindingClassifyArgs),
+    List(FindingListArgs),
+    Verify(FindingVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct FindingAddArgs {
+    #[arg(long)]
+    run: i64,
+    #[arg(long = "type")]
+    finding_type: String,
+    #[arg(long)]
+    severity: String,
+    #[arg(long)]
+    description: String,
+    #[arg(long)]
+    design_requirement: Option<i64>,
+    #[arg(long)]
+    task: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+struct FindingClassifyArgs {
+    finding_id: i64,
+    #[arg(long)]
+    classification: String,
+}
+
+#[derive(Debug, Args)]
+struct FindingListArgs {
+    #[arg(long)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct FindingVerifyArgs {
+    #[arg(long)]
+    run: i64,
+    #[arg(long)]
+    finding: i64,
+    #[arg(long)]
+    closure: i64,
+    #[arg(long)]
+    result: String,
+    #[arg(long)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClosureCommand {
+    Add(ClosureAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct ClosureAddArgs {
+    #[arg(long)]
+    finding: i64,
+    #[arg(long)]
+    invariant: String,
+    #[arg(long)]
+    citations: Option<String>,
+    #[arg(long)]
+    evidence: Option<String>,
+    #[arg(long)]
+    surfaces: Option<String>,
+    #[arg(long)]
+    search: Option<String>,
+    #[arg(long)]
+    other_violations: Option<String>,
+    #[arg(long)]
+    fix_plan: Option<String>,
+    #[arg(long)]
+    tests: Option<String>,
+    #[arg(long)]
+    verification: Option<String>,
+    #[arg(long)]
+    commit: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1767,6 +1994,257 @@ fn main() -> Result<()> {
                         record.id, record.status, record.requirement_key, work_unit, task, detail
                     );
                 }
+            }
+        },
+        Command::Review { command } => match command {
+            ReviewCommand::Scope { command } => match command {
+                ReviewScopeCommand::Start(args) => {
+                    let outcome = start_review_scope(
+                        &root,
+                        NewReviewScope {
+                            name: &args.name,
+                            review_type: &args.review_type,
+                            scope: &args.scope,
+                            allowed_inputs: None,
+                            forbidden_judgments: None,
+                            expected_output_type: None,
+                            exclusions: None,
+                            prompt_template_ref: None,
+                        },
+                    )?;
+                    println!("started review scope");
+                    println!("review_scope_id: {}", outcome.review_scope_id);
+                }
+                ReviewScopeCommand::List => {
+                    let records = list_review_scopes(&root)?;
+                    if records.is_empty() {
+                        println!("no review scopes");
+                    }
+                    for record in records {
+                        println!(
+                            "{} [{}:{} role={} streak={}] {}",
+                            record.id,
+                            record.review_type,
+                            record.status,
+                            record.agent_role,
+                            record.no_findings_streak,
+                            record.name
+                        );
+                    }
+                }
+            },
+            ReviewCommand::Policy { command } => match command {
+                ReviewPolicyCommand::Add(args) => {
+                    let outcome = add_review_policy(
+                        &root,
+                        NewReviewPolicy {
+                            name: &args.name,
+                            review_type: &args.review_type,
+                            max_fresh_agents: args.max_fresh_agents,
+                            max_resume_agents: args.max_resume_agents,
+                            max_parallel_agents: args.max_parallel_agents,
+                            required_consecutive_clean_fresh_runs: args.fresh_clean,
+                            required_consecutive_clean_resume_runs: args.resume_clean,
+                            stop_on_severity: &args.stop_on_severity,
+                            allow_resume_review: true,
+                            allow_fresh_review: true,
+                            allow_new_findings_in_resume: false,
+                            on_max_agents_exceeded: &args.on_max_agents_exceeded,
+                            run_count_scope: "review_plan",
+                            default_run_mode: "fresh",
+                        },
+                    )?;
+                    println!("added review policy");
+                    println!("review_policy_id: {}", outcome.review_policy_id);
+                }
+                ReviewPolicyCommand::List => {
+                    let records = list_review_policies(&root)?;
+                    if records.is_empty() {
+                        println!("no review policies");
+                    }
+                    for record in records {
+                        println!(
+                            "{} [{} fresh_clean={} resume_clean={} max_fresh={} max_resume={} max_parallel={}] {}",
+                            record.id,
+                            record.review_type,
+                            record.required_consecutive_clean_fresh_runs,
+                            record.required_consecutive_clean_resume_runs,
+                            record.max_fresh_agents,
+                            record.max_resume_agents,
+                            record.max_parallel_agents,
+                            record.name
+                        );
+                    }
+                }
+            },
+            ReviewCommand::Plan { command } => match command {
+                ReviewPlanCommand::Add(args) => {
+                    let outcome = add_review_plan(
+                        &root,
+                        NewReviewPlan {
+                            work_unit_id: args.work_unit,
+                            design_version_id: args.design_version,
+                            review_type: &args.review_type,
+                            required: args.required,
+                            stage: &args.stage,
+                            scope: args.scope.as_deref(),
+                            clean_condition: None,
+                            stop_condition: None,
+                            review_policy_id: args.policy,
+                            review_scope_id: args.review_scope,
+                        },
+                    )?;
+                    println!("added review plan");
+                    println!("review_plan_id: {}", outcome.review_plan_id);
+                    if let Some(review_policy_id) = outcome.review_policy_id {
+                        println!("review_policy_id: {review_policy_id}");
+                    }
+                }
+                ReviewPlanCommand::List => {
+                    let records = list_review_plans(&root)?;
+                    if records.is_empty() {
+                        println!("no review plans");
+                    }
+                    for record in records {
+                        println!(
+                            "{} [{}:{} required={}] work_unit={} stage={}",
+                            record.id,
+                            record.review_type,
+                            record.status,
+                            record.required,
+                            record.work_unit_id,
+                            record.stage
+                        );
+                    }
+                }
+            },
+            ReviewCommand::Run { command } => match command {
+                ReviewRunCommand::Add(args) => {
+                    let outcome = add_review_run(
+                        &root,
+                        NewReviewRun {
+                            review_plan_id: args.plan,
+                            run_type: &args.run_type,
+                            run_purpose: &args.purpose,
+                            target_ref: args.target.as_deref(),
+                            prompt_deviations: None,
+                            result_summary: args.summary.as_deref(),
+                            new_findings_count: args.new_findings,
+                            carried_findings_checked: args.carried_findings,
+                            clean_run: args.clean,
+                            status: &args.status,
+                            agent_label: args.agent_label.as_deref(),
+                            external_agent_id: args.external_agent_id.as_deref(),
+                        },
+                    )?;
+                    println!("added review run");
+                    println!("review_run_id: {}", outcome.review_run_id);
+                    println!(
+                        "review_agent_invocation_id: {}",
+                        outcome.review_agent_invocation_id
+                    );
+                    println!("review_plan_id: {}", outcome.review_plan_id);
+                    println!("plan_status: {}", outcome.plan_status);
+                }
+                ReviewRunCommand::List(args) => {
+                    let records = list_review_runs(&root, args.plan)?;
+                    if records.is_empty() {
+                        println!("no review runs");
+                    }
+                    for record in records {
+                        let target = record.target_ref.as_deref().unwrap_or("-");
+                        println!(
+                            "{} [plan={} {}:{} clean={}] target={}",
+                            record.id,
+                            record
+                                .review_plan_id
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            record.run_type,
+                            record.status,
+                            record.clean_run,
+                            target
+                        );
+                    }
+                }
+            },
+        },
+        Command::Finding { command } => match command {
+            FindingCommand::Add(args) => {
+                let outcome = add_finding(
+                    &root,
+                    NewFinding {
+                        review_run_id: args.run,
+                        finding_type: &args.finding_type,
+                        severity: &args.severity,
+                        description: &args.description,
+                        design_requirement_id: args.design_requirement,
+                        task_id: args.task,
+                    },
+                )?;
+                println!("added finding");
+                println!("finding_id: {}", outcome.finding_id);
+            }
+            FindingCommand::Classify(args) => {
+                let outcome = classify_finding(&root, args.finding_id, &args.classification)?;
+                println!("classified finding");
+                println!("finding_id: {}", outcome.finding_id);
+            }
+            FindingCommand::List(args) => {
+                let records = list_findings(&root, args.status.as_deref())?;
+                if records.is_empty() {
+                    println!("no findings");
+                }
+                for record in records {
+                    println!(
+                        "{} [run={} {}:{} {}] {}",
+                        record.id,
+                        record.review_run_id,
+                        record.finding_type,
+                        record.severity,
+                        record.status,
+                        record.description
+                    );
+                }
+            }
+            FindingCommand::Verify(args) => {
+                let outcome = add_finding_verification(
+                    &root,
+                    NewFindingVerification {
+                        review_run_id: args.run,
+                        finding_id: args.finding,
+                        closure_id: args.closure,
+                        result: &args.result,
+                        notes: args.notes.as_deref(),
+                    },
+                )?;
+                println!("added finding verification");
+                println!(
+                    "finding_verification_id: {}",
+                    outcome.finding_verification_id
+                );
+            }
+        },
+        Command::Closure { command } => match command {
+            ClosureCommand::Add(args) => {
+                let outcome = add_closure(
+                    &root,
+                    NewClosure {
+                        finding_id: args.finding,
+                        design_invariant: &args.invariant,
+                        design_citations: args.citations.as_deref(),
+                        implementation_evidence: args.evidence.as_deref(),
+                        affected_surfaces: args.surfaces.as_deref(),
+                        same_invariant_search: args.search.as_deref(),
+                        other_violations_found: args.other_violations.as_deref(),
+                        fix_plan: args.fix_plan.as_deref(),
+                        tests_or_gates: args.tests.as_deref(),
+                        verification_plan: args.verification.as_deref(),
+                        closed_by_commit: args.commit.as_deref(),
+                    },
+                )?;
+                println!("added closure");
+                println!("closure_id: {}", outcome.closure_id);
             }
         },
         Command::Acceptance { command } => match command {
