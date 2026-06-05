@@ -603,7 +603,7 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
         bail!("cannot fork work while another activation is active");
     }
     if input.discard_policy != "keep_history" {
-        bail!("only --discard-policy keep_history is implemented in phase 2");
+        bail!("only --discard-policy keep_history is implemented currently");
     }
 
     let source = resolve_fork_source(&tx, input.source)?;
@@ -872,31 +872,31 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
     let later_items = [
         (
             "design_version_current",
-            "trace-aware design version check is not implemented in phase 2",
+            "trace-aware design version check is not implemented yet",
         ),
         (
             "task_derivation_current",
-            "trace-aware task derivation check is not implemented in phase 2",
+            "trace-aware task derivation check is not implemented yet",
         ),
         (
             "checklist_current",
-            "trace-aware checklist check is not implemented in phase 2",
+            "trace-aware checklist check is not implemented yet",
         ),
         (
             "selected_gate_current",
-            "trace-aware validation gate check is not implemented in phase 2",
+            "trace-aware validation gate check is not implemented yet",
         ),
         (
             "review_plan_current",
-            "trace-aware review plan check is not implemented in phase 2",
+            "trace-aware review plan check is not implemented yet",
         ),
         (
             "repository_state_current",
-            "repo-aware repository state check is not implemented in phase 2",
+            "repo-aware repository state check is not implemented yet",
         ),
         (
             "assumptions_current",
-            "repo-aware assumptions check is not implemented in phase 2",
+            "repo-aware assumptions check is not implemented yet",
         ),
     ];
     items.extend(
@@ -911,8 +911,7 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
     );
 
     if maturity != "basic" {
-        blocking_reason
-            .get_or_insert_with(|| format!("{maturity} checks are not implemented in phase 2"));
+        blocking_reason.get_or_insert_with(|| format!("{maturity} checks are not implemented yet"));
     }
     let allowed = basic_allowed && maturity == "basic";
     Ok(ResumeGateEvaluation {

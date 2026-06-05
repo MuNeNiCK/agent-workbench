@@ -1,6 +1,7 @@
 mod authority;
 mod commands;
 mod db;
+mod design;
 mod kpt;
 mod planning;
 mod records;
@@ -22,6 +23,7 @@ pub use db::{
     default_export_root, default_ledger_path, default_log_root, init_project, next_action,
     project_status,
 };
+pub use design::{DesignPackageInitOutcome, NewDesignPackage, init_design_package};
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
     KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem, NewKptReview,
@@ -55,6 +57,7 @@ mod tests {
     use super::*;
     use crate::db::{SCHEMA_VERSION, open_ledger};
     use rusqlite::params;
+    use std::fs;
 
     #[test]
     fn init_creates_ledger_and_project() {
@@ -208,7 +211,7 @@ mod tests {
         assert_eq!(check.result, "blocked");
         assert_eq!(
             check.blocking_reason.as_deref(),
-            Some("trace-aware checks are not implemented in phase 2")
+            Some("trace-aware checks are not implemented yet")
         );
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
         let stored_maturity: String = conn
@@ -607,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_work_rejects_non_default_discard_policy_in_phase_2() {
+    fn fork_work_rejects_non_default_discard_policy_before_policy_support() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
 
@@ -700,7 +703,7 @@ mod tests {
         .unwrap();
 
         let acceptance =
-            accept_task_out_of_scope(temp.path(), task.task_id, "phase 2 exception").unwrap();
+            accept_task_out_of_scope(temp.path(), task.task_id, "scoped exception").unwrap();
         let closed = close_active_work(temp.path(), "done with exception", None).unwrap();
 
         assert_eq!(closed.work_unit_id, task.work_unit_id.unwrap());
@@ -843,6 +846,85 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].id, decision.decision_id);
         assert_eq!(decisions[0].decision_key.as_deref(), Some("db.scope"));
+    }
+
+    #[test]
+    fn design_init_creates_standard_package_under_workbench() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let outcome = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+
+        let package = temp
+            .path()
+            .join(".agent-workbench")
+            .join("designs")
+            .join("storage-lifecycle");
+        assert_eq!(outcome.package_path, package);
+        assert!(package.join("design.yaml").exists());
+        assert!(package.join("01-introduction-goals.md").exists());
+        assert!(package.join("12-glossary.md").exists());
+        assert!(package.join("requirements").join("README.md").exists());
+        assert!(package.join("validation").join("gates.md").exists());
+
+        let manifest = fs::read_to_string(package.join("design.yaml")).unwrap();
+        assert!(manifest.contains(r#"id: "storage-lifecycle""#));
+        assert!(manifest.contains(r#"title: "Storage Lifecycle""#));
+        assert!(manifest.contains("format: arc42-agent-workbench"));
+        assert!(manifest.contains("introduction_goals: 01-introduction-goals.md"));
+    }
+
+    #[test]
+    fn design_init_rejects_invalid_or_existing_package_id() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        assert!(
+            init_design_package(
+                temp.path(),
+                NewDesignPackage {
+                    design_id: "Storage",
+                    title: "Storage",
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            init_design_package(
+                temp.path(),
+                NewDesignPackage {
+                    design_id: "storage/lifecycle",
+                    title: "Storage",
+                },
+            )
+            .is_err()
+        );
+
+        init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage",
+            },
+        )
+        .unwrap();
+        assert!(
+            init_design_package(
+                temp.path(),
+                NewDesignPackage {
+                    design_id: "storage-lifecycle",
+                    title: "Storage",
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

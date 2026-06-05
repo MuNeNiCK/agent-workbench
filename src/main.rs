@@ -6,17 +6,17 @@ use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
     CommandUsageListQuery, KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation,
-    NewCommandProfile, NewCommandUsage, NewDecision, NewKptItem, NewKptReview, NewTask,
-    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
+    NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage, NewKptItem, NewKptReview,
+    NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
+    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
     accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
     add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
     add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
     close_active_work, close_kpt_review, close_task, convert_kpt_item_to_task,
     create_follow_up_work, create_work_record, export_work_record_markdown, fork_work,
-    init_project, interrupt_work, list_authority_events, list_command_profiles,
-    list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews, list_tasks,
-    list_user_corrections, list_work_records, next_action, project_status, reopen_work,
+    init_design_package, init_project, interrupt_work, list_authority_events,
+    list_command_profiles, list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews,
+    list_tasks, list_user_corrections, list_work_records, next_action, project_status, reopen_work,
     resume_check, resume_ready, resume_work, start_kpt_review, start_work, suspend_work,
 };
 
@@ -81,6 +81,11 @@ enum Command {
     Decision {
         #[command(subcommand)]
         command: DecisionCommand,
+    },
+    /// Manage design package drafts.
+    Design {
+        #[command(subcommand)]
+        command: DesignCommand,
     },
     /// Manage authority events.
     Authority {
@@ -510,6 +515,18 @@ struct DecisionSearchArgs {
 }
 
 #[derive(Debug, Subcommand)]
+enum DesignCommand {
+    Init(DesignInitArgs),
+}
+
+#[derive(Debug, Args)]
+struct DesignInitArgs {
+    design_id: String,
+    #[arg(long)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
 enum AuthorityCommand {
     Event {
         #[command(subcommand)]
@@ -776,7 +793,7 @@ fn main() -> Result<()> {
         Command::Gate { command } => match command {
             GateCommand::ResumeReady(args) => {
                 if !args.dry_run {
-                    anyhow::bail!("gate resume-ready is read-only in phase 2; pass --dry-run");
+                    anyhow::bail!("gate resume-ready is read-only; pass --dry-run");
                 }
                 let outcome = resume_ready(&root, &args.maturity)?;
                 println!("gate: resume-ready");
@@ -1119,6 +1136,20 @@ fn main() -> Result<()> {
             }
             DecisionCommand::Search(args) => {
                 print_decisions(list_decisions(&root, Some(&args.query))?);
+            }
+        },
+        Command::Design { command } => match command {
+            DesignCommand::Init(args) => {
+                let title = args.title.as_deref().unwrap_or(&args.design_id);
+                let outcome = init_design_package(
+                    &root,
+                    NewDesignPackage {
+                        design_id: &args.design_id,
+                        title,
+                    },
+                )?;
+                println!("initialized design package");
+                println!("path: {}", outcome.package_path.display());
             }
         },
         Command::Authority { command } => match command {

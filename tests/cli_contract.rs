@@ -53,6 +53,35 @@ fn init_creates_workbench_artifact_directories() {
 }
 
 #[test]
+fn design_init_creates_package_under_workbench() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    let output = ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+
+    let package = temp
+        .path()
+        .join(".agent-workbench")
+        .join("designs")
+        .join("storage-lifecycle");
+    assert!(output.contains("initialized design package"));
+    assert!(output.contains(".agent-workbench/designs/storage-lifecycle"));
+    assert!(package.join("design.yaml").exists());
+    assert!(package.join("01-introduction-goals.md").exists());
+    assert!(package.join("requirements").join("README.md").exists());
+    assert!(package.join("validation").join("gates.md").exists());
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -86,7 +115,7 @@ fn resume_check_records_requested_maturity() {
 
     let output = ok(temp.path(), &["resume-check", "--maturity", "trace-aware"]);
     assert!(output.contains("result: blocked"));
-    assert!(output.contains("trace-aware checks are not implemented"));
+    assert!(output.contains("trace-aware checks are not implemented yet"));
 
     let saved: String = conn(temp.path())
         .query_row(
