@@ -854,6 +854,89 @@ pub fn add_work_record_file(
     })
 }
 
+pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot fork work while another activation is active");
+    }
+
+    let source = resolve_fork_source(&tx, input.source)?;
+    tx.execute(
+        r#"
+        insert into work_units(
+            project_id, parent_work_unit_id, title, status, responsibility,
+            interrupt_reason, started_at
+        )
+        values (?1, ?2, ?3, 'open', ?4, ?5, current_timestamp)
+        "#,
+        params![
+            project_id,
+            source.source_work_unit_id,
+            input.title,
+            Some("forked work"),
+            input.reason,
+        ],
+    )?;
+    let forked_work_unit_id = tx.last_insert_rowid();
+
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+        )
+        values (?1, ?2, 0, 'active', 'start', current_timestamp)
+        "#,
+        params![project_id, forked_work_unit_id],
+    )?;
+    let activation_id = tx.last_insert_rowid();
+
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: forked_work_unit_id,
+            activation_id: Some(activation_id),
+            related_activation_id: source.source_work_unit_activation_id,
+            event_type: "opened",
+            reason: Some(input.reason),
+            status_domain: "work_unit",
+            previous_status: None,
+            next_status: Some("open"),
+        },
+    )?;
+
+    tx.execute(
+        r#"
+        insert into work_record_forks(
+            project_id, source_work_unit_id, source_work_unit_activation_id,
+            source_work_record_id, source_git_commit_sha, forked_work_unit_id,
+            fork_reason, discard_policy, status, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', current_timestamp)
+        "#,
+        params![
+            project_id,
+            source.source_work_unit_id,
+            source.source_work_unit_activation_id,
+            source.source_work_record_id,
+            source.source_git_commit_sha,
+            forked_work_unit_id,
+            input.reason,
+            input.discard_policy,
+        ],
+    )?;
+    let fork_id = tx.last_insert_rowid();
+    tx.commit()?;
+
+    Ok(WorkForkOutcome {
+        fork_id,
+        work_unit_id: forked_work_unit_id,
+        activation_id,
+    })
+}
+
 fn open_ledger(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .with_context(|| format!("failed to open ledger {}", path.display()))?;
@@ -871,6 +954,7 @@ fn open_existing_project(root: &Path) -> Result<Connection> {
 
 fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
 
     let current_version = conn
         .query_row(
@@ -888,6 +972,22 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(());
+        }
+    }
+
+    conn.execute(
+        &format!("alter table {table} add column {column} {definition}"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -1152,6 +1252,51 @@ fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<(
     exists.context("work record not found")
 }
 
+fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<StoredForkSource> {
+    match source {
+        WorkForkSource::Record(work_record_id) => {
+            let source_work_unit_id = conn
+                .query_row(
+                    "select work_unit_id from work_records where id = ?1",
+                    params![work_record_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()?
+                .context("source work record not found")?;
+
+            Ok(StoredForkSource {
+                source_work_unit_id,
+                source_work_unit_activation_id: None,
+                source_work_record_id: Some(work_record_id),
+                source_git_commit_sha: None,
+            })
+        }
+        WorkForkSource::Activation(activation_id) => {
+            let work_unit_id = conn
+                .query_row(
+                    "select work_unit_id from work_unit_activations where id = ?1",
+                    params![activation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .context("source activation not found")?;
+
+            Ok(StoredForkSource {
+                source_work_unit_id: Some(work_unit_id),
+                source_work_unit_activation_id: Some(activation_id),
+                source_work_record_id: None,
+                source_git_commit_sha: None,
+            })
+        }
+        WorkForkSource::Commit(commit_sha) => Ok(StoredForkSource {
+            source_work_unit_id: None,
+            source_work_unit_activation_id: None,
+            source_work_record_id: None,
+            source_git_commit_sha: Some(commit_sha.to_string()),
+        }),
+    }
+}
+
 struct NewEvent<'a> {
     work_unit_id: i64,
     activation_id: Option<i64>,
@@ -1188,6 +1333,13 @@ struct StoredResumeCheck {
     status: String,
     authority_event_high_watermark: Option<i64>,
     activation_stack_revision: Option<i64>,
+}
+
+struct StoredForkSource {
+    source_work_unit_id: Option<i64>,
+    source_work_unit_activation_id: Option<i64>,
+    source_work_record_id: Option<i64>,
+    source_git_commit_sha: Option<String>,
 }
 
 struct RuleBindingInput<'a> {
@@ -1386,6 +1538,27 @@ pub struct NewWorkRecordFile<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct WorkRecordLinkOutcome {
     pub link_id: i64,
+}
+
+pub struct NewWorkFork<'a> {
+    pub title: &'a str,
+    pub source: WorkForkSource<'a>,
+    pub reason: &'a str,
+    pub discard_policy: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkForkSource<'a> {
+    Record(i64),
+    Activation(i64),
+    Commit(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkForkOutcome {
+    pub fork_id: i64,
+    pub work_unit_id: i64,
+    pub activation_id: i64,
 }
 
 const SCHEMA: &str = r#"
@@ -1693,6 +1866,7 @@ create table if not exists work_record_forks (
     source_work_record_id integer references work_records(id),
     source_repository_snapshot_id integer,
     source_git_commit_id integer,
+    source_git_commit_sha text,
     forked_work_unit_id integer references work_units(id),
     fork_reason text not null check (fork_reason in ('design_changed', 'agent_drift', 'invalid_assumption', 'failed_validation', 'user_requested_redo', 'other')),
     discard_policy text not null default 'keep_history' check (discard_policy in ('keep_history', 'supersede_source', 'mark_abandoned')),
@@ -1996,6 +2170,82 @@ mod tests {
         assert_eq!(command.link_id, 1);
         assert_eq!(commit.link_id, 1);
         assert_eq!(file.link_id, 1);
+    }
+
+    #[test]
+    fn fork_work_from_record_creates_new_active_work_unit() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let started = start_work(temp.path(), "bad attempt", None).unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: None,
+                topic: "before drift",
+                work_performed: Some("partial implementation"),
+                next_actions: Some("redo from this point"),
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        close_active_work(temp.path(), "abandon active line before fork", None).unwrap();
+
+        let fork = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "redo after drift",
+                source: WorkForkSource::Record(record.work_record_id),
+                reason: "agent_drift",
+                discard_policy: "keep_history",
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let fork_row: (i64, i64, i64, String) = conn
+            .query_row(
+                r#"
+                select source_work_unit_id, source_work_record_id, forked_work_unit_id, fork_reason
+                from work_record_forks
+                where id = ?1
+                "#,
+                params![fork.fork_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(fork_row.0, started.work_unit_id);
+        assert_eq!(fork_row.1, record.work_record_id);
+        assert_eq!(fork_row.2, fork.work_unit_id);
+        assert_eq!(fork_row.3, "agent_drift");
+        assert_eq!(
+            next_action(temp.path()).unwrap(),
+            NextAction::ContinueActive {
+                work_unit: ActiveWorkUnit {
+                    id: fork.work_unit_id,
+                    title: "redo after drift".to_string(),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn fork_work_refuses_to_run_while_work_is_active() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "active", None).unwrap();
+
+        let result = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "redo",
+                source: WorkForkSource::Commit("abc123"),
+                reason: "failed_validation",
+                discard_policy: "keep_history",
+            },
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

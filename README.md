@@ -40,6 +40,7 @@ cargo run -- record create --topic "current work" --work-performed "implemented 
 cargo run -- record command add 1 --command "cargo test" --result pass
 cargo run -- record commit add 1 --sha "$(git rev-parse --short HEAD)" --role created
 cargo run -- record file add 1 --path src/lib.rs --role changed
+cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift
 ```
 
 ## Local Preview

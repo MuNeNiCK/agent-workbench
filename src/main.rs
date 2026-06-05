@@ -5,12 +5,12 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewCommandProfile, NewUserCorrection, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, add_fixed_command, add_user_correction,
-    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    close_active_work, create_work_record, init_project, interrupt_work, list_command_profiles,
-    list_user_corrections, list_work_records, next_action, project_status, resume_check_basic,
-    resume_work, start_work, suspend_work,
+    NewCommandProfile, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
+    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, WorkForkSource,
+    add_fixed_command, add_user_correction, add_work_record_command, add_work_record_commit,
+    add_work_record_file, applicable_rules, close_active_work, create_work_record, fork_work,
+    init_project, interrupt_work, list_command_profiles, list_user_corrections, list_work_records,
+    next_action, project_status, resume_check_basic, resume_work, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -74,6 +74,8 @@ enum WorkCommand {
     Resume(WorkResumeArgs),
     /// Close the active work unit.
     Close(WorkCloseArgs),
+    /// Fork work from a prior record, activation, or commit.
+    Fork(WorkForkArgs),
 }
 
 #[derive(Debug, Args)]
@@ -110,6 +112,21 @@ struct WorkCloseArgs {
     summary: String,
     #[arg(long)]
     commit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct WorkForkArgs {
+    title: String,
+    #[arg(long)]
+    from_record: Option<i64>,
+    #[arg(long)]
+    from_activation: Option<i64>,
+    #[arg(long)]
+    from_commit: Option<String>,
+    #[arg(long)]
+    reason: String,
+    #[arg(long, default_value = "keep_history")]
+    discard_policy: String,
 }
 
 #[derive(Debug, Args)]
@@ -369,6 +386,45 @@ fn main() -> Result<()> {
             WorkCommand::Close(args) => {
                 let outcome = close_active_work(&root, &args.summary, args.commit.as_deref())?;
                 println!("closed work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+            WorkCommand::Fork(args) => {
+                let source_count = [
+                    args.from_record.is_some(),
+                    args.from_activation.is_some(),
+                    args.from_commit.is_some(),
+                ]
+                .into_iter()
+                .filter(|selected| *selected)
+                .count();
+                if source_count != 1 {
+                    anyhow::bail!(
+                        "exactly one of --from-record, --from-activation, or --from-commit is required"
+                    );
+                }
+
+                let source = match (
+                    args.from_record,
+                    args.from_activation,
+                    args.from_commit.as_deref(),
+                ) {
+                    (Some(id), None, None) => WorkForkSource::Record(id),
+                    (None, Some(id), None) => WorkForkSource::Activation(id),
+                    (None, None, Some(sha)) => WorkForkSource::Commit(sha),
+                    _ => unreachable!("source count checked above"),
+                };
+                let outcome = fork_work(
+                    &root,
+                    NewWorkFork {
+                        title: &args.title,
+                        source,
+                        reason: &args.reason,
+                        discard_policy: &args.discard_policy,
+                    },
+                )?;
+                println!("forked work");
+                println!("fork_id: {}", outcome.fork_id);
                 println!("work_unit_id: {}", outcome.work_unit_id);
                 println!("activation_id: {}", outcome.activation_id);
             }
