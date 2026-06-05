@@ -43,9 +43,10 @@ pub use rules::{
 };
 pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
-    ResumeOutcome, SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, close_active_work,
-    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check_basic, resume_work,
-    start_work, suspend_work,
+    ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome, SuspendOutcome, WorkForkOutcome,
+    WorkForkSource, WorkOutcome, close_active_work, create_follow_up_work, fork_work,
+    interrupt_work, reopen_work, resume_check_basic, resume_ready_basic, resume_work, start_work,
+    suspend_work,
 };
 
 #[cfg(test)]
@@ -142,6 +143,24 @@ mod tests {
             next_action(temp.path()).unwrap(),
             NextAction::ContinueActive { .. }
         ));
+    }
+
+    #[test]
+    fn resume_ready_dry_run_does_not_record_check() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement resume gate", None).unwrap();
+        suspend_work(temp.path(), "interrupt complete", "resume gate work").unwrap();
+
+        let outcome = resume_ready_basic(temp.path()).unwrap();
+
+        assert_eq!(outcome.result, "allowed");
+        assert!(outcome.items.iter().all(|item| item.result == "pass"));
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let count: i64 = conn
+            .query_row("select count(*) from resume_checks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

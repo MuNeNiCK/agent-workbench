@@ -33,6 +33,7 @@ cargo run -- next
 cargo run -- work start "current task"
 cargo run -- work suspend --reason "interrupting issue" --next "resume current task"
 cargo run -- resume-check --maturity basic
+cargo run -- gate resume-ready --dry-run
 cargo run -- work reopen 1 --reason "closure evidence was invalid"
 cargo run -- work follow-up 1 "related follow-up" --reason "later work found a related issue"
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"

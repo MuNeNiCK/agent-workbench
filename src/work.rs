@@ -213,70 +213,7 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
 pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
-    let target = suspended_activation(&tx)?.context("no suspended activation to resume")?;
-    let snapshot = suspend_snapshot(&tx, target.activation_id)?;
-    let stack_revision = max_id(&tx, "work_unit_events")?;
-    let authority_high_watermark = max_id(&tx, "authority_events")?;
-
-    let deeper_open = tx.query_row(
-        r#"
-        select count(*)
-        from work_unit_activations
-        where project_id = ?1
-          and stack_depth > ?2
-          and status not in ('completed', 'abandoned')
-        "#,
-        params![target.project_id, target.stack_depth],
-        |row| row.get::<_, i64>(0),
-    )?;
-    let blocking_dependencies = tx.query_row(
-        r#"
-        select count(*)
-        from work_unit_dependencies
-        where work_unit_id = ?1
-          and dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
-          and status = 'open'
-        "#,
-        params![target.work_unit_id],
-        |row| row.get::<_, i64>(0),
-    )?;
-
-    let checks = [
-        (
-            "resume_target_suspended",
-            target.status == "suspended",
-            "target activation must be suspended",
-        ),
-        (
-            "snapshot_exists",
-            true,
-            "suspend snapshot must exist for target activation",
-        ),
-        (
-            "suspend_reason_exists",
-            !snapshot.reason.trim().is_empty(),
-            "suspend snapshot must include a reason",
-        ),
-        (
-            "next_action_exists",
-            !snapshot.next_action.trim().is_empty(),
-            "suspend snapshot must include a next action",
-        ),
-        (
-            "deeper_frames_closed",
-            deeper_open == 0,
-            "deeper activation frames must be completed or abandoned",
-        ),
-        (
-            "blocking_dependencies_clear",
-            blocking_dependencies == 0,
-            "blocking dependencies must be resolved",
-        ),
-    ];
-    let allowed = checks.iter().all(|(_, pass, _)| *pass);
-    let blocking_reason = checks
-        .iter()
-        .find_map(|(_, pass, message)| (!pass).then_some(*message));
+    let evaluation = evaluate_resume_ready_basic(&tx)?;
 
     tx.execute(
         r#"
@@ -288,23 +225,23 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
         values (?1, ?2, ?3, 'basic', 'pending', ?4, ?5, ?6, ?7, ?8, current_timestamp)
         "#,
         params![
-            target.work_unit_id,
-            target.activation_id,
-            snapshot.id,
-            if allowed { "allowed" } else { "blocked" },
-            authority_high_watermark,
-            stack_revision,
-            if allowed {
-                Some(snapshot.next_action.as_str())
+            evaluation.work_unit_id,
+            evaluation.activation_id,
+            evaluation.suspend_snapshot_id,
+            evaluation.result,
+            evaluation.authority_high_watermark,
+            evaluation.activation_stack_revision,
+            if evaluation.result == "allowed" {
+                evaluation.allowed_next_action.as_deref()
             } else {
                 None
             },
-            blocking_reason,
+            evaluation.blocking_reason.as_deref(),
         ],
     )?;
     let resume_check_id = tx.last_insert_rowid();
 
-    for (name, pass, message) in checks {
+    for item in &evaluation.items {
         tx.execute(
             r#"
             insert into resume_check_items(
@@ -314,10 +251,10 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
             "#,
             params![
                 resume_check_id,
-                name,
-                if pass { "pass" } else { "fail" },
-                if pass { None } else { Some(message) },
-                message,
+                item.name,
+                item.result,
+                item.blocking_action.as_deref(),
+                item.details,
             ],
         )?;
     }
@@ -326,12 +263,21 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
 
     Ok(ResumeCheckOutcome {
         resume_check_id,
-        result: if allowed {
-            "allowed".to_string()
-        } else {
-            "blocked".to_string()
-        },
-        blocking_reason: blocking_reason.map(str::to_string),
+        result: evaluation.result,
+        blocking_reason: evaluation.blocking_reason,
+    })
+}
+
+pub fn resume_ready_basic(root: &Path) -> Result<ResumeReadyOutcome> {
+    let conn = open_existing_project(root)?;
+    let evaluation = evaluate_resume_ready_basic(&conn)?;
+
+    Ok(ResumeReadyOutcome {
+        work_unit_id: evaluation.work_unit_id,
+        activation_id: evaluation.activation_id,
+        result: evaluation.result,
+        blocking_reason: evaluation.blocking_reason,
+        items: evaluation.items,
     })
 }
 
@@ -734,6 +680,94 @@ fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<
     }
 }
 
+fn evaluate_resume_ready_basic(conn: &Connection) -> Result<ResumeGateEvaluation> {
+    let target = suspended_activation(conn)?.context("no suspended activation to resume")?;
+    let snapshot = suspend_snapshot(conn, target.activation_id)?;
+    let stack_revision = max_id(conn, "work_unit_events")?;
+    let authority_high_watermark = max_id(conn, "authority_events")?;
+
+    let deeper_open = conn.query_row(
+        r#"
+        select count(*)
+        from work_unit_activations
+        where project_id = ?1
+          and stack_depth > ?2
+          and status not in ('completed', 'abandoned')
+        "#,
+        params![target.project_id, target.stack_depth],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let blocking_dependencies = conn.query_row(
+        r#"
+        select count(*)
+        from work_unit_dependencies
+        where work_unit_id = ?1
+          and dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+          and status = 'open'
+        "#,
+        params![target.work_unit_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    let checks = [
+        (
+            "resume_target_suspended",
+            target.status == "suspended",
+            "target activation must be suspended",
+        ),
+        (
+            "snapshot_exists",
+            true,
+            "suspend snapshot must exist for target activation",
+        ),
+        (
+            "suspend_reason_exists",
+            !snapshot.reason.trim().is_empty(),
+            "suspend snapshot must include a reason",
+        ),
+        (
+            "next_action_exists",
+            !snapshot.next_action.trim().is_empty(),
+            "suspend snapshot must include a next action",
+        ),
+        (
+            "deeper_frames_closed",
+            deeper_open == 0,
+            "deeper activation frames must be completed or abandoned",
+        ),
+        (
+            "blocking_dependencies_clear",
+            blocking_dependencies == 0,
+            "blocking dependencies must be resolved",
+        ),
+    ];
+    let allowed = checks.iter().all(|(_, pass, _)| *pass);
+    let blocking_reason = checks
+        .iter()
+        .find_map(|(_, pass, message)| (!pass).then_some((*message).to_string()));
+    let items = checks
+        .into_iter()
+        .map(|(name, pass, message)| ResumeReadyItem {
+            name: name.to_string(),
+            result: if pass { "pass" } else { "fail" }.to_string(),
+            blocking_action: (!pass).then_some(message.to_string()),
+            details: message.to_string(),
+        })
+        .collect();
+
+    Ok(ResumeGateEvaluation {
+        work_unit_id: target.work_unit_id,
+        activation_id: target.activation_id,
+        suspend_snapshot_id: snapshot.id,
+        result: if allowed { "allowed" } else { "blocked" }.to_string(),
+        blocking_reason,
+        allowed_next_action: Some(snapshot.next_action),
+        authority_high_watermark,
+        activation_stack_revision: stack_revision,
+        items,
+    })
+}
+
 #[derive(Debug)]
 struct StoredResumeCheck {
     id: i64,
@@ -743,6 +777,18 @@ struct StoredResumeCheck {
     status: String,
     authority_event_high_watermark: Option<i64>,
     activation_stack_revision: Option<i64>,
+}
+
+struct ResumeGateEvaluation {
+    work_unit_id: i64,
+    activation_id: i64,
+    suspend_snapshot_id: i64,
+    result: String,
+    blocking_reason: Option<String>,
+    allowed_next_action: Option<String>,
+    authority_high_watermark: i64,
+    activation_stack_revision: i64,
+    items: Vec<ResumeReadyItem>,
 }
 
 struct StoredForkSource {
@@ -792,6 +838,23 @@ pub struct ResumeCheckOutcome {
     pub resume_check_id: i64,
     pub result: String,
     pub blocking_reason: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResumeReadyOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+    pub result: String,
+    pub blocking_reason: Option<String>,
+    pub items: Vec<ResumeReadyItem>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResumeReadyItem {
+    pub name: String,
+    pub result: String,
+    pub blocking_action: Option<String>,
+    pub details: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

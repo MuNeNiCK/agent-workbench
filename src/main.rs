@@ -17,7 +17,8 @@ use agent_workbench::{
     init_project, interrupt_work, list_authority_events, list_command_profiles,
     list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews, list_tasks,
     list_user_corrections, list_work_records, next_action, project_status, reopen_work,
-    resume_check_basic, resume_work, start_kpt_review, start_work, suspend_work,
+    resume_check_basic, resume_ready_basic, resume_work, start_kpt_review, start_work,
+    suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -46,6 +47,11 @@ enum Command {
     },
     /// Record a basic resume check for the latest suspended activation.
     ResumeCheck(ResumeCheckArgs),
+    /// Run read-only gates.
+    Gate {
+        #[command(subcommand)]
+        command: GateCommand,
+    },
     /// Record or list user corrections.
     Correction {
         #[command(subcommand)]
@@ -179,6 +185,20 @@ struct WorkFollowUpArgs {
 struct ResumeCheckArgs {
     #[arg(long, default_value = "basic")]
     maturity: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum GateCommand {
+    /// Check whether a suspended activation can resume without writing ledger rows.
+    ResumeReady(GateResumeReadyArgs),
+}
+
+#[derive(Debug, Args)]
+struct GateResumeReadyArgs {
+    #[arg(long, default_value = "basic")]
+    maturity: String,
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -751,6 +771,33 @@ fn main() -> Result<()> {
                 println!("blocking_reason: {reason}");
             }
         }
+        Command::Gate { command } => match command {
+            GateCommand::ResumeReady(args) => {
+                if args.maturity != "basic" {
+                    anyhow::bail!("only --maturity basic is implemented");
+                }
+                let outcome = resume_ready_basic(&root)?;
+                println!("gate: resume-ready");
+                println!("maturity: {}", args.maturity);
+                println!("dry_run: true");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+                println!("result: {}", outcome.result);
+                if let Some(reason) = outcome.blocking_reason {
+                    println!("blocking_reason: {reason}");
+                }
+                for item in outcome.items {
+                    match item.blocking_action {
+                        Some(action) => {
+                            println!("{}: {} ({})", item.name, item.result, action);
+                        }
+                        None => {
+                            println!("{}: {}", item.name, item.result);
+                        }
+                    }
+                }
+            }
+        },
         Command::Correction { command } => match command {
             CorrectionCommand::Add(args) => {
                 let outcome = add_user_correction(
