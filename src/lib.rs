@@ -284,6 +284,104 @@ mod tests {
     }
 
     #[test]
+    fn init_migrates_existing_review_run_type_purpose_constraint() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute_batch(
+            r#"
+            pragma foreign_keys = off;
+
+            drop table review_agent_invocations;
+            drop table finding_verifications;
+            drop table findings;
+            drop table review_runs;
+
+            create table review_runs (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                review_scope_id integer references review_scopes(id),
+                review_plan_id integer references review_plans(id),
+                run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+                run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
+                target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
+                design_version_id integer references design_versions(id),
+                design_requirement_id integer references design_requirements(id),
+                task_id integer references tasks(id),
+                work_unit_id integer references work_units(id),
+                repository_snapshot_id integer,
+                target_ref text,
+                prompt_deviations text,
+                result_summary text,
+                new_findings_count integer not null default 0,
+                carried_findings_checked integer not null default 0,
+                clean_run integer not null default 0 check (clean_run in (0, 1)),
+                status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+                created_at text not null
+            );
+
+            create table review_agent_invocations (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                review_plan_id integer references review_plans(id),
+                review_run_id integer references review_runs(id),
+                run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+                agent_label text,
+                external_agent_id text,
+                status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+                started_at text,
+                finished_at text
+            );
+
+            create table findings (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                review_run_id integer not null references review_runs(id) on delete cascade,
+                finding_type text not null check (finding_type in ('design_finding', 'design_implementation_drift', 'design_task_gap', 'implementation_finding', 'coverage_finding')),
+                severity text not null check (severity in ('critical', 'high', 'medium', 'low')),
+                description text not null,
+                classification text not null default 'unclassified' check (classification in ('unclassified', 'valid', 'invalid', 'design_conflict', 'needs_evidence')),
+                status text not null default 'open' check (status in ('open', 'closed', 'accepted_out_of_scope')),
+                design_requirement_id integer references design_requirements(id),
+                task_id integer references tasks(id),
+                created_at text not null
+            );
+
+            create table finding_verifications (
+                id integer primary key,
+                project_id integer not null references projects(id) on delete cascade,
+                review_run_id integer not null references review_runs(id) on delete cascade,
+                finding_id integer not null references findings(id) on delete cascade,
+                closure_id integer not null references closures(id) on delete cascade,
+                result text not null check (result in ('verified', 'not_fixed', 'needs_evidence', 'out_of_scope')),
+                notes text,
+                created_at text not null,
+                unique(review_run_id, finding_id, closure_id)
+            );
+
+            pragma foreign_keys = on;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let invalid = conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, run_type, run_purpose, target_type, target_ref,
+                new_findings_count, carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, 'fresh', 'finding_fix_verification', 'work_unit', 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            "#,
+            [],
+        );
+
+        assert!(invalid.is_err());
+    }
+
+    #[test]
     fn status_reports_uninitialized_project() {
         let temp = tempfile::tempdir().unwrap();
 
@@ -1035,6 +1133,134 @@ This requirement describes changed cleanup behavior that must be implemented.
         );
 
         assert!(mismatch.is_err());
+    }
+
+    #[test]
+    fn finding_verification_update_preserves_scope_constraints() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "verification update guard", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "verification-update",
+                review_type: "implementation_review",
+                max_fresh_agents: 2,
+                max_resume_agents: 2,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "resume",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let fresh = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let finding = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: fresh.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "update guarded finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+        let closure = add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: finding.finding_id,
+                design_invariant: "update invariant",
+                design_citations: None,
+                implementation_evidence: Some("abc123"),
+                affected_surfaces: None,
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: None,
+                tests_or_gates: None,
+                verification_plan: None,
+                closed_by_commit: None,
+            },
+        )
+        .unwrap();
+        let resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 0,
+                carried_findings_checked: 1,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding_verification(
+            temp.path(),
+            NewFindingVerification {
+                review_run_id: resume.review_run_id,
+                finding_id: finding.finding_id,
+                closure_id: closure.closure_id,
+                result: "not_fixed",
+                notes: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let update_to_fresh = conn.execute(
+            "update finding_verifications set review_run_id = ?1 where id = 1",
+            params![fresh.review_run_id],
+        );
+
+        assert!(update_to_fresh.is_err());
     }
 
     #[test]
