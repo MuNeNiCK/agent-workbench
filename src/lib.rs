@@ -855,6 +855,17 @@ This requirement describes changed cleanup behavior that must be implemented.
             },
         )
         .unwrap();
+        let fresh_verification = add_finding_verification(
+            temp.path(),
+            NewFindingVerification {
+                review_run_id: fresh.review_run_id,
+                finding_id: finding.finding_id,
+                closure_id: closure.closure_id,
+                result: "verified",
+                notes: None,
+            },
+        );
+        assert!(fresh_verification.is_err());
         let resume = add_review_run(
             temp.path(),
             NewReviewRun {
@@ -1193,6 +1204,134 @@ This requirement describes changed cleanup behavior that must be implemented.
 
         let plans = list_review_plans(temp.path()).unwrap();
         assert_eq!(plans[0].status, "clean");
+    }
+
+    #[test]
+    fn stop_on_severity_none_does_not_block_findings() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "no severity stop", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "no-severity-stop",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let run = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: None,
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: run.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "critical",
+                description: "critical but not a stop condition",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+
+        let plans = list_review_plans(temp.path()).unwrap();
+        assert_eq!(plans[0].status, "clean");
+    }
+
+    #[test]
+    fn review_plan_targets_reject_cross_project_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "target integrity", None).unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-target', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (2, 'other work', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let cross_project = conn.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, work_unit_id)
+            values (?1, 'work_unit', 2)
+            "#,
+            params![plan.review_plan_id],
+        );
+        let repository_snapshot_target = conn.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, repository_snapshot_id)
+            values (?1, 'repository_snapshot', 1)
+            "#,
+            params![plan.review_plan_id],
+        );
+
+        assert!(cross_project.is_err());
+        assert!(repository_snapshot_target.is_err());
     }
 
     #[test]
@@ -4733,6 +4872,9 @@ Run the project test suite before implementation handoff.
                 required_consecutive_clean_fresh_runs: 2,
                 required_consecutive_clean_resume_runs: 0,
                 stop_on_severity: "none",
+                allow_new_findings_in_resume: true,
+                run_count_scope: "work_unit",
+                default_run_mode: "resume",
                 on_max_agents_exceeded: "block",
             },
         )
@@ -4764,6 +4906,17 @@ Run the project test suite before implementation handoff.
         assert_eq!(design.design_version_id, imported.design_version_id);
 
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let policy_settings: (i64, String, String) = conn
+            .query_row(
+                r#"
+                select allow_new_findings_in_resume, run_count_scope, default_run_mode
+                from review_policies
+                where id = ?1
+                "#,
+                params![policy.review_policy_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
         let conversion_count: i64 = conn
             .query_row("select count(*) from kpt_item_conversions", [], |row| {
                 row.get(0)
@@ -4776,6 +4929,10 @@ Run the project test suite before implementation handoff.
                 |row| row.get(0),
             )
             .unwrap();
+        assert_eq!(
+            policy_settings,
+            (1, "work_unit".to_string(), "resume".to_string())
+        );
         assert_eq!(conversion_count, 3);
         assert_eq!(converted_count, 3);
     }

@@ -1553,6 +1553,36 @@ begin
     select raise(abort, 'review run project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_review_plan_target_project_insert
+before insert on review_plan_targets
+for each row
+when (new.target_type = 'design_version' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from design_versions where id = new.design_version_id))
+  or (new.target_type = 'design_requirement' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from design_requirements where id = new.design_requirement_id))
+  or (new.target_type = 'task' and (select project_id from review_plans where id = new.review_plan_id) != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.target_type = 'work_unit' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from work_units where id = new.work_unit_id))
+  or new.target_type = 'repository_snapshot'
+begin
+    select raise(abort, 'review plan target project_id must match review plan project_id');
+end;
+
+create trigger if not exists trg_review_plan_target_project_update
+before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id on review_plan_targets
+for each row
+when (new.target_type = 'design_version' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from design_versions where id = new.design_version_id))
+  or (new.target_type = 'design_requirement' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from design_requirements where id = new.design_requirement_id))
+  or (new.target_type = 'task' and (select project_id from review_plans where id = new.review_plan_id) != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.target_type = 'work_unit' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from work_units where id = new.work_unit_id))
+  or new.target_type = 'repository_snapshot'
+begin
+    select raise(abort, 'review plan target project_id must match review plan project_id');
+end;
+
 create trigger if not exists trg_finding_project_insert
 before insert on findings
 for each row

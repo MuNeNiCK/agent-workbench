@@ -907,6 +907,11 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "1",
             "--max-resume-agents",
             "2",
+            "--allow-new-findings-in-resume",
+            "--run-count-scope",
+            "work_unit",
+            "--default-run-mode",
+            "resume",
         ],
     );
     let scope = ok(
@@ -1043,9 +1048,11 @@ fn review_flow_records_policy_runs_findings_and_verification() {
         ],
     );
     let plans = ok(temp.path(), &["review", "plan", "list"]);
+    let policies = ok(temp.path(), &["review", "policy", "list"]);
     let findings = ok(temp.path(), &["finding", "list"]);
 
     assert!(policy.contains("review_policy_id: 1"));
+    assert!(policies.contains("resume_new=true count_scope=work_unit default_mode=resume"));
     assert!(scope.contains("review_scope_id: 1"));
     assert!(plan.contains("review_plan_id: 1"));
     assert!(context.contains("target 1 [work_unit] work_unit_id=1"));

@@ -853,6 +853,12 @@ struct ReviewPolicyAddArgs {
     max_parallel_agents: i64,
     #[arg(long, default_value = "none")]
     stop_on_severity: String,
+    #[arg(long, default_value_t = false)]
+    allow_new_findings_in_resume: bool,
+    #[arg(long, default_value = "review_plan")]
+    run_count_scope: String,
+    #[arg(long, default_value = "fresh")]
+    default_run_mode: String,
     #[arg(long, default_value = "block")]
     on_max_agents_exceeded: String,
 }
@@ -1155,6 +1161,12 @@ struct KptItemConvertArgs {
     max_parallel_agents: i64,
     #[arg(long, default_value = "none")]
     stop_on_severity: String,
+    #[arg(long, default_value_t = false)]
+    allow_new_findings_in_resume: bool,
+    #[arg(long, default_value = "review_plan")]
+    run_count_scope: String,
+    #[arg(long, default_value = "fresh")]
+    default_run_mode: String,
     #[arg(long, default_value = "block")]
     on_max_agents_exceeded: String,
     #[arg(long)]
@@ -2085,10 +2097,10 @@ fn main() -> Result<()> {
                             stop_on_severity: &args.stop_on_severity,
                             allow_resume_review: true,
                             allow_fresh_review: true,
-                            allow_new_findings_in_resume: false,
+                            allow_new_findings_in_resume: args.allow_new_findings_in_resume,
                             on_max_agents_exceeded: &args.on_max_agents_exceeded,
-                            run_count_scope: "review_plan",
-                            default_run_mode: "fresh",
+                            run_count_scope: &args.run_count_scope,
+                            default_run_mode: &args.default_run_mode,
                         },
                     )?;
                     println!("added review policy");
@@ -2101,7 +2113,7 @@ fn main() -> Result<()> {
                     }
                     for record in records {
                         println!(
-                            "{} [{} fresh_clean={} resume_clean={} max_fresh={} max_resume={} max_parallel={}] {}",
+                            "{} [{} fresh_clean={} resume_clean={} max_fresh={} max_resume={} max_parallel={} resume_new={} count_scope={} default_mode={}] {}",
                             record.id,
                             record.review_type,
                             record.required_consecutive_clean_fresh_runs,
@@ -2109,6 +2121,9 @@ fn main() -> Result<()> {
                             record.max_fresh_agents,
                             record.max_resume_agents,
                             record.max_parallel_agents,
+                            record.allow_new_findings_in_resume,
+                            record.run_count_scope,
+                            record.default_run_mode,
                             record.name
                         );
                     }
@@ -2471,6 +2486,9 @@ fn main() -> Result<()> {
                                 required_consecutive_clean_fresh_runs: args.fresh_clean,
                                 required_consecutive_clean_resume_runs: args.resume_clean,
                                 stop_on_severity: &args.stop_on_severity,
+                                allow_new_findings_in_resume: args.allow_new_findings_in_resume,
+                                run_count_scope: &args.run_count_scope,
+                                default_run_mode: &args.default_run_mode,
                                 on_max_agents_exceeded: &args.on_max_agents_exceeded,
                             },
                         )?;

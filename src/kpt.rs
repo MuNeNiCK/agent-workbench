@@ -251,7 +251,7 @@ pub fn convert_kpt_item_to_review_policy(
             allow_resume_review, allow_fresh_review, allow_new_findings_in_resume,
             on_max_agents_exceeded, run_count_scope, default_run_mode, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, 0, ?10, 'review_plan', 'fresh', current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, ?10, ?11, ?12, ?13, current_timestamp)
         "#,
         params![
             project_id,
@@ -263,7 +263,10 @@ pub fn convert_kpt_item_to_review_policy(
             input.required_consecutive_clean_fresh_runs,
             input.required_consecutive_clean_resume_runs,
             input.stop_on_severity,
+            bool_to_i64(input.allow_new_findings_in_resume),
             input.on_max_agents_exceeded,
+            input.run_count_scope,
+            input.default_run_mode,
         ],
     )?;
     let review_policy_id = tx.last_insert_rowid();
@@ -592,6 +595,10 @@ fn period_to_sqlite_modifier(period: &str) -> Result<String> {
     bail!("unsupported period; use values like 30d or 12h")
 }
 
+fn bool_to_i64(value: bool) -> i64 {
+    if value { 1 } else { 0 }
+}
+
 fn kpt_review_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptReviewRecord> {
     Ok(KptReviewRecord {
         id: row.get(0)?,
@@ -723,6 +730,9 @@ pub struct KptItemReviewPolicyConversion<'a> {
     pub required_consecutive_clean_fresh_runs: i64,
     pub required_consecutive_clean_resume_runs: i64,
     pub stop_on_severity: &'a str,
+    pub allow_new_findings_in_resume: bool,
+    pub run_count_scope: &'a str,
+    pub default_run_mode: &'a str,
     pub on_max_agents_exceeded: &'a str,
 }
 

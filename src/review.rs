@@ -518,6 +518,28 @@ pub fn add_finding_verification(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    let verification_run = tx
+        .query_row(
+            r#"
+            select run_type, run_purpose
+            from review_runs
+            where id = ?1 and project_id = ?2
+            "#,
+            params![input.review_run_id, project_id],
+            |row| {
+                Ok(StoredReviewRunPurpose {
+                    run_type: row.get(0)?,
+                    run_purpose: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .context("review run not found")?;
+    if verification_run.run_type != "resume"
+        || verification_run.run_purpose != "finding_fix_verification"
+    {
+        bail!("finding verification requires a resume finding_fix_verification run");
+    }
     tx.query_row(
         r#"
         select 1
@@ -913,7 +935,7 @@ fn agent_role_for_review_type(review_type: &str) -> Result<&'static str> {
 
 fn severity_blocks(threshold: &str, severity: &str) -> bool {
     let Some(threshold_rank) = severity_rank(threshold) else {
-        return true;
+        return false;
     };
     severity_rank(severity).is_some_and(|rank| rank <= threshold_rank)
 }
@@ -994,6 +1016,11 @@ struct StoredFinding {
 struct StoredReviewRunPolicy {
     run_type: String,
     review_policy_id: i64,
+}
+
+struct StoredReviewRunPurpose {
+    run_type: String,
+    run_purpose: String,
 }
 
 pub struct NewReviewScope<'a> {
