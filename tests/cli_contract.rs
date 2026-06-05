@@ -74,9 +74,8 @@ fn write_decision(root: &Path) {
 ```yaml agent-workbench
 type: decision
 key: DEC-001
-topic: database
-rationale: one ledger keeps project state isolated
 status: accepted
+supersedes: []
 ```
 
 Use one SQLite ledger per project.
@@ -96,9 +95,9 @@ fn write_gate_template(root: &Path) {
 ```yaml agent-workbench
 type: validation_gate_template
 key: GATE-001
-stage: implementation-ready
-command: cargo test
-requirements: [REQ-001]
+applies_to: [REQ-001]
+expected_result: pass
+phase: implementation
 status: active
 ```
 
@@ -241,11 +240,11 @@ fn design_import_lists_decisions_and_gate_templates() {
     );
 
     let decisions = ok(temp.path(), &["design-decision", "list", "--design", "1"]);
-    assert!(decisions.contains("DEC-001 [database:accepted]"));
+    assert!(decisions.contains("DEC-001 [Keep project-local ledger:accepted]"));
     assert!(decisions.contains("09-decisions.md"));
 
     let gates = ok(temp.path(), &["gate-template", "list", "--design", "1"]);
-    assert!(gates.contains("GATE-001 [implementation-ready:active command=cargo test]"));
+    assert!(gates.contains("GATE-001 [implementation-ready:active expected=pass command=-]"));
     assert!(gates.contains("validation/gates.md"));
 }
 

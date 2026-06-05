@@ -280,9 +280,9 @@ pub fn import_design_package(
                     insert into design_decisions(
                         project_id, design_version_id, source_design_file_id,
                         source_section, decision_key, decision_hash, topic,
-                        decision_text, rationale, status, created_at
+                        decision_text, rationale, supersedes_decision_keys, status, created_at
                     )
-                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, current_timestamp)
                     "#,
                     params![
                         project_id,
@@ -294,6 +294,7 @@ pub fn import_design_package(
                         decision.topic,
                         decision.decision_text,
                         decision.rationale,
+                        decision.supersedes_decision_keys,
                         decision.status,
                     ],
                 )?;
@@ -307,9 +308,9 @@ pub fn import_design_package(
                     insert into validation_gate_templates(
                         project_id, design_version_id, source_design_file_id,
                         source_section, gate_key, gate_hash, stage, command,
-                        requirement_keys, gate_text, status, created_at
+                        expected_result, requirement_keys, gate_text, status, created_at
                     )
-                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, current_timestamp)
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, current_timestamp)
                     "#,
                     params![
                         project_id,
@@ -320,6 +321,7 @@ pub fn import_design_package(
                         template.gate_hash,
                         template.stage,
                         template.command,
+                        template.expected_result,
                         template.requirement_keys,
                         template.gate_text,
                         template.status,
@@ -404,7 +406,7 @@ pub fn list_design_decisions(
         select
             d.id, d.design_version_id, d.source_design_file_id,
             f.relative_path, d.source_section, d.decision_key,
-            d.topic, d.decision_text, d.rationale, d.status
+            d.topic, d.decision_text, d.rationale, d.supersedes_decision_keys, d.status
         from design_decisions d
         join design_files f on f.id = d.source_design_file_id
         where d.project_id = ?1 and d.design_version_id = ?2
@@ -422,7 +424,8 @@ pub fn list_design_decisions(
             topic: row.get(6)?,
             decision_text: row.get(7)?,
             rationale: row.get(8)?,
-            status: row.get(9)?,
+            supersedes_decision_keys: row.get(9)?,
+            status: row.get(10)?,
         })
     })?;
 
@@ -444,7 +447,7 @@ pub fn list_validation_gate_templates(
         select
             g.id, g.design_version_id, g.source_design_file_id,
             f.relative_path, g.source_section, g.gate_key,
-            g.stage, g.command, g.requirement_keys, g.gate_text, g.status
+            g.stage, g.command, g.expected_result, g.requirement_keys, g.gate_text, g.status
         from validation_gate_templates g
         join design_files f on f.id = g.source_design_file_id
         where g.project_id = ?1 and g.design_version_id = ?2
@@ -461,9 +464,10 @@ pub fn list_validation_gate_templates(
             gate_key: row.get(5)?,
             stage: row.get(6)?,
             command: row.get(7)?,
-            requirement_keys: row.get(8)?,
-            gate_text: row.get(9)?,
-            status: row.get(10)?,
+            expected_result: row.get(8)?,
+            requirement_keys: row.get(9)?,
+            gate_text: row.get(10)?,
+            status: row.get(11)?,
         })
     })?;
 
@@ -939,6 +943,42 @@ fn valid_design_key(value: &str, prefix: &str) -> bool {
         && number.bytes().any(|byte| byte != b'0')
 }
 
+fn heading_key_matches(source_section: &str, key: &str) -> bool {
+    source_section
+        .split_once(':')
+        .map(|(heading_key, _)| heading_key.trim() == key)
+        .unwrap_or_else(|| source_section.trim() == key)
+}
+
+fn title_from_section(source_section: &str, key: &str) -> String {
+    source_section
+        .split_once(':')
+        .map(|(_, title)| title.trim())
+        .filter(|title| !title.is_empty())
+        .unwrap_or(key)
+        .to_string()
+}
+
+fn normalize_validation_phase(phase: &str) -> Result<String> {
+    match phase {
+        "design-ready" | "implementation-ready" | "close-ready" | "resume-ready" => {
+            Ok(phase.to_string())
+        }
+        "design" => Ok("design-ready".to_string()),
+        "implementation" => Ok("implementation-ready".to_string()),
+        "close" => Ok("close-ready".to_string()),
+        "resume" => Ok("resume-ready".to_string()),
+        _ => bail!("invalid validation gate phase: {phase}"),
+    }
+}
+
+fn validate_expected_result(expected_result: &str) -> Result<()> {
+    match expected_result {
+        "pass" | "blocked" | "needs_evidence" | "fail" => Ok(()),
+        _ => bail!("invalid validation gate expected_result: {expected_result}"),
+    }
+}
+
 fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDesignVersion> {
     Ok(StoredDesignVersion {
         design_version_id: row.get(0)?,
@@ -1056,7 +1096,7 @@ fn validate_requirement_metadata(
     if !valid_design_key(&metadata.key, "REQ") {
         bail!("requirement key must match REQ-<positive-number>");
     }
-    if !source_section.starts_with(&metadata.key) {
+    if !heading_key_matches(source_section, &metadata.key) {
         bail!("requirement heading must start with metadata key");
     }
     if !seen_keys.insert(metadata.key.clone()) {
@@ -1114,12 +1154,13 @@ fn extract_design_decisions(
         hasher.update(body.as_bytes());
         let digest = hasher.finalize();
         decisions.push(ExtractedDesignDecision {
+            topic: title_from_section(&block.source_section, &metadata.key),
             source_section: block.source_section,
             decision_key: metadata.key,
             decision_hash: hex_digest(&digest),
-            topic: metadata.topic,
             decision_text: body,
-            rationale: metadata.rationale,
+            rationale: None,
+            supersedes_decision_keys: join_metadata_list(&metadata.supersedes),
             status: metadata.status,
         });
     }
@@ -1137,14 +1178,16 @@ fn validate_decision_metadata(
     if !valid_design_key(&metadata.key, "DEC") {
         bail!("decision key must match DEC-<positive-number>");
     }
-    if !source_section.starts_with(&metadata.key) {
+    if !heading_key_matches(source_section, &metadata.key) {
         bail!("decision heading must start with metadata key");
     }
     if !seen_keys.insert(metadata.key.clone()) {
         bail!("duplicate decision key: {}", metadata.key);
     }
-    if metadata.topic.trim().is_empty() {
-        bail!("decision topic is required");
+    for superseded_key in &metadata.supersedes {
+        if !valid_design_key(superseded_key, "DEC") {
+            bail!("superseded decision key must match DEC-<positive-number>");
+        }
     }
     match metadata.status.as_str() {
         "accepted" | "rejected" | "superseded" => {}
@@ -1198,9 +1241,10 @@ fn extract_validation_gate_templates(
             source_section: block.source_section,
             gate_key: metadata.key,
             gate_hash: hex_digest(&digest),
-            stage: metadata.stage,
-            command: metadata.command,
-            requirement_keys: join_metadata_list(&metadata.requirements),
+            stage: normalize_validation_phase(&metadata.phase)?,
+            command: metadata.command_template,
+            expected_result: metadata.expected_result,
+            requirement_keys: join_metadata_list(&metadata.applies_to),
             gate_text: body,
             status: metadata.status,
         });
@@ -1219,22 +1263,25 @@ fn validate_validation_gate_template_metadata(
     if !valid_design_key(&metadata.key, "GATE") {
         bail!("validation gate key must match GATE-<positive-number>");
     }
-    if !source_section.starts_with(&metadata.key) {
+    if !heading_key_matches(source_section, &metadata.key) {
         bail!("validation gate heading must start with metadata key");
     }
     if !seen_keys.insert(metadata.key.clone()) {
         bail!("duplicate validation gate key: {}", metadata.key);
     }
-    match metadata.stage.as_str() {
-        "design-ready" | "implementation-ready" | "close-ready" | "resume-ready" => {}
-        _ => bail!("invalid validation gate stage: {}", metadata.stage),
-    }
+    normalize_validation_phase(&metadata.phase)?;
+    validate_expected_result(&metadata.expected_result)?;
     match metadata.status.as_str() {
         "active" | "superseded" | "accepted_out_of_scope" => {}
         _ => bail!("invalid validation gate status: {}", metadata.status),
     }
-    if metadata.requirements.is_empty() && metadata.status == "active" {
-        bail!("active validation gate must declare requirements metadata");
+    for requirement_key in &metadata.applies_to {
+        if !valid_design_key(requirement_key, "REQ") {
+            bail!("validation gate applies_to keys must match REQ-<positive-number>");
+        }
+    }
+    if metadata.applies_to.is_empty() && metadata.status == "active" {
+        bail!("active validation gate must declare applies_to metadata");
     }
     Ok(())
 }
@@ -1439,10 +1486,9 @@ struct DecisionMetadata {
     #[serde(rename = "type")]
     record_type: String,
     key: String,
-    topic: String,
-    #[serde(default)]
-    rationale: Option<String>,
     status: String,
+    #[serde(default)]
+    supersedes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1451,11 +1497,12 @@ struct ValidationGateTemplateMetadata {
     #[serde(rename = "type")]
     record_type: String,
     key: String,
-    stage: String,
+    phase: String,
+    expected_result: String,
     #[serde(default)]
-    command: Option<String>,
+    applies_to: Vec<String>,
     #[serde(default)]
-    requirements: Vec<String>,
+    command_template: Option<String>,
     status: String,
 }
 
@@ -1522,6 +1569,7 @@ struct ExtractedDesignDecision {
     topic: String,
     decision_text: String,
     rationale: Option<String>,
+    supersedes_decision_keys: Option<String>,
     status: String,
 }
 
@@ -1531,6 +1579,7 @@ struct ExtractedValidationGateTemplate {
     gate_hash: String,
     stage: String,
     command: Option<String>,
+    expected_result: String,
     requirement_keys: Option<String>,
     gate_text: String,
     status: String,
@@ -1673,6 +1722,7 @@ pub struct DesignDecisionRecord {
     pub topic: String,
     pub decision_text: String,
     pub rationale: Option<String>,
+    pub supersedes_decision_keys: Option<String>,
     pub status: String,
 }
 
@@ -1686,6 +1736,7 @@ pub struct ValidationGateTemplateRecord {
     pub gate_key: String,
     pub stage: String,
     pub command: Option<String>,
+    pub expected_result: String,
     pub requirement_keys: Option<String>,
     pub gate_text: String,
     pub status: String,

@@ -1202,9 +1202,10 @@ mod tests {
         assert_eq!(import.decision_count, 1);
         assert_eq!(import.validation_gate_template_count, 1);
         assert_eq!(decisions[0].decision_key, "DEC-001");
-        assert_eq!(decisions[0].topic, "database");
+        assert_eq!(decisions[0].topic, "Keep project-local ledger");
         assert_eq!(gates[0].gate_key, "GATE-001");
         assert_eq!(gates[0].stage, "implementation-ready");
+        assert_eq!(gates[0].expected_result, "pass");
         assert_eq!(gates[0].requirement_keys.as_deref(), Some("REQ-001"));
     }
 
@@ -1596,6 +1597,34 @@ Body.
             )
             .is_err()
         );
+
+        let bad_heading = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-heading",
+                title: "Bad Heading",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_heading
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Bad heading", "high")
+                .replace("## REQ-001:", "## REQ-001-extra:"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_heading.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1775,6 +1804,63 @@ Body.
     }
 
     #[test]
+    fn acceptance_records_enforce_design_target_project_match() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            r#"
+            insert into projects(name, root_path, created_at, updated_at)
+            values ('other', '/tmp/agent-workbench-other', current_timestamp, current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        let requirement_id: i64 = conn
+            .query_row(
+                "select id from design_requirements where design_version_id = ?1",
+                params![import.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let cross_project = conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, design_requirement_id, acceptance_type,
+                reason, created_by, status, created_at
+            )
+            values (2, 'design_requirement', ?1, 'explicit_exception',
+                    'wrong project', 'user', 'approved', current_timestamp)
+            "#,
+            params![requirement_id],
+        );
+
+        assert!(cross_project.is_err());
+    }
+
+    #[test]
     fn design_approval_marks_current_version_and_creates_authority() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -1925,9 +2011,8 @@ This requirement describes one verifiable behavior that must be implemented.
 ```yaml agent-workbench
 type: decision
 key: DEC-001
-topic: database
-rationale: one ledger keeps project state isolated
 status: accepted
+supersedes: []
 ```
 
 Use one SQLite ledger per project.
@@ -1941,9 +2026,9 @@ Use one SQLite ledger per project.
 ```yaml agent-workbench
 type: validation_gate_template
 key: {key}
-stage: implementation-ready
-command: cargo test
-requirements: [REQ-001]
+applies_to: [REQ-001]
+expected_result: pass
+phase: implementation
 status: active
 ```
 

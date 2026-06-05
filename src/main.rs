@@ -1377,10 +1377,11 @@ fn main() -> Result<()> {
                 for record in records {
                     let command = record.command.as_deref().unwrap_or("-");
                     println!(
-                        "{} [{}:{} command={}] {} ({})",
+                        "{} [{}:{} expected={} command={}] {} ({})",
                         record.gate_key,
                         record.stage,
                         record.status,
+                        record.expected_result,
                         command,
                         record.source_section,
                         record.source_path

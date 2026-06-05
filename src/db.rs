@@ -771,6 +771,7 @@ create table if not exists design_decisions (
     topic text not null,
     decision_text text not null,
     rationale text,
+    supersedes_decision_keys text,
     status text not null check (status in ('accepted', 'rejected', 'superseded')),
     created_at text not null,
     unique(design_version_id, decision_key)
@@ -786,12 +787,49 @@ create table if not exists validation_gate_templates (
     gate_hash text not null,
     stage text not null check (stage in ('design-ready', 'implementation-ready', 'close-ready', 'resume-ready')),
     command text,
+    expected_result text not null,
     requirement_keys text,
     gate_text text not null,
     status text not null check (status in ('active', 'superseded', 'accepted_out_of_scope')),
     created_at text not null,
     unique(design_version_id, gate_key)
 );
+
+create trigger if not exists trg_acceptance_design_requirement_project_insert
+before insert on acceptance_records
+for each row
+when new.target_type = 'design_requirement'
+ and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+begin
+    select raise(abort, 'acceptance project_id must match design requirement project_id');
+end;
+
+create trigger if not exists trg_acceptance_design_requirement_project_update
+before update of project_id, target_type, design_requirement_id on acceptance_records
+for each row
+when new.target_type = 'design_requirement'
+ and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+begin
+    select raise(abort, 'acceptance project_id must match design requirement project_id');
+end;
+
+create trigger if not exists trg_acceptance_validation_gate_template_project_insert
+before insert on acceptance_records
+for each row
+when new.target_type = 'validation_gate_template'
+ and new.project_id != (select project_id from validation_gate_templates where id = new.validation_gate_template_id)
+begin
+    select raise(abort, 'acceptance project_id must match validation gate template project_id');
+end;
+
+create trigger if not exists trg_acceptance_validation_gate_template_project_update
+before update of project_id, target_type, validation_gate_template_id on acceptance_records
+for each row
+when new.target_type = 'validation_gate_template'
+ and new.project_id != (select project_id from validation_gate_templates where id = new.validation_gate_template_id)
+begin
+    select raise(abort, 'acceptance project_id must match validation gate template project_id');
+end;
 
 create table if not exists kpt_reviews (
     id integer primary key,
