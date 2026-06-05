@@ -93,6 +93,37 @@ pub fn list_command_profiles(
 }
 
 pub fn add_command_usage(root: &Path, input: NewCommandUsage<'_>) -> Result<CommandUsageOutcome> {
+    insert_command_usage(
+        root,
+        CommandUsageInput {
+            profile: input.profile,
+            command: input.command,
+            result: input.result,
+            log_path: input.log_path,
+            work_unit_id: input.work_unit_id,
+            repository_snapshot_id: None,
+        },
+    )
+}
+
+pub fn add_command_usage_with_repository_snapshot(
+    root: &Path,
+    input: NewCommandUsageWithRepositorySnapshot<'_>,
+) -> Result<CommandUsageOutcome> {
+    insert_command_usage(
+        root,
+        CommandUsageInput {
+            profile: input.profile,
+            command: input.command,
+            result: input.result,
+            log_path: input.log_path,
+            work_unit_id: input.work_unit_id,
+            repository_snapshot_id: input.repository_snapshot_id,
+        },
+    )
+}
+
+fn insert_command_usage(root: &Path, input: CommandUsageInput<'_>) -> Result<CommandUsageOutcome> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let active = active_activation(&conn)?;
@@ -114,9 +145,9 @@ pub fn add_command_usage(root: &Path, input: NewCommandUsage<'_>) -> Result<Comm
         r#"
         insert into command_usages(
             command_profile_id, work_unit_id, work_unit_activation_id,
-            command, result, log_path, created_at
+            command, result, log_path, repository_snapshot_id, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
         "#,
         params![
             command_profile_id,
@@ -125,6 +156,7 @@ pub fn add_command_usage(root: &Path, input: NewCommandUsage<'_>) -> Result<Comm
             command,
             input.result,
             input.log_path,
+            input.repository_snapshot_id,
         ],
     )?;
 
@@ -370,6 +402,24 @@ pub struct NewCommandUsage<'a> {
     pub result: &'a str,
     pub log_path: Option<&'a str>,
     pub work_unit_id: Option<i64>,
+}
+
+pub struct NewCommandUsageWithRepositorySnapshot<'a> {
+    pub profile: Option<&'a str>,
+    pub command: Option<&'a str>,
+    pub result: &'a str,
+    pub log_path: Option<&'a str>,
+    pub work_unit_id: Option<i64>,
+    pub repository_snapshot_id: Option<i64>,
+}
+
+struct CommandUsageInput<'a> {
+    profile: Option<&'a str>,
+    command: Option<&'a str>,
+    result: &'a str,
+    log_path: Option<&'a str>,
+    work_unit_id: Option<i64>,
+    repository_snapshot_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

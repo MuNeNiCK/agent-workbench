@@ -1123,8 +1123,9 @@ create table if not exists acceptance_records (
 create trigger if not exists trg_repository_state_classification_acceptance_insert
 before insert on repository_state_classifications
 for each row
-when new.acceptance_record_id is not null
-  and (
+when (new.classification = 'accepted_exception' and new.acceptance_record_id is null)
+  or (new.classification != 'accepted_exception' and new.acceptance_record_id is not null)
+  or (new.acceptance_record_id is not null and (
       not exists (select 1 from acceptance_records where id = new.acceptance_record_id)
       or (select project_id from acceptance_records where id = new.acceptance_record_id) != (
           select r.project_id
@@ -1132,16 +1133,17 @@ when new.acceptance_record_id is not null
           join repositories r on r.id = s.repository_id
           where s.id = new.repository_snapshot_id
       )
-  )
+  ))
 begin
     select raise(abort, 'repository state classification acceptance must match snapshot project_id');
 end;
 
 create trigger if not exists trg_repository_state_classification_acceptance_update
-before update of repository_snapshot_id, acceptance_record_id on repository_state_classifications
+before update of repository_snapshot_id, classification, acceptance_record_id on repository_state_classifications
 for each row
-when new.acceptance_record_id is not null
-  and (
+when (new.classification = 'accepted_exception' and new.acceptance_record_id is null)
+  or (new.classification != 'accepted_exception' and new.acceptance_record_id is not null)
+  or (new.acceptance_record_id is not null and (
       not exists (select 1 from acceptance_records where id = new.acceptance_record_id)
       or (select project_id from acceptance_records where id = new.acceptance_record_id) != (
           select r.project_id
@@ -1149,7 +1151,7 @@ when new.acceptance_record_id is not null
           join repositories r on r.id = s.repository_id
           where s.id = new.repository_snapshot_id
       )
-  )
+  ))
 begin
     select raise(abort, 'repository state classification acceptance must match snapshot project_id');
 end;
@@ -1230,6 +1232,84 @@ create table if not exists command_deviations (
     acceptance_record_id integer,
     created_at text not null
 );
+
+create trigger if not exists trg_command_usage_repository_snapshot_insert
+before insert on command_usages
+for each row
+when new.repository_snapshot_id is not null
+  and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (new.command_profile_id is null and new.work_unit_id is null and new.work_unit_activation_id is null)
+      or (
+          new.command_profile_id is not null
+          and (select project_id from command_profiles where id = new.command_profile_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+      or (
+          new.work_unit_id is not null
+          and (select project_id from work_units where id = new.work_unit_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+      or (
+          new.work_unit_activation_id is not null
+          and (select project_id from work_unit_activations where id = new.work_unit_activation_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+  )
+begin
+    select raise(abort, 'command usage repository snapshot must match referenced project');
+end;
+
+create trigger if not exists trg_command_usage_repository_snapshot_update
+before update of command_profile_id, work_unit_id, work_unit_activation_id, repository_snapshot_id on command_usages
+for each row
+when new.repository_snapshot_id is not null
+  and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (new.command_profile_id is null and new.work_unit_id is null and new.work_unit_activation_id is null)
+      or (
+          new.command_profile_id is not null
+          and (select project_id from command_profiles where id = new.command_profile_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+      or (
+          new.work_unit_id is not null
+          and (select project_id from work_units where id = new.work_unit_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+      or (
+          new.work_unit_activation_id is not null
+          and (select project_id from work_unit_activations where id = new.work_unit_activation_id) != (
+              select r.project_id
+              from repository_snapshots s
+              join repositories r on r.id = s.repository_id
+              where s.id = new.repository_snapshot_id
+          )
+      )
+  )
+begin
+    select raise(abort, 'command usage repository snapshot must match referenced project');
+end;
 
 create table if not exists work_records (
     id integer primary key,
@@ -1381,6 +1461,62 @@ create table if not exists work_record_forks (
     created_at text not null,
     closed_at text
 );
+
+create trigger if not exists trg_work_record_fork_repository_git_insert
+before insert on work_record_forks
+for each row
+when (new.source_repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.source_repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.source_repository_snapshot_id
+      )
+  ))
+  or (new.source_git_commit_id is not null and (
+      not exists (select 1 from git_commits where id = new.source_git_commit_id)
+      or new.project_id != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.source_git_commit_id
+      )
+      or (new.source_git_commit_sha is not null and new.source_git_commit_sha != (
+          select commit_sha from git_commits where id = new.source_git_commit_id
+      ))
+  ))
+begin
+    select raise(abort, 'work record fork repository and git sources must match project');
+end;
+
+create trigger if not exists trg_work_record_fork_repository_git_update
+before update of project_id, source_repository_snapshot_id, source_git_commit_id, source_git_commit_sha on work_record_forks
+for each row
+when (new.source_repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.source_repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.source_repository_snapshot_id
+      )
+  ))
+  or (new.source_git_commit_id is not null and (
+      not exists (select 1 from git_commits where id = new.source_git_commit_id)
+      or new.project_id != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.source_git_commit_id
+      )
+      or (new.source_git_commit_sha is not null and new.source_git_commit_sha != (
+          select commit_sha from git_commits where id = new.source_git_commit_id
+      ))
+  ))
+begin
+    select raise(abort, 'work record fork repository and git sources must match project');
+end;
 
 create table if not exists design_packages (
     id integer primary key,
@@ -1559,6 +1695,94 @@ create table if not exists implementation_evidence (
     created_at text not null,
     check (task_id is not null or design_requirement_id is not null)
 );
+
+create trigger if not exists trg_implementation_evidence_git_insert
+before insert on implementation_evidence
+for each row
+when (new.repository_id is not null and (
+      not exists (select 1 from repositories where id = new.repository_id)
+      or new.project_id != (select project_id from repositories where id = new.repository_id)
+  ))
+  or (new.git_commit_id is not null and (
+      not exists (select 1 from git_commits where id = new.git_commit_id)
+      or new.project_id != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.git_commit_id
+      )
+      or (new.repository_id is not null and new.repository_id != (
+          select repository_id from git_commits where id = new.git_commit_id
+      ))
+      or (new.commit_sha is not null and new.commit_sha != (
+          select commit_sha from git_commits where id = new.git_commit_id
+      ))
+  ))
+  or (new.git_file_change_id is not null and (
+      not exists (select 1 from git_file_changes where id = new.git_file_change_id)
+      or new.project_id != (
+          select r.project_id
+          from git_file_changes f
+          join repositories r on r.id = f.repository_id
+          where f.id = new.git_file_change_id
+      )
+      or (new.repository_id is not null and new.repository_id != (
+          select repository_id from git_file_changes where id = new.git_file_change_id
+      ))
+      or (new.git_commit_id is not null and new.git_commit_id != (
+          select git_commit_id from git_file_changes where id = new.git_file_change_id
+      ))
+      or (new.file_path is not null and new.file_path != (
+          select path from git_file_changes where id = new.git_file_change_id
+      ))
+  ))
+begin
+    select raise(abort, 'implementation evidence git links must match project and paths');
+end;
+
+create trigger if not exists trg_implementation_evidence_git_update
+before update of project_id, repository_id, git_commit_id, git_file_change_id, commit_sha, file_path on implementation_evidence
+for each row
+when (new.repository_id is not null and (
+      not exists (select 1 from repositories where id = new.repository_id)
+      or new.project_id != (select project_id from repositories where id = new.repository_id)
+  ))
+  or (new.git_commit_id is not null and (
+      not exists (select 1 from git_commits where id = new.git_commit_id)
+      or new.project_id != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.git_commit_id
+      )
+      or (new.repository_id is not null and new.repository_id != (
+          select repository_id from git_commits where id = new.git_commit_id
+      ))
+      or (new.commit_sha is not null and new.commit_sha != (
+          select commit_sha from git_commits where id = new.git_commit_id
+      ))
+  ))
+  or (new.git_file_change_id is not null and (
+      not exists (select 1 from git_file_changes where id = new.git_file_change_id)
+      or new.project_id != (
+          select r.project_id
+          from git_file_changes f
+          join repositories r on r.id = f.repository_id
+          where f.id = new.git_file_change_id
+      )
+      or (new.repository_id is not null and new.repository_id != (
+          select repository_id from git_file_changes where id = new.git_file_change_id
+      ))
+      or (new.git_commit_id is not null and new.git_commit_id != (
+          select git_commit_id from git_file_changes where id = new.git_file_change_id
+      ))
+      or (new.file_path is not null and new.file_path != (
+          select path from git_file_changes where id = new.git_file_change_id
+      ))
+  ))
+begin
+    select raise(abort, 'implementation evidence git links must match project and paths');
+end;
 
 create table if not exists coverage_items (
     id integer primary key,

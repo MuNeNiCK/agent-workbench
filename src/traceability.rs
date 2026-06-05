@@ -164,6 +164,54 @@ pub fn add_implementation_evidence(
     root: &Path,
     input: NewImplementationEvidence<'_>,
 ) -> Result<ImplementationEvidenceOutcome> {
+    insert_implementation_evidence(
+        root,
+        ImplementationEvidenceInput {
+            task_id: input.task_id,
+            design_version_id: input.design_version_id,
+            requirement_key: input.requirement_key,
+            evidence_type: input.evidence_type,
+            repository_id: None,
+            git_commit_id: None,
+            git_file_change_id: None,
+            commit_sha: input.commit_sha,
+            file_path: input.file_path,
+            line_ref: input.line_ref,
+            symbol: input.symbol,
+            artifact_path: input.artifact_path,
+            note: input.note,
+        },
+    )
+}
+
+pub fn add_implementation_evidence_with_git(
+    root: &Path,
+    input: NewImplementationEvidenceWithGit<'_>,
+) -> Result<ImplementationEvidenceOutcome> {
+    insert_implementation_evidence(
+        root,
+        ImplementationEvidenceInput {
+            task_id: input.task_id,
+            design_version_id: input.design_version_id,
+            requirement_key: input.requirement_key,
+            evidence_type: input.evidence_type,
+            repository_id: input.repository_id,
+            git_commit_id: input.git_commit_id,
+            git_file_change_id: input.git_file_change_id,
+            commit_sha: input.commit_sha,
+            file_path: input.file_path,
+            line_ref: input.line_ref,
+            symbol: input.symbol,
+            artifact_path: input.artifact_path,
+            note: input.note,
+        },
+    )
+}
+
+fn insert_implementation_evidence(
+    root: &Path,
+    input: ImplementationEvidenceInput<'_>,
+) -> Result<ImplementationEvidenceOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
@@ -204,22 +252,35 @@ pub fn add_implementation_evidence(
     if let (Some(task_id), Some(design_requirement_id)) = (task_id, design_requirement_id) {
         require_task_derivation(&tx, design_requirement_id, task_id)?;
     }
+    let git = resolve_git_evidence(
+        &tx,
+        project_id,
+        input.repository_id,
+        input.git_commit_id,
+        input.git_file_change_id,
+        input.commit_sha,
+        input.file_path,
+    )?;
 
     tx.execute(
         r#"
         insert into implementation_evidence(
             project_id, task_id, design_requirement_id, evidence_type,
-            commit_sha, file_path, line_ref, symbol, artifact_path, note, created_at
+            repository_id, git_commit_id, git_file_change_id, commit_sha,
+            file_path, line_ref, symbol, artifact_path, note, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, current_timestamp)
         "#,
         params![
             project_id,
             task_id,
             design_requirement_id,
             input.evidence_type,
-            input.commit_sha,
-            input.file_path,
+            git.repository_id,
+            git.git_commit_id,
+            git.git_file_change_id,
+            git.commit_sha,
+            git.file_path,
             input.line_ref,
             input.symbol,
             input.artifact_path,
@@ -277,6 +338,118 @@ pub fn list_implementation_evidence(
         records.push(row?);
     }
     Ok(records)
+}
+
+fn resolve_git_evidence(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    repository_id: Option<i64>,
+    git_commit_id: Option<i64>,
+    git_file_change_id: Option<i64>,
+    commit_sha: Option<&str>,
+    file_path: Option<&str>,
+) -> Result<ResolvedGitEvidence> {
+    let mut resolved_repository_id = repository_id;
+    let mut resolved_commit_sha = commit_sha.map(str::to_string);
+    let mut resolved_file_path = file_path.map(str::to_string);
+
+    if let Some(repository_id) = resolved_repository_id {
+        conn.query_row(
+            "select 1 from repositories where id = ?1 and project_id = ?2",
+            params![repository_id, project_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("repository not found")?;
+    }
+
+    if let Some(git_commit_id) = git_commit_id {
+        let commit = conn
+            .query_row(
+                r#"
+                select c.repository_id, c.commit_sha
+                from git_commits c
+                join repositories r on r.id = c.repository_id
+                where c.id = ?1 and r.project_id = ?2
+                "#,
+                params![git_commit_id, project_id],
+                |row| {
+                    Ok(ResolvedCommit {
+                        repository_id: row.get(0)?,
+                        commit_sha: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?
+            .context("git commit not found")?;
+        if let Some(existing_repository_id) = resolved_repository_id
+            && existing_repository_id != commit.repository_id
+        {
+            bail!("implementation evidence repository must match git commit");
+        }
+        if let Some(existing_commit_sha) = &resolved_commit_sha
+            && existing_commit_sha != &commit.commit_sha
+        {
+            bail!("implementation evidence commit sha must match git commit");
+        }
+        resolved_repository_id = Some(commit.repository_id);
+        resolved_commit_sha = Some(commit.commit_sha);
+    }
+
+    if let Some(git_file_change_id) = git_file_change_id {
+        let file = conn
+            .query_row(
+                r#"
+                select f.repository_id, f.git_commit_id, f.path, c.commit_sha
+                from git_file_changes f
+                join git_commits c on c.id = f.git_commit_id
+                join repositories r on r.id = f.repository_id
+                where f.id = ?1 and r.project_id = ?2
+                "#,
+                params![git_file_change_id, project_id],
+                |row| {
+                    Ok(ResolvedFileChange {
+                        repository_id: row.get(0)?,
+                        git_commit_id: row.get(1)?,
+                        path: row.get(2)?,
+                        commit_sha: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .context("git file change not found")?;
+        if let Some(existing_repository_id) = resolved_repository_id
+            && existing_repository_id != file.repository_id
+        {
+            bail!("implementation evidence repository must match git file change");
+        }
+        if let Some(existing_git_commit_id) = git_commit_id
+            && existing_git_commit_id != file.git_commit_id
+        {
+            bail!("implementation evidence git file change must match git commit");
+        }
+        if let Some(existing_commit_sha) = &resolved_commit_sha
+            && existing_commit_sha != &file.commit_sha
+        {
+            bail!("implementation evidence commit sha must match git file change");
+        }
+        if let Some(existing_file_path) = &resolved_file_path
+            && existing_file_path != &file.path
+        {
+            bail!("implementation evidence file path must match git file change");
+        }
+        resolved_repository_id = Some(file.repository_id);
+        resolved_commit_sha = Some(file.commit_sha);
+        resolved_file_path = Some(file.path);
+    }
+
+    Ok(ResolvedGitEvidence {
+        repository_id: resolved_repository_id,
+        git_commit_id,
+        git_file_change_id,
+        commit_sha: resolved_commit_sha,
+        file_path: resolved_file_path,
+    })
 }
 
 pub fn select_validation_gate(
@@ -1071,6 +1244,58 @@ pub struct NewImplementationEvidence<'a> {
     pub symbol: Option<&'a str>,
     pub artifact_path: Option<&'a str>,
     pub note: Option<&'a str>,
+}
+
+pub struct NewImplementationEvidenceWithGit<'a> {
+    pub task_id: Option<i64>,
+    pub design_version_id: Option<i64>,
+    pub requirement_key: Option<&'a str>,
+    pub evidence_type: &'a str,
+    pub repository_id: Option<i64>,
+    pub git_commit_id: Option<i64>,
+    pub git_file_change_id: Option<i64>,
+    pub commit_sha: Option<&'a str>,
+    pub file_path: Option<&'a str>,
+    pub line_ref: Option<&'a str>,
+    pub symbol: Option<&'a str>,
+    pub artifact_path: Option<&'a str>,
+    pub note: Option<&'a str>,
+}
+
+struct ImplementationEvidenceInput<'a> {
+    task_id: Option<i64>,
+    design_version_id: Option<i64>,
+    requirement_key: Option<&'a str>,
+    evidence_type: &'a str,
+    repository_id: Option<i64>,
+    git_commit_id: Option<i64>,
+    git_file_change_id: Option<i64>,
+    commit_sha: Option<&'a str>,
+    file_path: Option<&'a str>,
+    line_ref: Option<&'a str>,
+    symbol: Option<&'a str>,
+    artifact_path: Option<&'a str>,
+    note: Option<&'a str>,
+}
+
+struct ResolvedGitEvidence {
+    repository_id: Option<i64>,
+    git_commit_id: Option<i64>,
+    git_file_change_id: Option<i64>,
+    commit_sha: Option<String>,
+    file_path: Option<String>,
+}
+
+struct ResolvedCommit {
+    repository_id: i64,
+    commit_sha: String,
+}
+
+struct ResolvedFileChange {
+    repository_id: i64,
+    git_commit_id: i64,
+    path: String,
+    commit_sha: String,
 }
 
 pub struct ImplementationEvidenceListQuery {

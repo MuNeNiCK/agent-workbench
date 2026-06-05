@@ -10,36 +10,37 @@ use agent_workbench::{
     ImplementationEvidenceListQuery, ImplementationEvidenceRecord, ImplementationReadyCheck,
     KptItemCommandProfileConversion, KptItemDecisionConversion, KptItemDesignVersionConversion,
     KptItemReviewPolicyConversion, KptItemTaskConversion, NewAuthorityEvent, NewClosure,
-    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewCoverageItem, NewDecision,
-    NewDesignExceptionAcceptance, NewDesignPackage, NewFinding, NewFindingVerification,
-    NewGitCommit, NewGitFileChange, NewImplementationEvidence, NewKptItem, NewKptReview,
-    NewRepository, NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
-    NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation,
-    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery,
-    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
-    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
-    accept_task_out_of_scope, add_authority_event, add_closure, add_command_deviation,
-    add_command_usage, add_coverage_item, add_decision, add_finding, add_finding_verification,
-    add_fixed_command, add_git_commit, add_git_file_change, add_implementation_evidence,
-    add_kpt_item, add_repository, add_repository_dirty_entry, add_repository_snapshot,
-    add_repository_snapshot_comparison, add_review_plan, add_review_policy, add_review_run,
-    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, add_work_record_git_commit, add_work_record_git_file, applicable_rules,
-    approve_design_version, classify_finding, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_command_profile, convert_kpt_item_to_decision,
-    convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
-    derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
-    implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
-    list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
-    list_decisions, list_design_decisions, list_design_requirements, list_findings,
-    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_repositories,
-    list_repository_snapshots, list_review_plan_targets, list_review_plans, list_review_policies,
-    list_review_runs, list_review_scopes, list_task_derivations, list_tasks, list_user_corrections,
-    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
-    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review,
-    start_review_scope, start_work, suspend_work,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewCommandUsageWithRepositorySnapshot,
+    NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage, NewFinding,
+    NewFindingVerification, NewGitCommit, NewGitFileChange, NewImplementationEvidence,
+    NewImplementationEvidenceWithGit, NewKptItem, NewKptReview, NewRepository,
+    NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison, NewReviewPlan,
+    NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation, NewUserCorrection,
+    NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile,
+    NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery, TaskDerivationListQuery,
+    TaskListQuery, ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
+    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
+    add_command_deviation, add_command_usage, add_command_usage_with_repository_snapshot,
+    add_coverage_item, add_decision, add_finding, add_finding_verification, add_fixed_command,
+    add_git_commit, add_git_file_change, add_implementation_evidence,
+    add_implementation_evidence_with_git, add_kpt_item, add_repository, add_repository_dirty_entry,
+    add_repository_snapshot, add_repository_snapshot_comparison, add_review_plan,
+    add_review_policy, add_review_run, add_task, add_user_correction, add_work_record_command,
+    add_work_record_commit, add_work_record_file, add_work_record_git_commit,
+    add_work_record_git_file, applicable_rules, approve_design_version, classify_finding,
+    close_active_work, close_kpt_review, close_task, convert_kpt_item_to_command_profile,
+    convert_kpt_item_to_decision, convert_kpt_item_to_design_version,
+    convert_kpt_item_to_review_policy, convert_kpt_item_to_task, create_follow_up_work,
+    create_work_record, derive_task_from_requirement, design_ready, export_work_record_markdown,
+    fork_work, implementation_ready, import_design_package, init_design_package, init_project,
+    interrupt_work, list_authority_events, list_command_profiles, list_command_usages,
+    list_coverage_items, list_decisions, list_design_decisions, list_design_requirements,
+    list_findings, list_implementation_evidence, list_kpt_items, list_kpt_reviews,
+    list_repositories, list_repository_snapshots, list_review_plan_targets, list_review_plans,
+    list_review_policies, list_review_runs, list_review_scopes, list_task_derivations, list_tasks,
+    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
+    project_status, reopen_work, resume_check, resume_ready, resume_work, select_validation_gate,
+    start_kpt_review, start_review_scope, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -243,6 +244,10 @@ struct WorkForkArgs {
     #[arg(long)]
     from_commit: Option<String>,
     #[arg(long)]
+    from_git_commit_id: Option<i64>,
+    #[arg(long)]
+    from_snapshot: Option<i64>,
+    #[arg(long)]
     reason: String,
     #[arg(long, default_value = "keep_history")]
     discard_policy: String,
@@ -409,6 +414,8 @@ struct CommandUsageAddArgs {
     log: Option<String>,
     #[arg(long)]
     work_unit: Option<i64>,
+    #[arg(long)]
+    snapshot: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -892,7 +899,7 @@ struct TraceDerivationListArgs {
 
 #[derive(Debug, Subcommand)]
 enum EvidenceCommand {
-    Add(EvidenceAddArgs),
+    Add(Box<EvidenceAddArgs>),
     List(EvidenceListArgs),
 }
 
@@ -906,6 +913,12 @@ struct EvidenceAddArgs {
     requirement: Option<String>,
     #[arg(long = "type")]
     evidence_type: String,
+    #[arg(long)]
+    repository_id: Option<i64>,
+    #[arg(long)]
+    git_commit_id: Option<i64>,
+    #[arg(long)]
+    git_file_change_id: Option<i64>,
     #[arg(long)]
     commit: Option<String>,
     #[arg(long)]
@@ -1459,13 +1472,15 @@ fn main() -> Result<()> {
                     args.from_record.is_some(),
                     args.from_activation.is_some(),
                     args.from_commit.is_some(),
+                    args.from_git_commit_id.is_some(),
+                    args.from_snapshot.is_some(),
                 ]
                 .into_iter()
                 .filter(|selected| *selected)
                 .count();
                 if source_count != 1 {
                     anyhow::bail!(
-                        "exactly one of --from-record, --from-activation, or --from-commit is required"
+                        "exactly one of --from-record, --from-activation, --from-commit, --from-git-commit-id, or --from-snapshot is required"
                     );
                 }
 
@@ -1473,10 +1488,14 @@ fn main() -> Result<()> {
                     args.from_record,
                     args.from_activation,
                     args.from_commit.as_deref(),
+                    args.from_git_commit_id,
+                    args.from_snapshot,
                 ) {
-                    (Some(id), None, None) => WorkForkSource::Record(id),
-                    (None, Some(id), None) => WorkForkSource::Activation(id),
-                    (None, None, Some(sha)) => WorkForkSource::Commit(sha),
+                    (Some(id), None, None, None, None) => WorkForkSource::Record(id),
+                    (None, Some(id), None, None, None) => WorkForkSource::Activation(id),
+                    (None, None, Some(sha), None, None) => WorkForkSource::Commit(sha),
+                    (None, None, None, Some(id), None) => WorkForkSource::GitCommit(id),
+                    (None, None, None, None, Some(id)) => WorkForkSource::RepositorySnapshot(id),
                     _ => unreachable!("source count checked above"),
                 };
                 let outcome = fork_work(
@@ -1682,16 +1701,29 @@ fn main() -> Result<()> {
             },
             MemoryCommand::Usage { command } => match command {
                 CommandUsageCommand::Add(args) => {
-                    let outcome = add_command_usage(
-                        &root,
-                        NewCommandUsage {
-                            profile: args.profile.as_deref(),
-                            command: args.command.as_deref(),
-                            result: &args.result,
-                            log_path: args.log.as_deref(),
-                            work_unit_id: args.work_unit,
-                        },
-                    )?;
+                    let outcome = match args.snapshot {
+                        Some(snapshot_id) => add_command_usage_with_repository_snapshot(
+                            &root,
+                            NewCommandUsageWithRepositorySnapshot {
+                                profile: args.profile.as_deref(),
+                                command: args.command.as_deref(),
+                                result: &args.result,
+                                log_path: args.log.as_deref(),
+                                work_unit_id: args.work_unit,
+                                repository_snapshot_id: Some(snapshot_id),
+                            },
+                        )?,
+                        None => add_command_usage(
+                            &root,
+                            NewCommandUsage {
+                                profile: args.profile.as_deref(),
+                                command: args.command.as_deref(),
+                                result: &args.result,
+                                log_path: args.log.as_deref(),
+                                work_unit_id: args.work_unit,
+                            },
+                        )?,
+                    };
                     println!("recorded command usage");
                     println!("command_usage_id: {}", outcome.command_usage_id);
                     if let Some(command_profile_id) = outcome.command_profile_id {
@@ -2295,21 +2327,45 @@ fn main() -> Result<()> {
         },
         Command::Evidence { command } => match command {
             EvidenceCommand::Add(args) => {
-                let outcome = add_implementation_evidence(
-                    &root,
-                    NewImplementationEvidence {
-                        task_id: args.task,
-                        design_version_id: args.design,
-                        requirement_key: args.requirement.as_deref(),
-                        evidence_type: &args.evidence_type,
-                        commit_sha: args.commit.as_deref(),
-                        file_path: args.file.as_deref(),
-                        line_ref: args.line.as_deref(),
-                        symbol: args.symbol.as_deref(),
-                        artifact_path: args.artifact.as_deref(),
-                        note: args.note.as_deref(),
-                    },
-                )?;
+                let outcome = if args.repository_id.is_some()
+                    || args.git_commit_id.is_some()
+                    || args.git_file_change_id.is_some()
+                {
+                    add_implementation_evidence_with_git(
+                        &root,
+                        NewImplementationEvidenceWithGit {
+                            task_id: args.task,
+                            design_version_id: args.design,
+                            requirement_key: args.requirement.as_deref(),
+                            evidence_type: &args.evidence_type,
+                            repository_id: args.repository_id,
+                            git_commit_id: args.git_commit_id,
+                            git_file_change_id: args.git_file_change_id,
+                            commit_sha: args.commit.as_deref(),
+                            file_path: args.file.as_deref(),
+                            line_ref: args.line.as_deref(),
+                            symbol: args.symbol.as_deref(),
+                            artifact_path: args.artifact.as_deref(),
+                            note: args.note.as_deref(),
+                        },
+                    )?
+                } else {
+                    add_implementation_evidence(
+                        &root,
+                        NewImplementationEvidence {
+                            task_id: args.task,
+                            design_version_id: args.design,
+                            requirement_key: args.requirement.as_deref(),
+                            evidence_type: &args.evidence_type,
+                            commit_sha: args.commit.as_deref(),
+                            file_path: args.file.as_deref(),
+                            line_ref: args.line.as_deref(),
+                            symbol: args.symbol.as_deref(),
+                            artifact_path: args.artifact.as_deref(),
+                            note: args.note.as_deref(),
+                        },
+                    )?
+                };
                 println!("added implementation evidence");
                 println!(
                     "implementation_evidence_id: {}",

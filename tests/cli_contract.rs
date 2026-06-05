@@ -333,6 +333,73 @@ fn repository_commands_record_state_and_git_evidence() {
             "changed",
         ],
     );
+    let work = ok(temp.path(), &["work", "start", "git linked work"]);
+    let task = ok(
+        temp.path(),
+        &[
+            "task",
+            "add",
+            "wire git evidence",
+            "--work-unit",
+            "1",
+            "--completion-condition",
+            "evidence links to git ids",
+        ],
+    );
+    let usage = ok(
+        temp.path(),
+        &[
+            "command",
+            "usage",
+            "add",
+            "--command",
+            "cargo test",
+            "--result",
+            "pass",
+            "--work-unit",
+            "1",
+            "--snapshot",
+            "1",
+        ],
+    );
+    let evidence = ok(
+        temp.path(),
+        &[
+            "evidence",
+            "add",
+            "--task",
+            "1",
+            "--type",
+            "file",
+            "--git-commit-id",
+            "1",
+            "--git-file-change-id",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "suspend",
+            "--reason",
+            "fork from snapshot",
+            "--next",
+            "redo",
+        ],
+    );
+    let fork = ok(
+        temp.path(),
+        &[
+            "work",
+            "fork",
+            "redo from snapshot",
+            "--from-snapshot",
+            "1",
+            "--reason",
+            "user_requested_redo",
+        ],
+    );
     let list = ok(temp.path(), &["repository", "list"]);
     let snapshots = ok(temp.path(), &["repository", "snapshot", "list"]);
 
@@ -344,8 +411,39 @@ fn repository_commands_record_state_and_git_evidence() {
     assert!(record.contains("work_record_id: 1"));
     assert!(record_commit.contains("work_record_commit_id: 1"));
     assert!(record_file.contains("work_record_file_id: 1"));
+    assert!(work.contains("work_unit_id: 1"));
+    assert!(task.contains("task_id: 1"));
+    assert!(usage.contains("command_usage_id: 1"));
+    assert!(evidence.contains("implementation_evidence_id: 1"));
+    assert!(fork.contains("fork_id: 1"));
     assert!(list.contains("main"));
     assert!(snapshots.contains("repository=main"));
+
+    let conn = conn(temp.path());
+    let usage_snapshot: i64 = conn
+        .query_row(
+            "select repository_snapshot_id from command_usages where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let evidence_links: (i64, i64, i64) = conn
+        .query_row(
+            "select repository_id, git_commit_id, git_file_change_id from implementation_evidence where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let fork_snapshot: i64 = conn
+        .query_row(
+            "select source_repository_snapshot_id from work_record_forks where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(usage_snapshot, 1);
+    assert_eq!(evidence_links, (1, 1, 1));
+    assert_eq!(fork_snapshot, 1);
 }
 
 #[test]

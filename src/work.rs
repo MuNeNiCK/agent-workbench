@@ -606,7 +606,7 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
         bail!("only --discard-policy keep_history is implemented currently");
     }
 
-    let source = resolve_fork_source(&tx, input.source)?;
+    let source = resolve_fork_source(&tx, project_id, input.source)?;
     tx.execute(
         r#"
         insert into work_units(
@@ -654,16 +654,19 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
         r#"
         insert into work_record_forks(
             project_id, source_work_unit_id, source_work_unit_activation_id,
-            source_work_record_id, source_git_commit_sha, forked_work_unit_id,
+            source_work_record_id, source_repository_snapshot_id,
+            source_git_commit_id, source_git_commit_sha, forked_work_unit_id,
             fork_reason, discard_policy, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'open', current_timestamp)
         "#,
         params![
             project_id,
             source.source_work_unit_id,
             source.source_work_unit_activation_id,
             source.source_work_record_id,
+            source.source_repository_snapshot_id,
+            source.source_git_commit_id,
             source.source_git_commit_sha,
             forked_work_unit_id,
             input.reason,
@@ -746,7 +749,11 @@ fn prepare_parent_frame(
     suspended_activation(conn)
 }
 
-fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<StoredForkSource> {
+fn resolve_fork_source(
+    conn: &Connection,
+    project_id: i64,
+    source: WorkForkSource<'_>,
+) -> Result<StoredForkSource> {
     match source {
         WorkForkSource::Record(work_record_id) => {
             let source_work_unit_id = conn
@@ -762,6 +769,8 @@ fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<
                 source_work_unit_id,
                 source_work_unit_activation_id: None,
                 source_work_record_id: Some(work_record_id),
+                source_repository_snapshot_id: None,
+                source_git_commit_id: None,
                 source_git_commit_sha: None,
             })
         }
@@ -779,15 +788,80 @@ fn resolve_fork_source(conn: &Connection, source: WorkForkSource<'_>) -> Result<
                 source_work_unit_id: Some(work_unit_id),
                 source_work_unit_activation_id: Some(activation_id),
                 source_work_record_id: None,
+                source_repository_snapshot_id: None,
+                source_git_commit_id: None,
                 source_git_commit_sha: None,
             })
         }
-        WorkForkSource::Commit(commit_sha) => Ok(StoredForkSource {
-            source_work_unit_id: None,
-            source_work_unit_activation_id: None,
-            source_work_record_id: None,
-            source_git_commit_sha: Some(commit_sha.to_string()),
-        }),
+        WorkForkSource::Commit(commit_sha) => {
+            let git_commit_id = conn
+                .query_row(
+                    r#"
+                    select c.id
+                    from git_commits c
+                    join repositories r on r.id = c.repository_id
+                    where c.commit_sha = ?1 and r.project_id = ?2
+                    order by c.id
+                    limit 1
+                    "#,
+                    params![commit_sha, project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            Ok(StoredForkSource {
+                source_work_unit_id: None,
+                source_work_unit_activation_id: None,
+                source_work_record_id: None,
+                source_repository_snapshot_id: None,
+                source_git_commit_id: git_commit_id,
+                source_git_commit_sha: Some(commit_sha.to_string()),
+            })
+        }
+        WorkForkSource::GitCommit(git_commit_id) => {
+            let commit_sha = conn
+                .query_row(
+                    r#"
+                    select c.commit_sha
+                    from git_commits c
+                    join repositories r on r.id = c.repository_id
+                    where c.id = ?1 and r.project_id = ?2
+                    "#,
+                    params![git_commit_id, project_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .context("source git commit not found")?;
+            Ok(StoredForkSource {
+                source_work_unit_id: None,
+                source_work_unit_activation_id: None,
+                source_work_record_id: None,
+                source_repository_snapshot_id: None,
+                source_git_commit_id: Some(git_commit_id),
+                source_git_commit_sha: Some(commit_sha),
+            })
+        }
+        WorkForkSource::RepositorySnapshot(repository_snapshot_id) => {
+            conn.query_row(
+                r#"
+                select 1
+                from repository_snapshots s
+                join repositories r on r.id = s.repository_id
+                where s.id = ?1 and r.project_id = ?2
+                "#,
+                params![repository_snapshot_id, project_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .context("source repository snapshot not found")?;
+            Ok(StoredForkSource {
+                source_work_unit_id: None,
+                source_work_unit_activation_id: None,
+                source_work_record_id: None,
+                source_repository_snapshot_id: Some(repository_snapshot_id),
+                source_git_commit_id: None,
+                source_git_commit_sha: None,
+            })
+        }
     }
 }
 
@@ -1189,6 +1263,8 @@ struct StoredForkSource {
     source_work_unit_id: Option<i64>,
     source_work_unit_activation_id: Option<i64>,
     source_work_record_id: Option<i64>,
+    source_repository_snapshot_id: Option<i64>,
+    source_git_commit_id: Option<i64>,
     source_git_commit_sha: Option<String>,
 }
 
@@ -1269,6 +1345,8 @@ pub enum WorkForkSource<'a> {
     Record(i64),
     Activation(i64),
     Commit(&'a str),
+    GitCommit(i64),
+    RepositorySnapshot(i64),
 }
 
 #[derive(Debug, PartialEq, Eq)]
