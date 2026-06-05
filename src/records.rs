@@ -85,8 +85,12 @@ pub fn add_work_record_command(
     if input.command_usage_id.is_none() && input.command.is_none() {
         anyhow::bail!("either --usage or --command is required");
     }
+    let work_record_project_id = work_record_project_id(&conn, input.work_record_id)?;
     if let Some(command_usage_id) = input.command_usage_id {
-        ensure_command_usage_exists(&conn, command_usage_id)?;
+        ensure_command_usage_project(&conn, command_usage_id, work_record_project_id)?;
+    }
+    if let Some(command_profile_id) = input.command_profile_id {
+        ensure_command_profile_project(&conn, command_profile_id, work_record_project_id)?;
     }
     conn.execute(
         r#"
@@ -330,15 +334,69 @@ fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<(
     exists.context("work record not found")
 }
 
-fn ensure_command_usage_exists(conn: &Connection, command_usage_id: i64) -> Result<()> {
-    let exists = conn
+fn work_record_project_id(conn: &Connection, work_record_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        select w.project_id
+        from work_records wr
+        left join work_units w on w.id = wr.work_unit_id
+        where wr.id = ?1
+        "#,
+        params![work_record_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()?
+    .context("work record not found")
+}
+
+fn ensure_command_usage_project(
+    conn: &Connection,
+    command_usage_id: i64,
+    work_record_project_id: Option<i64>,
+) -> Result<()> {
+    let usage_project_id = conn
         .query_row(
-            "select 1 from command_usages where id = ?1",
+            r#"
+            select coalesce(
+                (select project_id from work_units where id = cu.work_unit_id),
+                (select project_id from command_profiles where id = cu.command_profile_id)
+            )
+            from command_usages cu
+            where cu.id = ?1
+            "#,
             params![command_usage_id],
-            |_| Ok(()),
+            |row| row.get::<_, Option<i64>>(0),
         )
-        .optional()?;
-    exists.context("command usage not found")
+        .optional()?
+        .context("command usage not found")?;
+    if let (Some(work_record_project_id), Some(usage_project_id)) =
+        (work_record_project_id, usage_project_id)
+        && work_record_project_id != usage_project_id
+    {
+        anyhow::bail!("work record command usage must match work record project");
+    }
+    Ok(())
+}
+
+fn ensure_command_profile_project(
+    conn: &Connection,
+    command_profile_id: i64,
+    work_record_project_id: Option<i64>,
+) -> Result<()> {
+    let profile_project_id = conn
+        .query_row(
+            "select project_id from command_profiles where id = ?1",
+            params![command_profile_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .context("command profile not found")?;
+    if let Some(work_record_project_id) = work_record_project_id
+        && work_record_project_id != profile_project_id
+    {
+        anyhow::bail!("work record command profile must match work record project");
+    }
+    Ok(())
 }
 
 fn ensure_git_commit_matches(

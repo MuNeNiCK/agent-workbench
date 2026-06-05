@@ -7602,6 +7602,203 @@ Run the project test suite before implementation handoff.
     }
 
     #[test]
+    fn work_record_commands_reject_cross_project_links() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "project one work", None).unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "project one record",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-command-link', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (2, 'other work', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into command_profiles(
+                project_id, name, command, command_type, status, stability,
+                source, created_at, updated_at
+            )
+            values (2, 'other-test', 'cargo test', 'test', 'fixed', 'stable', 'user', current_timestamp, current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into command_usages(command_profile_id, work_unit_id, command, result, created_at)
+            values (1, 2, 'cargo test', 'pass', current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let cross_usage = conn.execute(
+            r#"
+            insert into work_record_commands(work_record_id, command_usage_id)
+            values (?1, 1)
+            "#,
+            params![record.work_record_id],
+        );
+        let cross_profile = conn.execute(
+            r#"
+            insert into work_record_commands(work_record_id, command_profile_id, command)
+            values (?1, 1, 'cargo test')
+            "#,
+            params![record.work_record_id],
+        );
+
+        assert!(cross_usage.is_err());
+        assert!(cross_profile.is_err());
+    }
+
+    #[test]
+    fn work_fork_rejects_cross_project_record_and_activation_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-fork-source', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (2, 'other work', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_unit_activations(project_id, work_unit_id, status, activation_reason, opened_at) values (2, 1, 'suspended', 'start', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_records(work_unit_id, topic, created_at) values (1, 'other record', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let cross_record = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "bad record fork",
+                source: WorkForkSource::Record(1),
+                reason: "other",
+                discard_policy: "keep_history",
+            },
+        );
+        let cross_activation = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "bad activation fork",
+                source: WorkForkSource::Activation(1),
+                reason: "other",
+                discard_policy: "keep_history",
+            },
+        );
+
+        assert!(cross_record.is_err());
+        assert!(cross_activation.is_err());
+    }
+
+    #[test]
+    fn repository_direct_links_block_repository_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "repository direct links", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "direct repository link",
+                priority: "medium",
+                source: "user",
+                work_unit_id: Some(work.work_unit_id),
+                details: None,
+                completion_condition: Some("repository link blocks delete"),
+            },
+        )
+        .unwrap();
+        let repo = add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "repository file link",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        add_work_record_git_file(
+            temp.path(),
+            NewWorkRecordGitFile {
+                work_record_id: record.work_record_id,
+                git_file_change_id: None,
+                repository_id: Some(repo.repository_id),
+                path: "src/lib.rs",
+                role: "changed",
+                note: None,
+            },
+        )
+        .unwrap();
+        add_implementation_evidence_with_git(
+            temp.path(),
+            NewImplementationEvidenceWithGit {
+                task_id: Some(task.task_id),
+                design_version_id: None,
+                requirement_key: None,
+                evidence_type: "file",
+                repository_id: Some(repo.repository_id),
+                git_commit_id: None,
+                git_file_change_id: None,
+                commit_sha: None,
+                file_path: Some("src/lib.rs"),
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let delete_repository = conn.execute(
+            "delete from repositories where id = ?1",
+            params![repo.repository_id],
+        );
+
+        assert!(delete_repository.is_err());
+    }
+
+    #[test]
     fn activation_unique_active_constraint_is_enforced() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();

@@ -758,8 +758,14 @@ fn resolve_fork_source(
         WorkForkSource::Record(work_record_id) => {
             let source_work_unit_id = conn
                 .query_row(
-                    "select work_unit_id from work_records where id = ?1",
-                    params![work_record_id],
+                    r#"
+                    select wr.work_unit_id
+                    from work_records wr
+                    left join work_units w on w.id = wr.work_unit_id
+                    where wr.id = ?1
+                      and (wr.work_unit_id is null or w.project_id = ?2)
+                    "#,
+                    params![work_record_id, project_id],
                     |row| row.get::<_, Option<i64>>(0),
                 )
                 .optional()?
@@ -777,8 +783,8 @@ fn resolve_fork_source(
         WorkForkSource::Activation(activation_id) => {
             let work_unit_id = conn
                 .query_row(
-                    "select work_unit_id from work_unit_activations where id = ?1",
-                    params![activation_id],
+                    "select work_unit_id from work_unit_activations where id = ?1 and project_id = ?2",
+                    params![activation_id, project_id],
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()?

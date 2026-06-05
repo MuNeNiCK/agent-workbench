@@ -1352,6 +1352,62 @@ create table if not exists work_record_files (
     note text
 );
 
+create trigger if not exists trg_work_record_command_project_insert
+before insert on work_record_commands
+for each row
+when (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select coalesce(
+              (select project_id from work_units where id = (select work_unit_id from command_usages where id = new.command_usage_id)),
+              (select project_id from command_profiles where id = (select command_profile_id from command_usages where id = new.command_usage_id))
+          )) != (
+              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
+          )
+      )
+  ))
+  or (new.command_profile_id is not null and (
+      not exists (select 1 from command_profiles where id = new.command_profile_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select project_id from command_profiles where id = new.command_profile_id) != (
+              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
+          )
+      )
+  ))
+begin
+    select raise(abort, 'work record command must match referenced project');
+end;
+
+create trigger if not exists trg_work_record_command_project_update
+before update of work_record_id, command_usage_id, command_profile_id on work_record_commands
+for each row
+when (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select coalesce(
+              (select project_id from work_units where id = (select work_unit_id from command_usages where id = new.command_usage_id)),
+              (select project_id from command_profiles where id = (select command_profile_id from command_usages where id = new.command_usage_id))
+          )) != (
+              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
+          )
+      )
+  ))
+  or (new.command_profile_id is not null and (
+      not exists (select 1 from command_profiles where id = new.command_profile_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select project_id from command_profiles where id = new.command_profile_id) != (
+              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
+          )
+      )
+  ))
+begin
+    select raise(abort, 'work record command must match referenced project');
+end;
+
 create trigger if not exists trg_work_record_commit_git_insert
 before insert on work_record_commits
 for each row
@@ -1465,7 +1521,25 @@ create table if not exists work_record_forks (
 create trigger if not exists trg_work_record_fork_repository_git_insert
 before insert on work_record_forks
 for each row
-when (new.source_repository_snapshot_id is not null and (
+when new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
+  or (new.source_work_unit_id is not null and new.project_id != (
+      select project_id from work_units where id = new.source_work_unit_id
+  ))
+  or (new.source_work_unit_activation_id is not null and new.project_id != (
+      select project_id from work_unit_activations where id = new.source_work_unit_activation_id
+  ))
+  or (new.source_work_record_id is not null and (
+      not exists (select 1 from work_records where id = new.source_work_record_id)
+      or (
+          (select work_unit_id from work_records where id = new.source_work_record_id) is not null
+          and new.project_id != (
+              select project_id from work_units where id = (
+                  select work_unit_id from work_records where id = new.source_work_record_id
+              )
+          )
+      )
+  ))
+  or (new.source_repository_snapshot_id is not null and (
       not exists (select 1 from repository_snapshots where id = new.source_repository_snapshot_id)
       or new.project_id != (
           select r.project_id
@@ -1491,9 +1565,27 @@ begin
 end;
 
 create trigger if not exists trg_work_record_fork_repository_git_update
-before update of project_id, source_repository_snapshot_id, source_git_commit_id, source_git_commit_sha on work_record_forks
+before update of project_id, source_work_unit_id, source_work_unit_activation_id, source_work_record_id, source_repository_snapshot_id, source_git_commit_id, source_git_commit_sha, forked_work_unit_id on work_record_forks
 for each row
-when (new.source_repository_snapshot_id is not null and (
+when new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
+  or (new.source_work_unit_id is not null and new.project_id != (
+      select project_id from work_units where id = new.source_work_unit_id
+  ))
+  or (new.source_work_unit_activation_id is not null and new.project_id != (
+      select project_id from work_unit_activations where id = new.source_work_unit_activation_id
+  ))
+  or (new.source_work_record_id is not null and (
+      not exists (select 1 from work_records where id = new.source_work_record_id)
+      or (
+          (select work_unit_id from work_records where id = new.source_work_record_id) is not null
+          and new.project_id != (
+              select project_id from work_units where id = (
+                  select work_unit_id from work_records where id = new.source_work_record_id
+              )
+          )
+      )
+  ))
+  or (new.source_repository_snapshot_id is not null and (
       not exists (select 1 from repository_snapshots where id = new.source_repository_snapshot_id)
       or new.project_id != (
           select r.project_id
@@ -2920,6 +3012,19 @@ when exists (select 1 from resume_checks where repository_snapshot_id = old.id)
   or exists (select 1 from work_record_forks where source_repository_snapshot_id = old.id)
 begin
     select raise(abort, 'cannot delete repository snapshot referenced by ledger rows');
+end;
+
+create trigger if not exists trg_repository_referenced_delete
+before delete on repositories
+for each row
+when exists (select 1 from repository_snapshots where repository_id = old.id)
+  or exists (select 1 from git_commits where repository_id = old.id)
+  or exists (select 1 from git_file_changes where repository_id = old.id)
+  or exists (select 1 from command_profiles where repository_id = old.id)
+  or exists (select 1 from work_record_files where repository_id = old.id)
+  or exists (select 1 from implementation_evidence where repository_id = old.id)
+begin
+    select raise(abort, 'cannot delete repository referenced by ledger rows');
 end;
 
 create trigger if not exists trg_git_commit_referenced_delete
