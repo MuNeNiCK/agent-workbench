@@ -137,6 +137,13 @@ pub fn add_review_plan(root: &Path, input: NewReviewPlan<'_>) -> Result<ReviewPl
             input.review_type,
         )?),
     };
+    validate_review_plan_references(
+        &tx,
+        project_id,
+        input.review_type,
+        review_policy_id,
+        input.review_scope_id,
+    )?;
     tx.execute(
         r#"
         insert into review_plans(
@@ -256,6 +263,7 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     let plan = load_review_plan(&tx, project_id, input.review_plan_id)?;
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
     validate_run_type_purpose(input.run_type, input.run_purpose)?;
+    validate_review_run_result(&input)?;
     enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
@@ -373,7 +381,7 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
     let run = tx
         .query_row(
             r#"
-            select r.run_type, p.review_policy_id
+            select r.run_type, p.review_policy_id, r.clean_run
             from review_runs r
             join review_plans p on p.id = r.review_plan_id
             where r.id = ?1 and r.project_id = ?2
@@ -383,11 +391,15 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
                 Ok(StoredReviewRunPolicy {
                     run_type: row.get(0)?,
                     review_policy_id: row.get(1)?,
+                    clean_run: row.get::<_, i64>(2)? == 1,
                 })
             },
         )
         .optional()?
         .context("review run not found")?;
+    if run.clean_run {
+        bail!("cannot add finding to a clean review run");
+    }
     let policy = load_review_policy(&tx, project_id, run.review_policy_id)?;
     if run.run_type == "resume" && !policy.allow_new_findings_in_resume {
         bail!("new findings are disabled for resume review by policy");
@@ -750,7 +762,10 @@ fn consecutive_clean_runs(
         r#"
         select clean_run
         from review_runs
-        where review_plan_id = ?1 and run_type = ?2 and status = 'completed'
+        where review_plan_id = ?1
+          and run_type = ?2
+          and status = 'completed'
+          and new_findings_count = 0
         order by id desc
         "#,
     )?;
@@ -803,6 +818,55 @@ fn count_invocations(
     );
     conn.query_row(&sql, params![scope_id], |row| row.get(0))
         .map_err(Into::into)
+}
+
+fn validate_review_plan_references(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    review_type: &str,
+    review_policy_id: Option<i64>,
+    review_scope_id: Option<i64>,
+) -> Result<()> {
+    if let Some(review_policy_id) = review_policy_id {
+        let policy_type: String = conn
+            .query_row(
+                "select review_type from review_policies where id = ?1 and project_id = ?2",
+                params![review_policy_id, project_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("review policy not found")?;
+        if policy_type != review_type {
+            bail!("review policy type must match review plan type");
+        }
+    }
+    if let Some(review_scope_id) = review_scope_id {
+        let scope_type: String = conn
+            .query_row(
+                "select review_type from review_scopes where id = ?1 and project_id = ?2",
+                params![review_scope_id, project_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("review scope not found")?;
+        if scope_type != review_type {
+            bail!("review scope type must match review plan type");
+        }
+    }
+    Ok(())
+}
+
+fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()> {
+    if input.new_findings_count < 0 || input.carried_findings_checked < 0 {
+        bail!("review run counters must be non-negative");
+    }
+    if input.clean_run && input.new_findings_count > 0 {
+        bail!("clean review run cannot report new findings");
+    }
+    if input.clean_run && input.status != "completed" {
+        bail!("clean review run must be completed");
+    }
+    Ok(())
 }
 
 fn get_or_create_default_policy(
@@ -1028,6 +1092,7 @@ struct StoredFinding {
 struct StoredReviewRunPolicy {
     run_type: String,
     review_policy_id: i64,
+    clean_run: bool,
 }
 
 struct StoredReviewRunPurpose {

@@ -1523,8 +1523,8 @@ create table if not exists review_runs (
     target_ref text,
     prompt_deviations text,
     result_summary text,
-    new_findings_count integer not null default 0,
-    carried_findings_checked integer not null default 0,
+    new_findings_count integer not null default 0 check (new_findings_count >= 0),
+    carried_findings_checked integer not null default 0 check (carried_findings_checked >= 0),
     clean_run integer not null default 0 check (clean_run in (0, 1)),
     status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
     created_at text not null,
@@ -1532,6 +1532,10 @@ create table if not exists review_runs (
         (run_type = 'fresh' and run_purpose = 'new_unbiased_review')
         or (run_type = 'resume' and run_purpose = 'finding_fix_verification')
         or (run_type = 'coverage' and run_purpose = 'coverage_audit')
+    ),
+    check (
+        clean_run = 0
+        or (status = 'completed' and new_findings_count = 0)
     )
 );
 
@@ -1602,8 +1606,46 @@ begin
     select raise(abort, 'review plan project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_review_plan_project_update
+before update of project_id, work_unit_id, design_version_id, review_policy_id, review_scope_id on review_plans
+for each row
+when new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  or (new.design_version_id is not null and new.project_id != (select project_id from design_versions where id = new.design_version_id))
+  or (new.review_policy_id is not null and new.project_id != (select project_id from review_policies where id = new.review_policy_id))
+  or (new.review_scope_id is not null and new.project_id != (select project_id from review_scopes where id = new.review_scope_id))
+begin
+    select raise(abort, 'review plan project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_plan_type_insert
+before insert on review_plans
+for each row
+when (new.review_policy_id is not null and new.review_type != (select review_type from review_policies where id = new.review_policy_id))
+  or (new.review_scope_id is not null and new.review_type != (select review_type from review_scopes where id = new.review_scope_id))
+begin
+    select raise(abort, 'review plan type must match policy and scope type');
+end;
+
+create trigger if not exists trg_review_plan_type_update
+before update of review_type, review_policy_id, review_scope_id on review_plans
+for each row
+when (new.review_policy_id is not null and new.review_type != (select review_type from review_policies where id = new.review_policy_id))
+  or (new.review_scope_id is not null and new.review_type != (select review_type from review_scopes where id = new.review_scope_id))
+begin
+    select raise(abort, 'review plan type must match policy and scope type');
+end;
+
 create trigger if not exists trg_review_run_project_insert
 before insert on review_runs
+for each row
+when (new.review_scope_id is not null and new.project_id != (select project_id from review_scopes where id = new.review_scope_id))
+  or (new.review_plan_id is not null and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
+begin
+    select raise(abort, 'review run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_run_project_update
+before update of project_id, review_scope_id, review_plan_id on review_runs
 for each row
 when (new.review_scope_id is not null and new.project_id != (select project_id from review_scopes where id = new.review_scope_id))
   or (new.review_plan_id is not null and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
@@ -1633,6 +1675,26 @@ when not (
 )
 begin
     select raise(abort, 'review run type must match purpose');
+end;
+
+create trigger if not exists trg_review_run_result_insert
+before insert on review_runs
+for each row
+when new.new_findings_count < 0
+  or new.carried_findings_checked < 0
+  or (new.clean_run = 1 and (new.status != 'completed' or new.new_findings_count != 0))
+begin
+    select raise(abort, 'review run result is inconsistent');
+end;
+
+create trigger if not exists trg_review_run_result_update
+before update of new_findings_count, carried_findings_checked, clean_run, status on review_runs
+for each row
+when new.new_findings_count < 0
+  or new.carried_findings_checked < 0
+  or (new.clean_run = 1 and (new.status != 'completed' or new.new_findings_count != 0))
+begin
+    select raise(abort, 'review run result is inconsistent');
 end;
 
 create trigger if not exists trg_review_plan_target_project_insert
@@ -1678,8 +1740,45 @@ begin
     select raise(abort, 'finding project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_finding_project_update
+before update of project_id, review_run_id, design_requirement_id, task_id on findings
+for each row
+when new.project_id != (select project_id from review_runs where id = new.review_run_id)
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+begin
+    select raise(abort, 'finding project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_finding_clean_run_insert
+before insert on findings
+for each row
+when (select clean_run from review_runs where id = new.review_run_id) = 1
+begin
+    select raise(abort, 'cannot attach finding to clean review run');
+end;
+
+create trigger if not exists trg_finding_clean_run_update
+before update of review_run_id on findings
+for each row
+when (select clean_run from review_runs where id = new.review_run_id) = 1
+begin
+    select raise(abort, 'cannot attach finding to clean review run');
+end;
+
 create trigger if not exists trg_closure_project_insert
 before insert on closures
+for each row
+when new.project_id != (select project_id from findings where id = new.finding_id)
+begin
+    select raise(abort, 'closure project_id must match finding project_id');
+end;
+
+create trigger if not exists trg_closure_project_update
+before update of project_id, finding_id on closures
 for each row
 when new.project_id != (select project_id from findings where id = new.finding_id)
 begin

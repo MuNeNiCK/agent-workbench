@@ -39,7 +39,12 @@ pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptRevie
         )?;
     }
     if sources.contains(&KptSource::Findings) {
-        generated_item_count += import_findings_as_kpt_items(&tx, kpt_review_id, project_id)?;
+        generated_item_count += import_findings_as_kpt_items(
+            &tx,
+            kpt_review_id,
+            project_id,
+            period_modifier.as_deref(),
+        )?;
     }
     if sources.contains(&KptSource::Commands) {
         generated_item_count += import_commands_as_kpt_items(
@@ -431,6 +436,7 @@ pub fn convert_kpt_item_to_command_profile(
     )?;
     let command_profile_id = tx.last_insert_rowid();
     if matches!(input.status, "fixed" | "preferred") {
+        let rule_scope = input.scope.unwrap_or("project");
         insert_rule_binding(
             &tx,
             RuleBindingInput {
@@ -440,8 +446,8 @@ pub fn convert_kpt_item_to_command_profile(
                 user_correction_id: None,
                 command_profile_id: Some(command_profile_id),
                 work_unit_id: None,
-                scope_type: scope_type_for(input.scope.unwrap_or("command")),
-                scope_key: input.scope,
+                scope_type: scope_type_for(rule_scope),
+                scope_key: Some(rule_scope),
                 precedence: if input.status == "fixed" { 70 } else { 55 },
             },
         )?;
@@ -527,26 +533,36 @@ fn import_findings_as_kpt_items(
     conn: &Connection,
     kpt_review_id: i64,
     project_id: i64,
+    period_modifier: Option<&str>,
 ) -> Result<i64> {
-    let mut stmt = conn.prepare(
-        r#"
-        select id, finding_type, severity, description, classification, status
-        from findings
-        where project_id = ?1
-          and status = 'open'
-        order by severity, id
-        "#,
-    )?;
-    let rows = stmt.query_map(params![project_id], |row| {
-        Ok(StoredFinding {
-            id: row.get(0)?,
-            finding_type: row.get(1)?,
-            severity: row.get(2)?,
-            description: row.get(3)?,
-            classification: row.get(4)?,
-            status: row.get(5)?,
-        })
-    })?;
+    let sql = match period_modifier {
+        Some(_) => {
+            r#"
+            select id, finding_type, severity, description, classification, status
+            from findings
+            where project_id = ?1
+              and status = 'open'
+              and created_at >= datetime('now', ?2)
+            order by severity, id
+            "#
+        }
+        None => {
+            r#"
+            select id, finding_type, severity, description, classification, status
+            from findings
+            where project_id = ?1
+              and status = 'open'
+            order by severity, id
+            "#
+        }
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = match period_modifier {
+        Some(period_modifier) => {
+            stmt.query_map(params![project_id, period_modifier], stored_finding_record)?
+        }
+        None => stmt.query_map(params![project_id], stored_finding_record)?,
+    };
     let mut count = 0;
     for row in rows {
         let finding = row?;
@@ -575,6 +591,17 @@ fn import_findings_as_kpt_items(
         count += 1;
     }
     Ok(count)
+}
+
+fn stored_finding_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFinding> {
+    Ok(StoredFinding {
+        id: row.get(0)?,
+        finding_type: row.get(1)?,
+        severity: row.get(2)?,
+        description: row.get(3)?,
+        classification: row.get(4)?,
+        status: row.get(5)?,
+    })
 }
 
 fn import_corrections_as_kpt_items(
