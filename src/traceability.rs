@@ -201,6 +201,9 @@ pub fn add_implementation_evidence(
     if task_id.is_none() && design_requirement_id.is_none() {
         bail!("implementation evidence requires --task or --design with --requirement");
     }
+    if let (Some(task_id), Some(design_requirement_id)) = (task_id, design_requirement_id) {
+        require_task_derivation(&tx, design_requirement_id, task_id)?;
+    }
 
     tx.execute(
         r#"
@@ -336,6 +339,7 @@ pub fn select_validation_gate(
         )
         .optional()?
         .context("task not found")?;
+    require_task_derivation(&tx, requirement_id, input.task_id)?;
     let command = input.command.or(template.command.as_deref());
     tx.execute(
         r#"
@@ -453,6 +457,35 @@ pub fn implementation_ready(
         ));
     }
 
+    let stale_validation_gate_count =
+        count_stale_validation_gates(&conn, version.design_package_id)?;
+    if stale_validation_gate_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "validation_gates_current",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "validation_gates_current",
+            Some(format!(
+                "{stale_validation_gate_count} validation gates are stale"
+            )),
+        ));
+    }
+
+    let stale_coverage_count = count_stale_coverage_items(&conn, version.design_package_id)?;
+    if stale_coverage_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "coverage_items_current",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "coverage_items_current",
+            Some(format!("{stale_coverage_count} coverage items are stale")),
+        ));
+    }
+
     let missing_validation_count =
         count_missing_validation_links(&conn, version.design_version_id)?;
     if missing_validation_count == 0 {
@@ -485,6 +518,22 @@ pub fn implementation_ready(
         ));
     }
 
+    let missing_completion_condition_count =
+        count_missing_completion_conditions(&conn, version.design_version_id)?;
+    if missing_completion_condition_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "completion_conditions_present",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "completion_conditions_present",
+            Some(format!(
+                "{missing_completion_condition_count} active task derivations have no completion condition"
+            )),
+        ));
+    }
+
     let missing_evidence_count =
         count_closed_derived_tasks_missing_evidence(&conn, version.design_version_id)?;
     if missing_evidence_count == 0 {
@@ -497,6 +546,22 @@ pub fn implementation_ready(
             "implementation_evidence_present",
             Some(format!(
                 "{missing_evidence_count} closed design-derived tasks have no implementation evidence"
+            )),
+        ));
+    }
+
+    let missing_coverage_count =
+        count_closed_derived_tasks_missing_coverage(&conn, version.design_version_id)?;
+    if missing_coverage_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "coverage_items_present",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "coverage_items_present",
+            Some(format!(
+                "{missing_coverage_count} closed design-derived tasks have no covered coverage item"
             )),
         ));
     }
@@ -519,6 +584,31 @@ pub fn implementation_ready(
         design_version_id: Some(version.design_version_id),
         items,
     })
+}
+
+fn require_task_derivation(
+    conn: &rusqlite::Connection,
+    design_requirement_id: i64,
+    task_id: i64,
+) -> Result<()> {
+    let exists = conn
+        .query_row(
+            r#"
+            select 1
+            from task_derivations
+            where design_requirement_id = ?1
+              and task_id = ?2
+              and status = 'active'
+            "#,
+            params![design_requirement_id, task_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    if !exists {
+        bail!("task is not actively derived from the design requirement");
+    }
+    Ok(())
 }
 
 fn get_or_create_checklist(
@@ -642,6 +732,14 @@ fn count_stale_task_derivations(
         where p.id = ?1
           and td.status = 'active'
           and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
         "#,
         params![design_package_id],
         |row| row.get(0),
@@ -652,13 +750,78 @@ fn count_stale_task_derivations(
 fn count_stale_checklists(conn: &rusqlite::Connection, design_package_id: i64) -> Result<i64> {
     conn.query_row(
         r#"
-        select count(*)
+        select count(distinct c.id)
         from checklists c
-        join design_versions v on v.id = c.design_version_id
+        join checklist_items ci on ci.checklist_id = c.id
+        join design_requirements r on r.id = ci.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
           and c.status = 'active'
-          and p.current_design_version_id != c.design_version_id
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![design_package_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_validation_gates(
+    conn: &rusqlite::Connection,
+    design_package_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from validation_gates vg
+        join design_requirements r on r.id = vg.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where p.id = ?1
+          and vg.status = 'active'
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![design_package_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_coverage_items(conn: &rusqlite::Connection, design_package_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from coverage_items c
+        join design_requirements r on r.id = c.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where p.id = ?1
+          and c.status not in ('accepted_out_of_scope')
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
         "#,
         params![design_package_id],
         |row| row.get(0),
@@ -718,6 +881,31 @@ fn count_missing_selected_gates(
     .map_err(Into::into)
 }
 
+fn count_missing_completion_conditions(
+    conn: &rusqlite::Connection,
+    design_version_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join design_requirements r on r.id = td.design_requirement_id
+        join tasks t on t.id = td.task_id
+        left join checklist_items ci on ci.id = td.checklist_item_id
+        where r.design_version_id = ?1
+          and r.status = 'active'
+          and td.status = 'active'
+          and coalesce(
+            nullif(trim(ci.completion_condition), ''),
+            nullif(trim(t.completion_condition), '')
+          ) is null
+        "#,
+        params![design_version_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 fn count_closed_derived_tasks_missing_evidence(
     conn: &rusqlite::Connection,
     design_version_id: i64,
@@ -736,7 +924,47 @@ fn count_closed_derived_tasks_missing_evidence(
             select 1
             from implementation_evidence e
             where e.task_id = td.task_id
-               or e.design_requirement_id = r.id
+              and (
+                e.design_requirement_id = r.id
+                or (
+                  e.design_requirement_id is null
+                  and not exists (
+                    select 1
+                    from task_derivations sibling
+                    where sibling.task_id = td.task_id
+                      and sibling.status = 'active'
+                      and sibling.design_requirement_id != r.id
+                  )
+                )
+              )
+          )
+        "#,
+        params![design_version_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_closed_derived_tasks_missing_coverage(
+    conn: &rusqlite::Connection,
+    design_version_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join design_requirements r on r.id = td.design_requirement_id
+        join tasks t on t.id = td.task_id
+        where r.design_version_id = ?1
+          and r.status = 'active'
+          and td.status = 'active'
+          and t.status = 'closed'
+          and not exists (
+            select 1
+            from coverage_items c
+            where c.design_requirement_id = r.id
+              and (c.task_id = td.task_id or c.task_id is null)
+              and c.status in ('covered', 'accepted_out_of_scope')
           )
         "#,
         params![design_version_id],

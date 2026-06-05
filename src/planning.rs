@@ -105,6 +105,7 @@ pub fn list_tasks(root: &Path, input: TaskListQuery<'_>) -> Result<Vec<TaskRecor
 
 pub fn close_task(root: &Path, task_id: i64, commit: Option<&str>) -> Result<TaskCloseOutcome> {
     let conn = open_existing_project(root)?;
+    ensure_design_task_closure_ready(&conn, task_id)?;
     let changed = conn.execute(
         r#"
         update tasks
@@ -118,6 +119,139 @@ pub fn close_task(root: &Path, task_id: i64, commit: Option<&str>) -> Result<Tas
     }
 
     Ok(TaskCloseOutcome { task_id })
+}
+
+fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -> Result<()> {
+    let active_derivation_count: i64 = conn.query_row(
+        "select count(*) from task_derivations where task_id = ?1 and status = 'active'",
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if active_derivation_count == 0 {
+        return Ok(());
+    }
+
+    let missing_checklist_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations
+        where task_id = ?1
+          and status = 'active'
+          and checklist_item_id is null
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if missing_checklist_count > 0 {
+        bail!(
+            "cannot close design-derived task; {missing_checklist_count} derivations have no checklist item"
+        );
+    }
+
+    let missing_completion_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        left join checklist_items ci on ci.id = td.checklist_item_id
+        where td.task_id = ?1
+          and td.status = 'active'
+          and coalesce(
+            nullif(trim(ci.completion_condition), ''),
+            nullif(trim(t.completion_condition), '')
+          ) is null
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if missing_completion_count > 0 {
+        bail!(
+            "cannot close design-derived task; {missing_completion_count} derivations have no completion condition"
+        );
+    }
+
+    let missing_gate_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        where td.task_id = ?1
+          and td.status = 'active'
+          and not exists (
+            select 1
+            from validation_gates vg
+            where vg.design_requirement_id = td.design_requirement_id
+              and vg.task_id = td.task_id
+              and vg.selected_before_edit = 1
+              and vg.status = 'active'
+          )
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if missing_gate_count > 0 {
+        bail!(
+            "cannot close design-derived task; {missing_gate_count} derivations have no selected validation gate"
+        );
+    }
+
+    let missing_evidence_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        where td.task_id = ?1
+          and td.status = 'active'
+          and not exists (
+            select 1
+            from implementation_evidence e
+            where e.task_id = td.task_id
+              and (
+                e.design_requirement_id = td.design_requirement_id
+                or (
+                  e.design_requirement_id is null
+                  and not exists (
+                    select 1
+                    from task_derivations sibling
+                    where sibling.task_id = td.task_id
+                      and sibling.status = 'active'
+                      and sibling.design_requirement_id != td.design_requirement_id
+                  )
+                )
+              )
+          )
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if missing_evidence_count > 0 {
+        bail!(
+            "cannot close design-derived task; {missing_evidence_count} derivations have no implementation evidence"
+        );
+    }
+
+    let missing_coverage_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        where td.task_id = ?1
+          and td.status = 'active'
+          and not exists (
+            select 1
+            from coverage_items c
+            where c.design_requirement_id = td.design_requirement_id
+              and (c.task_id = td.task_id or c.task_id is null)
+              and c.status in ('covered', 'accepted_out_of_scope')
+          )
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    if missing_coverage_count > 0 {
+        bail!(
+            "cannot close design-derived task; {missing_coverage_count} derivations have no covered coverage item"
+        );
+    }
+
+    Ok(())
 }
 
 pub fn accept_task_out_of_scope(

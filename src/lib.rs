@@ -1450,20 +1450,13 @@ mod tests {
             },
         )
         .unwrap();
-        close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
-        let blocked_without_evidence = implementation_ready(
-            temp.path(),
-            ImplementationReadyCheck {
-                design_version_id: Some(import.design_version_id),
-            },
-        )
-        .unwrap();
+        let close_without_trace = close_task(temp.path(), task.task_id, Some("abc123"));
         let evidence = add_implementation_evidence(
             temp.path(),
             NewImplementationEvidence {
                 task_id: Some(task.task_id),
-                design_version_id: None,
-                requirement_key: None,
+                design_version_id: Some(import.design_version_id),
+                requirement_key: Some("REQ-001"),
                 evidence_type: "commit",
                 commit_sha: Some("abc123"),
                 file_path: None,
@@ -1471,13 +1464,6 @@ mod tests {
                 symbol: None,
                 artifact_path: None,
                 note: None,
-            },
-        )
-        .unwrap();
-        let passed_with_evidence = implementation_ready(
-            temp.path(),
-            ImplementationReadyCheck {
-                design_version_id: Some(import.design_version_id),
             },
         )
         .unwrap();
@@ -1515,6 +1501,14 @@ mod tests {
             },
         )
         .unwrap();
+        close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
+        let passed_after_close = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
         let records = list_task_derivations(
             temp.path(),
             TaskDerivationListQuery {
@@ -1542,18 +1536,245 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].requirement_key, "REQ-001");
         assert_eq!(passed.result, "pass");
-        assert_eq!(blocked_without_evidence.result, "blocked");
-        assert!(blocked_without_evidence.items.iter().any(|item| {
-            item.name == "implementation_evidence_present" && item.result == "fail"
-        }));
+        assert!(close_without_trace.is_err());
         assert_eq!(evidence.task_id, Some(task.task_id));
         assert_eq!(evidence_records.len(), 1);
+        assert_eq!(
+            evidence_records[0].requirement_key.as_deref(),
+            Some("REQ-001")
+        );
         assert_eq!(evidence_records[0].commit_sha.as_deref(), Some("abc123"));
-        assert_eq!(passed_with_evidence.result, "pass");
+        assert_eq!(passed_after_close.result, "pass");
         assert_eq!(coverage.task_id, Some(task.task_id));
         assert_eq!(coverage_records.len(), 1);
         assert_eq!(coverage_records[0].requirement_key, "REQ-001");
         assert_eq!(coverage_records[0].status, "covered");
+    }
+
+    #[test]
+    fn trace_links_reject_mismatched_requirement_task_pairs() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task_one = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered"),
+            },
+        )
+        .unwrap();
+        let task_two = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement archival",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("archival behavior is covered"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            format!(
+                "{}\n{}",
+                requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+                requirement_doc("REQ-002", "Preserve archival behavior", "high")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task_one.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-002",
+                task_id: task_two.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+
+        let mismatched_evidence = add_implementation_evidence(
+            temp.path(),
+            NewImplementationEvidence {
+                task_id: Some(task_two.task_id),
+                design_version_id: Some(import.design_version_id),
+                requirement_key: Some("REQ-001"),
+                evidence_type: "commit",
+                commit_sha: Some("abc123"),
+                file_path: None,
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: None,
+            },
+        );
+        let mismatched_gate = select_validation_gate(
+            temp.path(),
+            ValidationGateSelection {
+                design_version_id: import.design_version_id,
+                gate_key: "GATE-001",
+                requirement_key: "REQ-001",
+                task_id: task_two.task_id,
+                command: None,
+            },
+        );
+        let mismatched_coverage = add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task_two.task_id),
+                requirement: "cleanup behavior is connected",
+                runtime_boundary_evidence: None,
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: Some("GATE-001"),
+                missing_or_unverified: None,
+                status: "covered",
+            },
+        );
+
+        assert!(mismatched_evidence.is_err());
+        assert!(mismatched_gate.is_err());
+        assert!(mismatched_coverage.is_err());
+    }
+
+    #[test]
+    fn implementation_ready_requires_completion_conditions() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        select_validation_gate(
+            temp.path(),
+            ValidationGateSelection {
+                design_version_id: import.design_version_id,
+                gate_key: "GATE-001",
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                command: None,
+            },
+        )
+        .unwrap();
+
+        let outcome = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.result, "blocked");
+        assert!(
+            outcome.items.iter().any(|item| {
+                item.name == "completion_conditions_present" && item.result == "fail"
+            })
+        );
     }
 
     #[test]

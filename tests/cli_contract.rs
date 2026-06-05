@@ -570,21 +570,22 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "--dry-run",
         ],
     );
-    ok(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
-    let without_evidence = ok(
-        temp.path(),
-        &[
-            "gate",
-            "implementation-ready",
-            "--design-version",
-            "1",
-            "--dry-run",
-        ],
-    );
+    let close_without_trace = err(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
     let evidence = ok(
         temp.path(),
         &[
-            "evidence", "add", "--task", "1", "--type", "commit", "--commit", "abc123",
+            "evidence",
+            "add",
+            "--task",
+            "1",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--type",
+            "commit",
+            "--commit",
+            "abc123",
         ],
     );
     let evidence_list = ok(temp.path(), &["evidence", "list", "--task", "1"]);
@@ -611,7 +612,8 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         temp.path(),
         &["coverage", "list", "--design", "1", "--status", "covered"],
     );
-    let passed_with_evidence = ok(
+    ok(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
+    let passed_after_close = ok(
         temp.path(),
         &[
             "gate",
@@ -631,15 +633,16 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("task_derivations_exist: pass"));
     assert!(passed.contains("validation_gates_selected: pass"));
-    assert!(without_evidence.contains("implementation_evidence_present: fail"));
+    assert!(close_without_trace.contains("cannot close design-derived task"));
     assert!(evidence.contains("added implementation evidence"));
     assert!(evidence.contains("implementation_evidence_id: 1"));
-    assert!(evidence_list.contains("1 [commit] task=1 requirement=- commit=abc123"));
+    assert!(evidence_list.contains("1 [commit] task=1 requirement=REQ-001 commit=abc123"));
     assert!(coverage.contains("added coverage item"));
     assert!(coverage.contains("coverage_item_id: 1"));
     assert!(coverage_list.contains("1 [covered] requirement=REQ-001"));
-    assert!(passed_with_evidence.contains("result: pass"));
-    assert!(passed_with_evidence.contains("implementation_evidence_present: pass"));
+    assert!(passed_after_close.contains("result: pass"));
+    assert!(passed_after_close.contains("implementation_evidence_present: pass"));
+    assert!(passed_after_close.contains("coverage_items_present: pass"));
 }
 
 #[test]

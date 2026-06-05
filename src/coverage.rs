@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
@@ -36,6 +36,25 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
             .context("task not found")?,
         (None, None) => None,
     };
+    if let Some(task_id) = input.task_id {
+        let derived = tx
+            .query_row(
+                r#"
+                select 1
+                from task_derivations
+                where design_requirement_id = ?1
+                  and task_id = ?2
+                  and status = 'active'
+                "#,
+                params![design_requirement_id, task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some();
+        if !derived {
+            bail!("task is not actively derived from the design requirement");
+        }
+    }
 
     tx.execute(
         r#"
