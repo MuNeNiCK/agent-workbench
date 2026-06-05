@@ -386,25 +386,66 @@ mod tests {
             [],
         )
         .unwrap();
+        let work_unit_id = conn.last_insert_rowid();
+        conn.execute(
+            r#"
+            insert into review_policies(
+                project_id, name, review_type, max_fresh_agents, max_resume_agents,
+                max_parallel_agents, required_consecutive_clean_fresh_runs,
+                required_consecutive_clean_resume_runs, stop_on_severity,
+                allow_resume_review, allow_fresh_review, allow_new_findings_in_resume,
+                on_max_agents_exceeded, run_count_scope, default_run_mode, created_at
+            )
+            values (1, 'migration-policy', 'implementation_review', 2, 1, 1, 1, 0, 'none', 1, 1, 0, 'block', 'review_plan', 'fresh', current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        let review_policy_id = conn.last_insert_rowid();
+        conn.execute(
+            r#"
+            insert into review_plans(
+                project_id, work_unit_id, review_type, required, stage,
+                review_policy_id, status, created_at
+            )
+            values (1, ?1, 'implementation_review', 1, 'close-ready', ?2, 'open', current_timestamp)
+            "#,
+            params![work_unit_id, review_policy_id],
+        )
+        .unwrap();
+        let review_plan_id = conn.last_insert_rowid();
+        conn.execute(
+            "insert into review_plan_targets(review_plan_id, target_type, work_unit_id) values (?1, 'work_unit', ?2)",
+            params![review_plan_id, work_unit_id],
+        )
+        .unwrap();
         let invalid = conn.execute(
             r#"
             insert into review_runs(
-                project_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
+                project_id, review_plan_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
                 new_findings_count, carried_findings_checked, clean_run, status, created_at
             )
-            values (1, 'fresh', 'finding_fix_verification', 'work_unit', 1, 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            values (1, ?1, 'fresh', 'finding_fix_verification', 'work_unit', ?2, ?3, 0, 0, 0, 'completed', current_timestamp)
             "#,
-            [],
+            params![
+                review_plan_id,
+                work_unit_id,
+                format!("work_unit:{work_unit_id}"),
+            ],
         );
         conn.execute(
             r#"
             insert into review_runs(
-                project_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
+                project_id, review_plan_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
                 new_findings_count, carried_findings_checked, clean_run, status, created_at
             )
-            values (1, 'fresh', 'new_unbiased_review', 'work_unit', 1, 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            values (1, ?1, 'fresh', 'new_unbiased_review', 'work_unit', ?2, ?3, 0, 0, 0, 'completed', current_timestamp)
             "#,
-            [],
+            params![
+                review_plan_id,
+                work_unit_id,
+                format!("work_unit:{work_unit_id}"),
+            ],
         )
         .unwrap();
         let invalid_update = conn.execute(
@@ -1262,6 +1303,10 @@ This requirement describes changed cleanup behavior that must be implemented.
             "update review_plans set review_type = 'design_review' where id = ?1",
             params![plan.review_plan_id],
         );
+        let plan_policy_null_break = conn.execute(
+            "update review_plans set review_policy_id = null where id = ?1",
+            params![plan.review_plan_id],
+        );
         let policy_type_break = conn.execute(
             "update review_policies set review_type = 'design_review' where id = ?1",
             params![policy.review_policy_id],
@@ -1272,6 +1317,10 @@ This requirement describes changed cleanup behavior that must be implemented.
         );
         let run_project_break = conn.execute(
             "update review_runs set project_id = 2 where id = ?1",
+            params![run.review_run_id],
+        );
+        let run_plan_null_break = conn.execute(
+            "update review_runs set review_plan_id = null where id = ?1",
             params![run.review_run_id],
         );
         let run_target_update_break = conn.execute(
@@ -1313,6 +1362,21 @@ This requirement describes changed cleanup behavior that must be implemented.
                 format!("work_unit:{same_project_work_unit_id}"),
             ],
         );
+        let run_plan_null_insert_break = conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, review_scope_id, run_type, run_purpose,
+                target_type, work_unit_id, target_ref, new_findings_count,
+                carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, ?1, 'fresh', 'new_unbiased_review', 'work_unit', ?2, ?3, 0, 0, 0, 'completed', current_timestamp)
+            "#,
+            params![
+                scope.review_scope_id,
+                work.work_unit_id,
+                format!("work_unit:{}", work.work_unit_id),
+            ],
+        );
         let plan_target_update_break = conn.execute(
             "update review_plan_targets set work_unit_id = ?1 where id = ?2",
             params![same_project_work_unit_id, plan_target_id],
@@ -1332,13 +1396,16 @@ This requirement describes changed cleanup behavior that must be implemented.
 
         assert!(plan_project_break.is_err());
         assert!(plan_type_break.is_err());
+        assert!(plan_policy_null_break.is_err());
         assert!(policy_type_break.is_err());
         assert!(scope_type_break.is_err());
         assert!(run_project_break.is_err());
+        assert!(run_plan_null_break.is_err());
         assert!(run_target_update_break.is_err());
         assert!(run_plan_target_update_break.is_err());
         assert!(run_target_insert_break.is_err());
         assert!(run_plan_target_insert_break.is_err());
+        assert!(run_plan_null_insert_break.is_err());
         assert!(plan_target_update_break.is_err());
         assert!(plan_target_delete_break.is_err());
         assert!(finding_project_break.is_err());

@@ -175,11 +175,15 @@ fn refresh_review_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_review_policy_referenced_update;
         drop trigger if exists trg_review_policy_resume_findings_update;
         drop trigger if exists trg_review_scope_referenced_update;
+        drop trigger if exists trg_review_plan_policy_required_insert;
+        drop trigger if exists trg_review_plan_policy_required_update;
         drop trigger if exists trg_review_plan_project_insert;
         drop trigger if exists trg_review_plan_project_update;
         drop trigger if exists trg_review_plan_type_insert;
         drop trigger if exists trg_review_plan_type_update;
         drop trigger if exists trg_review_plan_resume_policy_update;
+        drop trigger if exists trg_review_run_plan_required_insert;
+        drop trigger if exists trg_review_run_plan_required_update;
         drop trigger if exists trg_review_run_project_insert;
         drop trigger if exists trg_review_run_target_insert;
         drop trigger if exists trg_review_run_project_update;
@@ -1522,7 +1526,7 @@ create table if not exists review_plans (
     scope text,
     clean_condition text,
     stop_condition text,
-    review_policy_id integer references review_policies(id),
+    review_policy_id integer not null references review_policies(id),
     review_scope_id integer references review_scopes(id),
     status text not null default 'open' check (status in ('open', 'blocked', 'clean', 'accepted_exception', 'not_required', 'exhausted', 'needs_user_decision')),
     created_at text not null
@@ -1603,7 +1607,7 @@ create table if not exists review_runs (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
     review_scope_id integer references review_scopes(id),
-    review_plan_id integer references review_plans(id),
+    review_plan_id integer not null references review_plans(id),
     run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
     run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
     target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
@@ -1687,6 +1691,22 @@ create table if not exists finding_verifications (
     unique(review_run_id, finding_id, closure_id)
 );
 
+create trigger if not exists trg_review_plan_policy_required_insert
+before insert on review_plans
+for each row
+when new.review_policy_id is null
+begin
+    select raise(abort, 'review plan requires review policy');
+end;
+
+create trigger if not exists trg_review_plan_policy_required_update
+before update of review_policy_id on review_plans
+for each row
+when new.review_policy_id is null
+begin
+    select raise(abort, 'review plan requires review policy');
+end;
+
 create trigger if not exists trg_review_plan_project_insert
 before insert on review_plans
 for each row
@@ -1741,6 +1761,22 @@ when (select allow_new_findings_in_resume from review_policies where id = new.re
   )
 begin
     select raise(abort, 'review plan policy update would conflict with resume findings');
+end;
+
+create trigger if not exists trg_review_run_plan_required_insert
+before insert on review_runs
+for each row
+when new.review_plan_id is null
+begin
+    select raise(abort, 'review run requires review plan');
+end;
+
+create trigger if not exists trg_review_run_plan_required_update
+before update of review_plan_id on review_runs
+for each row
+when new.review_plan_id is null
+begin
+    select raise(abort, 'review run requires review plan');
 end;
 
 create trigger if not exists trg_review_run_project_insert
