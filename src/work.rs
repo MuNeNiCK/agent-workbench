@@ -869,23 +869,91 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         })
         .collect();
 
-    let later_items = [
-        (
-            "design_version_current",
-            "trace-aware design version check is not implemented yet",
-        ),
-        (
-            "task_derivation_current",
-            "trace-aware task derivation check is not implemented yet",
-        ),
-        (
-            "checklist_current",
-            "trace-aware checklist check is not implemented yet",
-        ),
-        (
-            "selected_gate_current",
-            "trace-aware validation gate check is not implemented yet",
-        ),
+    let trace_maturity = matches!(maturity, "trace" | "trace-aware");
+    let trace_counts = trace_maturity
+        .then(|| trace_resume_counts(conn, target.work_unit_id))
+        .transpose()?;
+    let mut trace_allowed = true;
+    if let Some(trace_counts) = trace_counts {
+        let trace_items = [
+            (
+                "design_version_current",
+                trace_counts.stale_design_records == 0,
+                format!(
+                    "{} design-derived records reference changed requirements",
+                    trace_counts.stale_design_records
+                ),
+            ),
+            (
+                "task_derivation_current",
+                trace_counts.stale_task_derivations == 0,
+                format!(
+                    "{} task derivations reference changed requirements",
+                    trace_counts.stale_task_derivations
+                ),
+            ),
+            (
+                "checklist_current",
+                trace_counts.stale_checklists == 0,
+                format!(
+                    "{} checklists reference changed requirements",
+                    trace_counts.stale_checklists
+                ),
+            ),
+            (
+                "selected_gate_current",
+                trace_counts.stale_selected_gates == 0,
+                format!(
+                    "{} selected validation gates reference changed requirements",
+                    trace_counts.stale_selected_gates
+                ),
+            ),
+        ];
+        for (name, pass, details) in trace_items {
+            if !pass {
+                trace_allowed = false;
+                blocking_reason
+                    .get_or_insert_with(|| "trace-aware resume checks failed".to_string());
+            }
+            items.push(ResumeReadyItem {
+                name: name.to_string(),
+                result: if pass { "pass" } else { "fail" }.to_string(),
+                blocking_action: (!pass).then(|| details.clone()),
+                details,
+            });
+        }
+    } else {
+        let later_items = [
+            (
+                "design_version_current",
+                "trace-aware design version check was not requested",
+            ),
+            (
+                "task_derivation_current",
+                "trace-aware task derivation check was not requested",
+            ),
+            (
+                "checklist_current",
+                "trace-aware checklist check was not requested",
+            ),
+            (
+                "selected_gate_current",
+                "trace-aware validation gate check was not requested",
+            ),
+        ];
+        items.extend(
+            later_items
+                .into_iter()
+                .map(|(name, details)| ResumeReadyItem {
+                    name: name.to_string(),
+                    result: "not_checked".to_string(),
+                    blocking_action: None,
+                    details: details.to_string(),
+                }),
+        );
+    }
+
+    let remaining_later_items = [
         (
             "review_plan_current",
             "trace-aware review plan check is not implemented yet",
@@ -900,7 +968,7 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         ),
     ];
     items.extend(
-        later_items
+        remaining_later_items
             .into_iter()
             .map(|(name, details)| ResumeReadyItem {
                 name: name.to_string(),
@@ -910,10 +978,11 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             }),
     );
 
-    if maturity != "basic" {
+    let known_maturity = matches!(maturity, "basic" | "trace" | "trace-aware");
+    if !known_maturity {
         blocking_reason.get_or_insert_with(|| format!("{maturity} checks are not implemented yet"));
     }
-    let allowed = basic_allowed && maturity == "basic";
+    let allowed = basic_allowed && trace_allowed && known_maturity;
     Ok(ResumeGateEvaluation {
         work_unit_id: target.work_unit_id,
         activation_id: target.activation_id,
@@ -925,6 +994,123 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         activation_stack_revision: stack_revision,
         items,
     })
+}
+
+fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResumeCounts> {
+    Ok(TraceResumeCounts {
+        stale_design_records: count_stale_design_records_for_work(conn, work_unit_id)?,
+        stale_task_derivations: count_stale_task_derivations_for_work(conn, work_unit_id)?,
+        stale_checklists: count_stale_checklists_for_work(conn, work_unit_id)?,
+        stale_selected_gates: count_stale_selected_gates_for_work(conn, work_unit_id)?,
+    })
+}
+
+fn count_stale_design_records_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(distinct r.id)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_task_derivations_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_checklists_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(distinct c.id)
+        from checklists c
+        join checklist_items ci on ci.checklist_id = c.id
+        join design_requirements r on r.id = ci.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where c.work_unit_id = ?1
+          and c.status = 'active'
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_selected_gates_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from validation_gates vg
+        join design_requirements r on r.id = vg.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        left join tasks t on t.id = vg.task_id
+        where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+          and vg.status = 'active'
+          and p.current_design_version_id != r.design_version_id
+          and not exists (
+            select 1
+            from design_requirements current_r
+            where current_r.design_version_id = p.current_design_version_id
+              and current_r.requirement_key = r.requirement_key
+              and current_r.requirement_hash = r.requirement_hash
+              and current_r.status = 'active'
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 #[derive(Debug)]
@@ -948,6 +1134,13 @@ struct ResumeGateEvaluation {
     authority_high_watermark: i64,
     activation_stack_revision: i64,
     items: Vec<ResumeReadyItem>,
+}
+
+struct TraceResumeCounts {
+    stale_design_records: i64,
+    stale_task_derivations: i64,
+    stale_checklists: i64,
+    stale_selected_gates: i64,
 }
 
 struct StoredForkSource {

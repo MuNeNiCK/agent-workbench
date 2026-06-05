@@ -678,8 +678,7 @@ fn resume_check_records_requested_maturity() {
     );
 
     let output = ok(temp.path(), &["resume-check", "--maturity", "trace-aware"]);
-    assert!(output.contains("result: blocked"));
-    assert!(output.contains("trace-aware checks are not implemented yet"));
+    assert!(output.contains("result: allowed"));
 
     let saved: String = conn(temp.path())
         .query_row(

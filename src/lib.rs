@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_aware_resume_check_records_not_checked_items() {
+    fn trace_aware_resume_check_evaluates_trace_items() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
         start_work(temp.path(), "implement trace gate", None).unwrap();
@@ -319,11 +319,8 @@ mod tests {
 
         let check = resume_check(temp.path(), "trace-aware").unwrap();
 
-        assert_eq!(check.result, "blocked");
-        assert_eq!(
-            check.blocking_reason.as_deref(),
-            Some("trace-aware checks are not implemented yet")
-        );
+        assert_eq!(check.result, "allowed");
+        assert_eq!(check.blocking_reason, None);
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
         let stored_maturity: String = conn
             .query_row(
@@ -332,15 +329,26 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        let not_checked: i64 = conn
+        let trace_passes: i64 = conn
             .query_row(
-                "select count(*) from resume_check_items where resume_check_id = ?1 and result = 'not_checked'",
+                r#"
+                select count(*)
+                from resume_check_items
+                where resume_check_id = ?1
+                  and check_name in (
+                    'design_version_current',
+                    'task_derivation_current',
+                    'checklist_current',
+                    'selected_gate_current'
+                  )
+                  and result = 'pass'
+                "#,
                 params![check.resume_check_id],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(stored_maturity, "trace-aware");
-        assert!(not_checked > 0);
+        assert_eq!(trace_passes, 4);
     }
 
     #[test]
