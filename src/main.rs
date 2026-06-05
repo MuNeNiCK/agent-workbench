@@ -618,7 +618,9 @@ enum AcceptanceCommand {
 #[derive(Debug, Args)]
 struct AcceptanceAddArgs {
     #[arg(long)]
-    design: i64,
+    design: Option<i64>,
+    #[arg(long)]
+    package: Option<String>,
     #[arg(long)]
     target: String,
     #[arg(long = "type")]
@@ -1395,6 +1397,7 @@ fn main() -> Result<()> {
                     &root,
                     NewDesignExceptionAcceptance {
                         design_version_id: args.design,
+                        design_package: args.package.as_deref(),
                         target: &args.target,
                         acceptance_type: &args.acceptance_type,
                         reason: &args.reason,
@@ -1409,6 +1412,15 @@ fn main() -> Result<()> {
                 }
                 if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
                     println!("validation_gate_template_id: {validation_gate_template_id}");
+                }
+                if let Some(design_package_key) = outcome.design_package_key {
+                    println!("design_package_key: {design_package_key}");
+                }
+                if let Some(design_file_path) = outcome.design_file_path {
+                    println!("design_file_path: {design_file_path}");
+                }
+                if let Some(design_requirement_key) = outcome.design_requirement_key {
+                    println!("design_requirement_key: {design_requirement_key}");
                 }
             }
         },

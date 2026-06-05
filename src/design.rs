@@ -25,6 +25,21 @@ const ARC42_FILES: &[(&str, &str)] = &[
     ("12-glossary.md", "Glossary"),
 ];
 
+const ARC42_KEYS: &[&str] = &[
+    "introduction_goals",
+    "constraints",
+    "context_scope",
+    "solution_strategy",
+    "building_blocks",
+    "runtime_view",
+    "deployment_view",
+    "crosscutting_concepts",
+    "decisions",
+    "quality_requirements",
+    "risks_technical_debt",
+    "glossary",
+];
+
 pub fn init_design_package(
     root: &Path,
     input: NewDesignPackage<'_>,
@@ -124,6 +139,7 @@ pub fn import_design_package(
     for dependency in &manifest.depends_on {
         validate_design_id(dependency)?;
     }
+    validate_arc42_manifest_keys(&manifest)?;
 
     let mut design_files = manifest.design_files();
     design_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -140,7 +156,14 @@ pub fn import_design_package(
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let line_count = line_count(&content);
-        if line_count > 1000 {
+        if line_count > 1000
+            && !design_file_exception_exists(
+                &conn,
+                project_id,
+                &manifest.id,
+                &design_file.relative_path,
+            )?
+        {
             bail!(
                 "design file exceeds 1000 lines: {}",
                 design_file.relative_path
@@ -242,18 +265,21 @@ pub fn import_design_package(
         )?;
         let design_file_id = tx.last_insert_rowid();
         if file.section_key == "requirements" {
-            let requirements = extract_design_requirements(&file.content, file)?;
+            let requirements =
+                extract_design_requirements(&tx, project_id, &manifest.id, &file.content, file)?;
             requirement_count += requirements.len();
             for requirement in requirements {
+                let supersedes_requirement_id =
+                    validate_requirement_version_transition(&tx, design_package_id, &requirement)?;
                 tx.execute(
                     r#"
                     insert into design_requirements(
                         project_id, design_version_id, source_design_file_id,
                         source_section, requirement_key, revision, requirement_hash,
-                        requirement_text, priority, required_surfaces,
+                        supersedes_requirement_id, requirement_text, priority, required_surfaces,
                         validation_expectation, status, created_at
                     )
-                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, current_timestamp)
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, current_timestamp)
                     "#,
                     params![
                         project_id,
@@ -263,6 +289,7 @@ pub fn import_design_package(
                         requirement.requirement_key,
                         requirement.revision,
                         requirement.requirement_hash,
+                        supersedes_requirement_id,
                         requirement.requirement_text,
                         requirement.priority,
                         requirement.required_surfaces,
@@ -483,11 +510,27 @@ pub fn accept_design_exception(
     input: NewDesignExceptionAcceptance<'_>,
 ) -> Result<DesignExceptionAcceptanceOutcome> {
     validate_design_acceptance_type(input.acceptance_type)?;
+    match (input.design_version_id, input.design_package) {
+        (Some(_), None) | (None, Some(_)) => {}
+        _ => bail!("provide exactly one of design_version_id or design_package"),
+    }
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let (target_type, design_requirement_id, validation_gate_template_id) =
-        resolve_design_acceptance_target(&tx, project_id, input.design_version_id, input.target)?;
+    let target = match (input.design_version_id, input.design_package) {
+        (Some(design_version_id), None) => {
+            resolve_design_acceptance_target(&tx, project_id, design_version_id, input.target)?
+        }
+        (None, Some(design_package)) => {
+            resolve_pre_import_design_acceptance_target(design_package, input.target)?
+        }
+        _ => unreachable!("validated above"),
+    };
+    let scope = match (input.design_version_id, input.design_package) {
+        (Some(design_version_id), None) => design_version_id.to_string(),
+        (None, Some(design_package)) => design_package.to_string(),
+        _ => unreachable!("validated above"),
+    };
 
     tx.execute(
         r#"
@@ -500,53 +543,59 @@ pub fn accept_design_exception(
         params![
             project_id,
             format!(
-                "accepted design exception for {} on design version {}: {}",
-                input.target, input.design_version_id, input.reason
+                "accepted design exception for {} on {}: {}",
+                input.target, scope, input.reason
             ),
-            input.design_version_id.to_string(),
+            scope,
         ],
     )?;
     let authority_event_id = tx.last_insert_rowid();
     tx.execute(
         r#"
         insert into acceptance_records(
-            project_id, target_type, design_requirement_id,
-            validation_gate_template_id, acceptance_type, reason, scope,
+            project_id, target_type, task_id, design_requirement_id,
+            validation_gate_template_id, design_package_key, design_file_path,
+            design_requirement_key, acceptance_type, reason, scope,
             created_by, status, approved_by_authority_event_id, approved_at,
             created_at, review_impact
         )
         values (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-            'user', 'approved', ?8, current_timestamp,
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+            'user', 'approved', ?12, current_timestamp,
             current_timestamp, 'design exception accepted for current design scope'
         )
         "#,
         params![
             project_id,
-            target_type,
-            design_requirement_id,
-            validation_gate_template_id,
+            target.target_type,
+            target.task_id,
+            target.design_requirement_id,
+            target.validation_gate_template_id,
+            target.design_package_key,
+            target.design_file_path,
+            target.design_requirement_key,
             input.acceptance_type,
             input.reason,
-            input.design_version_id.to_string(),
+            scope,
             authority_event_id,
         ],
     )?;
     let acceptance_record_id = tx.last_insert_rowid();
     if input.acceptance_type == "accepted_out_of_scope" {
-        match target_type {
+        match target.target_type {
             "design_requirement" => {
                 tx.execute(
                     "update design_requirements set status = 'accepted_out_of_scope' where id = ?1",
-                    params![design_requirement_id],
+                    params![target.design_requirement_id],
                 )?;
             }
             "validation_gate_template" => {
                 tx.execute(
                     "update validation_gate_templates set status = 'accepted_out_of_scope' where id = ?1",
-                    params![validation_gate_template_id],
+                    params![target.validation_gate_template_id],
                 )?;
             }
+            "design_file" | "design_requirement_key" => {}
             _ => unreachable!("target type resolved above"),
         }
     }
@@ -555,9 +604,12 @@ pub fn accept_design_exception(
     Ok(DesignExceptionAcceptanceOutcome {
         acceptance_record_id,
         authority_event_id,
-        target_type: target_type.to_string(),
-        design_requirement_id,
-        validation_gate_template_id,
+        target_type: target.target_type.to_string(),
+        design_requirement_id: target.design_requirement_id,
+        validation_gate_template_id: target.validation_gate_template_id,
+        design_package_key: target.design_package_key,
+        design_file_path: target.design_file_path,
+        design_requirement_key: target.design_requirement_key,
     })
 }
 
@@ -878,7 +930,7 @@ fn resolve_design_acceptance_target(
     project_id: i64,
     design_version_id: i64,
     target: &str,
-) -> Result<(&'static str, Option<i64>, Option<i64>)> {
+) -> Result<ResolvedDesignAcceptanceTarget> {
     validate_design_acceptance_type_target(target)?;
     if let Some(requirement_key) = target.strip_prefix("requirement:") {
         let id = conn
@@ -893,7 +945,15 @@ fn resolve_design_acceptance_target(
             )
             .optional()?
             .context("design requirement target not found")?;
-        return Ok(("design_requirement", Some(id), None));
+        return Ok(ResolvedDesignAcceptanceTarget {
+            target_type: "design_requirement",
+            task_id: None,
+            design_requirement_id: Some(id),
+            validation_gate_template_id: None,
+            design_package_key: None,
+            design_file_path: None,
+            design_requirement_key: None,
+        });
     }
     if let Some(gate_key) = target.strip_prefix("gate:") {
         let id = conn
@@ -908,9 +968,54 @@ fn resolve_design_acceptance_target(
             )
             .optional()?
             .context("validation gate template target not found")?;
-        return Ok(("validation_gate_template", None, Some(id)));
+        return Ok(ResolvedDesignAcceptanceTarget {
+            target_type: "validation_gate_template",
+            task_id: None,
+            design_requirement_id: None,
+            validation_gate_template_id: Some(id),
+            design_package_key: None,
+            design_file_path: None,
+            design_requirement_key: None,
+        });
     }
     unreachable!("target was validated above")
+}
+
+fn resolve_pre_import_design_acceptance_target(
+    design_package: &str,
+    target: &str,
+) -> Result<ResolvedDesignAcceptanceTarget> {
+    validate_design_id(design_package)?;
+    if let Some(relative_path) = target.strip_prefix("file:") {
+        if relative_path.is_empty() {
+            bail!("acceptance file target path is required");
+        }
+        validate_relative_manifest_path(relative_path)?;
+        return Ok(ResolvedDesignAcceptanceTarget {
+            target_type: "design_file",
+            task_id: None,
+            design_requirement_id: None,
+            validation_gate_template_id: None,
+            design_package_key: Some(design_package.to_string()),
+            design_file_path: Some(relative_path.to_string()),
+            design_requirement_key: None,
+        });
+    }
+    if let Some(requirement_key) = target.strip_prefix("requirement:") {
+        if !valid_design_key(requirement_key, "REQ") {
+            bail!("acceptance requirement target key must match REQ-<positive-number>");
+        }
+        return Ok(ResolvedDesignAcceptanceTarget {
+            target_type: "design_requirement_key",
+            task_id: None,
+            design_requirement_id: None,
+            validation_gate_template_id: None,
+            design_package_key: Some(design_package.to_string()),
+            design_file_path: None,
+            design_requirement_key: Some(requirement_key.to_string()),
+        });
+    }
+    bail!("package-scoped acceptance target must be file:<path> or requirement:<key>");
 }
 
 fn validate_design_acceptance_type_target(target: &str) -> Result<()> {
@@ -979,6 +1084,101 @@ fn validate_expected_result(expected_result: &str) -> Result<()> {
     }
 }
 
+fn validate_arc42_manifest_keys(manifest: &DesignManifest) -> Result<()> {
+    let required: BTreeSet<&str> = ARC42_KEYS.iter().copied().collect();
+    let actual: BTreeSet<&str> = manifest.arc42.keys().map(String::as_str).collect();
+    let missing: Vec<&str> = required.difference(&actual).copied().collect();
+    let unknown: Vec<&str> = actual.difference(&required).copied().collect();
+    if !missing.is_empty() || !unknown.is_empty() {
+        bail!(
+            "design manifest arc42 keys must exactly match required sections; missing=[{}] unknown=[{}]",
+            missing.join(","),
+            unknown.join(",")
+        );
+    }
+    Ok(())
+}
+
+fn design_file_exception_exists(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_key: &str,
+    relative_path: &str,
+) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from acceptance_records
+        where project_id = ?1
+          and target_type = 'design_file'
+          and design_package_key = ?2
+          and design_file_path = ?3
+          and acceptance_type = 'explicit_exception'
+          and status = 'approved'
+        "#,
+        params![project_id, design_key, relative_path],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn design_requirement_key_exception_exists(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_key: &str,
+    requirement_key: &str,
+) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from acceptance_records
+        where project_id = ?1
+          and target_type = 'design_requirement_key'
+          and design_package_key = ?2
+          and design_requirement_key = ?3
+          and acceptance_type = 'explicit_exception'
+          and status = 'approved'
+        "#,
+        params![project_id, design_key, requirement_key],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn validate_requirement_version_transition(
+    conn: &rusqlite::Connection,
+    design_package_id: i64,
+    requirement: &ExtractedDesignRequirement,
+) -> Result<Option<i64>> {
+    let previous: Option<(i64, i64, String)> = conn
+        .query_row(
+            r#"
+            select r.id, r.revision, r.requirement_hash
+            from design_requirements r
+            join design_versions v on v.id = r.design_version_id
+            where v.design_package_id = ?1 and r.requirement_key = ?2
+            order by v.version_number desc, r.revision desc, r.id desc
+            limit 1
+            "#,
+            params![design_package_id, requirement.requirement_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((previous_id, previous_revision, previous_hash)) = previous else {
+        return Ok(None);
+    };
+    if previous_hash == requirement.requirement_hash {
+        return Ok(None);
+    }
+    if requirement.revision > previous_revision {
+        return Ok(Some(previous_id));
+    }
+    bail!(
+        "requirement {} changed without increasing revision",
+        requirement.requirement_key
+    );
+}
+
 fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDesignVersion> {
     Ok(StoredDesignVersion {
         design_version_id: row.get(0)?,
@@ -991,10 +1191,14 @@ fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
 }
 
 fn extract_design_requirements(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_key: &str,
     content: &str,
     file: &ImportedDesignFile,
 ) -> Result<Vec<ExtractedDesignRequirement>> {
     reject_legacy_headings(content, file, &["R-"], "REQ-")?;
+    reject_invalid_agent_blocks(content, file, "requirement", "REQ")?;
     let lines: Vec<&str> = content.lines().collect();
     let mut requirements = Vec::new();
     let mut seen_keys = BTreeSet::new();
@@ -1052,7 +1256,14 @@ fn extract_design_requirements(
             );
         }
         let body_line_count = body.lines().count();
-        if body_line_count > 150 {
+        if body_line_count > 150
+            && !design_requirement_key_exception_exists(
+                conn,
+                project_id,
+                design_key,
+                &metadata.key,
+            )?
+        {
             bail!(
                 "requirement {} exceeds 150 lines in {}",
                 metadata.key,
@@ -1121,6 +1332,7 @@ fn extract_design_decisions(
     file: &ImportedDesignFile,
 ) -> Result<Vec<ExtractedDesignDecision>> {
     reject_legacy_headings(content, file, &["D-"], "DEC-")?;
+    reject_invalid_agent_blocks(content, file, "decision", "DEC")?;
     let blocks = extract_agent_workbench_blocks(content, file, "DEC-", "decision")?;
     let mut decisions = Vec::with_capacity(blocks.len());
     let mut seen_keys = BTreeSet::new();
@@ -1201,6 +1413,7 @@ fn extract_validation_gate_templates(
     file: &ImportedDesignFile,
 ) -> Result<Vec<ExtractedValidationGateTemplate>> {
     reject_legacy_headings(content, file, &["VG-", "VAL-"], "GATE-")?;
+    reject_invalid_agent_blocks(content, file, "validation_gate_template", "GATE")?;
     let blocks = extract_agent_workbench_blocks(content, file, "GATE-", "validation gate")?;
     let mut templates = Vec::with_capacity(blocks.len());
     let mut seen_keys = BTreeSet::new();
@@ -1308,6 +1521,67 @@ fn reject_legacy_headings(
                 required_prefix
             );
         }
+    }
+    Ok(())
+}
+
+fn reject_invalid_agent_blocks(
+    content: &str,
+    file: &ImportedDesignFile,
+    expected_type: &str,
+    key_prefix: &str,
+) -> Result<()> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("## ") {
+            index += 1;
+            continue;
+        }
+        let source_section = line.trim_start_matches("## ").trim().to_string();
+        let fence_start = index + 1;
+        if lines.get(fence_start).map(|line| line.trim()) != Some("```yaml agent-workbench") {
+            index += 1;
+            continue;
+        }
+        let mut fence_end = fence_start + 1;
+        while fence_end < lines.len() && lines[fence_end].trim() != "```" {
+            fence_end += 1;
+        }
+        if fence_end == lines.len() {
+            bail!(
+                "agent-workbench block {} in {} has an unterminated yaml block",
+                source_section,
+                file.relative_path
+            );
+        }
+        let metadata_text = lines[fence_start + 1..fence_end].join("\n");
+        let metadata: AgentBlockHeaderMetadata = yaml_serde::from_str(&metadata_text)
+            .with_context(|| {
+                format!(
+                    "failed to parse agent-workbench metadata for {} in {}",
+                    source_section, file.relative_path
+                )
+            })?;
+        if metadata.record_type != expected_type {
+            bail!(
+                "unexpected agent-workbench metadata type {} in {}; expected {}",
+                metadata.record_type,
+                file.relative_path,
+                expected_type
+            );
+        }
+        if !valid_design_key(&metadata.key, key_prefix) {
+            bail!(
+                "agent-workbench metadata key must match {}-<positive-number>",
+                key_prefix
+            );
+        }
+        if !heading_key_matches(&source_section, &metadata.key) {
+            bail!("agent-workbench heading must start with metadata key");
+        }
+        index = fence_end + 1;
     }
     Ok(())
 }
@@ -1506,6 +1780,13 @@ struct ValidationGateTemplateMetadata {
     status: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AgentBlockHeaderMetadata {
+    #[serde(rename = "type")]
+    record_type: String,
+    key: String,
+}
+
 impl DesignManifest {
     fn design_files(&self) -> Vec<ManifestDesignFile> {
         let mut files = Vec::new();
@@ -1600,6 +1881,16 @@ struct StoredDesignVersion {
     current_design_version_id: Option<i64>,
 }
 
+struct ResolvedDesignAcceptanceTarget {
+    target_type: &'static str,
+    task_id: Option<i64>,
+    design_requirement_id: Option<i64>,
+    validation_gate_template_id: Option<i64>,
+    design_package_key: Option<String>,
+    design_file_path: Option<String>,
+    design_requirement_key: Option<String>,
+}
+
 pub struct NewDesignPackage<'a> {
     pub design_id: &'a str,
     pub title: &'a str,
@@ -1632,7 +1923,8 @@ pub struct ValidationGateTemplateListQuery {
 }
 
 pub struct NewDesignExceptionAcceptance<'a> {
-    pub design_version_id: i64,
+    pub design_version_id: Option<i64>,
+    pub design_package: Option<&'a str>,
     pub target: &'a str,
     pub acceptance_type: &'a str,
     pub reason: &'a str,
@@ -1749,6 +2041,9 @@ pub struct DesignExceptionAcceptanceOutcome {
     pub target_type: String,
     pub design_requirement_id: Option<i64>,
     pub validation_gate_template_id: Option<i64>,
+    pub design_package_key: Option<String>,
+    pub design_file_path: Option<String>,
+    pub design_requirement_key: Option<String>,
 }
 
 impl DesignReadyItem {

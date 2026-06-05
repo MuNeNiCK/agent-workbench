@@ -297,6 +297,65 @@ fn acceptance_add_records_design_exception() {
 }
 
 #[test]
+fn acceptance_add_records_package_scoped_design_exception() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "oversized-file",
+            "--title",
+            "Oversized File",
+        ],
+    );
+    std::fs::write(
+        temp.path()
+            .join(".agent-workbench")
+            .join("designs")
+            .join("oversized-file")
+            .join("01-introduction-goals.md"),
+        std::iter::repeat("line")
+            .take(1001)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+
+    let output = ok(
+        temp.path(),
+        &[
+            "acceptance",
+            "add",
+            "--package",
+            "oversized-file",
+            "--target",
+            "file:01-introduction-goals.md",
+            "--type",
+            "explicit_exception",
+            "--reason",
+            "temporary source document is larger than the import guardrail",
+        ],
+    );
+    let imported = ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/oversized-file",
+            "--status",
+            "draft",
+        ],
+    );
+
+    assert!(output.contains("target_type: design_file"));
+    assert!(output.contains("design_package_key: oversized-file"));
+    assert!(output.contains("design_file_path: 01-introduction-goals.md"));
+    assert!(imported.contains("imported design package"));
+}
+
+#[test]
 fn requirement_list_prints_imported_requirements() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

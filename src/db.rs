@@ -544,10 +544,13 @@ create table if not exists decisions (
 create table if not exists acceptance_records (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
-    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template')),
+    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key')),
     task_id integer references tasks(id),
     design_requirement_id integer references design_requirements(id),
     validation_gate_template_id integer references validation_gate_templates(id),
+    design_package_key text,
+    design_file_path text,
+    design_requirement_key text,
     acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
     reason text not null,
     scope text,
@@ -558,9 +561,11 @@ create table if not exists acceptance_records (
     created_at text not null,
     review_impact text,
     check (
-        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null)
-        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null)
-        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null)
+        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
+        or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
     )
 );
 
@@ -811,6 +816,30 @@ when new.target_type = 'design_requirement'
  and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
 begin
     select raise(abort, 'acceptance project_id must match design requirement project_id');
+end;
+
+create trigger if not exists trg_acceptance_task_project_insert
+before insert on acceptance_records
+for each row
+when new.target_type = 'task'
+ and new.project_id != coalesce(
+     (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+     -1
+ )
+begin
+    select raise(abort, 'acceptance project_id must match task project_id');
+end;
+
+create trigger if not exists trg_acceptance_task_project_update
+before update of project_id, target_type, task_id on acceptance_records
+for each row
+when new.target_type = 'task'
+ and new.project_id != coalesce(
+     (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+     -1
+ )
+begin
+    select raise(abort, 'acceptance project_id must match task project_id');
 end;
 
 create trigger if not exists trg_acceptance_validation_gate_template_project_insert
