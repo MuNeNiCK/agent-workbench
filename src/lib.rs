@@ -1246,6 +1246,13 @@ This requirement describes changed cleanup behavior that must be implemented.
         )
         .unwrap();
         let same_project_work_unit_id = conn.last_insert_rowid();
+        let plan_target_id: i64 = conn
+            .query_row(
+                "select id from review_plan_targets where review_plan_id = ?1 and target_type = 'work_unit'",
+                params![plan.review_plan_id],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         let plan_project_break = conn.execute(
             "update review_plans set work_unit_id = 2 where id = ?1",
@@ -1306,6 +1313,14 @@ This requirement describes changed cleanup behavior that must be implemented.
                 format!("work_unit:{same_project_work_unit_id}"),
             ],
         );
+        let plan_target_update_break = conn.execute(
+            "update review_plan_targets set work_unit_id = ?1 where id = ?2",
+            params![same_project_work_unit_id, plan_target_id],
+        );
+        let plan_target_delete_break = conn.execute(
+            "delete from review_plan_targets where id = ?1",
+            params![plan_target_id],
+        );
         let finding_project_break = conn.execute(
             "update findings set project_id = 2 where id = ?1",
             params![finding.finding_id],
@@ -1324,6 +1339,8 @@ This requirement describes changed cleanup behavior that must be implemented.
         assert!(run_plan_target_update_break.is_err());
         assert!(run_target_insert_break.is_err());
         assert!(run_plan_target_insert_break.is_err());
+        assert!(plan_target_update_break.is_err());
+        assert!(plan_target_delete_break.is_err());
         assert!(finding_project_break.is_err());
         assert!(closure_project_break.is_err());
     }
@@ -2155,6 +2172,45 @@ This requirement describes changed cleanup behavior that must be implemented.
         assert!(policy_tighten_with_actual_finding.is_err());
         assert!(plan_policy_swap_with_count.is_err());
         assert!(run_plan_swap_with_count.is_err());
+
+        conn.execute_batch(
+            r#"
+            drop trigger trg_review_policy_resume_findings_update;
+            create trigger trg_review_policy_resume_findings_update
+            before update of allow_new_findings_in_resume on review_policies
+            for each row
+            when new.allow_new_findings_in_resume = 0
+              and exists (
+                  select 1
+                  from review_plans p
+                  join review_runs r on r.review_plan_id = p.id
+                  where p.review_policy_id = old.id
+                    and r.run_type = 'resume'
+                    and r.new_findings_count > 0
+              )
+            begin
+                select raise(abort, 'old weak trigger');
+            end;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let refreshed_trigger_sql: String = conn
+            .query_row(
+                r#"
+                select sql
+                from sqlite_schema
+                where type = 'trigger'
+                  and name = 'trg_review_policy_resume_findings_update'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(refreshed_trigger_sql.contains("left join findings"));
     }
 
     #[test]

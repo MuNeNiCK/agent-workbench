@@ -142,6 +142,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_acceptance_records(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
+    refresh_review_integrity_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
@@ -165,6 +166,48 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn refresh_review_integrity_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_review_policy_referenced_update;
+        drop trigger if exists trg_review_policy_resume_findings_update;
+        drop trigger if exists trg_review_scope_referenced_update;
+        drop trigger if exists trg_review_plan_project_insert;
+        drop trigger if exists trg_review_plan_project_update;
+        drop trigger if exists trg_review_plan_type_insert;
+        drop trigger if exists trg_review_plan_type_update;
+        drop trigger if exists trg_review_plan_resume_policy_update;
+        drop trigger if exists trg_review_run_project_insert;
+        drop trigger if exists trg_review_run_target_insert;
+        drop trigger if exists trg_review_run_project_update;
+        drop trigger if exists trg_review_run_target_update;
+        drop trigger if exists trg_review_run_plan_target_insert;
+        drop trigger if exists trg_review_run_plan_target_update;
+        drop trigger if exists trg_review_run_type_purpose_insert;
+        drop trigger if exists trg_review_run_type_purpose_update;
+        drop trigger if exists trg_review_run_resume_policy_insert;
+        drop trigger if exists trg_review_run_resume_policy_update;
+        drop trigger if exists trg_review_run_result_insert;
+        drop trigger if exists trg_review_run_result_update;
+        drop trigger if exists trg_review_plan_target_project_insert;
+        drop trigger if exists trg_review_plan_target_project_update;
+        drop trigger if exists trg_review_plan_target_referenced_update;
+        drop trigger if exists trg_review_plan_target_referenced_delete;
+        drop trigger if exists trg_finding_project_insert;
+        drop trigger if exists trg_finding_project_update;
+        drop trigger if exists trg_finding_clean_run_insert;
+        drop trigger if exists trg_finding_clean_run_update;
+        drop trigger if exists trg_finding_resume_policy_insert;
+        drop trigger if exists trg_finding_resume_policy_update;
+        drop trigger if exists trg_closure_project_insert;
+        drop trigger if exists trg_closure_project_update;
+        drop trigger if exists trg_finding_verification_project_insert;
+        drop trigger if exists trg_finding_verification_project_update;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -1978,6 +2021,48 @@ when (new.target_type = 'design_version' and (select project_id from review_plan
   or new.target_type = 'repository_snapshot'
 begin
     select raise(abort, 'review plan target project_id must match review plan project_id');
+end;
+
+create trigger if not exists trg_review_plan_target_referenced_update
+before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, file_path, symbol on review_plan_targets
+for each row
+when exists (
+    select 1
+    from review_runs r
+    where r.review_plan_id = old.review_plan_id
+      and (
+          (r.target_type = 'design_version' and old.target_type = 'design_version' and r.design_version_id = old.design_version_id)
+          or (r.target_type = 'design_requirement' and old.target_type = 'design_requirement' and r.design_requirement_id = old.design_requirement_id)
+          or (r.target_type = 'task' and old.target_type = 'task' and r.task_id = old.task_id)
+          or (r.target_type = 'work_unit' and old.target_type = 'work_unit' and r.work_unit_id = old.work_unit_id)
+          or (r.target_type = 'repository_snapshot' and old.target_type = 'repository_snapshot' and r.repository_snapshot_id = old.repository_snapshot_id)
+          or (r.target_type = 'file' and old.target_type = 'file' and r.target_ref = old.file_path)
+          or (r.target_type = 'symbol' and old.target_type = 'symbol' and r.target_ref = old.symbol)
+      )
+)
+begin
+    select raise(abort, 'cannot update review plan target referenced by review runs');
+end;
+
+create trigger if not exists trg_review_plan_target_referenced_delete
+before delete on review_plan_targets
+for each row
+when exists (
+    select 1
+    from review_runs r
+    where r.review_plan_id = old.review_plan_id
+      and (
+          (r.target_type = 'design_version' and old.target_type = 'design_version' and r.design_version_id = old.design_version_id)
+          or (r.target_type = 'design_requirement' and old.target_type = 'design_requirement' and r.design_requirement_id = old.design_requirement_id)
+          or (r.target_type = 'task' and old.target_type = 'task' and r.task_id = old.task_id)
+          or (r.target_type = 'work_unit' and old.target_type = 'work_unit' and r.work_unit_id = old.work_unit_id)
+          or (r.target_type = 'repository_snapshot' and old.target_type = 'repository_snapshot' and r.repository_snapshot_id = old.repository_snapshot_id)
+          or (r.target_type = 'file' and old.target_type = 'file' and r.target_ref = old.file_path)
+          or (r.target_type = 'symbol' and old.target_type = 'symbol' and r.target_ref = old.symbol)
+      )
+)
+begin
+    select raise(abort, 'cannot delete review plan target referenced by review runs');
 end;
 
 create trigger if not exists trg_finding_project_insert
