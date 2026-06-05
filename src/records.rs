@@ -271,15 +271,16 @@ fn insert_work_record_file(
 
 pub fn export_work_record_markdown(root: &Path, work_record_id: i64) -> Result<String> {
     let conn = open_existing_project(root)?;
+    let current_project_id = project_id(&conn)?;
     let record = conn
         .query_row(
             r#"
             select id, work_unit_id, topic, work_performed, next_actions,
                    notable_operations, created_at
             from work_records
-            where id = ?1
+            where id = ?1 and project_id = ?2
             "#,
-            params![work_record_id],
+            params![work_record_id, current_project_id],
             |row| {
                 Ok(StoredWorkRecord {
                     id: row.get(0)?,
@@ -337,21 +338,22 @@ fn work_record_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRecordEnt
 }
 
 fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<()> {
+    let current_project_id = project_id(conn)?;
     let exists = conn
         .query_row(
-            "select 1 from work_records where id = ?1",
-            params![work_record_id],
+            "select 1 from work_records where id = ?1 and project_id = ?2",
+            params![work_record_id, current_project_id],
             |_| Ok(()),
         )
         .optional()?;
     exists.context("work record not found")
 }
 
-fn work_record_project_id(conn: &Connection, work_record_id: i64) -> Result<Option<i64>> {
+fn work_record_project_id(conn: &Connection, work_record_id: i64) -> Result<i64> {
     conn.query_row(
         "select project_id from work_records where id = ?1",
         params![work_record_id],
-        |row| row.get::<_, Option<i64>>(0),
+        |row| row.get::<_, i64>(0),
     )
     .optional()?
     .context("work record not found")
@@ -360,7 +362,7 @@ fn work_record_project_id(conn: &Connection, work_record_id: i64) -> Result<Opti
 fn ensure_command_usage_project(
     conn: &Connection,
     command_usage_id: i64,
-    work_record_project_id: Option<i64>,
+    work_record_project_id: i64,
 ) -> Result<()> {
     let usage_project_id = conn
         .query_row(
@@ -370,14 +372,11 @@ fn ensure_command_usage_project(
             where cu.id = ?1
             "#,
             params![command_usage_id],
-            |row| row.get::<_, Option<i64>>(0),
+            |row| row.get::<_, i64>(0),
         )
         .optional()?
         .context("command usage not found")?;
-    if let (Some(work_record_project_id), Some(usage_project_id)) =
-        (work_record_project_id, usage_project_id)
-        && work_record_project_id != usage_project_id
-    {
+    if work_record_project_id != usage_project_id {
         anyhow::bail!("work record command usage must match work record project");
     }
     Ok(())
@@ -386,7 +385,7 @@ fn ensure_command_usage_project(
 fn ensure_command_profile_project(
     conn: &Connection,
     command_profile_id: i64,
-    work_record_project_id: Option<i64>,
+    work_record_project_id: i64,
 ) -> Result<()> {
     let profile_project_id = conn
         .query_row(
@@ -396,9 +395,7 @@ fn ensure_command_profile_project(
         )
         .optional()?
         .context("command profile not found")?;
-    if let Some(work_record_project_id) = work_record_project_id
-        && work_record_project_id != profile_project_id
-    {
+    if work_record_project_id != profile_project_id {
         anyhow::bail!("work record command profile must match work record project");
     }
     Ok(())

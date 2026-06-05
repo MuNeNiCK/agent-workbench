@@ -143,6 +143,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_acceptance_records(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
+    validate_project_scoped_ledger_links(conn)?;
     validate_review_required_links(conn)?;
     refresh_review_integrity_triggers(conn)?;
     refresh_ledger_integrity_triggers(conn)?;
@@ -258,39 +259,229 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
 fn prepare_project_scoped_ledger_rows_for_schema(conn: &Connection) -> Result<()> {
     if table_exists(conn, "work_records")? {
         ensure_column(conn, "work_records", "project_id", "integer")?;
-        conn.execute(
-            r#"
-            update work_records
-            set project_id = coalesce(
-                (select project_id from work_units where id = work_records.work_unit_id),
-                (select id from projects order by id limit 1)
-            )
-            where project_id is null
-            "#,
-            [],
-        )?;
+        if table_exists(conn, "work_units")? {
+            conn.execute(
+                r#"
+                update work_records
+                set project_id = (select project_id from work_units where id = work_records.work_unit_id)
+                where project_id is null and work_unit_id is not null
+                "#,
+                [],
+            )?;
+        }
+        if table_exists(conn, "projects")? {
+            conn.execute(
+                r#"
+                update work_records
+                set project_id = (select id from projects order by id limit 1)
+                where project_id is null
+                "#,
+                [],
+            )?;
+        }
     }
     if table_exists(conn, "command_usages")? {
         ensure_column(conn, "command_usages", "project_id", "integer")?;
-        conn.execute(
-            r#"
-            update command_usages
-            set project_id = coalesce(
-                (select project_id from command_profiles where id = command_usages.command_profile_id),
-                (select project_id from work_units where id = command_usages.work_unit_id),
-                (select project_id from work_unit_activations where id = command_usages.work_unit_activation_id),
-                (
+        if table_exists(conn, "command_profiles")? {
+            conn.execute(
+                r#"
+                update command_usages
+                set project_id = (select project_id from command_profiles where id = command_usages.command_profile_id)
+                where project_id is null and command_profile_id is not null
+                "#,
+                [],
+            )?;
+        }
+        if table_exists(conn, "work_units")? {
+            conn.execute(
+                r#"
+                update command_usages
+                set project_id = (select project_id from work_units where id = command_usages.work_unit_id)
+                where project_id is null and work_unit_id is not null
+                "#,
+                [],
+            )?;
+        }
+        if table_exists(conn, "work_unit_activations")? {
+            conn.execute(
+                r#"
+                update command_usages
+                set project_id = (select project_id from work_unit_activations where id = command_usages.work_unit_activation_id)
+                where project_id is null and work_unit_activation_id is not null
+                "#,
+                [],
+            )?;
+        }
+        if table_exists(conn, "repository_snapshots")? && table_exists(conn, "repositories")? {
+            conn.execute(
+                r#"
+                update command_usages
+                set project_id = (
                     select r.project_id
                     from repository_snapshots s
                     join repositories r on r.id = s.repository_id
                     where s.id = command_usages.repository_snapshot_id
-                ),
-                (select id from projects order by id limit 1)
-            )
-            where project_id is null
-            "#,
-            [],
-        )?;
+                )
+                where project_id is null and repository_snapshot_id is not null
+                "#,
+                [],
+            )?;
+        }
+        if table_exists(conn, "projects")? {
+            conn.execute(
+                r#"
+                update command_usages
+                set project_id = (select id from projects order by id limit 1)
+                where project_id is null
+                "#,
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
+    reject_invalid_rows(
+        conn,
+        "work_records",
+        r#"
+        select count(*)
+        from work_records wr
+        left join work_units w on w.id = wr.work_unit_id
+        where wr.project_id is null
+           or not exists (select 1 from projects where id = wr.project_id)
+           or (wr.work_unit_id is not null and (w.id is null or wr.project_id != w.project_id))
+        "#,
+        "work_records contains rows without a valid project_id",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "command_usages",
+        r#"
+        select count(*)
+        from command_usages cu
+        left join command_profiles cp on cp.id = cu.command_profile_id
+        left join work_units w on w.id = cu.work_unit_id
+        left join work_unit_activations a on a.id = cu.work_unit_activation_id
+        left join repository_snapshots s on s.id = cu.repository_snapshot_id
+        left join repositories sr on sr.id = s.repository_id
+        where cu.project_id is null
+           or not exists (select 1 from projects where id = cu.project_id)
+           or (cu.command_profile_id is not null and (cp.id is null or cu.project_id != cp.project_id))
+           or (cu.work_unit_id is not null and (w.id is null or cu.project_id != w.project_id))
+           or (cu.work_unit_activation_id is not null and (a.id is null or cu.project_id != a.project_id))
+           or (cu.repository_snapshot_id is not null and (s.id is null or cu.project_id != sr.project_id))
+        "#,
+        "command_usages contains rows without a valid project_id",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "work_record_commands",
+        r#"
+        select count(*)
+        from work_record_commands wrc
+        left join work_records wr on wr.id = wrc.work_record_id
+        left join command_usages cu on cu.id = wrc.command_usage_id
+        left join command_profiles cp on cp.id = wrc.command_profile_id
+        where wr.id is null
+           or (wrc.command_usage_id is not null and (cu.id is null or wr.project_id != cu.project_id))
+           or (wrc.command_profile_id is not null and (cp.id is null or wr.project_id != cp.project_id))
+        "#,
+        "work_record_commands contains cross-project links",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "work_record_commits",
+        r#"
+        select count(*)
+        from work_record_commits wrc
+        left join work_records wr on wr.id = wrc.work_record_id
+        left join git_commits gc on gc.id = wrc.git_commit_id
+        left join repositories r on r.id = gc.repository_id
+        where wr.id is null
+           or (
+               wrc.git_commit_id is not null
+               and (
+                   gc.id is null
+                   or wrc.commit_sha is null
+                   or wrc.commit_sha != gc.commit_sha
+                   or wr.project_id != r.project_id
+               )
+           )
+        "#,
+        "work_record_commits contains invalid git links",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "work_record_files",
+        r#"
+        select count(*)
+        from work_record_files wrf
+        left join work_records wr on wr.id = wrf.work_record_id
+        left join repositories r on r.id = wrf.repository_id
+        left join git_file_changes gf on gf.id = wrf.git_file_change_id
+        where wr.id is null
+           or (wrf.repository_id is not null and (r.id is null or wr.project_id != r.project_id))
+           or (
+               wrf.git_file_change_id is not null
+               and (
+                   gf.id is null
+                   or wrf.repository_id is null
+                   or wrf.repository_id != gf.repository_id
+                   or wrf.path != gf.path
+               )
+           )
+        "#,
+        "work_record_files contains invalid repository links",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "work_record_forks",
+        r#"
+        select count(*)
+        from work_record_forks f
+        left join work_units forked on forked.id = f.forked_work_unit_id
+        left join work_units source_w on source_w.id = f.source_work_unit_id
+        left join work_unit_activations source_a on source_a.id = f.source_work_unit_activation_id
+        left join work_records source_r on source_r.id = f.source_work_record_id
+        left join repository_snapshots source_s on source_s.id = f.source_repository_snapshot_id
+        left join repositories source_sr on source_sr.id = source_s.repository_id
+        left join git_commits source_gc on source_gc.id = f.source_git_commit_id
+        left join repositories source_gr on source_gr.id = source_gc.repository_id
+        where f.project_id is null
+           or forked.id is null
+           or f.project_id != forked.project_id
+           or (f.source_work_unit_id is not null and (source_w.id is null or f.project_id != source_w.project_id))
+           or (f.source_work_unit_activation_id is not null and (source_a.id is null or f.project_id != source_a.project_id))
+           or (f.source_work_record_id is not null and (source_r.id is null or f.project_id != source_r.project_id))
+           or (f.source_repository_snapshot_id is not null and (source_s.id is null or f.project_id != source_sr.project_id))
+           or (
+               f.source_git_commit_id is not null
+               and (
+                   source_gc.id is null
+                   or f.project_id != source_gr.project_id
+                   or (f.source_git_commit_sha is not null and f.source_git_commit_sha != source_gc.commit_sha)
+               )
+           )
+        "#,
+        "work_record_forks contains invalid project links",
+    )?;
+    Ok(())
+}
+
+fn reject_invalid_rows(
+    conn: &Connection,
+    table: &str,
+    sql: &str,
+    message: &'static str,
+) -> Result<()> {
+    if !table_exists(conn, table)? {
+        return Ok(());
+    }
+    let count: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+    if count > 0 {
+        bail!("{message}");
     }
     Ok(())
 }

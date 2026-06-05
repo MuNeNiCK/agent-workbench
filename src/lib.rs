@@ -8044,6 +8044,174 @@ Run the project test suite before implementation handoff.
     }
 
     #[test]
+    fn work_record_operations_reject_records_from_other_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-record-api', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_records(project_id, topic, created_at) values (2, 'other record', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        let other_record_id = conn.last_insert_rowid();
+        drop(conn);
+
+        let command_link = add_work_record_command(
+            temp.path(),
+            NewWorkRecordCommand {
+                work_record_id: other_record_id,
+                command_usage_id: None,
+                command_profile_id: None,
+                command: Some("cargo test"),
+                result: Some("pass"),
+                log_path: None,
+                note: None,
+            },
+        );
+        let commit_link = add_work_record_commit(
+            temp.path(),
+            NewWorkRecordCommit {
+                work_record_id: other_record_id,
+                commit_sha: "abc123",
+                role: "referenced",
+                note: None,
+            },
+        );
+        let file_link = add_work_record_file(
+            temp.path(),
+            NewWorkRecordFile {
+                work_record_id: other_record_id,
+                path: "src/lib.rs",
+                role: "changed",
+                note: None,
+            },
+        );
+        let exported = export_work_record_markdown(temp.path(), other_record_id);
+
+        assert!(command_link.is_err());
+        assert!(commit_link.is_err());
+        assert!(file_link.is_err());
+        assert!(exported.is_err());
+    }
+
+    #[test]
+    fn init_rejects_legacy_cross_project_work_record_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger_dir = temp.path().join(".agent-workbench");
+        fs::create_dir_all(&ledger_dir).unwrap();
+        let ledger_path = ledger_dir.join("ledger.sqlite");
+        let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+        conn.execute_batch(
+            r#"
+            create table schema_migrations (
+                version integer primary key,
+                applied_at text not null
+            );
+            insert into schema_migrations(version, applied_at)
+            values (4, current_timestamp);
+
+            create table projects (
+                id integer primary key,
+                name text not null,
+                root_path text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            insert into projects(id, name, root_path, created_at, updated_at)
+            values
+                (1, 'main', '/tmp/main-awb-legacy-link', current_timestamp, current_timestamp),
+                (2, 'other', '/tmp/other-awb-legacy-link', current_timestamp, current_timestamp);
+
+            create table work_units (
+                id integer primary key,
+                project_id integer not null,
+                title text not null,
+                status text not null,
+                started_at text
+            );
+            insert into work_units(id, project_id, title, status, started_at)
+            values (1, 2, 'other work', 'open', current_timestamp);
+
+            create table command_profiles (
+                id integer primary key,
+                project_id integer not null,
+                repository_id integer,
+                name text not null,
+                command text not null,
+                command_type text not null,
+                scope text,
+                status text not null,
+                stability text not null,
+                working_directory text,
+                environment text,
+                timeout text,
+                expected_result text,
+                replaces_command_profile_id integer,
+                source text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table command_usages (
+                id integer primary key,
+                command_profile_id integer,
+                work_unit_id integer,
+                work_unit_activation_id integer,
+                command text not null,
+                result text not null,
+                log_path text,
+                repository_snapshot_id integer,
+                created_at text not null
+            );
+            insert into command_usages(id, work_unit_id, command, result, created_at)
+            values (1, 1, 'cargo test', 'pass', current_timestamp);
+
+            create table work_records (
+                id integer primary key,
+                work_unit_id integer,
+                topic text not null,
+                work_performed text,
+                next_actions text,
+                notable_operations text,
+                export_path text,
+                created_at text not null
+            );
+            insert into work_records(id, work_unit_id, topic, created_at)
+            values (1, null, 'legacy detached record', current_timestamp);
+
+            create table work_record_commands (
+                id integer primary key,
+                work_record_id integer not null,
+                command_usage_id integer,
+                command_profile_id integer,
+                command text,
+                result text,
+                log_path text,
+                note text
+            );
+            insert into work_record_commands(id, work_record_id, command_usage_id)
+            values (1, 1, 1);
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = init_project(temp.path());
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("work_record_commands contains cross-project links"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn implementation_evidence_rejects_tasks_without_work_units() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
