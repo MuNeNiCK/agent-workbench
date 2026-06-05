@@ -12,18 +12,20 @@ pub use authority::{
     list_authority_events,
 };
 pub use commands::{
-    CommandDeviationOutcome, CommandOutcome, CommandProfileRecord, CommandUsageOutcome,
-    NewCommandDeviation, NewCommandProfile, NewCommandUsage, add_command_deviation,
-    add_command_usage, add_fixed_command, list_command_profiles,
+    CommandDeviationOutcome, CommandOutcome, CommandProfileRecord, CommandUsageListQuery,
+    CommandUsageOutcome, CommandUsageRecord, NewCommandDeviation, NewCommandProfile,
+    NewCommandUsage, add_command_deviation, add_command_usage, add_fixed_command,
+    list_command_profiles, list_command_usages,
 };
 pub use db::{
     ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_ledger_path, init_project,
     next_action, project_status,
 };
 pub use kpt::{
-    KptItemConversionOutcome, KptItemOutcome, KptItemTaskConversion, KptReviewCloseOutcome,
-    KptReviewOutcome, NewKptItem, NewKptReview, add_kpt_item, close_kpt_review,
-    convert_kpt_item_to_task, start_kpt_review,
+    KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
+    KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem, NewKptReview,
+    add_kpt_item, close_kpt_review, convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews,
+    start_kpt_review,
 };
 pub use planning::{
     DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskCloseOutcome, TaskListQuery,
@@ -32,7 +34,7 @@ pub use planning::{
 pub use records::{
     NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, WorkRecordEntry,
     WorkRecordLinkOutcome, WorkRecordOutcome, add_work_record_command, add_work_record_commit,
-    add_work_record_file, create_work_record, list_work_records,
+    add_work_record_file, create_work_record, export_work_record_markdown, list_work_records,
 };
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
@@ -283,6 +285,17 @@ mod tests {
         assert_eq!(usage.work_unit_id, Some(work.work_unit_id));
         assert_eq!(deviation.command_profile_id, profile.command_profile_id);
         assert_eq!(deviation.work_unit_id, Some(work.work_unit_id));
+
+        let usages = list_command_usages(
+            temp.path(),
+            CommandUsageListQuery {
+                profile: Some("unit-tests"),
+                work_unit_id: Some(work.work_unit_id),
+            },
+        )
+        .unwrap();
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].command, "cargo test");
     }
 
     #[test]
@@ -343,6 +356,13 @@ mod tests {
         assert_eq!(command.link_id, 1);
         assert_eq!(commit.link_id, 1);
         assert_eq!(file.link_id, 1);
+
+        let markdown =
+            export_work_record_markdown(temp.path(), work_record.work_record_id).unwrap();
+        assert!(markdown.contains("# work record ledger"));
+        assert!(markdown.contains("cargo test -> pass"));
+        assert!(markdown.contains("abc123 [created]"));
+        assert!(markdown.contains("src/lib.rs [changed]"));
     }
 
     #[test]
@@ -617,6 +637,12 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, conversion.task_id);
         assert_eq!(tasks[0].title, "stabilize validation command");
+
+        let reviews = list_kpt_reviews(temp.path(), Some("open")).unwrap();
+        let items = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].linked_task_id, Some(conversion.task_id));
     }
 
     #[test]

@@ -135,6 +135,55 @@ pub fn add_command_usage(root: &Path, input: NewCommandUsage<'_>) -> Result<Comm
     })
 }
 
+pub fn list_command_usages(
+    root: &Path,
+    input: CommandUsageListQuery<'_>,
+) -> Result<Vec<CommandUsageRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let command_profile_id = match input.profile {
+        Some(profile) => Some(resolve_command_profile(&conn, project_id, profile)?),
+        None => None,
+    };
+    let mut records = Vec::new();
+
+    match (command_profile_id, input.work_unit_id) {
+        (Some(command_profile_id), Some(work_unit_id)) => {
+            let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_FILTERED)?;
+            let rows = stmt.query_map(
+                params![command_profile_id, work_unit_id],
+                command_usage_record,
+            )?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (Some(command_profile_id), None) => {
+            let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_BY_PROFILE)?;
+            let rows = stmt.query_map(params![command_profile_id], command_usage_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (None, Some(work_unit_id)) => {
+            let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_BY_WORK_UNIT)?;
+            let rows = stmt.query_map(params![work_unit_id], command_usage_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (None, None) => {
+            let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_ALL)?;
+            let rows = stmt.query_map([], command_usage_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    Ok(records)
+}
+
 pub fn add_command_deviation(
     root: &Path,
     input: NewCommandDeviation<'_>,
@@ -214,6 +263,45 @@ fn command_profile_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandPr
     })
 }
 
+fn command_usage_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandUsageRecord> {
+    Ok(CommandUsageRecord {
+        id: row.get(0)?,
+        command_profile_id: row.get(1)?,
+        work_unit_id: row.get(2)?,
+        command: row.get(3)?,
+        result: row.get(4)?,
+        log_path: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+const COMMAND_USAGE_SELECT_ALL: &str = r#"
+select id, command_profile_id, work_unit_id, command, result, log_path, created_at
+from command_usages
+order by id
+"#;
+
+const COMMAND_USAGE_SELECT_BY_PROFILE: &str = r#"
+select id, command_profile_id, work_unit_id, command, result, log_path, created_at
+from command_usages
+where command_profile_id = ?1
+order by id
+"#;
+
+const COMMAND_USAGE_SELECT_BY_WORK_UNIT: &str = r#"
+select id, command_profile_id, work_unit_id, command, result, log_path, created_at
+from command_usages
+where work_unit_id = ?1
+order by id
+"#;
+
+const COMMAND_USAGE_SELECT_FILTERED: &str = r#"
+select id, command_profile_id, work_unit_id, command, result, log_path, created_at
+from command_usages
+where command_profile_id = ?1 and work_unit_id = ?2
+order by id
+"#;
+
 pub struct NewCommandProfile<'a> {
     pub name: &'a str,
     pub command_type: &'a str,
@@ -251,6 +339,22 @@ pub struct CommandUsageOutcome {
     pub command_usage_id: i64,
     pub command_profile_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+}
+
+pub struct CommandUsageListQuery<'a> {
+    pub profile: Option<&'a str>,
+    pub work_unit_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CommandUsageRecord {
+    pub id: i64,
+    pub command_profile_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+    pub command: String,
+    pub result: String,
+    pub log_path: Option<String>,
+    pub created_at: String,
 }
 
 pub struct NewCommandDeviation<'a> {

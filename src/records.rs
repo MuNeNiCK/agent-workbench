@@ -147,6 +147,62 @@ pub fn add_work_record_file(
     })
 }
 
+pub fn export_work_record_markdown(root: &Path, work_record_id: i64) -> Result<String> {
+    let conn = open_existing_project(root)?;
+    let record = conn
+        .query_row(
+            r#"
+            select id, work_unit_id, topic, work_performed, next_actions,
+                   notable_operations, created_at
+            from work_records
+            where id = ?1
+            "#,
+            params![work_record_id],
+            |row| {
+                Ok(StoredWorkRecord {
+                    id: row.get(0)?,
+                    work_unit_id: row.get(1)?,
+                    topic: row.get(2)?,
+                    work_performed: row.get(3)?,
+                    next_actions: row.get(4)?,
+                    notable_operations: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .context("work record not found")?;
+    let commands = work_record_commands(&conn, record.id)?;
+    let commits = work_record_commits(&conn, record.id)?;
+    let files = work_record_files(&conn, record.id)?;
+    let tasks = match record.work_unit_id {
+        Some(work_unit_id) => work_record_tasks(&conn, work_unit_id)?,
+        None => Vec::new(),
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", record.topic));
+    out.push_str(&format!("- work_record_id: {}\n", record.id));
+    out.push_str(&format!("- created_at: {}\n", record.created_at));
+    if let Some(work_unit_id) = record.work_unit_id {
+        out.push_str(&format!("- work_unit_id: {work_unit_id}\n"));
+    }
+
+    push_optional_section(&mut out, "Work Performed", record.work_performed.as_deref());
+    push_optional_section(&mut out, "Next Actions", record.next_actions.as_deref());
+    push_optional_section(
+        &mut out,
+        "Notable Operations",
+        record.notable_operations.as_deref(),
+    );
+    push_list_section(&mut out, "Commands", &commands);
+    push_list_section(&mut out, "Commits", &commits);
+    push_list_section(&mut out, "Files", &files);
+    push_list_section(&mut out, "Tasks", &tasks);
+
+    Ok(out)
+}
+
 fn work_record_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRecordEntry> {
     Ok(WorkRecordEntry {
         id: row.get(0)?,
@@ -167,6 +223,140 @@ fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<(
         )
         .optional()?;
     exists.context("work record not found")
+}
+
+fn work_record_commands(conn: &Connection, work_record_id: i64) -> Result<Vec<String>> {
+    let mut records = Vec::new();
+    let mut stmt = conn.prepare(
+        r#"
+        select command, result, log_path, note
+        from work_record_commands
+        where work_record_id = ?1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_record_id], |row| {
+        let command: Option<String> = row.get(0)?;
+        let result: Option<String> = row.get(1)?;
+        let log_path: Option<String> = row.get(2)?;
+        let note: Option<String> = row.get(3)?;
+        let mut text = command.unwrap_or_else(|| "(linked command usage)".to_string());
+        if let Some(result) = result {
+            text.push_str(&format!(" -> {result}"));
+        }
+        if let Some(log_path) = log_path {
+            text.push_str(&format!(" ({log_path})"));
+        }
+        if let Some(note) = note {
+            text.push_str(&format!(" - {note}"));
+        }
+        Ok(text)
+    })?;
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn work_record_commits(conn: &Connection, work_record_id: i64) -> Result<Vec<String>> {
+    let mut records = Vec::new();
+    let mut stmt = conn.prepare(
+        r#"
+        select commit_sha, role, note
+        from work_record_commits
+        where work_record_id = ?1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_record_id], |row| {
+        let commit_sha: String = row.get(0)?;
+        let role: String = row.get(1)?;
+        let note: Option<String> = row.get(2)?;
+        Ok(match note {
+            Some(note) => format!("{commit_sha} [{role}] - {note}"),
+            None => format!("{commit_sha} [{role}]"),
+        })
+    })?;
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn work_record_files(conn: &Connection, work_record_id: i64) -> Result<Vec<String>> {
+    let mut records = Vec::new();
+    let mut stmt = conn.prepare(
+        r#"
+        select path, role, note
+        from work_record_files
+        where work_record_id = ?1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_record_id], |row| {
+        let path: String = row.get(0)?;
+        let role: String = row.get(1)?;
+        let note: Option<String> = row.get(2)?;
+        Ok(match note {
+            Some(note) => format!("{path} [{role}] - {note}"),
+            None => format!("{path} [{role}]"),
+        })
+    })?;
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn work_record_tasks(conn: &Connection, work_unit_id: i64) -> Result<Vec<String>> {
+    let mut records = Vec::new();
+    let mut stmt = conn.prepare(
+        r#"
+        select id, title, priority, status
+        from tasks
+        where work_unit_id = ?1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id], |row| {
+        let id: i64 = row.get(0)?;
+        let title: String = row.get(1)?;
+        let priority: String = row.get(2)?;
+        let status: String = row.get(3)?;
+        Ok(format!("#{id} [{priority}:{status}] {title}"))
+    })?;
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn push_optional_section(out: &mut String, title: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        if !value.trim().is_empty() {
+            out.push_str(&format!("\n## {title}\n\n{value}\n"));
+        }
+    }
+}
+
+fn push_list_section(out: &mut String, title: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n## {title}\n\n"));
+    for value in values {
+        out.push_str(&format!("- {value}\n"));
+    }
+}
+
+struct StoredWorkRecord {
+    id: i64,
+    work_unit_id: Option<i64>,
+    topic: String,
+    work_performed: Option<String>,
+    next_actions: Option<String>,
+    notable_operations: Option<String>,
+    created_at: String,
 }
 
 pub struct NewWorkRecord<'a> {

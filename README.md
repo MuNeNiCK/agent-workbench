@@ -38,12 +38,14 @@ cargo run -- work follow-up 1 "related follow-up" --reason "later work found a r
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
 cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
 cargo run -- command usage add --profile tests --result pass --log local/logs/tests.log
+cargo run -- command usage list --profile tests
 cargo run -- command deviation add --profile tests --usage 1 --reason "platform-specific path"
 cargo run -- rules applicable --scope project
 cargo run -- record create --topic "current work" --work-performed "implemented feature" --next-actions "run review"
 cargo run -- record command add 1 --command "cargo test" --result pass
 cargo run -- record commit add 1 --sha "$(git rev-parse --short HEAD)" --role created
 cargo run -- record file add 1 --path src/lib.rs --role changed
+cargo run -- record export 1
 cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift
 cargo run -- task add "write parser tests" --priority high --source design
 cargo run -- task list --status open
@@ -51,6 +53,8 @@ cargo run -- decision add --topic database --decision "use one sqlite ledger per
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
 cargo run -- kpt start --scope project --summary "process review"
 cargo run -- kpt item add --type try --title "stabilize validation command"
+cargo run -- kpt list --status open
+cargo run -- kpt item list --review 1
 cargo run -- kpt item convert --item 1 --to task --priority high
 ```
 

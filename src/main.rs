@@ -5,16 +5,17 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
-    NewCommandUsage, NewDecision, NewKptItem, NewKptReview, NewTask, NewUserCorrection,
-    NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile,
-    NextAction, RuleQuery, TaskListQuery, WorkForkSource, add_authority_event,
+    CommandUsageListQuery, KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation,
+    NewCommandProfile, NewCommandUsage, NewDecision, NewKptItem, NewKptReview, NewTask,
+    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource, add_authority_event,
     add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
     add_task, add_user_correction, add_work_record_command, add_work_record_commit,
     add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record, fork_work, init_project,
-    interrupt_work, list_authority_events, list_command_profiles, list_decisions, list_tasks,
-    list_user_corrections, list_work_records, next_action, project_status, reopen_work,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    export_work_record_markdown, fork_work, init_project, interrupt_work, list_authority_events,
+    list_command_profiles, list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews,
+    list_tasks, list_user_corrections, list_work_records, next_action, project_status, reopen_work,
     resume_check_basic, resume_work, start_kpt_review, start_work, suspend_work,
 };
 
@@ -254,6 +255,7 @@ struct CommandListArgs {
 #[derive(Debug, Subcommand)]
 enum CommandUsageCommand {
     Add(CommandUsageAddArgs),
+    List(CommandUsageListArgs),
 }
 
 #[derive(Debug, Args)]
@@ -266,6 +268,14 @@ struct CommandUsageAddArgs {
     result: String,
     #[arg(long)]
     log: Option<String>,
+    #[arg(long)]
+    work_unit: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+struct CommandUsageListArgs {
+    #[arg(long)]
+    profile: Option<String>,
     #[arg(long)]
     work_unit: Option<i64>,
 }
@@ -302,6 +312,7 @@ struct RulesApplicableArgs {
 enum WorkRecordCommand {
     Create(WorkRecordCreateArgs),
     List(WorkRecordListArgs),
+    Export(WorkRecordExportArgs),
     Command {
         #[command(subcommand)]
         command: WorkRecordCommandLinkCommand,
@@ -336,6 +347,13 @@ struct WorkRecordCreateArgs {
 struct WorkRecordListArgs {
     #[arg(long)]
     work_unit: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+struct WorkRecordExportArgs {
+    work_record_id: i64,
+    #[arg(long, default_value = "md")]
+    format: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -498,6 +516,7 @@ struct AuthorityListArgs {
 #[derive(Debug, Subcommand)]
 enum KptCommand {
     Start(KptStartArgs),
+    List(KptListArgs),
     Close(KptCloseArgs),
     Item {
         #[command(subcommand)]
@@ -514,6 +533,12 @@ struct KptStartArgs {
 }
 
 #[derive(Debug, Args)]
+struct KptListArgs {
+    #[arg(long)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct KptCloseArgs {
     kpt_review_id: i64,
 }
@@ -521,6 +546,7 @@ struct KptCloseArgs {
 #[derive(Debug, Subcommand)]
 enum KptItemCommand {
     Add(KptItemAddArgs),
+    List(KptItemListArgs),
     Convert(KptItemConvertArgs),
 }
 
@@ -538,6 +564,12 @@ struct KptItemAddArgs {
     severity: String,
     #[arg(long)]
     proposed_action: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct KptItemListArgs {
+    #[arg(long)]
+    review: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -782,6 +814,32 @@ fn main() -> Result<()> {
                         println!("work_unit_id: {work_unit_id}");
                     }
                 }
+                CommandUsageCommand::List(args) => {
+                    let records = list_command_usages(
+                        &root,
+                        CommandUsageListQuery {
+                            profile: args.profile.as_deref(),
+                            work_unit_id: args.work_unit,
+                        },
+                    )?;
+                    if records.is_empty() {
+                        println!("no command usages");
+                    }
+                    for record in records {
+                        let profile = record
+                            .command_profile_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let work_unit = record
+                            .work_unit_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{} [profile={} work_unit={} {}] {}",
+                            record.id, profile, work_unit, record.result, record.command
+                        );
+                    }
+                }
             },
             MemoryCommand::Deviation { command } => match command {
                 CommandDeviationCommand::Add(args) => {
@@ -866,6 +924,15 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|| "-".to_string());
                     println!("{} [work_unit={}] {}", record.id, work_unit, record.topic);
                 }
+            }
+            WorkRecordCommand::Export(args) => {
+                if args.format != "md" {
+                    anyhow::bail!("only --format md is implemented");
+                }
+                print!(
+                    "{}",
+                    export_work_record_markdown(&root, args.work_record_id)?
+                );
             }
             WorkRecordCommand::Command { command } => match command {
                 WorkRecordCommandLinkCommand::Add(args) => {
@@ -1028,6 +1095,20 @@ fn main() -> Result<()> {
                 println!("started kpt review");
                 println!("kpt_review_id: {}", outcome.kpt_review_id);
             }
+            KptCommand::List(args) => {
+                let records = list_kpt_reviews(&root, args.status.as_deref())?;
+                if records.is_empty() {
+                    println!("no kpt reviews");
+                }
+                for record in records {
+                    let scope = record.scope.as_deref().unwrap_or("-");
+                    let summary = record.summary.as_deref().unwrap_or("");
+                    println!(
+                        "{} [scope={} {}] {}",
+                        record.id, scope, record.status, summary
+                    );
+                }
+            }
             KptCommand::Close(args) => {
                 let outcome = close_kpt_review(&root, args.kpt_review_id)?;
                 println!("closed kpt review");
@@ -1049,6 +1130,27 @@ fn main() -> Result<()> {
                     println!("added kpt item");
                     println!("kpt_item_id: {}", outcome.kpt_item_id);
                     println!("kpt_review_id: {}", outcome.kpt_review_id);
+                }
+                KptItemCommand::List(args) => {
+                    let records = list_kpt_items(&root, args.review)?;
+                    if records.is_empty() {
+                        println!("no kpt items");
+                    }
+                    for record in records {
+                        let task = record
+                            .linked_task_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{} [review={} {}:{} task={}] {}",
+                            record.id,
+                            record.kpt_review_id,
+                            record.item_type,
+                            record.status,
+                            task,
+                            record.title
+                        );
+                    }
                 }
                 KptItemCommand::Convert(args) => {
                     if args.target_type != "task" {

@@ -21,6 +21,45 @@ pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptRevie
     })
 }
 
+pub fn list_kpt_reviews(root: &Path, status: Option<&str>) -> Result<Vec<KptReviewRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut records = Vec::new();
+
+    match status {
+        Some(status) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, summary, status, created_at, closed_at
+                from kpt_reviews
+                where project_id = ?1 and status = ?2
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![project_id, status], kpt_review_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, summary, status, created_at, closed_at
+                from kpt_reviews
+                where project_id = ?1
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![project_id], kpt_review_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    Ok(records)
+}
+
 pub fn add_kpt_item(root: &Path, input: NewKptItem<'_>) -> Result<KptItemOutcome> {
     let conn = open_existing_project(root)?;
     let review_id = match input.kpt_review_id {
@@ -50,6 +89,43 @@ pub fn add_kpt_item(root: &Path, input: NewKptItem<'_>) -> Result<KptItemOutcome
         kpt_item_id: conn.last_insert_rowid(),
         kpt_review_id: review_id,
     })
+}
+
+pub fn list_kpt_items(root: &Path, kpt_review_id: Option<i64>) -> Result<Vec<KptItemRecord>> {
+    let conn = open_existing_project(root)?;
+    let mut records = Vec::new();
+
+    match kpt_review_id {
+        Some(kpt_review_id) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, kpt_review_id, item_type, title, severity, status, linked_task_id
+                from kpt_items
+                where kpt_review_id = ?1
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![kpt_review_id], kpt_item_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, kpt_review_id, item_type, title, severity, status, linked_task_id
+                from kpt_items
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map([], kpt_item_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    Ok(records)
 }
 
 pub fn close_kpt_review(root: &Path, kpt_review_id: i64) -> Result<KptReviewCloseOutcome> {
@@ -132,6 +208,29 @@ fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
     .context("no open kpt review; run kpt start first")
 }
 
+fn kpt_review_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptReviewRecord> {
+    Ok(KptReviewRecord {
+        id: row.get(0)?,
+        scope: row.get(1)?,
+        summary: row.get(2)?,
+        status: row.get(3)?,
+        created_at: row.get(4)?,
+        closed_at: row.get(5)?,
+    })
+}
+
+fn kpt_item_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptItemRecord> {
+    Ok(KptItemRecord {
+        id: row.get(0)?,
+        kpt_review_id: row.get(1)?,
+        item_type: row.get(2)?,
+        title: row.get(3)?,
+        severity: row.get(4)?,
+        status: row.get(5)?,
+        linked_task_id: row.get(6)?,
+    })
+}
+
 struct StoredKptItem {
     id: i64,
     title: String,
@@ -149,6 +248,16 @@ pub struct KptReviewOutcome {
     pub kpt_review_id: i64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptReviewRecord {
+    pub id: i64,
+    pub scope: Option<String>,
+    pub summary: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub closed_at: Option<String>,
+}
+
 pub struct NewKptItem<'a> {
     pub kpt_review_id: Option<i64>,
     pub item_type: &'a str,
@@ -162,6 +271,17 @@ pub struct NewKptItem<'a> {
 pub struct KptItemOutcome {
     pub kpt_item_id: i64,
     pub kpt_review_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptItemRecord {
+    pub id: i64,
+    pub kpt_review_id: i64,
+    pub item_type: String,
+    pub title: String,
+    pub severity: String,
+    pub status: String,
+    pub linked_task_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
