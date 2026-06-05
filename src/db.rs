@@ -921,6 +921,139 @@ create table if not exists validation_gate_templates (
     unique(design_version_id, gate_key)
 );
 
+create table if not exists validation_gate_template_requirements (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    validation_gate_template_id integer not null references validation_gate_templates(id) on delete cascade,
+    design_requirement_id integer not null references design_requirements(id) on delete cascade,
+    unique(validation_gate_template_id, design_requirement_id)
+);
+
+create table if not exists checklists (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    work_unit_id integer not null references work_units(id) on delete cascade,
+    design_version_id integer not null references design_versions(id) on delete cascade,
+    title text not null,
+    status text not null default 'active' check (status in ('active', 'stale', 'closed')),
+    created_by_review_run_id integer,
+    created_at text not null
+);
+
+create table if not exists checklist_items (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    checklist_id integer not null references checklists(id) on delete cascade,
+    design_requirement_id integer not null references design_requirements(id) on delete cascade,
+    task_id integer not null references tasks(id) on delete cascade,
+    item_order integer not null,
+    title text not null,
+    completion_condition text,
+    status text not null default 'open' check (status in ('open', 'blocked', 'closed', 'accepted_out_of_scope')),
+    unique(checklist_id, item_order)
+);
+
+create table if not exists task_derivations (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_requirement_id integer not null references design_requirements(id) on delete cascade,
+    task_id integer not null references tasks(id) on delete cascade,
+    checklist_item_id integer references checklist_items(id) on delete set null,
+    derivation_reason text,
+    generated_by_review_run_id integer,
+    status text not null default 'active' check (status in ('active', 'stale', 'closed')),
+    created_at text not null,
+    unique(design_requirement_id, task_id)
+);
+
+create trigger if not exists trg_gate_template_requirement_project_insert
+before insert on validation_gate_template_requirements
+for each row
+when new.project_id != (select project_id from validation_gate_templates where id = new.validation_gate_template_id)
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+begin
+    select raise(abort, 'validation gate template requirement project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_gate_template_requirement_project_update
+before update of project_id, validation_gate_template_id, design_requirement_id on validation_gate_template_requirements
+for each row
+when new.project_id != (select project_id from validation_gate_templates where id = new.validation_gate_template_id)
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+begin
+    select raise(abort, 'validation gate template requirement project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_checklist_project_insert
+before insert on checklists
+for each row
+when new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  or new.project_id != (select project_id from design_versions where id = new.design_version_id)
+begin
+    select raise(abort, 'checklist project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_checklist_project_update
+before update of project_id, work_unit_id, design_version_id on checklists
+for each row
+when new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  or new.project_id != (select project_id from design_versions where id = new.design_version_id)
+begin
+    select raise(abort, 'checklist project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_checklist_item_project_insert
+before insert on checklist_items
+for each row
+when new.project_id != (select project_id from checklists where id = new.checklist_id)
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  )
+begin
+    select raise(abort, 'checklist item project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_checklist_item_project_update
+before update of project_id, checklist_id, design_requirement_id, task_id on checklist_items
+for each row
+when new.project_id != (select project_id from checklists where id = new.checklist_id)
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  )
+begin
+    select raise(abort, 'checklist item project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_task_derivation_project_insert
+before insert on task_derivations
+for each row
+when new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  )
+  or (new.checklist_item_id is not null and new.project_id != (select project_id from checklist_items where id = new.checklist_item_id))
+begin
+    select raise(abort, 'task derivation project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_task_derivation_project_update
+before update of project_id, design_requirement_id, task_id, checklist_item_id on task_derivations
+for each row
+when new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  )
+  or (new.checklist_item_id is not null and new.project_id != (select project_id from checklist_items where id = new.checklist_item_id))
+begin
+    select raise(abort, 'task derivation project_id must match referenced rows');
+end;
+
 create trigger if not exists trg_acceptance_design_requirement_project_insert
 before insert on acceptance_records
 for each row

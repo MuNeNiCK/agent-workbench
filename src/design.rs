@@ -360,6 +360,14 @@ pub fn import_design_package(
                         template.status,
                     ],
                 )?;
+                let validation_gate_template_id = tx.last_insert_rowid();
+                insert_validation_gate_template_requirements(
+                    &tx,
+                    project_id,
+                    design_version_id,
+                    validation_gate_template_id,
+                    &template.requirement_keys,
+                )?;
             }
         }
     }
@@ -1194,6 +1202,50 @@ fn validate_requirement_version_transition(
         "requirement {} changed without increasing revision",
         requirement.requirement_key
     );
+}
+
+fn insert_validation_gate_template_requirements(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    validation_gate_template_id: i64,
+    requirement_keys: &Option<String>,
+) -> Result<()> {
+    let Some(requirement_keys) = requirement_keys else {
+        return Ok(());
+    };
+    for requirement_key in requirement_keys.split(',').filter(|key| !key.is_empty()) {
+        let design_requirement_id: i64 = conn
+            .query_row(
+                r#"
+                select id
+                from design_requirements
+                where project_id = ?1 and design_version_id = ?2 and requirement_key = ?3
+                "#,
+                params![project_id, design_version_id, requirement_key],
+                |row| row.get(0),
+            )
+            .optional()?
+            .with_context(|| {
+                format!(
+                    "validation gate applies_to references unknown requirement: {requirement_key}"
+                )
+            })?;
+        conn.execute(
+            r#"
+            insert into validation_gate_template_requirements(
+                project_id, validation_gate_template_id, design_requirement_id
+            )
+            values (?1, ?2, ?3)
+            "#,
+            params![
+                project_id,
+                validation_gate_template_id,
+                design_requirement_id
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn latest_requirement_id_by_key(

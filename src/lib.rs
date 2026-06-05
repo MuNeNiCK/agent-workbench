@@ -6,6 +6,7 @@ mod kpt;
 mod planning;
 mod records;
 mod rules;
+mod traceability;
 mod work;
 
 pub use authority::{
@@ -51,6 +52,11 @@ pub use records::{
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
     add_user_correction, applicable_rules, list_user_corrections,
+};
+pub use traceability::{
+    ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
+    NewTaskDerivation, TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord,
+    derive_task_from_requirement, implementation_ready, list_task_derivations,
 };
 pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
@@ -1328,6 +1334,236 @@ mod tests {
         assert_eq!(gates[0].stage, "implementation-ready");
         assert_eq!(gates[0].expected_result, "pass");
         assert_eq!(gates[0].requirement_keys.as_deref(), Some("REQ-001"));
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let linked_count: i64 = conn
+            .query_row(
+                "select count(*) from validation_gate_template_requirements",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked_count, 1);
+    }
+
+    #[test]
+    fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        let blocked = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+
+        let derivation = derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: Some("design task decomposition"),
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        let passed = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+        let records = list_task_derivations(
+            temp.path(),
+            TaskDerivationListQuery {
+                design_version_id: import.design_version_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocked.result, "blocked");
+        assert!(
+            blocked
+                .items
+                .iter()
+                .any(|item| { item.name == "task_derivations_exist" && item.result == "fail" })
+        );
+        assert_eq!(derivation.task_id, task.task_id);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].requirement_key, "REQ-001");
+        assert_eq!(passed.result, "pass");
+    }
+
+    #[test]
+    fn implementation_ready_blocks_stale_derivations_and_checklists() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import_a = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import_a.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import_a.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: Some("design task decomposition"),
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            r#"## REQ-001: Preserve cleanup behavior
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+revision: 2
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+This requirement describes changed cleanup behavior that must be implemented.
+"#,
+        )
+        .unwrap();
+        let import_b = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import_b.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+
+        let blocked = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import_b.design_version_id),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocked.result, "blocked");
+        assert!(
+            blocked
+                .items
+                .iter()
+                .any(|item| { item.name == "task_derivations_current" && item.result == "fail" })
+        );
+        assert!(
+            blocked
+                .items
+                .iter()
+                .any(|item| { item.name == "checklists_current" && item.result == "fail" })
+        );
     }
 
     #[test]

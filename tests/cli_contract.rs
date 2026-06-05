@@ -454,6 +454,107 @@ fn design_approve_allows_design_ready_gate_to_pass() {
 }
 
 #[test]
+fn trace_derivation_allows_implementation_ready_gate_to_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(
+        temp.path(),
+        &[
+            "task",
+            "add",
+            "implement cleanup",
+            "--priority",
+            "high",
+            "--source",
+            "design",
+            "--completion-condition",
+            "cleanup behavior is covered",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "approve",
+            "1",
+            "--summary",
+            "design passed document checks",
+        ],
+    );
+    let blocked = ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
+    assert!(blocked.contains("result: blocked"));
+    assert!(blocked.contains("task_derivations_exist: fail"));
+
+    let derivation = ok(
+        temp.path(),
+        &[
+            "trace",
+            "derive-task",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--reason",
+            "design task decomposition",
+        ],
+    );
+    let list = ok(
+        temp.path(),
+        &["trace", "derivation", "list", "--design", "1"],
+    );
+    let passed = ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
+
+    assert!(derivation.contains("derived task from requirement"));
+    assert!(derivation.contains("task_derivation_id: 1"));
+    assert!(list.contains("requirement=REQ-001 task=1"));
+    assert!(passed.contains("result: pass"));
+    assert!(passed.contains("task_derivations_exist: pass"));
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

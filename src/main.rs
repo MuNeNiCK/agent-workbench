@@ -6,23 +6,24 @@ use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
     CommandUsageListQuery, DesignDecisionListQuery, DesignPackageImport, DesignReadyCheck,
-    DesignRequirementListQuery, DesignVersionApproval, KptItemTaskConversion, NewAuthorityEvent,
-    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
-    NewDesignExceptionAcceptance, NewDesignPackage, NewKptItem, NewKptReview, NewTask,
-    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, ValidationGateTemplateListQuery,
-    WorkForkSource, accept_design_exception, accept_task_out_of_scope, add_authority_event,
-    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
-    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, applicable_rules, approve_design_version, close_active_work,
-    close_kpt_review, close_task, convert_kpt_item_to_task, create_follow_up_work,
-    create_work_record, design_ready, export_work_record_markdown, fork_work,
-    import_design_package, init_design_package, init_project, interrupt_work,
+    DesignRequirementListQuery, DesignVersionApproval, ImplementationReadyCheck,
+    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
+    NewCommandUsage, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage, NewKptItem,
+    NewKptReview, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork, NewWorkRecord,
+    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
+    TaskDerivationListQuery, TaskListQuery, ValidationGateTemplateListQuery, WorkForkSource,
+    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_command_deviation,
+    add_command_usage, add_decision, add_fixed_command, add_kpt_item, add_task,
+    add_user_correction, add_work_record_command, add_work_record_commit, add_work_record_file,
+    applicable_rules, approve_design_version, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
+    implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
     list_authority_events, list_command_profiles, list_command_usages, list_decisions,
-    list_design_decisions, list_design_requirements, list_kpt_items, list_kpt_reviews, list_tasks,
-    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
-    project_status, reopen_work, resume_check, resume_ready, resume_work, start_kpt_review,
-    start_work, suspend_work,
+    list_design_decisions, list_design_requirements, list_kpt_items, list_kpt_reviews,
+    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
+    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
+    resume_work, start_kpt_review, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -106,6 +107,11 @@ enum Command {
     GateTemplate {
         #[command(subcommand)]
         command: GateTemplateCommand,
+    },
+    /// Manage design traceability from requirements to work.
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
     },
     /// Accept explicit design exceptions.
     Acceptance {
@@ -222,6 +228,8 @@ enum GateCommand {
     ResumeReady(GateResumeReadyArgs),
     /// Check whether an imported design version is ready for implementation planning.
     DesignReady(GateDesignReadyArgs),
+    /// Check whether approved design work is decomposed and current.
+    ImplementationReady(GateImplementationReadyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -234,6 +242,14 @@ struct GateResumeReadyArgs {
 
 #[derive(Debug, Args)]
 struct GateDesignReadyArgs {
+    #[arg(long)]
+    design_version: Option<i64>,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct GateImplementationReadyArgs {
     #[arg(long)]
     design_version: Option<i64>,
     #[arg(long)]
@@ -611,6 +627,44 @@ struct GateTemplateListArgs {
 }
 
 #[derive(Debug, Subcommand)]
+enum TraceCommand {
+    DeriveTask(TraceDeriveTaskArgs),
+    Derivation {
+        #[command(subcommand)]
+        command: TraceDerivationCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+struct TraceDeriveTaskArgs {
+    #[arg(long)]
+    design: i64,
+    #[arg(long)]
+    requirement: String,
+    #[arg(long)]
+    task: i64,
+    #[arg(long)]
+    reason: Option<String>,
+    #[arg(long)]
+    checklist_title: Option<String>,
+    #[arg(long)]
+    item_title: Option<String>,
+    #[arg(long)]
+    completion_condition: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum TraceDerivationCommand {
+    List(TraceDerivationListArgs),
+}
+
+#[derive(Debug, Args)]
+struct TraceDerivationListArgs {
+    #[arg(long)]
+    design: i64,
+}
+
+#[derive(Debug, Subcommand)]
 enum AcceptanceCommand {
     Add(AcceptanceAddArgs),
 }
@@ -934,6 +988,35 @@ fn main() -> Result<()> {
                     },
                 )?;
                 println!("gate: design-ready");
+                println!("dry_run: true");
+                if let Some(design_package_id) = outcome.design_package_id {
+                    println!("design_package_id: {design_package_id}");
+                }
+                if let Some(design_version_id) = outcome.design_version_id {
+                    println!("design_version_id: {design_version_id}");
+                }
+                println!("result: {}", outcome.result);
+                if let Some(reason) = outcome.blocking_reason {
+                    println!("blocking_reason: {reason}");
+                }
+                for item in outcome.items {
+                    match item.detail {
+                        Some(detail) => println!("{}: {} ({})", item.name, item.result, detail),
+                        None => println!("{}: {}", item.name, item.result),
+                    }
+                }
+            }
+            GateCommand::ImplementationReady(args) => {
+                if !args.dry_run {
+                    anyhow::bail!("gate implementation-ready is read-only; pass --dry-run");
+                }
+                let outcome = implementation_ready(
+                    &root,
+                    ImplementationReadyCheck {
+                        design_version_id: args.design_version,
+                    },
+                )?;
+                println!("gate: implementation-ready");
                 println!("dry_run: true");
                 if let Some(design_package_id) = outcome.design_package_id {
                     println!("design_package_id: {design_package_id}");
@@ -1391,6 +1474,56 @@ fn main() -> Result<()> {
                     );
                 }
             }
+        },
+        Command::Trace { command } => match command {
+            TraceCommand::DeriveTask(args) => {
+                let outcome = derive_task_from_requirement(
+                    &root,
+                    NewTaskDerivation {
+                        design_version_id: args.design,
+                        requirement_key: &args.requirement,
+                        task_id: args.task,
+                        derivation_reason: args.reason.as_deref(),
+                        checklist_title: args.checklist_title.as_deref(),
+                        item_title: args.item_title.as_deref(),
+                        completion_condition: args.completion_condition.as_deref(),
+                    },
+                )?;
+                println!("derived task from requirement");
+                println!("task_derivation_id: {}", outcome.task_derivation_id);
+                println!("checklist_id: {}", outcome.checklist_id);
+                println!("checklist_item_id: {}", outcome.checklist_item_id);
+                println!("design_requirement_id: {}", outcome.design_requirement_id);
+                println!("task_id: {}", outcome.task_id);
+            }
+            TraceCommand::Derivation { command } => match command {
+                TraceDerivationCommand::List(args) => {
+                    let records = list_task_derivations(
+                        &root,
+                        TaskDerivationListQuery {
+                            design_version_id: args.design,
+                        },
+                    )?;
+                    if records.is_empty() {
+                        println!("no task derivations");
+                    }
+                    for record in records {
+                        let checklist_item = record
+                            .checklist_item_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{} [{}] requirement={} task={} checklist_item={} {}",
+                            record.id,
+                            record.status,
+                            record.requirement_key,
+                            record.task_id,
+                            checklist_item,
+                            record.task_title
+                        );
+                    }
+                }
+            },
         },
         Command::Acceptance { command } => match command {
             AcceptanceCommand::Add(args) => {
