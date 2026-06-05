@@ -8212,6 +8212,139 @@ Run the project test suite before implementation handoff.
     }
 
     #[test]
+    fn init_rejects_legacy_links_with_missing_repository_parent_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger_dir = temp.path().join(".agent-workbench");
+        fs::create_dir_all(&ledger_dir).unwrap();
+        let ledger_path = ledger_dir.join("ledger.sqlite");
+        let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+        conn.execute_batch(
+            r#"
+            create table schema_migrations (
+                version integer primary key,
+                applied_at text not null
+            );
+            insert into schema_migrations(version, applied_at)
+            values (4, current_timestamp);
+
+            create table projects (
+                id integer primary key,
+                name text not null,
+                root_path text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            insert into projects(id, name, root_path, created_at, updated_at)
+            values (1, 'main', '/tmp/main-awb-missing-repo', current_timestamp, current_timestamp);
+
+            create table repository_snapshots (
+                id integer primary key,
+                repository_id integer not null,
+                is_clean integer not null,
+                created_at text not null
+            );
+            insert into repository_snapshots(id, repository_id, is_clean, created_at)
+            values (1, 999, 1, current_timestamp);
+
+            create table command_usages (
+                id integer primary key,
+                command_profile_id integer,
+                work_unit_id integer,
+                work_unit_activation_id integer,
+                command text not null,
+                result text not null,
+                log_path text,
+                repository_snapshot_id integer,
+                created_at text not null
+            );
+            insert into command_usages(id, command, result, repository_snapshot_id, created_at)
+            values (1, 'cargo test', 'pass', 1, current_timestamp);
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = init_project(temp.path());
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("command_usages contains rows without a valid project_id"),
+            "{error}"
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let ledger_dir = temp.path().join(".agent-workbench");
+        fs::create_dir_all(&ledger_dir).unwrap();
+        let ledger_path = ledger_dir.join("ledger.sqlite");
+        let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+        conn.execute_batch(
+            r#"
+            create table schema_migrations (
+                version integer primary key,
+                applied_at text not null
+            );
+            insert into schema_migrations(version, applied_at)
+            values (4, current_timestamp);
+
+            create table projects (
+                id integer primary key,
+                name text not null,
+                root_path text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            insert into projects(id, name, root_path, created_at, updated_at)
+            values (1, 'main', '/tmp/main-awb-missing-commit-repo', current_timestamp, current_timestamp);
+
+            create table work_records (
+                id integer primary key,
+                work_unit_id integer,
+                topic text not null,
+                work_performed text,
+                next_actions text,
+                notable_operations text,
+                export_path text,
+                created_at text not null
+            );
+            insert into work_records(id, topic, created_at)
+            values (1, 'legacy record', current_timestamp);
+
+            create table git_commits (
+                id integer primary key,
+                repository_id integer not null,
+                commit_sha text not null,
+                created_at text not null
+            );
+            insert into git_commits(id, repository_id, commit_sha, created_at)
+            values (1, 999, 'abc123', current_timestamp);
+
+            create table work_record_commits (
+                id integer primary key,
+                work_record_id integer not null,
+                git_commit_id integer,
+                commit_sha text,
+                role text not null,
+                note text
+            );
+            insert into work_record_commits(id, work_record_id, git_commit_id, commit_sha, role)
+            values (1, 1, 1, 'abc123', 'referenced');
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = init_project(temp.path());
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("work_record_commits contains invalid git links"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn implementation_evidence_rejects_tasks_without_work_units() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();

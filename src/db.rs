@@ -371,7 +371,10 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
            or (cu.command_profile_id is not null and (cp.id is null or cu.project_id != cp.project_id))
            or (cu.work_unit_id is not null and (w.id is null or cu.project_id != w.project_id))
            or (cu.work_unit_activation_id is not null and (a.id is null or cu.project_id != a.project_id))
-           or (cu.repository_snapshot_id is not null and (s.id is null or cu.project_id != sr.project_id))
+           or (
+               cu.repository_snapshot_id is not null
+               and (s.id is null or sr.id is null or cu.project_id != sr.project_id)
+           )
         "#,
         "command_usages contains rows without a valid project_id",
     )?;
@@ -404,6 +407,7 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
                wrc.git_commit_id is not null
                and (
                    gc.id is null
+                   or r.id is null
                    or wrc.commit_sha is null
                    or wrc.commit_sha != gc.commit_sha
                    or wr.project_id != r.project_id
@@ -455,11 +459,15 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
            or (f.source_work_unit_id is not null and (source_w.id is null or f.project_id != source_w.project_id))
            or (f.source_work_unit_activation_id is not null and (source_a.id is null or f.project_id != source_a.project_id))
            or (f.source_work_record_id is not null and (source_r.id is null or f.project_id != source_r.project_id))
-           or (f.source_repository_snapshot_id is not null and (source_s.id is null or f.project_id != source_sr.project_id))
+           or (
+               f.source_repository_snapshot_id is not null
+               and (source_s.id is null or source_sr.id is null or f.project_id != source_sr.project_id)
+           )
            or (
                f.source_git_commit_id is not null
                and (
                    source_gc.id is null
+                   or source_gr.id is null
                    or f.project_id != source_gr.project_id
                    or (f.source_git_commit_sha is not null and f.source_git_commit_sha != source_gc.commit_sha)
                )
