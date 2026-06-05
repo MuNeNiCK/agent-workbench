@@ -467,6 +467,89 @@ pub fn list_validation_gate_templates(
     Ok(records)
 }
 
+pub fn accept_design_exception(
+    root: &Path,
+    input: NewDesignExceptionAcceptance<'_>,
+) -> Result<DesignExceptionAcceptanceOutcome> {
+    validate_design_acceptance_type(input.acceptance_type)?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let (target_type, design_requirement_id, validation_gate_template_id) =
+        resolve_design_acceptance_target(&tx, project_id, input.design_version_id, input.target)?;
+
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id, event_type, source, text_or_summary, scope, precedence,
+            status, created_at
+        )
+        values (?1, 'user_instruction', 'design acceptance', ?2, ?3, 100, 'active', current_timestamp)
+        "#,
+        params![
+            project_id,
+            format!(
+                "accepted design exception for {} on design version {}: {}",
+                input.target, input.design_version_id, input.reason
+            ),
+            input.design_version_id.to_string(),
+        ],
+    )?;
+    let authority_event_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, design_requirement_id,
+            validation_gate_template_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        )
+        values (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+            'user', 'approved', ?8, current_timestamp,
+            current_timestamp, 'design exception accepted for current design scope'
+        )
+        "#,
+        params![
+            project_id,
+            target_type,
+            design_requirement_id,
+            validation_gate_template_id,
+            input.acceptance_type,
+            input.reason,
+            input.design_version_id.to_string(),
+            authority_event_id,
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+    if input.acceptance_type == "accepted_out_of_scope" {
+        match target_type {
+            "design_requirement" => {
+                tx.execute(
+                    "update design_requirements set status = 'accepted_out_of_scope' where id = ?1",
+                    params![design_requirement_id],
+                )?;
+            }
+            "validation_gate_template" => {
+                tx.execute(
+                    "update validation_gate_templates set status = 'accepted_out_of_scope' where id = ?1",
+                    params![validation_gate_template_id],
+                )?;
+            }
+            _ => unreachable!("target type resolved above"),
+        }
+    }
+    tx.commit()?;
+
+    Ok(DesignExceptionAcceptanceOutcome {
+        acceptance_record_id,
+        authority_event_id,
+        target_type: target_type.to_string(),
+        design_requirement_id,
+        validation_gate_template_id,
+    })
+}
+
 pub fn approve_design_version(
     root: &Path,
     input: DesignVersionApproval<'_>,
@@ -777,6 +860,71 @@ fn resolve_design_version_for_gate(
             .map_err(Into::into)
         }
     }
+}
+
+fn resolve_design_acceptance_target(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    target: &str,
+) -> Result<(&'static str, Option<i64>, Option<i64>)> {
+    validate_design_acceptance_type_target(target)?;
+    if let Some(requirement_key) = target.strip_prefix("requirement:") {
+        let id = conn
+            .query_row(
+                r#"
+                select id
+                from design_requirements
+                where project_id = ?1 and design_version_id = ?2 and requirement_key = ?3
+                "#,
+                params![project_id, design_version_id, requirement_key],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("design requirement target not found")?;
+        return Ok(("design_requirement", Some(id), None));
+    }
+    if let Some(gate_key) = target.strip_prefix("gate:") {
+        let id = conn
+            .query_row(
+                r#"
+                select id
+                from validation_gate_templates
+                where project_id = ?1 and design_version_id = ?2 and gate_key = ?3
+                "#,
+                params![project_id, design_version_id, gate_key],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("validation gate template target not found")?;
+        return Ok(("validation_gate_template", None, Some(id)));
+    }
+    unreachable!("target was validated above")
+}
+
+fn validate_design_acceptance_type_target(target: &str) -> Result<()> {
+    if target
+        .strip_prefix("requirement:")
+        .is_some_and(valid_key_tail)
+        || target.strip_prefix("gate:").is_some_and(valid_key_tail)
+    {
+        return Ok(());
+    }
+    bail!("acceptance target must be requirement:<key> or gate:<key>");
+}
+
+fn validate_design_acceptance_type(acceptance_type: &str) -> Result<()> {
+    match acceptance_type {
+        "accepted_out_of_scope" | "explicit_exception" => Ok(()),
+        _ => bail!("acceptance type must be accepted_out_of_scope or explicit_exception"),
+    }
+}
+
+fn valid_key_tail(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDesignVersion> {
@@ -1411,6 +1559,13 @@ pub struct ValidationGateTemplateListQuery {
     pub design_version_id: i64,
 }
 
+pub struct NewDesignExceptionAcceptance<'a> {
+    pub design_version_id: i64,
+    pub target: &'a str,
+    pub acceptance_type: &'a str,
+    pub reason: &'a str,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DesignPackageInitOutcome {
     pub package_path: PathBuf,
@@ -1511,6 +1666,15 @@ pub struct ValidationGateTemplateRecord {
     pub requirement_keys: Option<String>,
     pub gate_text: String,
     pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DesignExceptionAcceptanceOutcome {
+    pub acceptance_record_id: i64,
+    pub authority_event_id: i64,
+    pub target_type: String,
+    pub design_requirement_id: Option<i64>,
+    pub validation_gate_template_id: Option<i64>,
 }
 
 impl DesignReadyItem {

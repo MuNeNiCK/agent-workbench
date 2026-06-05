@@ -250,6 +250,54 @@ fn design_import_lists_decisions_and_gate_templates() {
 }
 
 #[test]
+fn acceptance_add_records_design_exception() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let output = ok(
+        temp.path(),
+        &[
+            "acceptance",
+            "add",
+            "--design",
+            "1",
+            "--target",
+            "requirement:REQ-001",
+            "--type",
+            "accepted_out_of_scope",
+            "--reason",
+            "not needed for current scope",
+        ],
+    );
+
+    assert!(output.contains("accepted design exception"));
+    assert!(output.contains("target_type: design_requirement"));
+    assert!(output.contains("design_requirement_id: 1"));
+}
+
+#[test]
 fn requirement_list_prints_imported_requirements() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

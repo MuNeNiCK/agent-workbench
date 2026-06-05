@@ -27,10 +27,10 @@ pub use design::{
     DesignDecisionListQuery, DesignDecisionRecord, DesignPackageImport, DesignPackageImportOutcome,
     DesignPackageInitOutcome, DesignReadyCheck, DesignReadyItem, DesignReadyOutcome,
     DesignRequirementListQuery, DesignRequirementRecord, DesignVersionApproval,
-    DesignVersionApprovalOutcome, NewDesignPackage, ValidationGateTemplateListQuery,
-    ValidationGateTemplateRecord, approve_design_version, design_ready, import_design_package,
-    init_design_package, list_design_decisions, list_design_requirements,
-    list_validation_gate_templates,
+    DesignVersionApprovalOutcome, NewDesignExceptionAcceptance, NewDesignPackage,
+    ValidationGateTemplateListQuery, ValidationGateTemplateRecord, accept_design_exception,
+    approve_design_version, design_ready, import_design_package, init_design_package,
+    list_design_decisions, list_design_requirements, list_validation_gate_templates,
 };
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
@@ -1101,6 +1101,72 @@ mod tests {
         assert_eq!(gates[0].gate_key, "GATE-001");
         assert_eq!(gates[0].stage, "implementation-ready");
         assert_eq!(gates[0].requirement_keys.as_deref(), Some("REQ-001"));
+    }
+
+    #[test]
+    fn design_exception_acceptance_targets_requirements_and_gate_templates() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        let requirement_acceptance = accept_design_exception(
+            temp.path(),
+            NewDesignExceptionAcceptance {
+                design_version_id: import.design_version_id,
+                target: "requirement:REQ-001",
+                acceptance_type: "accepted_out_of_scope",
+                reason: "not needed for current scope",
+            },
+        )
+        .unwrap();
+        let gate_acceptance = accept_design_exception(
+            temp.path(),
+            NewDesignExceptionAcceptance {
+                design_version_id: import.design_version_id,
+                target: "gate:GATE-001",
+                acceptance_type: "explicit_exception",
+                reason: "manual validation for this draft",
+            },
+        )
+        .unwrap();
+        let requirements = list_design_requirements(
+            temp.path(),
+            DesignRequirementListQuery {
+                design_version_id: import.design_version_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(requirement_acceptance.target_type, "design_requirement");
+        assert!(requirement_acceptance.design_requirement_id.is_some());
+        assert_eq!(requirements[0].status, "accepted_out_of_scope".to_string());
+        assert_eq!(gate_acceptance.target_type, "validation_gate_template");
+        assert!(gate_acceptance.validation_gate_template_id.is_some());
     }
 
     #[test]

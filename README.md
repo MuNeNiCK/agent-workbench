@@ -58,6 +58,7 @@ cargo run -- design import .agent-workbench/designs/storage-lifecycle --status d
 cargo run -- requirement list --design 1
 cargo run -- design-decision list --design 1
 cargo run -- gate-template list --design 1
+cargo run -- acceptance add --design 1 --target requirement:REQ-001 --type accepted_out_of_scope --reason "not needed for current scope"
 cargo run -- design approve 1 --summary "design passed document checks"
 cargo run -- gate design-ready --design-version 1 --dry-run
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"

@@ -7,12 +7,13 @@ use clap::{Args, Parser, Subcommand};
 use agent_workbench::{
     CommandUsageListQuery, DesignDecisionListQuery, DesignPackageImport, DesignReadyCheck,
     DesignRequirementListQuery, DesignVersionApproval, KptItemTaskConversion, NewAuthorityEvent,
-    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage,
-    NewKptItem, NewKptReview, NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord,
-    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
-    TaskListQuery, ValidationGateTemplateListQuery, WorkForkSource, accept_task_out_of_scope,
-    add_authority_event, add_command_deviation, add_command_usage, add_decision, add_fixed_command,
-    add_kpt_item, add_task, add_user_correction, add_work_record_command, add_work_record_commit,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
+    NewDesignExceptionAcceptance, NewDesignPackage, NewKptItem, NewKptReview, NewTask,
+    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, ValidationGateTemplateListQuery,
+    WorkForkSource, accept_design_exception, accept_task_out_of_scope, add_authority_event,
+    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
+    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
     add_work_record_file, applicable_rules, approve_design_version, close_active_work,
     close_kpt_review, close_task, convert_kpt_item_to_task, create_follow_up_work,
     create_work_record, design_ready, export_work_record_markdown, fork_work,
@@ -105,6 +106,11 @@ enum Command {
     GateTemplate {
         #[command(subcommand)]
         command: GateTemplateCommand,
+    },
+    /// Accept explicit design exceptions.
+    Acceptance {
+        #[command(subcommand)]
+        command: AcceptanceCommand,
     },
     /// Manage authority events.
     Authority {
@@ -602,6 +608,23 @@ enum GateTemplateCommand {
 struct GateTemplateListArgs {
     #[arg(long)]
     design: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum AcceptanceCommand {
+    Add(AcceptanceAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct AcceptanceAddArgs {
+    #[arg(long)]
+    design: i64,
+    #[arg(long)]
+    target: String,
+    #[arg(long = "type")]
+    acceptance_type: String,
+    #[arg(long)]
+    reason: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1362,6 +1385,29 @@ fn main() -> Result<()> {
                         record.source_section,
                         record.source_path
                     );
+                }
+            }
+        },
+        Command::Acceptance { command } => match command {
+            AcceptanceCommand::Add(args) => {
+                let outcome = accept_design_exception(
+                    &root,
+                    NewDesignExceptionAcceptance {
+                        design_version_id: args.design,
+                        target: &args.target,
+                        acceptance_type: &args.acceptance_type,
+                        reason: &args.reason,
+                    },
+                )?;
+                println!("accepted design exception");
+                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+                println!("authority_event_id: {}", outcome.authority_event_id);
+                println!("target_type: {}", outcome.target_type);
+                if let Some(design_requirement_id) = outcome.design_requirement_id {
+                    println!("design_requirement_id: {design_requirement_id}");
+                }
+                if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
+                    println!("validation_gate_template_id: {validation_gate_template_id}");
                 }
             }
         },
