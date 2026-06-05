@@ -140,6 +140,12 @@ fn insert_command_usage(root: &Path, input: CommandUsageInput<'_>) -> Result<Com
         .work_unit_id
         .or_else(|| active.as_ref().map(|active| active.work_unit_id));
     let activation_id = active.as_ref().map(|active| active.activation_id);
+    if let Some(work_unit_id) = work_unit_id {
+        ensure_work_unit_project(&conn, work_unit_id, project_id)?;
+    }
+    if let (Some(command_profile_id), Some(work_unit_id)) = (command_profile_id, work_unit_id) {
+        ensure_profile_matches_work_unit(&conn, command_profile_id, work_unit_id)?;
+    }
 
     conn.execute(
         r#"
@@ -301,6 +307,39 @@ fn ensure_fixed_profile(conn: &rusqlite::Connection, command_profile_id: i64) ->
         bail!("command deviation requires a fixed command profile");
     }
     Ok(())
+}
+
+fn ensure_work_unit_project(
+    conn: &rusqlite::Connection,
+    work_unit_id: i64,
+    project_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        "select 1 from work_units where id = ?1 and project_id = ?2",
+        params![work_unit_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("work unit not found")
+}
+
+fn ensure_profile_matches_work_unit(
+    conn: &rusqlite::Connection,
+    command_profile_id: i64,
+    work_unit_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from command_profiles cp
+        join work_units w on w.id = ?2
+        where cp.id = ?1 and cp.project_id = w.project_id
+        "#,
+        params![command_profile_id, work_unit_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("command profile project must match work unit project")
 }
 
 fn ensure_usage_matches_profile(

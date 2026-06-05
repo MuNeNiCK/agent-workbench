@@ -1210,6 +1210,30 @@ create table if not exists command_profiles (
     unique(project_id, name)
 );
 
+create trigger if not exists trg_command_profile_repository_insert
+before insert on command_profiles
+for each row
+when new.repository_id is not null
+  and (
+      not exists (select 1 from repositories where id = new.repository_id)
+      or new.project_id != (select project_id from repositories where id = new.repository_id)
+  )
+begin
+    select raise(abort, 'command profile repository must match project_id');
+end;
+
+create trigger if not exists trg_command_profile_repository_update
+before update of project_id, repository_id on command_profiles
+for each row
+when new.repository_id is not null
+  and (
+      not exists (select 1 from repositories where id = new.repository_id)
+      or new.project_id != (select project_id from repositories where id = new.repository_id)
+  )
+begin
+    select raise(abort, 'command profile repository must match project_id');
+end;
+
 create table if not exists command_usages (
     id integer primary key,
     command_profile_id integer references command_profiles(id),
@@ -1221,6 +1245,80 @@ create table if not exists command_usages (
     repository_snapshot_id integer,
     created_at text not null
 );
+
+create trigger if not exists trg_command_usage_project_insert
+before insert on command_usages
+for each row
+when (new.command_profile_id is not null and not exists (
+      select 1 from command_profiles where id = new.command_profile_id
+  ))
+  or (new.work_unit_id is not null and not exists (
+      select 1 from work_units where id = new.work_unit_id
+  ))
+  or (new.work_unit_activation_id is not null and not exists (
+      select 1 from work_unit_activations where id = new.work_unit_activation_id
+  ))
+  or (
+      new.command_profile_id is not null
+      and new.work_unit_id is not null
+      and (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_units where id = new.work_unit_id
+      )
+  )
+  or (
+      new.command_profile_id is not null
+      and new.work_unit_activation_id is not null
+      and (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_unit_activations where id = new.work_unit_activation_id
+      )
+  )
+  or (
+      new.work_unit_id is not null
+      and new.work_unit_activation_id is not null
+      and (select project_id from work_units where id = new.work_unit_id) != (
+          select project_id from work_unit_activations where id = new.work_unit_activation_id
+      )
+  )
+begin
+    select raise(abort, 'command usage references must match project');
+end;
+
+create trigger if not exists trg_command_usage_project_update
+before update of command_profile_id, work_unit_id, work_unit_activation_id on command_usages
+for each row
+when (new.command_profile_id is not null and not exists (
+      select 1 from command_profiles where id = new.command_profile_id
+  ))
+  or (new.work_unit_id is not null and not exists (
+      select 1 from work_units where id = new.work_unit_id
+  ))
+  or (new.work_unit_activation_id is not null and not exists (
+      select 1 from work_unit_activations where id = new.work_unit_activation_id
+  ))
+  or (
+      new.command_profile_id is not null
+      and new.work_unit_id is not null
+      and (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_units where id = new.work_unit_id
+      )
+  )
+  or (
+      new.command_profile_id is not null
+      and new.work_unit_activation_id is not null
+      and (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_unit_activations where id = new.work_unit_activation_id
+      )
+  )
+  or (
+      new.work_unit_id is not null
+      and new.work_unit_activation_id is not null
+      and (select project_id from work_units where id = new.work_unit_id) != (
+          select project_id from work_unit_activations where id = new.work_unit_activation_id
+      )
+  )
+begin
+    select raise(abort, 'command usage references must match project');
+end;
 
 create table if not exists command_deviations (
     id integer primary key,
@@ -1333,6 +1431,22 @@ create table if not exists work_record_commands (
     note text
 );
 
+create trigger if not exists trg_work_record_command_required_insert
+before insert on work_record_commands
+for each row
+when new.command_usage_id is null and new.command is null
+begin
+    select raise(abort, 'work record command requires command_usage_id or command');
+end;
+
+create trigger if not exists trg_work_record_command_required_update
+before update of command_usage_id, command on work_record_commands
+for each row
+when new.command_usage_id is null and new.command is null
+begin
+    select raise(abort, 'work record command requires command_usage_id or command');
+end;
+
 create table if not exists work_record_commits (
     id integer primary key,
     work_record_id integer not null references work_records(id) on delete cascade,
@@ -1341,6 +1455,22 @@ create table if not exists work_record_commits (
     role text not null default 'referenced' check (role in ('created', 'referenced', 'validation_base', 'rollback_point')),
     note text
 );
+
+create trigger if not exists trg_work_record_commit_required_insert
+before insert on work_record_commits
+for each row
+when new.commit_sha is null
+begin
+    select raise(abort, 'work record commit requires commit_sha');
+end;
+
+create trigger if not exists trg_work_record_commit_required_update
+before update of commit_sha on work_record_commits
+for each row
+when new.commit_sha is null
+begin
+    select raise(abort, 'work record commit requires commit_sha');
+end;
 
 create table if not exists work_record_files (
     id integer primary key,
@@ -1521,7 +1651,15 @@ create table if not exists work_record_forks (
 create trigger if not exists trg_work_record_fork_repository_git_insert
 before insert on work_record_forks
 for each row
-when new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
+when new.forked_work_unit_id is null
+  or not exists (select 1 from work_units where id = new.forked_work_unit_id)
+  or (
+      (case when new.source_work_unit_activation_id is not null then 1 else 0 end)
+      + (case when new.source_work_record_id is not null then 1 else 0 end)
+      + (case when new.source_repository_snapshot_id is not null then 1 else 0 end)
+      + (case when new.source_git_commit_id is not null or new.source_git_commit_sha is not null then 1 else 0 end)
+  ) != 1
+  or new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
   or (new.source_work_unit_id is not null and new.project_id != (
       select project_id from work_units where id = new.source_work_unit_id
   ))
@@ -1567,7 +1705,15 @@ end;
 create trigger if not exists trg_work_record_fork_repository_git_update
 before update of project_id, source_work_unit_id, source_work_unit_activation_id, source_work_record_id, source_repository_snapshot_id, source_git_commit_id, source_git_commit_sha, forked_work_unit_id on work_record_forks
 for each row
-when new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
+when new.forked_work_unit_id is null
+  or not exists (select 1 from work_units where id = new.forked_work_unit_id)
+  or (
+      (case when new.source_work_unit_activation_id is not null then 1 else 0 end)
+      + (case when new.source_work_record_id is not null then 1 else 0 end)
+      + (case when new.source_repository_snapshot_id is not null then 1 else 0 end)
+      + (case when new.source_git_commit_id is not null or new.source_git_commit_sha is not null then 1 else 0 end)
+  ) != 1
+  or new.project_id != (select project_id from work_units where id = new.forked_work_unit_id)
   or (new.source_work_unit_id is not null and new.project_id != (
       select project_id from work_units where id = new.source_work_unit_id
   ))

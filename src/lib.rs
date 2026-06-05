@@ -7799,6 +7799,152 @@ Run the project test suite before implementation handoff.
     }
 
     #[test]
+    fn command_usage_rejects_cross_project_references_without_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-command-usage', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into command_profiles(
+                project_id, name, command, command_type, status, stability,
+                source, created_at, updated_at
+            )
+            values (1, 'test-command', 'cargo test', 'test', 'fixed', 'stable', 'user', current_timestamp, current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (2, 'other work', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let cross_project_usage = conn.execute(
+            r#"
+            insert into command_usages(command_profile_id, work_unit_id, command, result, created_at)
+            values (1, 1, 'cargo test', 'pass', current_timestamp)
+            "#,
+            [],
+        );
+
+        assert!(cross_project_usage.is_err());
+    }
+
+    #[test]
+    fn work_record_forks_require_target_and_one_source() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "fork source rules", None).unwrap();
+        suspend_work(temp.path(), "prepare fork", "redo").unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "fork source record",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'fork target', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let no_target = conn.execute(
+            r#"
+            insert into work_record_forks(project_id, fork_reason, discard_policy, status, created_at)
+            values (1, 'other', 'keep_history', 'open', current_timestamp)
+            "#,
+            [],
+        );
+        let no_source = conn.execute(
+            r#"
+            insert into work_record_forks(project_id, forked_work_unit_id, fork_reason, discard_policy, status, created_at)
+            values (1, 2, 'other', 'keep_history', 'open', current_timestamp)
+            "#,
+            [],
+        );
+        let multiple_sources = conn.execute(
+            r#"
+            insert into work_record_forks(
+                project_id, source_work_record_id, source_git_commit_sha,
+                forked_work_unit_id, fork_reason, discard_policy, status, created_at
+            )
+            values (1, ?1, 'abc123', 2, 'other', 'keep_history', 'open', current_timestamp)
+            "#,
+            params![record.work_record_id],
+        );
+
+        assert!(no_target.is_err());
+        assert!(no_source.is_err());
+        assert!(multiple_sources.is_err());
+    }
+
+    #[test]
+    fn command_profile_repository_and_empty_work_links_are_db_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "empty link rules", None).unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "empty link record",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-profile-repo', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into repositories(project_id, name, path, last_checked_at) values (2, 'other', '../other', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let cross_repository_profile = conn.execute(
+            r#"
+            insert into command_profiles(
+                project_id, repository_id, name, command, command_type,
+                status, stability, source, created_at, updated_at
+            )
+            values (1, 1, 'bad-profile', 'cargo test', 'test', 'fixed', 'stable', 'user', current_timestamp, current_timestamp)
+            "#,
+            [],
+        );
+        let empty_command_link = conn.execute(
+            "insert into work_record_commands(work_record_id) values (?1)",
+            params![record.work_record_id],
+        );
+        let empty_commit_link = conn.execute(
+            "insert into work_record_commits(work_record_id, role) values (?1, 'referenced')",
+            params![record.work_record_id],
+        );
+
+        assert!(cross_repository_profile.is_err());
+        assert!(empty_command_link.is_err());
+        assert!(empty_commit_link.is_err());
+    }
+
+    #[test]
     fn activation_unique_active_constraint_is_enforced() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
