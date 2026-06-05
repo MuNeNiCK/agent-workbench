@@ -5,12 +5,14 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewCommandProfile, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
-    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, WorkForkSource,
-    add_fixed_command, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, applicable_rules, close_active_work, create_work_record, fork_work,
-    init_project, interrupt_work, list_command_profiles, list_user_corrections, list_work_records,
-    next_action, project_status, resume_check_basic, resume_work, start_work, suspend_work,
+    NewAuthorityEvent, NewCommandProfile, NewDecision, NewTask, NewUserCorrection, NewWorkFork,
+    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction,
+    RuleQuery, TaskListQuery, WorkForkSource, add_authority_event, add_decision, add_fixed_command,
+    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
+    add_work_record_file, applicable_rules, close_active_work, close_task, create_work_record,
+    fork_work, init_project, interrupt_work, list_authority_events, list_command_profiles,
+    list_decisions, list_tasks, list_user_corrections, list_work_records, next_action,
+    project_status, resume_check_basic, resume_work, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -59,6 +61,21 @@ enum Command {
     WorkRecord {
         #[command(subcommand)]
         command: WorkRecordCommand,
+    },
+    /// Manage task ledger entries.
+    Task {
+        #[command(subcommand)]
+        command: TaskCommand,
+    },
+    /// Manage project decisions.
+    Decision {
+        #[command(subcommand)]
+        command: DecisionCommand,
+    },
+    /// Manage authority events.
+    Authority {
+        #[command(subcommand)]
+        command: AuthorityCommand,
     },
 }
 
@@ -302,6 +319,111 @@ struct WorkRecordFileAddArgs {
     role: String,
     #[arg(long)]
     note: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum TaskCommand {
+    Add(TaskAddArgs),
+    List(TaskListArgs),
+    Close(TaskCloseArgs),
+}
+
+#[derive(Debug, Args)]
+struct TaskAddArgs {
+    title: String,
+    #[arg(long, default_value = "medium")]
+    priority: String,
+    #[arg(long, default_value = "user")]
+    source: String,
+    #[arg(long)]
+    work_unit: Option<i64>,
+    #[arg(long)]
+    details: Option<String>,
+    #[arg(long)]
+    completion_condition: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct TaskListArgs {
+    #[arg(long)]
+    status: Option<String>,
+    #[arg(long)]
+    work_unit: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+struct TaskCloseArgs {
+    task_id: i64,
+    #[arg(long)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DecisionCommand {
+    Add(DecisionAddArgs),
+    List(DecisionListArgs),
+    Search(DecisionSearchArgs),
+}
+
+#[derive(Debug, Args)]
+struct DecisionAddArgs {
+    #[arg(long)]
+    topic: String,
+    #[arg(long)]
+    decision: String,
+    #[arg(long)]
+    key: Option<String>,
+    #[arg(long)]
+    rationale: Option<String>,
+    #[arg(long)]
+    compatibility_impact: Option<String>,
+    #[arg(long)]
+    authority_refs: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DecisionListArgs {
+    #[arg(long)]
+    query: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DecisionSearchArgs {
+    query: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthorityCommand {
+    Event {
+        #[command(subcommand)]
+        command: AuthorityEventCommand,
+    },
+    List(AuthorityListArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthorityEventCommand {
+    Add(AuthorityEventAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct AuthorityEventAddArgs {
+    #[arg(long = "type")]
+    event_type: String,
+    #[arg(long)]
+    summary: String,
+    #[arg(long)]
+    scope: Option<String>,
+    #[arg(long)]
+    source: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    precedence: i64,
+}
+
+#[derive(Debug, Args)]
+struct AuthorityListArgs {
+    #[arg(long)]
+    scope: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -605,7 +727,121 @@ fn main() -> Result<()> {
                 }
             },
         },
+        Command::Task { command } => match command {
+            TaskCommand::Add(args) => {
+                let outcome = add_task(
+                    &root,
+                    NewTask {
+                        title: &args.title,
+                        priority: &args.priority,
+                        source: &args.source,
+                        work_unit_id: args.work_unit,
+                        details: args.details.as_deref(),
+                        completion_condition: args.completion_condition.as_deref(),
+                    },
+                )?;
+                println!("added task");
+                println!("task_id: {}", outcome.task_id);
+                if let Some(work_unit_id) = outcome.work_unit_id {
+                    println!("work_unit_id: {work_unit_id}");
+                }
+            }
+            TaskCommand::List(args) => {
+                let records = list_tasks(
+                    &root,
+                    TaskListQuery {
+                        status: args.status.as_deref(),
+                        work_unit_id: args.work_unit,
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no tasks");
+                }
+                for record in records {
+                    let work_unit = record
+                        .work_unit_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    println!(
+                        "{} [work_unit={} {}:{}] {}",
+                        record.id, work_unit, record.priority, record.status, record.title
+                    );
+                }
+            }
+            TaskCommand::Close(args) => {
+                let outcome = close_task(&root, args.task_id, args.commit.as_deref())?;
+                println!("closed task");
+                println!("task_id: {}", outcome.task_id);
+            }
+        },
+        Command::Decision { command } => match command {
+            DecisionCommand::Add(args) => {
+                let outcome = add_decision(
+                    &root,
+                    NewDecision {
+                        decision_key: args.key.as_deref(),
+                        topic: &args.topic,
+                        decision: &args.decision,
+                        rationale: args.rationale.as_deref(),
+                        compatibility_impact: args.compatibility_impact.as_deref(),
+                        authority_refs: args.authority_refs.as_deref(),
+                    },
+                )?;
+                println!("added decision");
+                println!("decision_id: {}", outcome.decision_id);
+            }
+            DecisionCommand::List(args) => {
+                print_decisions(list_decisions(&root, args.query.as_deref())?);
+            }
+            DecisionCommand::Search(args) => {
+                print_decisions(list_decisions(&root, Some(&args.query))?);
+            }
+        },
+        Command::Authority { command } => match command {
+            AuthorityCommand::Event { command } => match command {
+                AuthorityEventCommand::Add(args) => {
+                    let outcome = add_authority_event(
+                        &root,
+                        NewAuthorityEvent {
+                            event_type: &args.event_type,
+                            source: args.source.as_deref(),
+                            summary: &args.summary,
+                            scope: args.scope.as_deref(),
+                            precedence: args.precedence,
+                        },
+                    )?;
+                    println!("added authority event");
+                    println!("authority_event_id: {}", outcome.authority_event_id);
+                }
+            },
+            AuthorityCommand::List(args) => {
+                let records = list_authority_events(&root, args.scope.as_deref())?;
+                if records.is_empty() {
+                    println!("no authority events");
+                }
+                for record in records {
+                    let scope = record.scope.as_deref().unwrap_or("-");
+                    println!(
+                        "{} [{} scope={} precedence={}] {}",
+                        record.id, record.event_type, scope, record.precedence, record.summary
+                    );
+                }
+            }
+        },
     }
 
     Ok(())
+}
+
+fn print_decisions(records: Vec<agent_workbench::DecisionRecord>) {
+    if records.is_empty() {
+        println!("no decisions");
+    }
+    for record in records {
+        let key = record.decision_key.as_deref().unwrap_or("-");
+        println!(
+            "{} [{}:{}] {}",
+            record.id, key, record.status, record.decision
+        );
+    }
 }

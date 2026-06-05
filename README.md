@@ -41,6 +41,10 @@ cargo run -- record command add 1 --command "cargo test" --result pass
 cargo run -- record commit add 1 --sha "$(git rev-parse --short HEAD)" --role created
 cargo run -- record file add 1 --path src/lib.rs --role changed
 cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift
+cargo run -- task add "write parser tests" --priority high --source design
+cargo run -- task list --status open
+cargo run -- decision add --topic database --decision "use one sqlite ledger per project"
+cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
 ```
 
 ## Local Preview
