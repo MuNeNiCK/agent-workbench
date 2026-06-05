@@ -999,6 +999,111 @@ mod tests {
     }
 
     #[test]
+    fn design_import_hashes_are_deterministic_and_change_with_content() {
+        let temp_a = tempfile::tempdir().unwrap();
+        init_project(temp_a.path()).unwrap();
+        let init_a = init_design_package(
+            temp_a.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init_a.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        let import_a = import_design_package(
+            temp_a.path(),
+            DesignPackageImport {
+                package_path: &init_a.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let conn_a = open_ledger(&default_ledger_path(temp_a.path())).unwrap();
+        let requirement_hash_a: String = conn_a
+            .query_row(
+                "select requirement_hash from design_requirements where design_version_id = ?1",
+                params![import_a.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let temp_b = tempfile::tempdir().unwrap();
+        init_project(temp_b.path()).unwrap();
+        let init_b = init_design_package(
+            temp_b.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init_b.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        let import_b = import_design_package(
+            temp_b.path(),
+            DesignPackageImport {
+                package_path: &init_b.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let conn_b = open_ledger(&default_ledger_path(temp_b.path())).unwrap();
+        let requirement_hash_b: String = conn_b
+            .query_row(
+                "select requirement_hash from design_requirements where design_version_id = ?1",
+                params![import_b.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let temp_c = tempfile::tempdir().unwrap();
+        init_project(temp_c.path()).unwrap();
+        let init_c = init_design_package(
+            temp_c.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init_c.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high")
+                .replace("one verifiable behavior", "a different verifiable behavior"),
+        )
+        .unwrap();
+        let import_c = import_design_package(
+            temp_c.path(),
+            DesignPackageImport {
+                package_path: &init_c.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let conn_c = open_ledger(&default_ledger_path(temp_c.path())).unwrap();
+        let requirement_hash_c: String = conn_c
+            .query_row(
+                "select requirement_hash from design_requirements where design_version_id = ?1",
+                params![import_c.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(import_a.content_hash, import_b.content_hash);
+        assert_eq!(requirement_hash_a, requirement_hash_b);
+        assert_ne!(import_a.content_hash, import_c.content_hash);
+        assert_ne!(requirement_hash_a, requirement_hash_c);
+    }
+
+    #[test]
     fn design_import_extracts_machine_readable_requirements() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -1315,9 +1420,219 @@ Body.
     }
 
     #[test]
+    fn design_import_rejects_non_strict_keys_revisions_and_unknown_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let bad_requirement_key = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-requirement-key",
+                title: "Bad Requirement Key",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_requirement_key
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001 extra", "Bad key", "high")
+                .replace("## REQ-001 extra", "## REQ-001 extra"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_requirement_key.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let bad_revision = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-revision",
+                title: "Bad Revision",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_revision
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            r#"## REQ-001: Bad revision
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+revision: 0
+priority: high
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_revision.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let unknown_field = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "unknown-field",
+                title: "Unknown Field",
+            },
+        )
+        .unwrap();
+        fs::write(
+            unknown_field
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            r#"## REQ-001: Unknown field
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+priority: high
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+surafces: [typo]
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &unknown_field.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let bad_decision_key = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-decision-key",
+                title: "Bad Decision Key",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_decision_key
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            bad_decision_key.package_path.join("09-decisions.md"),
+            decision_doc().replace("DEC-001", "DEC-bad"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_decision_key.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let bad_gate_key = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-gate-key",
+                title: "Bad Gate Key",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_gate_key
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            bad_gate_key
+                .package_path
+                .join("validation")
+                .join("gates.md"),
+            validation_gate_doc("GATE-foo"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_gate_key.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn design_import_rejects_duplicate_decisions_gates_and_oversized_files() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
+
+        let duplicate_requirement = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "duplicate-requirement",
+                title: "Duplicate Requirement",
+            },
+        )
+        .unwrap();
+        fs::write(
+            duplicate_requirement
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            format!(
+                "{}\n{}",
+                requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+                requirement_doc("REQ-001", "Preserve cleanup behavior again", "high")
+            ),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &duplicate_requirement.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
 
         let duplicate_decision = init_design_package(
             temp.path(),
@@ -1424,6 +1739,39 @@ Body.
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn acceptance_records_enforce_single_typed_target() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let missing_target = conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, acceptance_type, reason, created_by,
+                status, created_at
+            )
+            values (1, 'design_requirement', 'explicit_exception', 'missing target',
+                    'user', 'approved', current_timestamp)
+            "#,
+            [],
+        );
+        assert!(missing_target.is_err());
+
+        let wrong_target = conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, task_id, design_requirement_id,
+                acceptance_type, reason, created_by, status, created_at
+            )
+            values (1, 'task', 999, 999, 'explicit_exception', 'too many targets',
+                    'user', 'approved', current_timestamp)
+            "#,
+            [],
+        );
+        assert!(wrong_target.is_err());
     }
 
     #[test]

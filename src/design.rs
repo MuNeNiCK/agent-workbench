@@ -117,6 +117,13 @@ pub fn import_design_package(
     if manifest.version != 1 {
         bail!("unsupported design manifest version: {}", manifest.version);
     }
+    match manifest.status.as_str() {
+        "draft" | "imported" | "approved" | "superseded" | "archived" => {}
+        _ => bail!("invalid design manifest status: {}", manifest.status),
+    }
+    for dependency in &manifest.depends_on {
+        validate_design_id(dependency)?;
+    }
 
     let mut design_files = manifest.design_files();
     design_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -905,8 +912,10 @@ fn resolve_design_acceptance_target(
 fn validate_design_acceptance_type_target(target: &str) -> Result<()> {
     if target
         .strip_prefix("requirement:")
-        .is_some_and(valid_key_tail)
-        || target.strip_prefix("gate:").is_some_and(valid_key_tail)
+        .is_some_and(|key| valid_design_key(key, "REQ"))
+        || target
+            .strip_prefix("gate:")
+            .is_some_and(|key| valid_design_key(key, "GATE"))
     {
         return Ok(());
     }
@@ -920,11 +929,14 @@ fn validate_design_acceptance_type(acceptance_type: &str) -> Result<()> {
     }
 }
 
-fn valid_key_tail(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
+fn valid_design_key(value: &str, prefix: &str) -> bool {
+    let expected_prefix = format!("{prefix}-");
+    let Some(number) = value.strip_prefix(&expected_prefix) else {
+        return false;
+    };
+    !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && number.bytes().any(|byte| byte != b'0')
 }
 
 fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDesignVersion> {
@@ -1013,10 +1025,14 @@ fn extract_design_requirements(
         hasher.update(b"\0");
         hasher.update(body.as_bytes());
         let digest = hasher.finalize();
+        let revision = metadata.revision.unwrap_or(1);
+        if revision <= 0 {
+            bail!("requirement revision must be positive");
+        }
         requirements.push(ExtractedDesignRequirement {
             source_section,
             requirement_key: metadata.key,
-            revision: metadata.revision.unwrap_or(1),
+            revision,
             requirement_hash: hex_digest(&digest),
             requirement_text: body,
             priority: metadata.priority,
@@ -1037,8 +1053,8 @@ fn validate_requirement_metadata(
     if metadata.record_type != "requirement" {
         bail!("requirement metadata type must be requirement");
     }
-    if !metadata.key.starts_with("REQ-") {
-        bail!("requirement key must start with REQ-");
+    if !valid_design_key(&metadata.key, "REQ") {
+        bail!("requirement key must match REQ-<positive-number>");
     }
     if !source_section.starts_with(&metadata.key) {
         bail!("requirement heading must start with metadata key");
@@ -1118,8 +1134,8 @@ fn validate_decision_metadata(
     if metadata.record_type != "decision" {
         bail!("decision metadata type must be decision");
     }
-    if !metadata.key.starts_with("DEC-") {
-        bail!("decision key must start with DEC-");
+    if !valid_design_key(&metadata.key, "DEC") {
+        bail!("decision key must match DEC-<positive-number>");
     }
     if !source_section.starts_with(&metadata.key) {
         bail!("decision heading must start with metadata key");
@@ -1200,8 +1216,8 @@ fn validate_validation_gate_template_metadata(
     if metadata.record_type != "validation_gate_template" {
         bail!("validation gate metadata type must be validation_gate_template");
     }
-    if !metadata.key.starts_with("GATE-") {
-        bail!("validation gate key must start with GATE-");
+    if !valid_design_key(&metadata.key, "GATE") {
+        bail!("validation gate key must match GATE-<positive-number>");
     }
     if !source_section.starts_with(&metadata.key) {
         bail!("validation gate heading must start with metadata key");
@@ -1385,19 +1401,24 @@ fn markdown_stub(title: &str) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DesignManifest {
     id: String,
     title: String,
     format: String,
     version: i64,
+    status: String,
     arc42: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     requirements: Vec<String>,
     #[serde(default)]
     validation: Vec<String>,
+    #[serde(default)]
+    depends_on: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RequirementMetadata {
     #[serde(rename = "type")]
     record_type: String,
@@ -1413,6 +1434,7 @@ struct RequirementMetadata {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DecisionMetadata {
     #[serde(rename = "type")]
     record_type: String,
@@ -1424,6 +1446,7 @@ struct DecisionMetadata {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ValidationGateTemplateMetadata {
     #[serde(rename = "type")]
     record_type: String,

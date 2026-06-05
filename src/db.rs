@@ -546,8 +546,8 @@ create table if not exists acceptance_records (
     project_id integer not null references projects(id) on delete cascade,
     target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template')),
     task_id integer references tasks(id),
-    design_requirement_id integer,
-    validation_gate_template_id integer,
+    design_requirement_id integer references design_requirements(id),
+    validation_gate_template_id integer references validation_gate_templates(id),
     acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
     reason text not null,
     scope text,
@@ -556,7 +556,12 @@ create table if not exists acceptance_records (
     approved_by_authority_event_id integer references authority_events(id),
     approved_at text,
     created_at text not null,
-    review_impact text
+    review_impact text,
+    check (
+        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null)
+        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null)
+        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null)
+    )
 );
 
 create table if not exists rule_bindings (
