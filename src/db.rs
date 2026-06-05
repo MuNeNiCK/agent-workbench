@@ -140,6 +140,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     prepare_acceptance_records_for_schema(conn)?;
     conn.execute_batch(SCHEMA)?;
     migrate_acceptance_records(conn)?;
+    migrate_kpt_items(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
@@ -264,6 +265,87 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         drop table acceptance_records_old;
         "#,
     )?;
+    Ok(())
+}
+
+fn migrate_kpt_items(conn: &Connection) -> Result<()> {
+    let table_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'kpt_items'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+    if table_sql.contains("'converted'") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        pragma foreign_keys = off;
+
+        alter table kpt_item_conversions rename to kpt_item_conversions_old;
+        alter table kpt_items rename to kpt_items_old;
+
+        create table kpt_items (
+            id integer primary key,
+            kpt_review_id integer not null references kpt_reviews(id) on delete cascade,
+            item_type text not null check (item_type in ('keep', 'problem', 'try')),
+            title text not null,
+            details text,
+            severity text not null default 'medium' check (severity in ('critical', 'high', 'medium', 'low')),
+            linked_user_correction_id integer references user_corrections(id),
+            linked_command_profile_id integer references command_profiles(id),
+            linked_review_finding_id integer,
+            linked_task_id integer references tasks(id),
+            proposed_action text,
+            status text not null default 'open' check (status in ('open', 'accepted', 'converted', 'converted_to_task', 'dismissed')),
+            created_at text not null
+        );
+
+        insert into kpt_items(
+            id, kpt_review_id, item_type, title, details, severity,
+            linked_user_correction_id, linked_command_profile_id,
+            linked_review_finding_id, linked_task_id, proposed_action, status, created_at
+        )
+        select
+            id, kpt_review_id, item_type, title, details, severity,
+            linked_user_correction_id, linked_command_profile_id,
+            linked_review_finding_id, linked_task_id, proposed_action, status, created_at
+        from kpt_items_old;
+
+        create table kpt_item_conversions (
+            id integer primary key,
+            kpt_item_id integer not null references kpt_items(id) on delete cascade,
+            target_type text not null check (target_type in ('task', 'command_profile', 'review_policy', 'design_version', 'decision', 'user_correction')),
+            task_id integer references tasks(id),
+            command_profile_id integer references command_profiles(id),
+            review_policy_id integer,
+            design_version_id integer,
+            decision_id integer references decisions(id),
+            user_correction_id integer references user_corrections(id),
+            created_at text not null
+        );
+
+        insert into kpt_item_conversions(
+            id, kpt_item_id, target_type, task_id, command_profile_id,
+            review_policy_id, design_version_id, decision_id, user_correction_id, created_at
+        )
+        select
+            id, kpt_item_id, target_type, task_id, command_profile_id,
+            review_policy_id, design_version_id, decision_id, user_correction_id, created_at
+        from kpt_item_conversions_old;
+
+        drop table kpt_item_conversions_old;
+        drop table kpt_items_old;
+
+        pragma foreign_keys = on;
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -1506,7 +1588,7 @@ create table if not exists kpt_items (
     linked_review_finding_id integer,
     linked_task_id integer references tasks(id),
     proposed_action text,
-    status text not null default 'open' check (status in ('open', 'accepted', 'converted_to_task', 'dismissed')),
+    status text not null default 'open' check (status in ('open', 'accepted', 'converted', 'converted_to_task', 'dismissed')),
     created_at text not null
 );
 

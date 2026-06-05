@@ -40,10 +40,13 @@ pub use design::{
     list_design_decisions, list_design_requirements, list_validation_gate_templates,
 };
 pub use kpt::{
-    KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
-    KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem, NewKptReview,
-    add_kpt_item, close_kpt_review, convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews,
-    start_kpt_review,
+    KptItemConversionOutcome, KptItemDecisionConversion, KptItemDecisionConversionOutcome,
+    KptItemDesignVersionConversion, KptItemDesignVersionConversionOutcome, KptItemOutcome,
+    KptItemRecord, KptItemReviewPolicyConversion, KptItemReviewPolicyConversionOutcome,
+    KptItemTaskConversion, KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem,
+    NewKptReview, add_kpt_item, close_kpt_review, convert_kpt_item_to_decision,
+    convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
+    convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews, start_kpt_review,
 };
 pub use planning::{
     DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskAcceptanceOutcome, TaskCloseOutcome,
@@ -195,6 +198,88 @@ mod tests {
         assert_eq!(status.schema_version, Some(SCHEMA_VERSION));
         assert!(schema_sql.contains("created_by in ('user', 'agent', 'system')"));
         assert!(schema_sql.contains("status in ('proposed', 'approved', 'rejected', 'expired')"));
+    }
+
+    #[test]
+    fn init_migrates_existing_kpt_item_status_constraint() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute_batch(
+            r#"
+            pragma foreign_keys = off;
+
+            drop table kpt_item_conversions;
+            alter table kpt_items rename to kpt_items_current;
+
+            create table kpt_items (
+                id integer primary key,
+                kpt_review_id integer not null references kpt_reviews(id) on delete cascade,
+                item_type text not null check (item_type in ('keep', 'problem', 'try')),
+                title text not null,
+                details text,
+                severity text not null default 'medium' check (severity in ('critical', 'high', 'medium', 'low')),
+                linked_user_correction_id integer references user_corrections(id),
+                linked_command_profile_id integer references command_profiles(id),
+                linked_review_finding_id integer,
+                linked_task_id integer references tasks(id),
+                proposed_action text,
+                status text not null default 'open' check (status in ('open', 'accepted', 'converted_to_task', 'dismissed')),
+                created_at text not null
+            );
+
+            insert into kpt_items(
+                id, kpt_review_id, item_type, title, details, severity,
+                linked_user_correction_id, linked_command_profile_id,
+                linked_review_finding_id, linked_task_id, proposed_action, status, created_at
+            )
+            select
+                id, kpt_review_id, item_type, title, details, severity,
+                linked_user_correction_id, linked_command_profile_id,
+                linked_review_finding_id, linked_task_id, proposed_action, status, created_at
+            from kpt_items_current;
+
+            drop table kpt_items_current;
+
+            create table kpt_item_conversions (
+                id integer primary key,
+                kpt_item_id integer not null references kpt_items(id) on delete cascade,
+                target_type text not null check (target_type in ('task', 'command_profile', 'review_policy', 'design_version', 'decision', 'user_correction')),
+                task_id integer references tasks(id),
+                command_profile_id integer references command_profiles(id),
+                review_policy_id integer,
+                design_version_id integer,
+                decision_id integer references decisions(id),
+                user_correction_id integer references user_corrections(id),
+                created_at text not null
+            );
+
+            pragma foreign_keys = on;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            r#"
+            insert into kpt_reviews(project_id, trigger, summary, status, created_at)
+            values (1, 'manual', 'migration check', 'open', current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, severity, status, created_at
+            )
+            values (1, 'try', 'converted status is generic', 'medium', 'converted', current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -4105,6 +4190,7 @@ Run the project test suite before implementation handoff.
         let items = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
         assert_eq!(reviews.len(), 1);
         assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, "converted");
         assert_eq!(items[0].linked_task_id, Some(conversion.task_id));
     }
 
@@ -4144,6 +4230,245 @@ Run the project test suite before implementation handoff.
             items[0].title,
             "Repeated correction: validation command drifts"
         );
+    }
+
+    #[test]
+    fn kpt_review_can_import_open_findings() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "fix error handling", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "implementation-quality",
+                review_type: "implementation_review",
+                max_fresh_agents: 2,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 1,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "implementation-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let run = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("found a gap"),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: run.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "missing error context",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+
+        let kpt = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("finding triage"),
+                from: Some("findings"),
+                period: None,
+            },
+        )
+        .unwrap();
+
+        let items = list_kpt_items(temp.path(), Some(kpt.kpt_review_id)).unwrap();
+        assert_eq!(kpt.generated_item_count, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_type, "problem");
+        assert_eq!(items[0].severity, "high");
+        assert_eq!(items[0].title, "Review finding: missing error context");
+
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let linked_finding: i64 = conn
+            .query_row(
+                "select linked_review_finding_id from kpt_items where id = ?1",
+                params![items[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked_finding, 1);
+    }
+
+    #[test]
+    fn kpt_item_can_convert_to_policy_decision_and_design_version() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let review = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("process tuning"),
+                from: None,
+                period: None,
+            },
+        )
+        .unwrap();
+        let policy_item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(review.kpt_review_id),
+                item_type: "try",
+                title: "require two clean implementation passes",
+                details: Some("one clean pass missed regressions"),
+                severity: "medium",
+                proposed_action: Some("tighten implementation quality checks"),
+            },
+        )
+        .unwrap();
+        let decision_item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(review.kpt_review_id),
+                item_type: "keep",
+                title: "fixed validation command",
+                details: Some(
+                    "cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings",
+                ),
+                severity: "medium",
+                proposed_action: None,
+            },
+        )
+        .unwrap();
+        let design_item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(review.kpt_review_id),
+                item_type: "problem",
+                title: "design package needs explicit trace gate",
+                details: None,
+                severity: "high",
+                proposed_action: None,
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "trace-gates",
+                title: "Trace Gates",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve trace gate behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let imported = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        let policy = convert_kpt_item_to_review_policy(
+            temp.path(),
+            KptItemReviewPolicyConversion {
+                kpt_item_id: policy_item.kpt_item_id,
+                name: Some("two-clean-implementation-passes"),
+                review_type: "implementation_review",
+                max_fresh_agents: 2,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 2,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                on_max_agents_exceeded: "block",
+            },
+        )
+        .unwrap();
+        let decision = convert_kpt_item_to_decision(
+            temp.path(),
+            KptItemDecisionConversion {
+                kpt_item_id: decision_item.kpt_item_id,
+                decision_key: Some("DEC-KPT-001"),
+                topic: Some("validation command"),
+                decision: None,
+                rationale: Some("avoid command drift"),
+                compatibility_impact: None,
+                authority_refs: None,
+            },
+        )
+        .unwrap();
+        let design = convert_kpt_item_to_design_version(
+            temp.path(),
+            KptItemDesignVersionConversion {
+                kpt_item_id: design_item.kpt_item_id,
+                design_version_id: imported.design_version_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(policy.review_policy_id, 1);
+        assert_eq!(decision.decision_id, 1);
+        assert_eq!(design.design_version_id, imported.design_version_id);
+
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let conversion_count: i64 = conn
+            .query_row("select count(*) from kpt_item_conversions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let converted_count: i64 = conn
+            .query_row(
+                "select count(*) from kpt_items where status = 'converted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(conversion_count, 3);
+        assert_eq!(converted_count, 3);
     }
 
     #[test]

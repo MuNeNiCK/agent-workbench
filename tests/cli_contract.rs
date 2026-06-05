@@ -975,6 +975,17 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "missing error handling",
         ],
     );
+    let kpt = ok(
+        temp.path(),
+        &[
+            "kpt",
+            "start",
+            "--summary",
+            "triage open findings",
+            "--from",
+            "findings",
+        ],
+    );
     let classified = ok(
         temp.path(),
         &["finding", "classify", "1", "--classification", "valid"],
@@ -1038,6 +1049,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
     assert!(plan.contains("review_plan_id: 1"));
     assert!(fresh_run.contains("plan_status: open"));
     assert!(finding.contains("finding_id: 1"));
+    assert!(kpt.contains("generated_item_count: 1"));
     assert!(classified.contains("classified finding"));
     assert!(closure.contains("closure_id: 1"));
     assert!(resume_run.contains("review_run_id: 2"));

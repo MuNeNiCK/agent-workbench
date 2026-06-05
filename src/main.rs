@@ -8,6 +8,7 @@ use agent_workbench::{
     CommandUsageListQuery, CoverageItemListQuery, DesignDecisionListQuery, DesignPackageImport,
     DesignReadyCheck, DesignRequirementListQuery, DesignVersionApproval,
     ImplementationEvidenceListQuery, ImplementationEvidenceRecord, ImplementationReadyCheck,
+    KptItemDecisionConversion, KptItemDesignVersionConversion, KptItemReviewPolicyConversion,
     KptItemTaskConversion, NewAuthorityEvent, NewClosure, NewCommandDeviation, NewCommandProfile,
     NewCommandUsage, NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage,
     NewFinding, NewFindingVerification, NewImplementationEvidence, NewKptItem, NewKptReview,
@@ -21,16 +22,18 @@ use agent_workbench::{
     add_review_plan, add_review_policy, add_review_run, add_task, add_user_correction,
     add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
     approve_design_version, classify_finding, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
-    derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
-    implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
-    list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
-    list_decisions, list_design_decisions, list_design_requirements, list_findings,
-    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_review_plans,
-    list_review_policies, list_review_runs, list_review_scopes, list_task_derivations, list_tasks,
-    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
-    project_status, reopen_work, resume_check, resume_ready, resume_work, select_validation_gate,
-    start_kpt_review, start_review_scope, start_work, suspend_work,
+    convert_kpt_item_to_decision, convert_kpt_item_to_design_version,
+    convert_kpt_item_to_review_policy, convert_kpt_item_to_task, create_follow_up_work,
+    create_work_record, derive_task_from_requirement, design_ready, export_work_record_markdown,
+    fork_work, implementation_ready, import_design_package, init_design_package, init_project,
+    interrupt_work, list_authority_events, list_command_profiles, list_command_usages,
+    list_coverage_items, list_decisions, list_design_decisions, list_design_requirements,
+    list_findings, list_implementation_evidence, list_kpt_items, list_kpt_reviews,
+    list_review_plans, list_review_policies, list_review_runs, list_review_scopes,
+    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
+    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
+    resume_work, select_validation_gate, start_kpt_review, start_review_scope, start_work,
+    suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -1091,7 +1094,7 @@ struct KptCloseArgs {
 enum KptItemCommand {
     Add(KptItemAddArgs),
     List(KptItemListArgs),
-    Convert(KptItemConvertArgs),
+    Convert(Box<KptItemConvertArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -1130,6 +1133,34 @@ struct KptItemConvertArgs {
     priority: String,
     #[arg(long)]
     work_unit: Option<i64>,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long = "review-type")]
+    review_type: Option<String>,
+    #[arg(long, default_value_t = 1)]
+    fresh_clean: i64,
+    #[arg(long, default_value_t = 0)]
+    resume_clean: i64,
+    #[arg(long, default_value_t = 1)]
+    max_fresh_agents: i64,
+    #[arg(long, default_value_t = 1)]
+    max_resume_agents: i64,
+    #[arg(long, default_value_t = 1)]
+    max_parallel_agents: i64,
+    #[arg(long, default_value = "none")]
+    stop_on_severity: String,
+    #[arg(long, default_value = "block")]
+    on_max_agents_exceeded: String,
+    #[arg(long)]
+    decision_key: Option<String>,
+    #[arg(long)]
+    rationale: Option<String>,
+    #[arg(long)]
+    compatibility_impact: Option<String>,
+    #[arg(long)]
+    authority_refs: Option<String>,
+    #[arg(long)]
+    design_version: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -2386,24 +2417,80 @@ fn main() -> Result<()> {
                         );
                     }
                 }
-                KptItemCommand::Convert(args) => {
-                    if args.target_type != "task" {
-                        anyhow::bail!("only --to task is implemented");
+                KptItemCommand::Convert(args) => match args.target_type.as_str() {
+                    "task" => {
+                        let outcome = convert_kpt_item_to_task(
+                            &root,
+                            KptItemTaskConversion {
+                                kpt_item_id: args.item,
+                                task_title: args.title.as_deref(),
+                                details: args.details.as_deref(),
+                                priority: &args.priority,
+                                work_unit_id: args.work_unit,
+                            },
+                        )?;
+                        println!("converted kpt item");
+                        println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                        println!("task_id: {}", outcome.task_id);
                     }
-                    let outcome = convert_kpt_item_to_task(
-                        &root,
-                        KptItemTaskConversion {
-                            kpt_item_id: args.item,
-                            task_title: args.title.as_deref(),
-                            details: args.details.as_deref(),
-                            priority: &args.priority,
-                            work_unit_id: args.work_unit,
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("task_id: {}", outcome.task_id);
-                }
+                    "review-policy" | "review_policy" => {
+                        let review_type = args
+                            .review_type
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("--review-type is required"))?;
+                        let outcome = convert_kpt_item_to_review_policy(
+                            &root,
+                            KptItemReviewPolicyConversion {
+                                kpt_item_id: args.item,
+                                name: args.name.as_deref().or(args.title.as_deref()),
+                                review_type,
+                                max_fresh_agents: args.max_fresh_agents,
+                                max_resume_agents: args.max_resume_agents,
+                                max_parallel_agents: args.max_parallel_agents,
+                                required_consecutive_clean_fresh_runs: args.fresh_clean,
+                                required_consecutive_clean_resume_runs: args.resume_clean,
+                                stop_on_severity: &args.stop_on_severity,
+                                on_max_agents_exceeded: &args.on_max_agents_exceeded,
+                            },
+                        )?;
+                        println!("converted kpt item");
+                        println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                        println!("review_policy_id: {}", outcome.review_policy_id);
+                    }
+                    "decision" => {
+                        let outcome = convert_kpt_item_to_decision(
+                            &root,
+                            KptItemDecisionConversion {
+                                kpt_item_id: args.item,
+                                decision_key: args.decision_key.as_deref(),
+                                topic: args.title.as_deref(),
+                                decision: args.details.as_deref(),
+                                rationale: args.rationale.as_deref(),
+                                compatibility_impact: args.compatibility_impact.as_deref(),
+                                authority_refs: args.authority_refs.as_deref(),
+                            },
+                        )?;
+                        println!("converted kpt item");
+                        println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                        println!("decision_id: {}", outcome.decision_id);
+                    }
+                    "design-version" | "design_version" => {
+                        let design_version_id = args
+                            .design_version
+                            .ok_or_else(|| anyhow::anyhow!("--design-version is required"))?;
+                        let outcome = convert_kpt_item_to_design_version(
+                            &root,
+                            KptItemDesignVersionConversion {
+                                kpt_item_id: args.item,
+                                design_version_id,
+                            },
+                        )?;
+                        println!("converted kpt item");
+                        println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                        println!("design_version_id: {}", outcome.design_version_id);
+                    }
+                    other => anyhow::bail!("unsupported kpt item conversion target: {other}"),
+                },
             },
         },
     }

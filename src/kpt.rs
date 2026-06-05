@@ -26,20 +26,25 @@ pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptRevie
     )?;
     let kpt_review_id = tx.last_insert_rowid();
 
-    let generated_item_count = if input
+    let mut generated_item_count = 0;
+    if input
         .from
         .is_some_and(|source| source.split(',').any(|part| part.trim() == "corrections"))
     {
-        import_corrections_as_kpt_items(
+        generated_item_count += import_corrections_as_kpt_items(
             &tx,
             kpt_review_id,
             project_id,
             input.scope,
             period_modifier.as_deref(),
-        )?
-    } else {
-        0
-    };
+        )?;
+    }
+    if input
+        .from
+        .is_some_and(|source| source.split(',').any(|part| part.trim() == "findings"))
+    {
+        generated_item_count += import_findings_as_kpt_items(&tx, kpt_review_id, project_id)?;
+    }
 
     tx.commit()?;
 
@@ -217,7 +222,7 @@ pub fn convert_kpt_item_to_task(
     )?;
     let conversion_id = tx.last_insert_rowid();
     tx.execute(
-        "update kpt_items set status = 'converted_to_task', linked_task_id = ?1 where id = ?2",
+        "update kpt_items set status = 'converted', linked_task_id = ?1 where id = ?2",
         params![task_id, item.id],
     )?;
     tx.commit()?;
@@ -228,6 +233,166 @@ pub fn convert_kpt_item_to_task(
     })
 }
 
+pub fn convert_kpt_item_to_review_policy(
+    root: &Path,
+    input: KptItemReviewPolicyConversion<'_>,
+) -> Result<KptItemReviewPolicyConversionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let item = convertible_kpt_item(&tx, input.kpt_item_id)?;
+    let policy_name = input.name.unwrap_or(&item.title);
+    tx.execute(
+        r#"
+        insert into review_policies(
+            project_id, name, review_type, max_fresh_agents, max_resume_agents,
+            max_parallel_agents, required_consecutive_clean_fresh_runs,
+            required_consecutive_clean_resume_runs, stop_on_severity,
+            allow_resume_review, allow_fresh_review, allow_new_findings_in_resume,
+            on_max_agents_exceeded, run_count_scope, default_run_mode, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, 0, ?10, 'review_plan', 'fresh', current_timestamp)
+        "#,
+        params![
+            project_id,
+            policy_name,
+            input.review_type,
+            input.max_fresh_agents,
+            input.max_resume_agents,
+            input.max_parallel_agents,
+            input.required_consecutive_clean_fresh_runs,
+            input.required_consecutive_clean_resume_runs,
+            input.stop_on_severity,
+            input.on_max_agents_exceeded,
+        ],
+    )?;
+    let review_policy_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into kpt_item_conversions(kpt_item_id, target_type, review_policy_id, created_at)
+        values (?1, 'review_policy', ?2, current_timestamp)
+        "#,
+        params![item.id, review_policy_id],
+    )?;
+    let conversion_id = tx.last_insert_rowid();
+    tx.execute(
+        "update kpt_items set status = 'converted' where id = ?1",
+        params![item.id],
+    )?;
+    tx.commit()?;
+    Ok(KptItemReviewPolicyConversionOutcome {
+        kpt_item_conversion_id: conversion_id,
+        review_policy_id,
+    })
+}
+
+pub fn convert_kpt_item_to_decision(
+    root: &Path,
+    input: KptItemDecisionConversion<'_>,
+) -> Result<KptItemDecisionConversionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let item = convertible_kpt_item(&tx, input.kpt_item_id)?;
+    let topic = input.topic.unwrap_or(&item.title);
+    let decision = input
+        .decision
+        .or(item.proposed_action.as_deref())
+        .or(item.details.as_deref())
+        .unwrap_or(&item.title);
+    tx.execute(
+        r#"
+        insert into decisions(
+            project_id, decision_key, topic, decision, rationale,
+            compatibility_impact, status, authority_refs, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, 'accepted', ?7, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.decision_key,
+            topic,
+            decision,
+            input.rationale,
+            input.compatibility_impact,
+            input.authority_refs,
+        ],
+    )?;
+    let decision_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into kpt_item_conversions(kpt_item_id, target_type, decision_id, created_at)
+        values (?1, 'decision', ?2, current_timestamp)
+        "#,
+        params![item.id, decision_id],
+    )?;
+    let conversion_id = tx.last_insert_rowid();
+    tx.execute(
+        "update kpt_items set status = 'converted' where id = ?1",
+        params![item.id],
+    )?;
+    tx.commit()?;
+    Ok(KptItemDecisionConversionOutcome {
+        kpt_item_conversion_id: conversion_id,
+        decision_id,
+    })
+}
+
+pub fn convert_kpt_item_to_design_version(
+    root: &Path,
+    input: KptItemDesignVersionConversion,
+) -> Result<KptItemDesignVersionConversionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let item = convertible_kpt_item(&tx, input.kpt_item_id)?;
+    tx.query_row(
+        "select id from design_versions where id = ?1 and project_id = ?2",
+        params![input.design_version_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()?
+    .context("design version not found")?;
+    tx.execute(
+        r#"
+        insert into kpt_item_conversions(kpt_item_id, target_type, design_version_id, created_at)
+        values (?1, 'design_version', ?2, current_timestamp)
+        "#,
+        params![item.id, input.design_version_id],
+    )?;
+    let conversion_id = tx.last_insert_rowid();
+    tx.execute(
+        "update kpt_items set status = 'converted' where id = ?1",
+        params![item.id],
+    )?;
+    tx.commit()?;
+    Ok(KptItemDesignVersionConversionOutcome {
+        kpt_item_conversion_id: conversion_id,
+        design_version_id: input.design_version_id,
+    })
+}
+
+fn convertible_kpt_item(conn: &rusqlite::Connection, kpt_item_id: i64) -> Result<StoredKptItem> {
+    conn.query_row(
+        r#"
+        select id, title, details, proposed_action
+        from kpt_items
+        where id = ?1 and status in ('open', 'accepted')
+        "#,
+        params![kpt_item_id],
+        |row| {
+            Ok(StoredKptItem {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                details: row.get(2)?,
+                proposed_action: row.get(3)?,
+            })
+        },
+    )
+    .optional()?
+    .context("kpt item not found or not convertible")
+}
+
 fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
     conn.query_row(
         "select id from kpt_reviews where status = 'open' order by id desc limit 1",
@@ -236,6 +401,60 @@ fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
     )
     .optional()?
     .context("no open kpt review; run kpt start first")
+}
+
+fn import_findings_as_kpt_items(
+    conn: &Connection,
+    kpt_review_id: i64,
+    project_id: i64,
+) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        r#"
+        select id, finding_type, severity, description, classification, status
+        from findings
+        where project_id = ?1
+          and status = 'open'
+        order by severity, id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id], |row| {
+        Ok(StoredFinding {
+            id: row.get(0)?,
+            finding_type: row.get(1)?,
+            severity: row.get(2)?,
+            description: row.get(3)?,
+            classification: row.get(4)?,
+            status: row.get(5)?,
+        })
+    })?;
+    let mut count = 0;
+    for row in rows {
+        let finding = row?;
+        let title = format!("Review finding: {}", finding.description);
+        let details = format!(
+            "type: {}\nclassification: {}\nstatus: {}",
+            finding.finding_type, finding.classification, finding.status
+        );
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, details, severity,
+                linked_review_finding_id, proposed_action, status, created_at
+            )
+            values (?1, 'problem', ?2, ?3, ?4, ?5, ?6, 'open', current_timestamp)
+            "#,
+            params![
+                kpt_review_id,
+                title,
+                details,
+                finding.severity,
+                finding.id,
+                "classify, close, or convert this review finding",
+            ],
+        )?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn import_corrections_as_kpt_items(
@@ -423,6 +642,15 @@ struct StoredCorrection {
     severity: String,
 }
 
+struct StoredFinding {
+    id: i64,
+    finding_type: String,
+    severity: String,
+    description: String,
+    classification: String,
+    status: String,
+}
+
 pub struct NewKptReview<'a> {
     pub scope: Option<&'a str>,
     pub summary: Option<&'a str>,
@@ -485,8 +713,54 @@ pub struct KptItemTaskConversion<'a> {
     pub work_unit_id: Option<i64>,
 }
 
+pub struct KptItemReviewPolicyConversion<'a> {
+    pub kpt_item_id: i64,
+    pub name: Option<&'a str>,
+    pub review_type: &'a str,
+    pub max_fresh_agents: i64,
+    pub max_resume_agents: i64,
+    pub max_parallel_agents: i64,
+    pub required_consecutive_clean_fresh_runs: i64,
+    pub required_consecutive_clean_resume_runs: i64,
+    pub stop_on_severity: &'a str,
+    pub on_max_agents_exceeded: &'a str,
+}
+
+pub struct KptItemDecisionConversion<'a> {
+    pub kpt_item_id: i64,
+    pub decision_key: Option<&'a str>,
+    pub topic: Option<&'a str>,
+    pub decision: Option<&'a str>,
+    pub rationale: Option<&'a str>,
+    pub compatibility_impact: Option<&'a str>,
+    pub authority_refs: Option<&'a str>,
+}
+
+pub struct KptItemDesignVersionConversion {
+    pub kpt_item_id: i64,
+    pub design_version_id: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct KptItemConversionOutcome {
     pub kpt_item_conversion_id: i64,
     pub task_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptItemReviewPolicyConversionOutcome {
+    pub kpt_item_conversion_id: i64,
+    pub review_policy_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptItemDecisionConversionOutcome {
+    pub kpt_item_conversion_id: i64,
+    pub decision_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptItemDesignVersionConversionOutcome {
+    pub kpt_item_conversion_id: i64,
+    pub design_version_id: i64,
 }
