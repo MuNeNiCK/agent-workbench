@@ -372,72 +372,51 @@ fn migrate_kpt_items(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_review_runs(conn: &Connection) -> Result<()> {
-    let table_sql = conn
-        .query_row(
-            "select sql from sqlite_schema where type = 'table' and name = 'review_runs'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    let Some(table_sql) = table_sql else {
-        return Ok(());
-    };
-    if table_sql.contains("run_type = 'fresh' and run_purpose = 'new_unbiased_review'") {
+    if !table_exists(conn, "review_runs")? {
         return Ok(());
     }
 
+    let invalid_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_runs
+        where not (
+            (run_type = 'fresh' and run_purpose = 'new_unbiased_review')
+            or (run_type = 'resume' and run_purpose = 'finding_fix_verification')
+            or (run_type = 'coverage' and run_purpose = 'coverage_audit')
+        )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_count > 0 {
+        bail!("review_runs contains invalid run_type/run_purpose combinations");
+    }
     conn.execute_batch(
         r#"
-        pragma foreign_keys = off;
-
-        alter table review_runs rename to review_runs_old;
-
-        create table review_runs (
-            id integer primary key,
-            project_id integer not null references projects(id) on delete cascade,
-            review_scope_id integer references review_scopes(id),
-            review_plan_id integer references review_plans(id),
-            run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
-            run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
-            target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
-            design_version_id integer references design_versions(id),
-            design_requirement_id integer references design_requirements(id),
-            task_id integer references tasks(id),
-            work_unit_id integer references work_units(id),
-            repository_snapshot_id integer,
-            target_ref text,
-            prompt_deviations text,
-            result_summary text,
-            new_findings_count integer not null default 0,
-            carried_findings_checked integer not null default 0,
-            clean_run integer not null default 0 check (clean_run in (0, 1)),
-            status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
-            created_at text not null,
-            check (
-                (run_type = 'fresh' and run_purpose = 'new_unbiased_review')
-                or (run_type = 'resume' and run_purpose = 'finding_fix_verification')
-                or (run_type = 'coverage' and run_purpose = 'coverage_audit')
-            )
-        );
-
-        insert into review_runs(
-            id, project_id, review_scope_id, review_plan_id, run_type, run_purpose,
-            target_type, design_version_id, design_requirement_id, task_id,
-            work_unit_id, repository_snapshot_id, target_ref, prompt_deviations,
-            result_summary, new_findings_count, carried_findings_checked,
-            clean_run, status, created_at
+        create trigger if not exists trg_review_run_type_purpose_insert
+        before insert on review_runs
+        for each row
+        when not (
+            (new.run_type = 'fresh' and new.run_purpose = 'new_unbiased_review')
+            or (new.run_type = 'resume' and new.run_purpose = 'finding_fix_verification')
+            or (new.run_type = 'coverage' and new.run_purpose = 'coverage_audit')
         )
-        select
-            id, project_id, review_scope_id, review_plan_id, run_type, run_purpose,
-            target_type, design_version_id, design_requirement_id, task_id,
-            work_unit_id, repository_snapshot_id, target_ref, prompt_deviations,
-            result_summary, new_findings_count, carried_findings_checked,
-            clean_run, status, created_at
-        from review_runs_old;
+        begin
+            select raise(abort, 'review run type must match purpose');
+        end;
 
-        drop table review_runs_old;
-
-        pragma foreign_keys = on;
+        create trigger if not exists trg_review_run_type_purpose_update
+        before update of run_type, run_purpose on review_runs
+        for each row
+        when not (
+            (new.run_type = 'fresh' and new.run_purpose = 'new_unbiased_review')
+            or (new.run_type = 'resume' and new.run_purpose = 'finding_fix_verification')
+            or (new.run_type = 'coverage' and new.run_purpose = 'coverage_audit')
+        )
+        begin
+            select raise(abort, 'review run type must match purpose');
+        end;
         "#,
     )?;
 
@@ -1630,6 +1609,30 @@ when (new.review_scope_id is not null and new.project_id != (select project_id f
   or (new.review_plan_id is not null and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
 begin
     select raise(abort, 'review run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_run_type_purpose_insert
+before insert on review_runs
+for each row
+when not (
+    (new.run_type = 'fresh' and new.run_purpose = 'new_unbiased_review')
+    or (new.run_type = 'resume' and new.run_purpose = 'finding_fix_verification')
+    or (new.run_type = 'coverage' and new.run_purpose = 'coverage_audit')
+)
+begin
+    select raise(abort, 'review run type must match purpose');
+end;
+
+create trigger if not exists trg_review_run_type_purpose_update
+before update of run_type, run_purpose on review_runs
+for each row
+when not (
+    (new.run_type = 'fresh' and new.run_purpose = 'new_unbiased_review')
+    or (new.run_type = 'resume' and new.run_purpose = 'finding_fix_verification')
+    or (new.run_type = 'coverage' and new.run_purpose = 'coverage_audit')
+)
+begin
+    select raise(abort, 'review run type must match purpose');
 end;
 
 create trigger if not exists trg_review_plan_target_project_insert

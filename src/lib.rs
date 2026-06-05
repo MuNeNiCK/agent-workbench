@@ -367,6 +367,18 @@ mod tests {
 
         init_project(temp.path()).unwrap();
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let stale_trigger_refs: i64 = conn
+            .query_row(
+                r#"
+                select count(*)
+                from sqlite_schema
+                where type = 'trigger'
+                  and coalesce(sql, '') like '%review_runs_old%'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         let invalid = conn.execute(
             r#"
             insert into review_runs(
@@ -377,8 +389,25 @@ mod tests {
             "#,
             [],
         );
+        conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, run_type, run_purpose, target_type, target_ref,
+                new_findings_count, carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, 'fresh', 'new_unbiased_review', 'work_unit', 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            "#,
+            [],
+        )
+        .unwrap();
+        let invalid_update = conn.execute(
+            "update review_runs set run_purpose = 'finding_fix_verification' where id = 1",
+            [],
+        );
 
+        assert_eq!(stale_trigger_refs, 0);
         assert!(invalid.is_err());
+        assert!(invalid_update.is_err());
     }
 
     #[test]
