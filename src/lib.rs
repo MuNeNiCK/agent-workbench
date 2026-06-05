@@ -207,6 +207,13 @@ mod tests {
             Some("trace-aware checks are not implemented in phase 2")
         );
         let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let stored_maturity: String = conn
+            .query_row(
+                "select maturity from resume_checks where id = ?1",
+                params![check.resume_check_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let not_checked: i64 = conn
             .query_row(
                 "select count(*) from resume_check_items where resume_check_id = ?1 and result = 'not_checked'",
@@ -214,6 +221,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        assert_eq!(stored_maturity, "trace-aware");
         assert!(not_checked > 0);
     }
 
@@ -595,6 +603,24 @@ mod tests {
     }
 
     #[test]
+    fn fork_work_rejects_non_default_discard_policy_in_phase_2() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let fork = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "redo",
+                source: WorkForkSource::Commit("abc123"),
+                reason: "failed_validation",
+                discard_policy: "mark_abandoned",
+            },
+        );
+
+        assert!(fork.is_err());
+    }
+
+    #[test]
     fn tasks_attach_to_active_work_and_can_close() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -702,6 +728,15 @@ mod tests {
 
         let reopened = reopen_work(temp.path(), original.work_unit_id, "closure invalid").unwrap();
         assert_eq!(reopened.work_unit_id, original.work_unit_id);
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let invalidation_count: i64 = conn
+            .query_row(
+                "select count(*) from work_unit_dependencies where work_unit_id = ?1 and depends_on_work_unit_id = ?1 and dependency_type = 'invalidates_closure'",
+                params![original.work_unit_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invalidation_count, 1);
         close_active_work(temp.path(), "closed again", None).unwrap();
 
         let follow_up = create_follow_up_work(

@@ -226,12 +226,13 @@ pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
             status, result, authority_event_high_watermark, activation_stack_revision,
             allowed_next_action, blocking_reason, created_at
         )
-        values (?1, ?2, ?3, 'basic', 'pending', ?4, ?5, ?6, ?7, ?8, current_timestamp)
+        values (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, current_timestamp)
         "#,
         params![
             evaluation.work_unit_id,
             evaluation.activation_id,
             evaluation.suspend_snapshot_id,
+            maturity,
             evaluation.resume_result,
             evaluation.authority_high_watermark,
             evaluation.activation_stack_revision,
@@ -466,6 +467,16 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
             next_status: Some("open"),
         },
     )?;
+    tx.execute(
+        r#"
+        insert into work_unit_dependencies(
+            work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+            status, created_at
+        )
+        values (?1, ?1, 'invalidates_closure', ?2, 'resolved', current_timestamp)
+        "#,
+        params![work_unit_id, reason],
+    )?;
     tx.commit()?;
 
     Ok(WorkOutcome {
@@ -590,6 +601,9 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
 
     if active_activation(&tx)?.is_some() {
         bail!("cannot fork work while another activation is active");
+    }
+    if input.discard_policy != "keep_history" {
+        bail!("only --discard-policy keep_history is implemented in phase 2");
     }
 
     let source = resolve_fork_source(&tx, input.source)?;

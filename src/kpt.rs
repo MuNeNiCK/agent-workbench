@@ -173,8 +173,9 @@ pub fn convert_kpt_item_to_task(
     root: &Path,
     input: KptItemTaskConversion<'_>,
 ) -> Result<KptItemConversionOutcome> {
-    let conn = open_existing_project(root)?;
-    let item = conn
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let item = tx
         .query_row(
             r#"
             select id, title, details, proposed_action
@@ -199,26 +200,27 @@ pub fn convert_kpt_item_to_task(
         .or(item.proposed_action.as_deref())
         .or(item.details.as_deref());
 
-    conn.execute(
+    tx.execute(
         r#"
         insert into tasks(work_unit_id, title, priority, status, source, details)
         values (?1, ?2, ?3, 'open', 'review', ?4)
         "#,
         params![input.work_unit_id, task_title, input.priority, details],
     )?;
-    let task_id = conn.last_insert_rowid();
-    conn.execute(
+    let task_id = tx.last_insert_rowid();
+    tx.execute(
         r#"
         insert into kpt_item_conversions(kpt_item_id, target_type, task_id, created_at)
         values (?1, 'task', ?2, current_timestamp)
         "#,
         params![item.id, task_id],
     )?;
-    let conversion_id = conn.last_insert_rowid();
-    conn.execute(
+    let conversion_id = tx.last_insert_rowid();
+    tx.execute(
         "update kpt_items set status = 'converted_to_task', linked_task_id = ?1 where id = ?2",
         params![task_id, item.id],
     )?;
+    tx.commit()?;
 
     Ok(KptItemConversionOutcome {
         kpt_item_conversion_id: conversion_id,
