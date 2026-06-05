@@ -1,0 +1,155 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use rusqlite::{OptionalExtension, params};
+
+use crate::db::{open_existing_project, project_id};
+
+pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<CoverageItemOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let design_requirement_id = tx
+        .query_row(
+            r#"
+            select id
+            from design_requirements
+            where project_id = ?1
+              and design_version_id = ?2
+              and requirement_key = ?3
+              and status = 'active'
+            "#,
+            params![project_id, input.design_version_id, input.requirement_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .context("active design requirement not found")?;
+    let work_unit_id = match (input.work_unit_id, input.task_id) {
+        (Some(work_unit_id), _) => Some(work_unit_id),
+        (None, Some(task_id)) => tx
+            .query_row(
+                "select work_unit_id from tasks where id = ?1",
+                params![task_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .context("task not found")?,
+        (None, None) => None,
+    };
+
+    tx.execute(
+        r#"
+        insert into coverage_items(
+            project_id, review_scope_id, work_unit_id, design_requirement_id, task_id,
+            requirement, runtime_boundary_evidence, ux_boundary_evidence,
+            lifecycle_boundary_evidence, tests_or_gates, missing_or_unverified,
+            status, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.review_scope_id,
+            work_unit_id,
+            design_requirement_id,
+            input.task_id,
+            input.requirement,
+            input.runtime_boundary_evidence,
+            input.ux_boundary_evidence,
+            input.lifecycle_boundary_evidence,
+            input.tests_or_gates,
+            input.missing_or_unverified,
+            input.status,
+        ],
+    )?;
+    let coverage_item_id = tx.last_insert_rowid();
+    tx.commit()?;
+
+    Ok(CoverageItemOutcome {
+        coverage_item_id,
+        work_unit_id,
+        design_requirement_id,
+        task_id: input.task_id,
+    })
+}
+
+pub fn list_coverage_items(
+    root: &Path,
+    input: CoverageItemListQuery<'_>,
+) -> Result<Vec<CoverageItemRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            c.id, c.work_unit_id, c.task_id, r.requirement_key, c.requirement,
+            c.status, c.tests_or_gates, c.missing_or_unverified
+        from coverage_items c
+        join design_requirements r on r.id = c.design_requirement_id
+        where c.project_id = ?1
+          and r.design_version_id = ?2
+          and (?3 is null or c.status = ?3)
+        order by r.requirement_key, c.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, input.design_version_id, input.status],
+        |row| {
+            Ok(CoverageItemRecord {
+                id: row.get(0)?,
+                work_unit_id: row.get(1)?,
+                task_id: row.get(2)?,
+                requirement_key: row.get(3)?,
+                requirement: row.get(4)?,
+                status: row.get(5)?,
+                tests_or_gates: row.get(6)?,
+                missing_or_unverified: row.get(7)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub struct NewCoverageItem<'a> {
+    pub design_version_id: i64,
+    pub requirement_key: &'a str,
+    pub review_scope_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub requirement: &'a str,
+    pub runtime_boundary_evidence: Option<&'a str>,
+    pub ux_boundary_evidence: Option<&'a str>,
+    pub lifecycle_boundary_evidence: Option<&'a str>,
+    pub tests_or_gates: Option<&'a str>,
+    pub missing_or_unverified: Option<&'a str>,
+    pub status: &'a str,
+}
+
+pub struct CoverageItemListQuery<'a> {
+    pub design_version_id: i64,
+    pub status: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CoverageItemOutcome {
+    pub coverage_item_id: i64,
+    pub work_unit_id: Option<i64>,
+    pub design_requirement_id: i64,
+    pub task_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CoverageItemRecord {
+    pub id: i64,
+    pub work_unit_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub requirement_key: String,
+    pub requirement: String,
+    pub status: String,
+    pub tests_or_gates: Option<String>,
+    pub missing_or_unverified: Option<String>,
+}

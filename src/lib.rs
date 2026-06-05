@@ -1,5 +1,6 @@
 mod authority;
 mod commands;
+mod coverage;
 mod db;
 mod design;
 mod kpt;
@@ -18,6 +19,10 @@ pub use commands::{
     CommandUsageOutcome, CommandUsageRecord, NewCommandDeviation, NewCommandProfile,
     NewCommandUsage, add_command_deviation, add_command_usage, add_fixed_command,
     list_command_profiles, list_command_usages,
+};
+pub use coverage::{
+    CoverageItemListQuery, CoverageItemOutcome, CoverageItemRecord, NewCoverageItem,
+    add_coverage_item, list_coverage_items,
 };
 pub use db::{
     ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_design_root,
@@ -1484,6 +1489,32 @@ mod tests {
             },
         )
         .unwrap();
+        let coverage = add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task.task_id),
+                requirement: "cleanup behavior is connected to implementation and tests",
+                runtime_boundary_evidence: Some("cleanup path preserves lifecycle behavior"),
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: Some("storage lifecycle remains intact"),
+                tests_or_gates: Some("GATE-001"),
+                missing_or_unverified: None,
+                status: "covered",
+            },
+        )
+        .unwrap();
+        let coverage_records = list_coverage_items(
+            temp.path(),
+            CoverageItemListQuery {
+                design_version_id: import.design_version_id,
+                status: Some("covered"),
+            },
+        )
+        .unwrap();
         let records = list_task_derivations(
             temp.path(),
             TaskDerivationListQuery {
@@ -1519,6 +1550,10 @@ mod tests {
         assert_eq!(evidence_records.len(), 1);
         assert_eq!(evidence_records[0].commit_sha.as_deref(), Some("abc123"));
         assert_eq!(passed_with_evidence.result, "pass");
+        assert_eq!(coverage.task_id, Some(task.task_id));
+        assert_eq!(coverage_records.len(), 1);
+        assert_eq!(coverage_records[0].requirement_key, "REQ-001");
+        assert_eq!(coverage_records[0].status, "covered");
     }
 
     #[test]

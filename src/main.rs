@@ -5,25 +5,26 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    CommandUsageListQuery, DesignDecisionListQuery, DesignPackageImport, DesignReadyCheck,
-    DesignRequirementListQuery, DesignVersionApproval, ImplementationEvidenceListQuery,
-    ImplementationEvidenceRecord, ImplementationReadyCheck, KptItemTaskConversion,
-    NewAuthorityEvent, NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
-    NewDesignExceptionAcceptance, NewDesignPackage, NewImplementationEvidence, NewKptItem,
-    NewKptReview, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork, NewWorkRecord,
-    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
-    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
-    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
-    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
-    add_decision, add_fixed_command, add_implementation_evidence, add_kpt_item, add_task,
-    add_user_correction, add_work_record_command, add_work_record_commit, add_work_record_file,
-    applicable_rules, approve_design_version, close_active_work, close_kpt_review, close_task,
+    CommandUsageListQuery, CoverageItemListQuery, DesignDecisionListQuery, DesignPackageImport,
+    DesignReadyCheck, DesignRequirementListQuery, DesignVersionApproval,
+    ImplementationEvidenceListQuery, ImplementationEvidenceRecord, ImplementationReadyCheck,
+    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
+    NewCommandUsage, NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage,
+    NewImplementationEvidence, NewKptItem, NewKptReview, NewTask, NewTaskDerivation,
+    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
+    ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
+    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_command_deviation,
+    add_command_usage, add_coverage_item, add_decision, add_fixed_command,
+    add_implementation_evidence, add_kpt_item, add_task, add_user_correction,
+    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
+    approve_design_version, close_active_work, close_kpt_review, close_task,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
     derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
     implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
-    list_authority_events, list_command_profiles, list_command_usages, list_decisions,
-    list_design_decisions, list_design_requirements, list_implementation_evidence, list_kpt_items,
-    list_kpt_reviews, list_task_derivations, list_tasks, list_user_corrections,
+    list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
+    list_decisions, list_design_decisions, list_design_requirements, list_implementation_evidence,
+    list_kpt_items, list_kpt_reviews, list_task_derivations, list_tasks, list_user_corrections,
     list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
     resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review, start_work,
     suspend_work,
@@ -120,6 +121,11 @@ enum Command {
     Evidence {
         #[command(subcommand)]
         command: EvidenceCommand,
+    },
+    /// Record or list design implementation coverage.
+    Coverage {
+        #[command(subcommand)]
+        command: CoverageCommand,
     },
     /// Accept explicit design exceptions.
     Acceptance {
@@ -724,6 +730,46 @@ struct EvidenceListArgs {
     task: Option<i64>,
     #[arg(long)]
     design: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CoverageCommand {
+    Add(CoverageAddArgs),
+    List(CoverageListArgs),
+}
+
+#[derive(Debug, Args)]
+struct CoverageAddArgs {
+    #[arg(long)]
+    design: i64,
+    #[arg(long)]
+    requirement: String,
+    #[arg(long)]
+    task: Option<i64>,
+    #[arg(long)]
+    work_unit: Option<i64>,
+    #[arg(long)]
+    status: String,
+    #[arg(long)]
+    requirement_text: String,
+    #[arg(long)]
+    runtime: Option<String>,
+    #[arg(long)]
+    ux: Option<String>,
+    #[arg(long)]
+    lifecycle: Option<String>,
+    #[arg(long)]
+    tests_or_gates: Option<String>,
+    #[arg(long)]
+    missing: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CoverageListArgs {
+    #[arg(long)]
+    design: i64,
+    #[arg(long)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1657,6 +1703,67 @@ fn main() -> Result<()> {
                     println!(
                         "{} [{}] task={} requirement={} {}",
                         record.id, record.evidence_type, task, requirement, detail
+                    );
+                }
+            }
+        },
+        Command::Coverage { command } => match command {
+            CoverageCommand::Add(args) => {
+                let outcome = add_coverage_item(
+                    &root,
+                    NewCoverageItem {
+                        design_version_id: args.design,
+                        requirement_key: &args.requirement,
+                        review_scope_id: None,
+                        work_unit_id: args.work_unit,
+                        task_id: args.task,
+                        requirement: &args.requirement_text,
+                        runtime_boundary_evidence: args.runtime.as_deref(),
+                        ux_boundary_evidence: args.ux.as_deref(),
+                        lifecycle_boundary_evidence: args.lifecycle.as_deref(),
+                        tests_or_gates: args.tests_or_gates.as_deref(),
+                        missing_or_unverified: args.missing.as_deref(),
+                        status: &args.status,
+                    },
+                )?;
+                println!("added coverage item");
+                println!("coverage_item_id: {}", outcome.coverage_item_id);
+                println!("design_requirement_id: {}", outcome.design_requirement_id);
+                if let Some(work_unit_id) = outcome.work_unit_id {
+                    println!("work_unit_id: {work_unit_id}");
+                }
+                if let Some(task_id) = outcome.task_id {
+                    println!("task_id: {task_id}");
+                }
+            }
+            CoverageCommand::List(args) => {
+                let records = list_coverage_items(
+                    &root,
+                    CoverageItemListQuery {
+                        design_version_id: args.design,
+                        status: args.status.as_deref(),
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no coverage items");
+                }
+                for record in records {
+                    let work_unit = record
+                        .work_unit_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let task = record
+                        .task_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let detail = record
+                        .missing_or_unverified
+                        .as_deref()
+                        .or(record.tests_or_gates.as_deref())
+                        .unwrap_or("-");
+                    println!(
+                        "{} [{}] requirement={} work_unit={} task={} {}",
+                        record.id, record.status, record.requirement_key, work_unit, task, detail
                     );
                 }
             }

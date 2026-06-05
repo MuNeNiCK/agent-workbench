@@ -1004,6 +1004,23 @@ create table if not exists implementation_evidence (
     check (task_id is not null or design_requirement_id is not null)
 );
 
+create table if not exists coverage_items (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_scope_id integer,
+    work_unit_id integer references work_units(id) on delete cascade,
+    design_requirement_id integer not null references design_requirements(id) on delete cascade,
+    task_id integer references tasks(id) on delete cascade,
+    requirement text not null,
+    runtime_boundary_evidence text,
+    ux_boundary_evidence text,
+    lifecycle_boundary_evidence text,
+    tests_or_gates text,
+    missing_or_unverified text,
+    status text not null check (status in ('covered', 'partial', 'missing_required_surface', 'design_conflict', 'accepted_out_of_scope', 'needs_evidence')),
+    created_at text not null
+);
+
 create trigger if not exists trg_gate_template_requirement_project_insert
 before insert on validation_gate_template_requirements
 for each row
@@ -1142,6 +1159,32 @@ when (new.task_id is not null and new.project_id != coalesce(
   or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
 begin
     select raise(abort, 'implementation evidence project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_coverage_item_project_insert
+before insert on coverage_items
+for each row
+when (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+begin
+    select raise(abort, 'coverage item project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_coverage_item_project_update
+before update of project_id, work_unit_id, design_requirement_id, task_id on coverage_items
+for each row
+when (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+begin
+    select raise(abort, 'coverage item project_id must match referenced rows');
 end;
 
 create trigger if not exists trg_acceptance_design_requirement_project_insert

@@ -589,6 +589,29 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         ],
     );
     let evidence_list = ok(temp.path(), &["evidence", "list", "--task", "1"]);
+    let coverage = ok(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--status",
+            "covered",
+            "--requirement-text",
+            "cleanup behavior is connected",
+            "--tests-or-gates",
+            "GATE-001",
+        ],
+    );
+    let coverage_list = ok(
+        temp.path(),
+        &["coverage", "list", "--design", "1", "--status", "covered"],
+    );
     let passed_with_evidence = ok(
         temp.path(),
         &[
@@ -613,6 +636,9 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(evidence.contains("added implementation evidence"));
     assert!(evidence.contains("implementation_evidence_id: 1"));
     assert!(evidence_list.contains("1 [commit] task=1 requirement=- commit=abc123"));
+    assert!(coverage.contains("added coverage item"));
+    assert!(coverage.contains("coverage_item_id: 1"));
+    assert!(coverage_list.contains("1 [covered] requirement=REQ-001"));
     assert!(passed_with_evidence.contains("result: pass"));
     assert!(passed_with_evidence.contains("implementation_evidence_present: pass"));
 }
