@@ -5,7 +5,7 @@ long-running agent work.
 
 The intended direction is a skill plus a SQLite-backed memory CLI for tasks,
 decisions, reviews, commands, and handoffs. This repository currently contains
-the minimal distributable skill structure.
+the minimal distributable skill structure and an initial Rust CLI.
 
 ## Layout
 
@@ -16,6 +16,20 @@ skills/agent-workbench/
   scripts/
   references/
   assets/templates/
+src/
+  main.rs
+  lib.rs
+```
+
+## CLI
+
+The `agent-workbench` CLI stores project-local state in
+`.agent-workbench/ledger.sqlite`.
+
+```bash
+cargo run -- init
+cargo run -- status
+cargo run -- next
 ```
 
 ## Local Preview

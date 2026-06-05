@@ -15,7 +15,7 @@ survive across sessions without forcing the agent to grep old Markdown logs.
 This is the initial scaffold. The planned shape is:
 
 - Skill instructions that teach agents when and how to use structured memory.
-- A future SQLite-backed CLI for tasks, decisions, reviews, commands, and handoffs.
+- A SQLite-backed CLI for project-local memory.
 - Optional Markdown exports for human-readable project notes.
 
 ## References
@@ -26,5 +26,7 @@ settled.
 ## Rules
 
 - Prefer structured project memory over broad Markdown history searches.
+- Use `agent-workbench status` and `agent-workbench next` before long-running
+  work when the CLI is available.
 - Keep handoffs concise and queryable.
 - Treat accepted design decisions as durable constraints until the user changes them.
