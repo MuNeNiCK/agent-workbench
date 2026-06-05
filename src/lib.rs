@@ -340,11 +340,36 @@ mod tests {
             temp.path(),
             NewWorkRecordCommand {
                 work_record_id: work_record.work_record_id,
+                command_usage_id: None,
                 command_profile_id: None,
-                command: "cargo test",
+                command: Some("cargo test"),
                 result: Some("pass"),
                 log_path: None,
                 note: Some("verification"),
+            },
+        )
+        .unwrap();
+        let usage = add_command_usage(
+            temp.path(),
+            NewCommandUsage {
+                profile: None,
+                command: Some("cargo fmt"),
+                result: "pass",
+                log_path: None,
+                work_unit_id: Some(started.work_unit_id),
+            },
+        )
+        .unwrap();
+        let usage_link = add_work_record_command(
+            temp.path(),
+            NewWorkRecordCommand {
+                work_record_id: work_record.work_record_id,
+                command_usage_id: Some(usage.command_usage_id),
+                command_profile_id: None,
+                command: None,
+                result: None,
+                log_path: None,
+                note: None,
             },
         )
         .unwrap();
@@ -374,6 +399,7 @@ mod tests {
         assert_eq!(work_records.len(), 1);
         assert_eq!(work_records[0].topic, "work record ledger");
         assert_eq!(command.link_id, 1);
+        assert_eq!(usage_link.link_id, 2);
         assert_eq!(commit.link_id, 1);
         assert_eq!(file.link_id, 1);
 
@@ -381,6 +407,7 @@ mod tests {
             export_work_record_markdown(temp.path(), work_record.work_record_id).unwrap();
         assert!(markdown.contains("# work record ledger"));
         assert!(markdown.contains("cargo test -> pass"));
+        assert!(markdown.contains("cargo fmt -> pass [usage:1]"));
         assert!(markdown.contains("abc123 [created]"));
         assert!(markdown.contains("src/lib.rs [changed]"));
     }

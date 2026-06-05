@@ -82,15 +82,22 @@ pub fn add_work_record_command(
 ) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
     ensure_work_record_exists(&conn, input.work_record_id)?;
+    if input.command_usage_id.is_none() && input.command.is_none() {
+        anyhow::bail!("either --usage or --command is required");
+    }
+    if let Some(command_usage_id) = input.command_usage_id {
+        ensure_command_usage_exists(&conn, command_usage_id)?;
+    }
     conn.execute(
         r#"
         insert into work_record_commands(
-            work_record_id, command_profile_id, command, result, log_path, note
+            work_record_id, command_usage_id, command_profile_id, command, result, log_path, note
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         "#,
         params![
             input.work_record_id,
+            input.command_usage_id,
             input.command_profile_id,
             input.command,
             input.result,
@@ -225,14 +232,31 @@ fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<(
     exists.context("work record not found")
 }
 
+fn ensure_command_usage_exists(conn: &Connection, command_usage_id: i64) -> Result<()> {
+    let exists = conn
+        .query_row(
+            "select 1 from command_usages where id = ?1",
+            params![command_usage_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    exists.context("command usage not found")
+}
+
 fn work_record_commands(conn: &Connection, work_record_id: i64) -> Result<Vec<String>> {
     let mut records = Vec::new();
     let mut stmt = conn.prepare(
         r#"
-        select command, result, log_path, note
-        from work_record_commands
-        where work_record_id = ?1
-        order by id
+        select
+            coalesce(wrc.command, cu.command),
+            coalesce(wrc.result, cu.result),
+            coalesce(wrc.log_path, cu.log_path),
+            wrc.note,
+            wrc.command_usage_id
+        from work_record_commands wrc
+        left join command_usages cu on cu.id = wrc.command_usage_id
+        where wrc.work_record_id = ?1
+        order by wrc.id
         "#,
     )?;
     let rows = stmt.query_map(params![work_record_id], |row| {
@@ -240,12 +264,16 @@ fn work_record_commands(conn: &Connection, work_record_id: i64) -> Result<Vec<St
         let result: Option<String> = row.get(1)?;
         let log_path: Option<String> = row.get(2)?;
         let note: Option<String> = row.get(3)?;
+        let command_usage_id: Option<i64> = row.get(4)?;
         let mut text = command.unwrap_or_else(|| "(linked command usage)".to_string());
         if let Some(result) = result {
             text.push_str(&format!(" -> {result}"));
         }
         if let Some(log_path) = log_path {
             text.push_str(&format!(" ({log_path})"));
+        }
+        if let Some(command_usage_id) = command_usage_id {
+            text.push_str(&format!(" [usage:{command_usage_id}]"));
         }
         if let Some(note) = note {
             text.push_str(&format!(" - {note}"));
@@ -386,8 +414,9 @@ pub struct WorkRecordEntry {
 
 pub struct NewWorkRecordCommand<'a> {
     pub work_record_id: i64,
+    pub command_usage_id: Option<i64>,
     pub command_profile_id: Option<i64>,
-    pub command: &'a str,
+    pub command: Option<&'a str>,
     pub result: Option<&'a str>,
     pub log_path: Option<&'a str>,
     pub note: Option<&'a str>,

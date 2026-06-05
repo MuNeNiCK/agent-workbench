@@ -360,7 +360,7 @@ struct WorkRecordCreateArgs {
     notable_operations: Option<String>,
     #[arg(long)]
     work_unit: Option<i64>,
-    #[arg(long)]
+    #[arg(long, alias = "export-md")]
     export_path: Option<String>,
 }
 
@@ -386,7 +386,9 @@ enum WorkRecordCommandLinkCommand {
 struct WorkRecordCommandAddArgs {
     work_record_id: i64,
     #[arg(long)]
-    command: String,
+    usage: Option<i64>,
+    #[arg(long)]
+    command: Option<String>,
     #[arg(long)]
     result: Option<String>,
     #[arg(long)]
@@ -999,8 +1001,9 @@ fn main() -> Result<()> {
                         &root,
                         NewWorkRecordCommand {
                             work_record_id: args.work_record_id,
+                            command_usage_id: args.usage,
                             command_profile_id: args.profile,
-                            command: &args.command,
+                            command: args.command.as_deref(),
                             result: args.result.as_deref(),
                             log_path: args.log_path.as_deref(),
                             note: args.note.as_deref(),
