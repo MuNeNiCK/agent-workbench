@@ -1018,6 +1018,40 @@ create table if not exists resume_check_items (
     details text
 );
 
+create trigger if not exists trg_resume_check_repository_snapshot_insert
+before insert on resume_checks
+for each row
+when new.repository_snapshot_id is not null
+  and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (select project_id from work_units where id = new.work_unit_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  )
+begin
+    select raise(abort, 'resume check repository snapshot must match work unit project_id');
+end;
+
+create trigger if not exists trg_resume_check_repository_snapshot_update
+before update of work_unit_id, repository_snapshot_id on resume_checks
+for each row
+when new.repository_snapshot_id is not null
+  and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (select project_id from work_units where id = new.work_unit_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  )
+begin
+    select raise(abort, 'resume check repository snapshot must match work unit project_id');
+end;
+
 create table if not exists work_unit_dependencies (
     id integer primary key,
     work_unit_id integer not null references work_units(id) on delete cascade,
@@ -1085,6 +1119,40 @@ create table if not exists acceptance_records (
         or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
     )
 );
+
+create trigger if not exists trg_repository_state_classification_acceptance_insert
+before insert on repository_state_classifications
+for each row
+when new.acceptance_record_id is not null
+  and (
+      not exists (select 1 from acceptance_records where id = new.acceptance_record_id)
+      or (select project_id from acceptance_records where id = new.acceptance_record_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  )
+begin
+    select raise(abort, 'repository state classification acceptance must match snapshot project_id');
+end;
+
+create trigger if not exists trg_repository_state_classification_acceptance_update
+before update of repository_snapshot_id, acceptance_record_id on repository_state_classifications
+for each row
+when new.acceptance_record_id is not null
+  and (
+      not exists (select 1 from acceptance_records where id = new.acceptance_record_id)
+      or (select project_id from acceptance_records where id = new.acceptance_record_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  )
+begin
+    select raise(abort, 'repository state classification acceptance must match snapshot project_id');
+end;
 
 create table if not exists rule_bindings (
     id integer primary key,
@@ -1203,6 +1271,98 @@ create table if not exists work_record_files (
     role text not null default 'changed' check (role in ('changed', 'reviewed', 'generated', 'evidence', 'ignored')),
     note text
 );
+
+create trigger if not exists trg_work_record_commit_git_insert
+before insert on work_record_commits
+for each row
+when new.git_commit_id is not null
+  and (
+      not exists (select 1 from git_commits where id = new.git_commit_id)
+      or new.commit_sha is null
+      or new.commit_sha != (select commit_sha from git_commits where id = new.git_commit_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+              select r.project_id
+              from git_commits c
+              join repositories r on r.id = c.repository_id
+              where c.id = new.git_commit_id
+          )
+      )
+  )
+begin
+    select raise(abort, 'work record commit must match git commit');
+end;
+
+create trigger if not exists trg_work_record_commit_git_update
+before update of work_record_id, git_commit_id, commit_sha on work_record_commits
+for each row
+when new.git_commit_id is not null
+  and (
+      not exists (select 1 from git_commits where id = new.git_commit_id)
+      or new.commit_sha is null
+      or new.commit_sha != (select commit_sha from git_commits where id = new.git_commit_id)
+      or (
+          (select work_unit_id from work_records where id = new.work_record_id) is not null
+          and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+              select r.project_id
+              from git_commits c
+              join repositories r on r.id = c.repository_id
+              where c.id = new.git_commit_id
+          )
+      )
+  )
+begin
+    select raise(abort, 'work record commit must match git commit');
+end;
+
+create trigger if not exists trg_work_record_file_git_insert
+before insert on work_record_files
+for each row
+when (new.repository_id is not null and not exists (select 1 from repositories where id = new.repository_id))
+  or (
+      new.git_file_change_id is not null
+      and (
+          new.repository_id is null
+          or not exists (select 1 from git_file_changes where id = new.git_file_change_id)
+          or new.repository_id != (select repository_id from git_file_changes where id = new.git_file_change_id)
+          or new.path != (select path from git_file_changes where id = new.git_file_change_id)
+      )
+  )
+  or (
+      new.repository_id is not null
+      and (select work_unit_id from work_records where id = new.work_record_id) is not null
+      and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+          select project_id from repositories where id = new.repository_id
+      )
+  )
+begin
+    select raise(abort, 'work record file must match repository or git file change');
+end;
+
+create trigger if not exists trg_work_record_file_git_update
+before update of work_record_id, git_file_change_id, repository_id, path on work_record_files
+for each row
+when (new.repository_id is not null and not exists (select 1 from repositories where id = new.repository_id))
+  or (
+      new.git_file_change_id is not null
+      and (
+          new.repository_id is null
+          or not exists (select 1 from git_file_changes where id = new.git_file_change_id)
+          or new.repository_id != (select repository_id from git_file_changes where id = new.git_file_change_id)
+          or new.path != (select path from git_file_changes where id = new.git_file_change_id)
+      )
+  )
+  or (
+      new.repository_id is not null
+      and (select work_unit_id from work_records where id = new.work_record_id) is not null
+      and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+          select project_id from repositories where id = new.repository_id
+      )
+  )
+begin
+    select raise(abort, 'work record file must match repository or git file change');
+end;
 
 create table if not exists work_record_forks (
     id integer primary key,
@@ -2524,5 +2684,36 @@ when (new.target_type = 'task' and (select project_id from kpt_reviews where id 
   or (new.target_type = 'user_correction' and (select project_id from kpt_reviews where id = (select kpt_review_id from kpt_items where id = new.kpt_item_id)) != (select project_id from user_corrections where id = new.user_correction_id))
 begin
     select raise(abort, 'kpt item conversion project_id must match target project_id');
+end;
+
+create trigger if not exists trg_repository_snapshot_referenced_delete
+before delete on repository_snapshots
+for each row
+when exists (select 1 from resume_checks where repository_snapshot_id = old.id)
+  or exists (select 1 from command_usages where repository_snapshot_id = old.id)
+  or exists (select 1 from review_plan_targets where repository_snapshot_id = old.id)
+  or exists (select 1 from review_runs where repository_snapshot_id = old.id)
+  or exists (select 1 from work_record_forks where source_repository_snapshot_id = old.id)
+begin
+    select raise(abort, 'cannot delete repository snapshot referenced by ledger rows');
+end;
+
+create trigger if not exists trg_git_commit_referenced_delete
+before delete on git_commits
+for each row
+when exists (select 1 from work_record_commits where git_commit_id = old.id)
+  or exists (select 1 from work_record_forks where source_git_commit_id = old.id)
+  or exists (select 1 from implementation_evidence where git_commit_id = old.id)
+begin
+    select raise(abort, 'cannot delete git commit referenced by ledger rows');
+end;
+
+create trigger if not exists trg_git_file_change_referenced_delete
+before delete on git_file_changes
+for each row
+when exists (select 1 from work_record_files where git_file_change_id = old.id)
+  or exists (select 1 from implementation_evidence where git_file_change_id = old.id)
+begin
+    select raise(abort, 'cannot delete git file change referenced by ledger rows');
 end;
 "#;

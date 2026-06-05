@@ -16,16 +16,17 @@ use agent_workbench::{
     NewRepository, NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
     NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation,
     NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
-    ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
-    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
-    add_command_deviation, add_command_usage, add_coverage_item, add_decision, add_finding,
-    add_finding_verification, add_fixed_command, add_git_commit, add_git_file_change,
-    add_implementation_evidence, add_kpt_item, add_repository, add_repository_dirty_entry,
-    add_repository_snapshot, add_repository_snapshot_comparison, add_review_plan,
-    add_review_policy, add_review_run, add_task, add_user_correction, add_work_record_command,
-    add_work_record_commit, add_work_record_file, applicable_rules, approve_design_version,
-    classify_finding, close_active_work, close_kpt_review, close_task,
+    NewWorkRecordFile, NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery,
+    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
+    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
+    accept_task_out_of_scope, add_authority_event, add_closure, add_command_deviation,
+    add_command_usage, add_coverage_item, add_decision, add_finding, add_finding_verification,
+    add_fixed_command, add_git_commit, add_git_file_change, add_implementation_evidence,
+    add_kpt_item, add_repository, add_repository_dirty_entry, add_repository_snapshot,
+    add_repository_snapshot_comparison, add_review_plan, add_review_policy, add_review_run,
+    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
+    add_work_record_file, add_work_record_git_commit, add_work_record_git_file, applicable_rules,
+    approve_design_version, classify_finding, close_active_work, close_kpt_review, close_task,
     convert_kpt_item_to_command_profile, convert_kpt_item_to_decision,
     convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
@@ -1839,33 +1840,57 @@ fn main() -> Result<()> {
             },
             WorkRecordCommand::Commit { command } => match command {
                 WorkRecordCommitCommand::Add(args) => {
-                    let outcome = add_work_record_commit(
-                        &root,
-                        NewWorkRecordCommit {
-                            work_record_id: args.work_record_id,
-                            git_commit_id: args.git_commit,
-                            commit_sha: &args.sha,
-                            role: &args.role,
-                            note: args.note.as_deref(),
-                        },
-                    )?;
+                    let outcome = match args.git_commit {
+                        Some(git_commit_id) => add_work_record_git_commit(
+                            &root,
+                            NewWorkRecordGitCommit {
+                                work_record_id: args.work_record_id,
+                                git_commit_id: Some(git_commit_id),
+                                commit_sha: &args.sha,
+                                role: &args.role,
+                                note: args.note.as_deref(),
+                            },
+                        )?,
+                        None => add_work_record_commit(
+                            &root,
+                            NewWorkRecordCommit {
+                                work_record_id: args.work_record_id,
+                                commit_sha: &args.sha,
+                                role: &args.role,
+                                note: args.note.as_deref(),
+                            },
+                        )?,
+                    };
                     println!("linked work record commit");
                     println!("work_record_commit_id: {}", outcome.link_id);
                 }
             },
             WorkRecordCommand::File { command } => match command {
                 WorkRecordFileCommand::Add(args) => {
-                    let outcome = add_work_record_file(
-                        &root,
-                        NewWorkRecordFile {
-                            work_record_id: args.work_record_id,
-                            git_file_change_id: args.git_file_change,
-                            repository_id: args.repository_id,
-                            path: &args.path,
-                            role: &args.role,
-                            note: args.note.as_deref(),
-                        },
-                    )?;
+                    let outcome = if args.git_file_change.is_some() || args.repository_id.is_some()
+                    {
+                        add_work_record_git_file(
+                            &root,
+                            NewWorkRecordGitFile {
+                                work_record_id: args.work_record_id,
+                                git_file_change_id: args.git_file_change,
+                                repository_id: args.repository_id,
+                                path: &args.path,
+                                role: &args.role,
+                                note: args.note.as_deref(),
+                            },
+                        )?
+                    } else {
+                        add_work_record_file(
+                            &root,
+                            NewWorkRecordFile {
+                                work_record_id: args.work_record_id,
+                                path: &args.path,
+                                role: &args.role,
+                                note: args.note.as_deref(),
+                            },
+                        )?
+                    };
                     println!("linked work record file");
                     println!("work_record_file_id: {}", outcome.link_id);
                 }

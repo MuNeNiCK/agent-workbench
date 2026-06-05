@@ -117,9 +117,43 @@ pub fn add_work_record_commit(
 ) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
     ensure_work_record_exists(&conn, input.work_record_id)?;
+    insert_work_record_commit(
+        &conn,
+        CommitLinkInput {
+            work_record_id: input.work_record_id,
+            git_commit_id: None,
+            commit_sha: input.commit_sha,
+            role: input.role,
+            note: input.note,
+        },
+    )
+}
+
+pub fn add_work_record_git_commit(
+    root: &Path,
+    input: NewWorkRecordGitCommit<'_>,
+) -> Result<WorkRecordLinkOutcome> {
+    let conn = open_existing_project(root)?;
+    ensure_work_record_exists(&conn, input.work_record_id)?;
     if let Some(git_commit_id) = input.git_commit_id {
         ensure_git_commit_matches(&conn, git_commit_id, input.commit_sha)?;
     }
+    insert_work_record_commit(
+        &conn,
+        CommitLinkInput {
+            work_record_id: input.work_record_id,
+            git_commit_id: input.git_commit_id,
+            commit_sha: input.commit_sha,
+            role: input.role,
+            note: input.note,
+        },
+    )
+}
+
+fn insert_work_record_commit(
+    conn: &Connection,
+    input: CommitLinkInput<'_>,
+) -> Result<WorkRecordLinkOutcome> {
     conn.execute(
         r#"
         insert into work_record_commits(work_record_id, git_commit_id, commit_sha, role, note)
@@ -145,6 +179,25 @@ pub fn add_work_record_file(
 ) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
     ensure_work_record_exists(&conn, input.work_record_id)?;
+    insert_work_record_file(
+        &conn,
+        FileLinkInput {
+            work_record_id: input.work_record_id,
+            git_file_change_id: None,
+            repository_id: None,
+            path: input.path,
+            role: input.role,
+            note: input.note,
+        },
+    )
+}
+
+pub fn add_work_record_git_file(
+    root: &Path,
+    input: NewWorkRecordGitFile<'_>,
+) -> Result<WorkRecordLinkOutcome> {
+    let conn = open_existing_project(root)?;
+    ensure_work_record_exists(&conn, input.work_record_id)?;
     let repository_id = match input.git_file_change_id {
         Some(git_file_change_id) => {
             let stored = ensure_git_file_change_matches(&conn, git_file_change_id, input.path)?;
@@ -160,6 +213,23 @@ pub fn add_work_record_file(
     if let Some(repository_id) = repository_id {
         ensure_repository_exists(&conn, repository_id)?;
     }
+    insert_work_record_file(
+        &conn,
+        FileLinkInput {
+            work_record_id: input.work_record_id,
+            git_file_change_id: input.git_file_change_id,
+            repository_id,
+            path: input.path,
+            role: input.role,
+            note: input.note,
+        },
+    )
+}
+
+fn insert_work_record_file(
+    conn: &Connection,
+    input: FileLinkInput<'_>,
+) -> Result<WorkRecordLinkOutcome> {
     conn.execute(
         r#"
         insert into work_record_files(
@@ -170,7 +240,7 @@ pub fn add_work_record_file(
         params![
             input.work_record_id,
             input.git_file_change_id,
-            repository_id,
+            input.repository_id,
             input.path,
             input.role,
             input.note
@@ -518,6 +588,13 @@ pub struct NewWorkRecordCommand<'a> {
 
 pub struct NewWorkRecordCommit<'a> {
     pub work_record_id: i64,
+    pub commit_sha: &'a str,
+    pub role: &'a str,
+    pub note: Option<&'a str>,
+}
+
+pub struct NewWorkRecordGitCommit<'a> {
+    pub work_record_id: i64,
     pub git_commit_id: Option<i64>,
     pub commit_sha: &'a str,
     pub role: &'a str,
@@ -525,6 +602,13 @@ pub struct NewWorkRecordCommit<'a> {
 }
 
 pub struct NewWorkRecordFile<'a> {
+    pub work_record_id: i64,
+    pub path: &'a str,
+    pub role: &'a str,
+    pub note: Option<&'a str>,
+}
+
+pub struct NewWorkRecordGitFile<'a> {
     pub work_record_id: i64,
     pub git_file_change_id: Option<i64>,
     pub repository_id: Option<i64>,
@@ -536,6 +620,23 @@ pub struct NewWorkRecordFile<'a> {
 struct StoredGitFileChange {
     repository_id: i64,
     path: String,
+}
+
+struct CommitLinkInput<'a> {
+    work_record_id: i64,
+    git_commit_id: Option<i64>,
+    commit_sha: &'a str,
+    role: &'a str,
+    note: Option<&'a str>,
+}
+
+struct FileLinkInput<'a> {
+    work_record_id: i64,
+    git_file_change_id: Option<i64>,
+    repository_id: Option<i64>,
+    path: &'a str,
+    role: &'a str,
+    note: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

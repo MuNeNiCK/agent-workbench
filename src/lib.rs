@@ -57,9 +57,11 @@ pub use planning::{
     close_task, list_decisions, list_tasks,
 };
 pub use records::{
-    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, WorkRecordEntry,
-    WorkRecordLinkOutcome, WorkRecordOutcome, add_work_record_command, add_work_record_commit,
-    add_work_record_file, create_work_record, export_work_record_markdown, list_work_records,
+    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile,
+    NewWorkRecordGitCommit, NewWorkRecordGitFile, WorkRecordEntry, WorkRecordLinkOutcome,
+    WorkRecordOutcome, add_work_record_command, add_work_record_commit, add_work_record_file,
+    add_work_record_git_commit, add_work_record_git_file, create_work_record,
+    export_work_record_markdown, list_work_records,
 };
 pub use repository::{
     GitCommitOutcome, GitFileChangeOutcome, NewGitCommit, NewGitFileChange, NewRepository,
@@ -2885,7 +2887,6 @@ This requirement describes changed cleanup behavior that must be implemented.
             temp.path(),
             NewWorkRecordCommit {
                 work_record_id: work_record.work_record_id,
-                git_commit_id: None,
                 commit_sha: "abc123",
                 role: "created",
                 note: None,
@@ -2896,8 +2897,6 @@ This requirement describes changed cleanup behavior that must be implemented.
             temp.path(),
             NewWorkRecordFile {
                 work_record_id: work_record.work_record_id,
-                git_file_change_id: None,
-                repository_id: None,
                 path: "src/lib.rs",
                 role: "changed",
                 note: None,
@@ -6759,9 +6758,9 @@ Run the project test suite before implementation handoff.
             },
         )
         .unwrap();
-        add_work_record_commit(
+        add_work_record_git_commit(
             temp.path(),
-            NewWorkRecordCommit {
+            NewWorkRecordGitCommit {
                 work_record_id: work_record.work_record_id,
                 git_commit_id: Some(commit.git_commit_id),
                 commit_sha: "abc123",
@@ -6770,9 +6769,9 @@ Run the project test suite before implementation handoff.
             },
         )
         .unwrap();
-        add_work_record_file(
+        add_work_record_git_file(
             temp.path(),
-            NewWorkRecordFile {
+            NewWorkRecordGitFile {
                 work_record_id: work_record.work_record_id,
                 git_file_change_id: Some(file.git_file_change_id),
                 repository_id: None,
@@ -7021,6 +7020,251 @@ Run the project test suite before implementation handoff.
 
         assert!(cross_activation.is_err());
         assert!(cross_file_change.is_err());
+    }
+
+    #[test]
+    fn repository_work_record_git_links_are_db_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let commit = add_git_commit(
+            temp.path(),
+            NewGitCommit {
+                repository: "main",
+                commit_sha: "abc123",
+                short_sha: None,
+                subject: None,
+                author_name: None,
+                author_email: None,
+                committed_at: None,
+                parent_shas: None,
+            },
+        )
+        .unwrap();
+        let file = add_git_file_change(
+            temp.path(),
+            NewGitFileChange {
+                git_commit_id: commit.git_commit_id,
+                repository: None,
+                path: "src/lib.rs",
+                old_path: None,
+                change_type: "modified",
+                additions: None,
+                deletions: None,
+                content_hash: None,
+            },
+        )
+        .unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: None,
+                topic: "db enforced git links",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let dangling_commit = conn.execute(
+            r#"
+            insert into work_record_commits(work_record_id, git_commit_id, commit_sha, role)
+            values (?1, 999, 'abc123', 'created')
+            "#,
+            params![record.work_record_id],
+        );
+        let mismatched_sha = conn.execute(
+            r#"
+            insert into work_record_commits(work_record_id, git_commit_id, commit_sha, role)
+            values (?1, ?2, 'different', 'created')
+            "#,
+            params![record.work_record_id, commit.git_commit_id],
+        );
+        let missing_file_repository = conn.execute(
+            r#"
+            insert into work_record_files(work_record_id, git_file_change_id, path, role)
+            values (?1, ?2, 'src/lib.rs', 'changed')
+            "#,
+            params![record.work_record_id, file.git_file_change_id],
+        );
+        let mismatched_file_path = conn.execute(
+            r#"
+            insert into work_record_files(work_record_id, git_file_change_id, repository_id, path, role)
+            values (?1, ?2, 1, 'src/main.rs', 'changed')
+            "#,
+            params![record.work_record_id, file.git_file_change_id],
+        );
+
+        assert!(dangling_commit.is_err());
+        assert!(mismatched_sha.is_err());
+        assert!(missing_file_repository.is_err());
+        assert!(mismatched_file_path.is_err());
+    }
+
+    #[test]
+    fn repository_snapshot_references_are_db_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "snapshot references", None).unwrap();
+        let suspended = suspend_work(temp.path(), "capture state", "resume").unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "resume-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let snapshot = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: Some(work.activation_id),
+                head_sha: Some("abc123"),
+                branch: Some("master"),
+                status_summary: Some("clean"),
+                is_clean: true,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, repository_snapshot_id)
+            values (?1, 'repository_snapshot', ?2)
+            "#,
+            params![plan.review_plan_id, snapshot.repository_snapshot_id],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into resume_checks(
+                work_unit_id, work_unit_activation_id, suspend_snapshot_id, maturity,
+                result, repository_snapshot_id, created_at
+            )
+            values (?1, ?2, ?3, 'repo-aware', 'allowed', ?4, current_timestamp)
+            "#,
+            params![
+                suspended.work_unit_id,
+                suspended.activation_id,
+                suspended.suspend_snapshot_id,
+                snapshot.repository_snapshot_id
+            ],
+        )
+        .unwrap();
+
+        let delete_snapshot = conn.execute(
+            "delete from repository_snapshots where id = ?1",
+            params![snapshot.repository_snapshot_id],
+        );
+
+        assert!(delete_snapshot.is_err());
+    }
+
+    #[test]
+    fn repository_classification_acceptance_project_is_db_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let snapshot = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: None,
+                head_sha: Some("abc123"),
+                branch: None,
+                status_summary: None,
+                is_clean: false,
+            },
+        )
+        .unwrap();
+        let dirty = add_repository_dirty_entry(
+            temp.path(),
+            NewRepositoryDirtyEntry {
+                repository_snapshot_id: snapshot.repository_snapshot_id,
+                path: "src/lib.rs",
+                change_type: "modified",
+                staged: false,
+                content_hash: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-classification', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, design_package_key, design_file_path,
+                acceptance_type, reason, created_by, status, created_at
+            )
+            values (
+                2, 'design_file', 'other', '01-other.md',
+                'explicit_exception', 'other project exception', 'user',
+                'approved', current_timestamp
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let cross_project_acceptance = conn.execute(
+            r#"
+            insert into repository_state_classifications(
+                repository_snapshot_id, dirty_entry_id, classification,
+                reason, acceptance_record_id, created_at
+            )
+            values (?1, ?2, 'accepted_exception', 'accepted elsewhere', 1, current_timestamp)
+            "#,
+            params![
+                snapshot.repository_snapshot_id,
+                dirty.repository_dirty_entry_id
+            ],
+        );
+
+        assert!(cross_project_acceptance.is_err());
     }
 
     #[test]
