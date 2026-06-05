@@ -1,23 +1,51 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
 
 pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptReviewOutcome> {
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    conn.execute(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let period_modifier = input.period.map(period_to_sqlite_modifier).transpose()?;
+    tx.execute(
         r#"
-        insert into kpt_reviews(project_id, scope, trigger, summary, status, created_at)
-        values (?1, ?2, 'manual', ?3, 'open', current_timestamp)
+        insert into kpt_reviews(
+            project_id, scope, period_start, period_end, trigger, summary, status, created_at
+        )
+        values (
+            ?1, ?2,
+            case when ?3 is null then null else datetime('now', ?3) end,
+            case when ?3 is null then null else current_timestamp end,
+            'manual', ?4, 'open', current_timestamp
+        )
         "#,
-        params![project_id, input.scope, input.summary],
+        params![project_id, input.scope, period_modifier, input.summary],
     )?;
+    let kpt_review_id = tx.last_insert_rowid();
+
+    let generated_item_count = if input
+        .from
+        .is_some_and(|source| source.split(',').any(|part| part.trim() == "corrections"))
+    {
+        import_corrections_as_kpt_items(
+            &tx,
+            kpt_review_id,
+            project_id,
+            input.scope,
+            period_modifier.as_deref(),
+        )?
+    } else {
+        0
+    };
+
+    tx.commit()?;
 
     Ok(KptReviewOutcome {
-        kpt_review_id: conn.last_insert_rowid(),
+        kpt_review_id,
+        generated_item_count,
     })
 }
 
@@ -208,6 +236,141 @@ fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
     .context("no open kpt review; run kpt start first")
 }
 
+fn import_corrections_as_kpt_items(
+    conn: &Connection,
+    kpt_review_id: i64,
+    project_id: i64,
+    scope: Option<&str>,
+    period_modifier: Option<&str>,
+) -> Result<i64> {
+    let corrections = corrections_for_kpt(conn, project_id, scope, period_modifier)?;
+    for correction in &corrections {
+        let title = format!("Repeated correction: {}", correction.mistake_pattern);
+        let details = format!(
+            "scope: {}\ntype: {}\ncorrection: {}",
+            correction.scope, correction.correction_type, correction.correction
+        );
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, details, severity,
+                linked_user_correction_id, proposed_action, status, created_at
+            )
+            values (?1, 'problem', ?2, ?3, ?4, ?5, ?6, 'open', current_timestamp)
+            "#,
+            params![
+                kpt_review_id,
+                title,
+                details,
+                correction.severity,
+                correction.id,
+                correction.correction,
+            ],
+        )?;
+    }
+
+    Ok(corrections.len() as i64)
+}
+
+fn corrections_for_kpt(
+    conn: &Connection,
+    project_id: i64,
+    scope: Option<&str>,
+    period_modifier: Option<&str>,
+) -> Result<Vec<StoredCorrection>> {
+    let mut records = Vec::new();
+    match (scope, period_modifier) {
+        (Some(scope), Some(period_modifier)) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, correction_type, mistake_pattern, correction, severity
+                from user_corrections
+                where project_id = ?1
+                  and status = 'active'
+                  and scope = ?2
+                  and created_at >= datetime('now', ?3)
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                params![project_id, scope, period_modifier],
+                stored_correction_record,
+            )?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (Some(scope), None) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, correction_type, mistake_pattern, correction, severity
+                from user_corrections
+                where project_id = ?1 and status = 'active' and scope = ?2
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![project_id, scope], stored_correction_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (None, Some(period_modifier)) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, correction_type, mistake_pattern, correction, severity
+                from user_corrections
+                where project_id = ?1
+                  and status = 'active'
+                  and created_at >= datetime('now', ?2)
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                params![project_id, period_modifier],
+                stored_correction_record,
+            )?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        (None, None) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, scope, correction_type, mistake_pattern, correction, severity
+                from user_corrections
+                where project_id = ?1 and status = 'active'
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![project_id], stored_correction_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    Ok(records)
+}
+
+fn period_to_sqlite_modifier(period: &str) -> Result<String> {
+    let period = period.trim();
+    if let Some(days) = period.strip_suffix('d') {
+        let days = days.parse::<u32>()?;
+        if days == 0 {
+            bail!("period must be greater than zero");
+        }
+        return Ok(format!("-{days} days"));
+    }
+    if let Some(hours) = period.strip_suffix('h') {
+        let hours = hours.parse::<u32>()?;
+        if hours == 0 {
+            bail!("period must be greater than zero");
+        }
+        return Ok(format!("-{hours} hours"));
+    }
+    bail!("unsupported period; use values like 30d or 12h")
+}
+
 fn kpt_review_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptReviewRecord> {
     Ok(KptReviewRecord {
         id: row.get(0)?,
@@ -231,6 +394,17 @@ fn kpt_item_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptItemRecord> {
     })
 }
 
+fn stored_correction_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCorrection> {
+    Ok(StoredCorrection {
+        id: row.get(0)?,
+        scope: row.get(1)?,
+        correction_type: row.get(2)?,
+        mistake_pattern: row.get(3)?,
+        correction: row.get(4)?,
+        severity: row.get(5)?,
+    })
+}
+
 struct StoredKptItem {
     id: i64,
     title: String,
@@ -238,14 +412,26 @@ struct StoredKptItem {
     proposed_action: Option<String>,
 }
 
+struct StoredCorrection {
+    id: i64,
+    scope: String,
+    correction_type: String,
+    mistake_pattern: String,
+    correction: String,
+    severity: String,
+}
+
 pub struct NewKptReview<'a> {
     pub scope: Option<&'a str>,
     pub summary: Option<&'a str>,
+    pub from: Option<&'a str>,
+    pub period: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct KptReviewOutcome {
     pub kpt_review_id: i64,
+    pub generated_item_count: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

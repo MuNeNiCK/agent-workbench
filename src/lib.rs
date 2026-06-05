@@ -678,6 +678,8 @@ mod tests {
             NewKptReview {
                 scope: Some("project"),
                 summary: Some("monthly review"),
+                from: None,
+                period: None,
             },
         )
         .unwrap();
@@ -722,6 +724,44 @@ mod tests {
         assert_eq!(reviews.len(), 1);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].linked_task_id, Some(conversion.task_id));
+    }
+
+    #[test]
+    fn kpt_review_can_import_user_corrections() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_user_correction(
+            temp.path(),
+            NewUserCorrection {
+                scope: "project",
+                correction_type: "process",
+                mistake_pattern: "validation command drifts",
+                correction: "use fixed validation command",
+                applies_to: "project",
+                severity: "high",
+            },
+        )
+        .unwrap();
+
+        let review = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("process review"),
+                from: Some("corrections"),
+                period: Some("30d"),
+            },
+        )
+        .unwrap();
+
+        let items = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+        assert_eq!(review.generated_item_count, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_type, "problem");
+        assert_eq!(
+            items[0].title,
+            "Repeated correction: validation command drifts"
+        );
     }
 
     #[test]

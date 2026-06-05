@@ -559,6 +559,10 @@ struct KptStartArgs {
     scope: Option<String>,
     #[arg(long)]
     summary: Option<String>,
+    #[arg(long = "from")]
+    from: Option<String>,
+    #[arg(long)]
+    period: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1150,10 +1154,13 @@ fn main() -> Result<()> {
                     NewKptReview {
                         scope: args.scope.as_deref(),
                         summary: args.summary.as_deref(),
+                        from: args.from.as_deref(),
+                        period: args.period.as_deref(),
                     },
                 )?;
                 println!("started kpt review");
                 println!("kpt_review_id: {}", outcome.kpt_review_id);
+                println!("generated_item_count: {}", outcome.generated_item_count);
             }
             KptCommand::List(args) => {
                 let records = list_kpt_reviews(&root, args.status.as_deref())?;
