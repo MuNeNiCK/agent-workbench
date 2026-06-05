@@ -35,6 +35,8 @@ cargo run -- work suspend --reason "interrupting issue" --next "resume current t
 cargo run -- resume-check --maturity basic
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
 cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
+cargo run -- command usage add --profile tests --result pass --log local/logs/tests.log
+cargo run -- command deviation add --profile tests --usage 1 --reason "platform-specific path"
 cargo run -- rules applicable --scope project
 cargo run -- record create --topic "current work" --work-performed "implemented feature" --next-actions "run review"
 cargo run -- record command add 1 --command "cargo test" --result pass

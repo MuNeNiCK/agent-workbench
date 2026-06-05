@@ -5,9 +5,10 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewAuthorityEvent, NewCommandProfile, NewDecision, NewTask, NewUserCorrection, NewWorkFork,
-    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction,
-    RuleQuery, TaskListQuery, WorkForkSource, add_authority_event, add_decision, add_fixed_command,
+    NewAuthorityEvent, NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
+    NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
+    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
+    add_authority_event, add_command_deviation, add_command_usage, add_decision, add_fixed_command,
     add_task, add_user_correction, add_work_record_command, add_work_record_commit,
     add_work_record_file, applicable_rules, close_active_work, close_task, create_work_record,
     fork_work, init_project, interrupt_work, list_authority_events, list_command_profiles,
@@ -186,6 +187,14 @@ enum MemoryCommand {
         #[command(subcommand)]
         command: FixedCommand,
     },
+    Usage {
+        #[command(subcommand)]
+        command: CommandUsageCommand,
+    },
+    Deviation {
+        #[command(subcommand)]
+        command: CommandDeviationCommand,
+    },
     List(CommandListArgs),
 }
 
@@ -214,6 +223,40 @@ struct CommandFixedAddArgs {
 struct CommandListArgs {
     #[arg(long = "type")]
     command_type: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandUsageCommand {
+    Add(CommandUsageAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct CommandUsageAddArgs {
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long)]
+    command: Option<String>,
+    #[arg(long, default_value = "unknown")]
+    result: String,
+    #[arg(long)]
+    log: Option<String>,
+    #[arg(long)]
+    work_unit: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandDeviationCommand {
+    Add(CommandDeviationAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct CommandDeviationAddArgs {
+    #[arg(long)]
+    profile: String,
+    #[arg(long)]
+    usage: Option<i64>,
+    #[arg(long)]
+    reason: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -611,6 +654,46 @@ fn main() -> Result<()> {
                     )?;
                     println!("added fixed command");
                     println!("command_profile_id: {}", outcome.command_profile_id);
+                }
+            },
+            MemoryCommand::Usage { command } => match command {
+                CommandUsageCommand::Add(args) => {
+                    let outcome = add_command_usage(
+                        &root,
+                        NewCommandUsage {
+                            profile: args.profile.as_deref(),
+                            command: args.command.as_deref(),
+                            result: &args.result,
+                            log_path: args.log.as_deref(),
+                            work_unit_id: args.work_unit,
+                        },
+                    )?;
+                    println!("recorded command usage");
+                    println!("command_usage_id: {}", outcome.command_usage_id);
+                    if let Some(command_profile_id) = outcome.command_profile_id {
+                        println!("command_profile_id: {command_profile_id}");
+                    }
+                    if let Some(work_unit_id) = outcome.work_unit_id {
+                        println!("work_unit_id: {work_unit_id}");
+                    }
+                }
+            },
+            MemoryCommand::Deviation { command } => match command {
+                CommandDeviationCommand::Add(args) => {
+                    let outcome = add_command_deviation(
+                        &root,
+                        NewCommandDeviation {
+                            profile: &args.profile,
+                            command_usage_id: args.usage,
+                            reason: &args.reason,
+                        },
+                    )?;
+                    println!("recorded command deviation");
+                    println!("command_deviation_id: {}", outcome.command_deviation_id);
+                    println!("command_profile_id: {}", outcome.command_profile_id);
+                    if let Some(work_unit_id) = outcome.work_unit_id {
+                        println!("work_unit_id: {work_unit_id}");
+                    }
                 }
             },
             MemoryCommand::List(args) => {

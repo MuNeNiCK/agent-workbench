@@ -1,4 +1,5 @@
 mod authority;
+mod commands;
 mod db;
 mod planning;
 mod records;
@@ -8,6 +9,11 @@ mod work;
 pub use authority::{
     AuthorityEventOutcome, AuthorityEventRecord, NewAuthorityEvent, add_authority_event,
     list_authority_events,
+};
+pub use commands::{
+    CommandDeviationOutcome, CommandOutcome, CommandProfileRecord, CommandUsageOutcome,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, add_command_deviation,
+    add_command_usage, add_fixed_command, list_command_profiles,
 };
 pub use db::{
     ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_ledger_path, init_project,
@@ -23,9 +29,8 @@ pub use records::{
     add_work_record_file, create_work_record, list_work_records,
 };
 pub use rules::{
-    CommandOutcome, CommandProfileRecord, NewCommandProfile, NewUserCorrection, RuleQuery,
-    RuleRecord, UserCorrectionOutcome, UserCorrectionRecord, add_fixed_command,
-    add_user_correction, applicable_rules, list_command_profiles, list_user_corrections,
+    NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
+    add_user_correction, applicable_rules, list_user_corrections,
 };
 pub use work::{
     CloseOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome, ResumeOutcome, SuspendOutcome,
@@ -226,6 +231,51 @@ mod tests {
             rules[0].command_profile_id,
             Some(command.command_profile_id)
         );
+    }
+
+    #[test]
+    fn command_usage_and_deviation_attach_to_profile_and_active_work() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "run validation", None).unwrap();
+        let profile = add_fixed_command(
+            temp.path(),
+            NewCommandProfile {
+                name: "unit-tests",
+                command_type: "test",
+                scope: "project",
+                command: "cargo test",
+                timeout: Some("120s"),
+                expected_result: Some("pass"),
+            },
+        )
+        .unwrap();
+
+        let usage = add_command_usage(
+            temp.path(),
+            NewCommandUsage {
+                profile: Some("unit-tests"),
+                command: None,
+                result: "pass",
+                log_path: Some("local/logs/unit-tests.log"),
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        let deviation = add_command_deviation(
+            temp.path(),
+            NewCommandDeviation {
+                profile: "unit-tests",
+                command_usage_id: Some(usage.command_usage_id),
+                reason: "platform-specific validation path",
+            },
+        )
+        .unwrap();
+
+        assert_eq!(usage.command_profile_id, Some(profile.command_profile_id));
+        assert_eq!(usage.work_unit_id, Some(work.work_unit_id));
+        assert_eq!(deviation.command_profile_id, profile.command_profile_id);
+        assert_eq!(deviation.work_unit_id, Some(work.work_unit_id));
     }
 
     #[test]
