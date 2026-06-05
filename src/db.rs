@@ -145,6 +145,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
+    ensure_column(conn, "acceptance_records", "coverage_item_id", "integer")?;
 
     let current_version = conn
         .query_row(
@@ -172,6 +173,7 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
+    ensure_column(conn, "acceptance_records", "coverage_item_id", "integer")?;
     Ok(())
 }
 
@@ -187,10 +189,12 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         return Ok(());
     };
     if table_sql.contains("'design_file'")
+        && table_sql.contains("'coverage_item'")
         && table_sql.contains("'design_requirement_key'")
         && table_has_column(conn, "acceptance_records", "design_package_key")?
         && table_has_column(conn, "acceptance_records", "design_file_path")?
         && table_has_column(conn, "acceptance_records", "design_requirement_key")?
+        && table_has_column(conn, "acceptance_records", "coverage_item_id")?
     {
         return Ok(());
     }
@@ -208,10 +212,11 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         create table acceptance_records (
             id integer primary key,
             project_id integer not null references projects(id) on delete cascade,
-            target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key')),
+            target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key', 'coverage_item')),
             task_id integer references tasks(id),
             design_requirement_id integer references design_requirements(id),
             validation_gate_template_id integer references validation_gate_templates(id),
+            coverage_item_id integer references coverage_items(id),
             design_package_key text,
             design_file_path text,
             design_requirement_key text,
@@ -225,23 +230,24 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             created_at text not null,
             review_impact text,
             check (
-                (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
-                or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
+                (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'coverage_item' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+                or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
+                or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
             )
         );
 
         insert into acceptance_records(
             id, project_id, target_type, task_id, design_requirement_id,
-            validation_gate_template_id, acceptance_type, reason, scope,
+            validation_gate_template_id, coverage_item_id, acceptance_type, reason, scope,
             created_by, status, approved_by_authority_event_id, approved_at,
             created_at, review_impact
         )
         select
             id, project_id, target_type, task_id, design_requirement_id,
-            validation_gate_template_id, acceptance_type, reason, scope,
+            validation_gate_template_id, coverage_item_id, acceptance_type, reason, scope,
             case
                 when created_by in ('user', 'agent', 'system') then created_by
                 else 'system'
@@ -665,10 +671,11 @@ create table if not exists decisions (
 create table if not exists acceptance_records (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
-    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key')),
+    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key', 'coverage_item')),
     task_id integer references tasks(id),
     design_requirement_id integer references design_requirements(id),
     validation_gate_template_id integer references validation_gate_templates(id),
+    coverage_item_id integer references coverage_items(id),
     design_package_key text,
     design_file_path text,
     design_requirement_key text,
@@ -682,11 +689,12 @@ create table if not exists acceptance_records (
     created_at text not null,
     review_impact text,
     check (
-        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
-        or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
+        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'coverage_item' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
+        or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
+        or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
     )
 );
 
@@ -1245,6 +1253,24 @@ when new.target_type = 'validation_gate_template'
  and new.project_id != (select project_id from validation_gate_templates where id = new.validation_gate_template_id)
 begin
     select raise(abort, 'acceptance project_id must match validation gate template project_id');
+end;
+
+create trigger if not exists trg_acceptance_coverage_item_project_insert
+before insert on acceptance_records
+for each row
+when new.target_type = 'coverage_item'
+ and new.project_id != (select project_id from coverage_items where id = new.coverage_item_id)
+begin
+    select raise(abort, 'acceptance project_id must match coverage item project_id');
+end;
+
+create trigger if not exists trg_acceptance_coverage_item_project_update
+before update of project_id, target_type, coverage_item_id on acceptance_records
+for each row
+when new.target_type = 'coverage_item'
+ and new.project_id != (select project_id from coverage_items where id = new.coverage_item_id)
+begin
+    select raise(abort, 'acceptance project_id must match coverage item project_id');
 end;
 
 create table if not exists kpt_reviews (

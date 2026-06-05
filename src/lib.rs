@@ -1712,6 +1712,142 @@ mod tests {
     }
 
     #[test]
+    fn approved_coverage_acceptance_can_satisfy_trace_closure() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered or accepted"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        select_validation_gate(
+            temp.path(),
+            ValidationGateSelection {
+                design_version_id: import.design_version_id,
+                gate_key: "GATE-001",
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                command: None,
+            },
+        )
+        .unwrap();
+        add_implementation_evidence(
+            temp.path(),
+            NewImplementationEvidence {
+                task_id: Some(task.task_id),
+                design_version_id: Some(import.design_version_id),
+                requirement_key: Some("REQ-001"),
+                evidence_type: "commit",
+                commit_sha: Some("abc123"),
+                file_path: None,
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let coverage = add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task.task_id),
+                requirement: "cleanup behavior is intentionally out of scope",
+                runtime_boundary_evidence: None,
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: None,
+                missing_or_unverified: Some("not applicable to this implementation"),
+                status: "partial",
+            },
+        )
+        .unwrap();
+        let close_without_acceptance = close_task(temp.path(), task.task_id, Some("abc123"));
+        let acceptance = accept_design_exception(
+            temp.path(),
+            NewDesignExceptionAcceptance {
+                design_version_id: Some(import.design_version_id),
+                design_package: None,
+                target: &format!("coverage:{}", coverage.coverage_item_id),
+                acceptance_type: "accepted_out_of_scope",
+                reason: "coverage is explicitly out of scope for this work",
+            },
+        )
+        .unwrap();
+        close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
+        let ready = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+
+        assert!(close_without_acceptance.is_err());
+        assert_eq!(acceptance.target_type, "coverage_item");
+        assert_eq!(acceptance.coverage_item_id, Some(coverage.coverage_item_id));
+        assert_eq!(ready.result, "pass");
+    }
+
+    #[test]
     fn implementation_ready_requires_completion_conditions() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();

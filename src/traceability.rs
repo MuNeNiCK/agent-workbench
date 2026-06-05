@@ -975,7 +975,20 @@ fn count_closed_derived_tasks_missing_coverage(
             from coverage_items c
             where c.design_requirement_id = r.id
               and (c.task_id = td.task_id or c.task_id is null)
-              and c.status = 'covered'
+              and (
+                c.status = 'covered'
+                or (
+                  c.status = 'accepted_out_of_scope'
+                  and exists (
+                    select 1
+                    from acceptance_records ar
+                    where ar.target_type = 'coverage_item'
+                      and ar.coverage_item_id = c.id
+                      and ar.acceptance_type = 'accepted_out_of_scope'
+                      and ar.status = 'approved'
+                  )
+                )
+              )
           )
         "#,
         params![design_version_id],

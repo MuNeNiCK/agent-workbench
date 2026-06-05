@@ -569,14 +569,14 @@ pub fn accept_design_exception(
         r#"
         insert into acceptance_records(
             project_id, target_type, task_id, design_requirement_id,
-            validation_gate_template_id, design_package_key, design_file_path,
-            design_requirement_key, acceptance_type, reason, scope,
+            validation_gate_template_id, coverage_item_id, design_package_key,
+            design_file_path, design_requirement_key, acceptance_type, reason, scope,
             created_by, status, approved_by_authority_event_id, approved_at,
             created_at, review_impact
         )
         values (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            'user', 'approved', ?12, current_timestamp,
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+            'user', 'approved', ?13, current_timestamp,
             current_timestamp, 'design exception accepted for current design scope'
         )
         "#,
@@ -586,6 +586,7 @@ pub fn accept_design_exception(
             target.task_id,
             target.design_requirement_id,
             target.validation_gate_template_id,
+            target.coverage_item_id,
             target.design_package_key,
             target.design_file_path,
             target.design_requirement_key,
@@ -610,6 +611,12 @@ pub fn accept_design_exception(
                     params![target.validation_gate_template_id],
                 )?;
             }
+            "coverage_item" => {
+                tx.execute(
+                    "update coverage_items set status = 'accepted_out_of_scope' where id = ?1",
+                    params![target.coverage_item_id],
+                )?;
+            }
             "design_file" | "design_requirement_key" => {}
             _ => unreachable!("target type resolved above"),
         }
@@ -622,6 +629,7 @@ pub fn accept_design_exception(
         target_type: target.target_type.to_string(),
         design_requirement_id: target.design_requirement_id,
         validation_gate_template_id: target.validation_gate_template_id,
+        coverage_item_id: target.coverage_item_id,
         design_package_key: target.design_package_key,
         design_file_path: target.design_file_path,
         design_requirement_key: target.design_requirement_key,
@@ -965,6 +973,7 @@ fn resolve_design_acceptance_target(
             task_id: None,
             design_requirement_id: Some(id),
             validation_gate_template_id: None,
+            coverage_item_id: None,
             design_package_key: None,
             design_file_path: None,
             design_requirement_key: None,
@@ -988,6 +997,35 @@ fn resolve_design_acceptance_target(
             task_id: None,
             design_requirement_id: None,
             validation_gate_template_id: Some(id),
+            coverage_item_id: None,
+            design_package_key: None,
+            design_file_path: None,
+            design_requirement_key: None,
+        });
+    }
+    if let Some(coverage_id) = target.strip_prefix("coverage:") {
+        let coverage_id = parse_positive_i64(coverage_id, "coverage target id")?;
+        let id = conn
+            .query_row(
+                r#"
+                select c.id
+                from coverage_items c
+                join design_requirements r on r.id = c.design_requirement_id
+                where c.project_id = ?1
+                  and r.design_version_id = ?2
+                  and c.id = ?3
+                "#,
+                params![project_id, design_version_id, coverage_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("coverage item target not found")?;
+        return Ok(ResolvedDesignAcceptanceTarget {
+            target_type: "coverage_item",
+            task_id: None,
+            design_requirement_id: None,
+            validation_gate_template_id: None,
+            coverage_item_id: Some(id),
             design_package_key: None,
             design_file_path: None,
             design_requirement_key: None,
@@ -1011,6 +1049,7 @@ fn resolve_pre_import_design_acceptance_target(
             task_id: None,
             design_requirement_id: None,
             validation_gate_template_id: None,
+            coverage_item_id: None,
             design_package_key: Some(design_package.to_string()),
             design_file_path: Some(relative_path.to_string()),
             design_requirement_key: None,
@@ -1025,6 +1064,7 @@ fn resolve_pre_import_design_acceptance_target(
             task_id: None,
             design_requirement_id: None,
             validation_gate_template_id: None,
+            coverage_item_id: None,
             design_package_key: Some(design_package.to_string()),
             design_file_path: None,
             design_requirement_key: Some(requirement_key.to_string()),
@@ -1040,10 +1080,13 @@ fn validate_design_acceptance_type_target(target: &str) -> Result<()> {
         || target
             .strip_prefix("gate:")
             .is_some_and(|key| valid_design_key(key, "GATE"))
+        || target
+            .strip_prefix("coverage:")
+            .is_some_and(|id| parse_positive_i64(id, "coverage target id").is_ok())
     {
         return Ok(());
     }
-    bail!("acceptance target must be requirement:<key> or gate:<key>");
+    bail!("acceptance target must be requirement:<key>, gate:<key>, or coverage:<id>");
 }
 
 fn validate_design_acceptance_type(acceptance_type: &str) -> Result<()> {
@@ -1051,6 +1094,16 @@ fn validate_design_acceptance_type(acceptance_type: &str) -> Result<()> {
         "accepted_out_of_scope" | "explicit_exception" => Ok(()),
         _ => bail!("acceptance type must be accepted_out_of_scope or explicit_exception"),
     }
+}
+
+fn parse_positive_i64(value: &str, label: &str) -> Result<i64> {
+    let id: i64 = value
+        .parse()
+        .with_context(|| format!("{label} must be a positive integer"))?;
+    if id <= 0 {
+        bail!("{label} must be a positive integer");
+    }
+    Ok(id)
 }
 
 fn valid_design_key(value: &str, prefix: &str) -> bool {
@@ -2101,6 +2154,7 @@ struct ResolvedDesignAcceptanceTarget {
     task_id: Option<i64>,
     design_requirement_id: Option<i64>,
     validation_gate_template_id: Option<i64>,
+    coverage_item_id: Option<i64>,
     design_package_key: Option<String>,
     design_file_path: Option<String>,
     design_requirement_key: Option<String>,
@@ -2257,6 +2311,7 @@ pub struct DesignExceptionAcceptanceOutcome {
     pub target_type: String,
     pub design_requirement_id: Option<i64>,
     pub validation_gate_template_id: Option<i64>,
+    pub coverage_item_id: Option<i64>,
     pub design_package_key: Option<String>,
     pub design_file_path: Option<String>,
     pub design_requirement_key: Option<String>,

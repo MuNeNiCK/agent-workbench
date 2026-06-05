@@ -1791,6 +1791,9 @@ fn main() -> Result<()> {
                 if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
                     println!("validation_gate_template_id: {validation_gate_template_id}");
                 }
+                if let Some(coverage_item_id) = outcome.coverage_item_id {
+                    println!("coverage_item_id: {coverage_item_id}");
+                }
                 if let Some(design_package_key) = outcome.design_package_key {
                     println!("design_package_key: {design_package_key}");
                 }

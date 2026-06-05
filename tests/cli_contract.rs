@@ -640,6 +640,40 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "--dry-run",
         ],
     );
+    let partial_coverage = ok(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--status",
+            "partial",
+            "--requirement-text",
+            "cleanup behavior is intentionally out of scope",
+            "--missing",
+            "not applicable",
+        ],
+    );
+    let coverage_acceptance = ok(
+        temp.path(),
+        &[
+            "acceptance",
+            "add",
+            "--design",
+            "1",
+            "--target",
+            "coverage:2",
+            "--type",
+            "accepted_out_of_scope",
+            "--reason",
+            "coverage is explicitly out of scope",
+        ],
+    );
 
     assert!(derivation.contains("derived task from requirement"));
     assert!(derivation.contains("task_derivation_id: 1"));
@@ -661,6 +695,9 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(passed_after_close.contains("result: pass"));
     assert!(passed_after_close.contains("implementation_evidence_present: pass"));
     assert!(passed_after_close.contains("coverage_items_present: pass"));
+    assert!(partial_coverage.contains("coverage_item_id: 2"));
+    assert!(coverage_acceptance.contains("target_type: coverage_item"));
+    assert!(coverage_acceptance.contains("coverage_item_id: 2"));
 }
 
 #[test]
