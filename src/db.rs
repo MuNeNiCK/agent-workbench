@@ -1485,6 +1485,38 @@ create table if not exists review_plans (
     created_at text not null
 );
 
+create trigger if not exists trg_review_policy_referenced_update
+before update of project_id, review_type on review_policies
+for each row
+when exists (
+    select 1
+    from review_plans p
+    where p.review_policy_id = old.id
+      and (p.project_id != new.project_id or p.review_type != new.review_type)
+)
+begin
+    select raise(abort, 'review policy update would break referenced review plans');
+end;
+
+create trigger if not exists trg_review_scope_referenced_update
+before update of project_id, review_type on review_scopes
+for each row
+when exists (
+    select 1
+    from review_plans p
+    where p.review_scope_id = old.id
+      and (p.project_id != new.project_id or p.review_type != new.review_type)
+)
+or exists (
+    select 1
+    from review_runs r
+    where r.review_scope_id = old.id
+      and r.project_id != new.project_id
+)
+begin
+    select raise(abort, 'review scope update would break referenced review plans or runs');
+end;
+
 create table if not exists review_plan_targets (
     id integer primary key,
     review_plan_id integer not null references review_plans(id) on delete cascade,
@@ -1644,6 +1676,63 @@ begin
     select raise(abort, 'review run project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_review_run_target_insert
+before insert on review_runs
+for each row
+when (new.target_type = 'design_version' and not (
+        new.design_version_id is not null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from design_versions where id = new.design_version_id)
+    ))
+  or (new.target_type = 'design_requirement' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is not null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from design_requirements where id = new.design_requirement_id)
+    ))
+  or (new.target_type = 'task' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is not null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = coalesce(
+            (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+            (select id from projects order by id limit 1)
+        )
+    ))
+  or (new.target_type = 'work_unit' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is not null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from work_units where id = new.work_unit_id)
+    ))
+  or (new.target_type = 'repository_snapshot' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is not null
+    ))
+  or (new.target_type in ('file', 'symbol') and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.target_ref is not null
+    ))
+begin
+    select raise(abort, 'review run target must match target_type and project_id');
+end;
+
 create trigger if not exists trg_review_run_project_update
 before update of project_id, review_scope_id, review_plan_id on review_runs
 for each row
@@ -1651,6 +1740,63 @@ when (new.review_scope_id is not null and new.project_id != (select project_id f
   or (new.review_plan_id is not null and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
 begin
     select raise(abort, 'review run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_run_target_update
+before update of project_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, target_ref on review_runs
+for each row
+when (new.target_type = 'design_version' and not (
+        new.design_version_id is not null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from design_versions where id = new.design_version_id)
+    ))
+  or (new.target_type = 'design_requirement' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is not null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from design_requirements where id = new.design_requirement_id)
+    ))
+  or (new.target_type = 'task' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is not null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.project_id = coalesce(
+            (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+            (select id from projects order by id limit 1)
+        )
+    ))
+  or (new.target_type = 'work_unit' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is not null
+        and new.repository_snapshot_id is null
+        and new.project_id = (select project_id from work_units where id = new.work_unit_id)
+    ))
+  or (new.target_type = 'repository_snapshot' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is not null
+    ))
+  or (new.target_type in ('file', 'symbol') and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.repository_snapshot_id is null
+        and new.target_ref is not null
+    ))
+begin
+    select raise(abort, 'review run target must match target_type and project_id');
 end;
 
 create trigger if not exists trg_review_run_type_purpose_insert
@@ -1693,6 +1839,9 @@ for each row
 when new.new_findings_count < 0
   or new.carried_findings_checked < 0
   or (new.clean_run = 1 and (new.status != 'completed' or new.new_findings_count != 0))
+  or (new.clean_run = 1 and exists (
+      select 1 from findings where review_run_id = new.id
+  ))
 begin
     select raise(abort, 'review run result is inconsistent');
 end;

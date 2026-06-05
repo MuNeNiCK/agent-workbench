@@ -381,23 +381,28 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'migration target', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
         let invalid = conn.execute(
             r#"
             insert into review_runs(
-                project_id, run_type, run_purpose, target_type, target_ref,
+                project_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
                 new_findings_count, carried_findings_checked, clean_run, status, created_at
             )
-            values (1, 'fresh', 'finding_fix_verification', 'work_unit', 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            values (1, 'fresh', 'finding_fix_verification', 'work_unit', 1, 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
             "#,
             [],
         );
         conn.execute(
             r#"
             insert into review_runs(
-                project_id, run_type, run_purpose, target_type, target_ref,
+                project_id, run_type, run_purpose, target_type, work_unit_id, target_ref,
                 new_findings_count, carried_findings_checked, clean_run, status, created_at
             )
-            values (1, 'fresh', 'new_unbiased_review', 'work_unit', 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
+            values (1, 'fresh', 'new_unbiased_review', 'work_unit', 1, 'work_unit:1', 0, 0, 0, 'completed', current_timestamp)
             "#,
             [],
         )
@@ -1007,6 +1012,43 @@ This requirement describes changed cleanup behavior that must be implemented.
 
         assert!(invalid_update.is_err());
         assert!(invalid_insert.is_err());
+
+        let dirty = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("found issue"),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: dirty.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description: "existing finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        let invalid_clean_flip = conn.execute(
+            "update review_runs set new_findings_count = 0, clean_run = 1 where id = ?1",
+            params![dirty.review_run_id],
+        );
+
+        assert!(invalid_clean_flip.is_err());
     }
 
     #[test]
@@ -1109,6 +1151,20 @@ This requirement describes changed cleanup behavior that must be implemented.
             },
         )
         .unwrap();
+        let scope = start_review_scope(
+            temp.path(),
+            NewReviewScope {
+                name: "implementation-scope",
+                review_type: "implementation_review",
+                scope: "implementation only",
+                allowed_inputs: None,
+                forbidden_judgments: None,
+                expected_output_type: None,
+                exclusions: None,
+                prompt_template_ref: None,
+            },
+        )
+        .unwrap();
         let plan = add_review_plan(
             temp.path(),
             NewReviewPlan {
@@ -1121,7 +1177,7 @@ This requirement describes changed cleanup behavior that must be implemented.
                 clean_condition: None,
                 stop_condition: None,
                 review_policy_id: Some(policy.review_policy_id),
-                review_scope_id: None,
+                review_scope_id: Some(scope.review_scope_id),
             },
         )
         .unwrap();
@@ -1193,9 +1249,32 @@ This requirement describes changed cleanup behavior that must be implemented.
             "update review_plans set review_type = 'design_review' where id = ?1",
             params![plan.review_plan_id],
         );
+        let policy_type_break = conn.execute(
+            "update review_policies set review_type = 'design_review' where id = ?1",
+            params![policy.review_policy_id],
+        );
+        let scope_type_break = conn.execute(
+            "update review_scopes set review_type = 'design_review' where id = ?1",
+            params![scope.review_scope_id],
+        );
         let run_project_break = conn.execute(
             "update review_runs set project_id = 2 where id = ?1",
             params![run.review_run_id],
+        );
+        let run_target_update_break = conn.execute(
+            "update review_runs set work_unit_id = 2 where id = ?1",
+            params![run.review_run_id],
+        );
+        let run_target_insert_break = conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, review_scope_id, review_plan_id, run_type, run_purpose,
+                target_type, work_unit_id, target_ref, new_findings_count,
+                carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, ?1, ?2, 'fresh', 'new_unbiased_review', 'work_unit', 2, 'work_unit:2', 0, 0, 0, 'completed', current_timestamp)
+            "#,
+            params![scope.review_scope_id, plan.review_plan_id],
         );
         let finding_project_break = conn.execute(
             "update findings set project_id = 2 where id = ?1",
@@ -1208,7 +1287,11 @@ This requirement describes changed cleanup behavior that must be implemented.
 
         assert!(plan_project_break.is_err());
         assert!(plan_type_break.is_err());
+        assert!(policy_type_break.is_err());
+        assert!(scope_type_break.is_err());
         assert!(run_project_break.is_err());
+        assert!(run_target_update_break.is_err());
+        assert!(run_target_insert_break.is_err());
         assert!(finding_project_break.is_err());
         assert!(closure_project_break.is_err());
     }
