@@ -150,12 +150,16 @@ pub fn import_design_package(
     let mut package_hasher = Sha256::new();
     package_hasher.update(manifest_text.as_bytes());
     let mut imported_files = Vec::with_capacity(design_files.len());
+    let mut warning_count = 0usize;
     for design_file in design_files {
         validate_relative_manifest_path(&design_file.relative_path)?;
         let path = package_path.join(&design_file.relative_path);
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let line_count = line_count(&content);
+        if line_count > 500 {
+            warning_count += 1;
+        }
         if line_count > 1000
             && !design_file_exception_exists(
                 &conn,
@@ -264,11 +268,13 @@ pub fn import_design_package(
             ],
         )?;
         let design_file_id = tx.last_insert_rowid();
+        validate_agent_blocks_for_file(file)?;
         if file.section_key == "requirements" {
             let requirements =
                 extract_design_requirements(&tx, project_id, &manifest.id, &file.content, file)?;
             requirement_count += requirements.len();
             for requirement in requirements {
+                warning_count += requirement.warning_count;
                 let supersedes_requirement_id =
                     validate_requirement_version_transition(&tx, design_package_id, &requirement)?;
                 tx.execute(
@@ -376,6 +382,7 @@ pub fn import_design_package(
         requirement_count,
         decision_count,
         validation_gate_template_count,
+        warning_count,
     })
 }
 
@@ -1150,6 +1157,16 @@ fn validate_requirement_version_transition(
     design_package_id: i64,
     requirement: &ExtractedDesignRequirement,
 ) -> Result<Option<i64>> {
+    if !requirement.supersedes_requirement_keys.is_empty() {
+        if requirement.supersedes_requirement_keys.len() > 1 {
+            bail!("requirement import currently supports one supersedes link");
+        }
+        let superseded_key = &requirement.supersedes_requirement_keys[0];
+        let superseded_id = latest_requirement_id_by_key(conn, design_package_id, superseded_key)?
+            .with_context(|| format!("superseded requirement not found: {superseded_key}"))?;
+        return Ok(Some(superseded_id));
+    }
+
     let previous: Option<(i64, i64, String)> = conn
         .query_row(
             r#"
@@ -1177,6 +1194,27 @@ fn validate_requirement_version_transition(
         "requirement {} changed without increasing revision",
         requirement.requirement_key
     );
+}
+
+fn latest_requirement_id_by_key(
+    conn: &rusqlite::Connection,
+    design_package_id: i64,
+    requirement_key: &str,
+) -> Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        select r.id
+        from design_requirements r
+        join design_versions v on v.id = r.design_version_id
+        where v.design_package_id = ?1 and r.requirement_key = ?2
+        order by v.version_number desc, r.revision desc, r.id desc
+        limit 1
+        "#,
+        params![design_package_id, requirement_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDesignVersion> {
@@ -1256,6 +1294,7 @@ fn extract_design_requirements(
             );
         }
         let body_line_count = body.lines().count();
+        let warning_count = usize::from(body_line_count > 80);
         if body_line_count > 150
             && !design_requirement_key_exception_exists(
                 conn,
@@ -1289,7 +1328,9 @@ fn extract_design_requirements(
             priority: metadata.priority,
             required_surfaces: join_metadata_list(&metadata.surfaces),
             validation_expectation: join_metadata_list(&metadata.validation),
+            supersedes_requirement_keys: metadata.supersedes,
             status: metadata.status,
+            warning_count,
         });
         index = body_end;
     }
@@ -1323,6 +1364,16 @@ fn validate_requirement_metadata(
     }
     if metadata.validation.is_empty() && metadata.status == "active" {
         bail!("active requirement must declare validation metadata");
+    }
+    for validation_key in &metadata.validation {
+        if !valid_design_key(validation_key, "GATE") {
+            bail!("requirement validation keys must match GATE-<positive-number>");
+        }
+    }
+    for superseded_key in &metadata.supersedes {
+        if !valid_design_key(superseded_key, "REQ") {
+            bail!("superseded requirement key must match REQ-<positive-number>");
+        }
     }
     Ok(())
 }
@@ -1525,6 +1576,47 @@ fn reject_legacy_headings(
     Ok(())
 }
 
+fn validate_agent_blocks_for_file(file: &ImportedDesignFile) -> Result<()> {
+    let lines: Vec<&str> = file.content.lines().collect();
+    reject_agent_workbench_blocks_without_level_two_heading(&lines, file)?;
+    for block in agent_workbench_header_blocks(&lines, file)? {
+        let metadata: AgentBlockHeaderMetadata = yaml_serde::from_str(&block.metadata_text)
+            .with_context(|| {
+                format!(
+                    "failed to parse agent-workbench metadata for {} in {}",
+                    block.source_section, file.relative_path
+                )
+            })?;
+        let (key_prefix, allowed_section) = match metadata.record_type.as_str() {
+            "requirement" => ("REQ", "requirements"),
+            "decision" => ("DEC", "arc42.decisions"),
+            "validation_gate_template" => ("GATE", "validation"),
+            _ => bail!(
+                "unknown agent-workbench metadata type {} in {}",
+                metadata.record_type,
+                file.relative_path
+            ),
+        };
+        if !valid_design_key(&metadata.key, key_prefix) {
+            bail!(
+                "agent-workbench metadata key must match {}-<positive-number>",
+                key_prefix
+            );
+        }
+        if !heading_key_matches(&block.source_section, &metadata.key) {
+            bail!("agent-workbench heading must start with metadata key");
+        }
+        if file.section_key != allowed_section {
+            bail!(
+                "agent-workbench metadata type {} is not allowed in {}",
+                metadata.record_type,
+                file.relative_path
+            );
+        }
+    }
+    Ok(())
+}
+
 fn reject_invalid_agent_blocks(
     content: &str,
     file: &ImportedDesignFile,
@@ -1585,6 +1677,45 @@ fn reject_invalid_agent_blocks(
         index = fence_end + 1;
     }
     Ok(())
+}
+
+fn agent_workbench_header_blocks(
+    lines: &[&str],
+    file: &ImportedDesignFile,
+) -> Result<Vec<ExtractedBlock>> {
+    let mut blocks = Vec::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("## ") {
+            index += 1;
+            continue;
+        }
+        let source_section = line.trim_start_matches("## ").trim().to_string();
+        let fence_start = index + 1;
+        if lines.get(fence_start).map(|line| line.trim()) != Some("```yaml agent-workbench") {
+            index += 1;
+            continue;
+        }
+        let mut fence_end = fence_start + 1;
+        while fence_end < lines.len() && lines[fence_end].trim() != "```" {
+            fence_end += 1;
+        }
+        if fence_end == lines.len() {
+            bail!(
+                "agent-workbench block {} in {} has an unterminated yaml block",
+                source_section,
+                file.relative_path
+            );
+        }
+        blocks.push(ExtractedBlock {
+            source_section,
+            metadata_text: lines[fence_start + 1..fence_end].join("\n"),
+            body: String::new(),
+        });
+        index = fence_end + 1;
+    }
+    Ok(blocks)
 }
 
 fn reject_agent_workbench_blocks_without_level_two_heading(
@@ -1779,6 +1910,8 @@ struct RequirementMetadata {
     surfaces: Vec<String>,
     #[serde(default)]
     validation: Vec<String>,
+    #[serde(default)]
+    supersedes: Vec<String>,
     status: String,
 }
 
@@ -1868,7 +2001,9 @@ struct ExtractedDesignRequirement {
     priority: String,
     required_surfaces: Option<String>,
     validation_expectation: Option<String>,
+    supersedes_requirement_keys: Vec<String>,
     status: String,
+    warning_count: usize,
 }
 
 struct ExtractedDesignDecision {
@@ -1973,6 +2108,7 @@ pub struct DesignPackageImportOutcome {
     pub requirement_count: usize,
     pub decision_count: usize,
     pub validation_gate_template_count: usize,
+    pub warning_count: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]

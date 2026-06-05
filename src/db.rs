@@ -218,8 +218,8 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
             reason text not null,
             scope text,
-            created_by text not null,
-            status text not null default 'approved' check (status in ('approved', 'revoked')),
+            created_by text not null check (created_by in ('user', 'agent', 'system')),
+            status text not null check (status in ('proposed', 'approved', 'rejected', 'expired')),
             approved_by_authority_event_id integer references authority_events(id),
             approved_at text,
             created_at text not null,
@@ -242,7 +242,16 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         select
             id, project_id, target_type, task_id, design_requirement_id,
             validation_gate_template_id, acceptance_type, reason, scope,
-            created_by, status, approved_by_authority_event_id, approved_at,
+            case
+                when created_by in ('user', 'agent', 'system') then created_by
+                else 'system'
+            end,
+            case
+                when status in ('proposed', 'approved', 'rejected', 'expired') then status
+                when status = 'revoked' then 'rejected'
+                else 'approved'
+            end,
+            approved_by_authority_event_id, approved_at,
             created_at, review_impact
         from acceptance_records_old;
 

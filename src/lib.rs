@@ -145,8 +145,32 @@ mod tests {
         )
         .unwrap();
         let status = project_status(temp.path()).unwrap();
+        let schema_sql: String = conn
+            .query_row(
+                "select sql from sqlite_schema where type = 'table' and name = 'acceptance_records'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, design_package_key, design_requirement_key,
+                acceptance_type, reason, created_by, status, created_at
+            )
+            values (
+                1, 'design_requirement_key', 'oversized-file', 'REQ-001',
+                'explicit_exception', 'proposed oversized requirement', 'agent',
+                'proposed', current_timestamp
+            )
+            "#,
+            [],
+        )
+        .unwrap();
 
         assert_eq!(status.schema_version, Some(SCHEMA_VERSION));
+        assert!(schema_sql.contains("created_by in ('user', 'agent', 'system')"));
+        assert!(schema_sql.contains("status in ('proposed', 'approved', 'rejected', 'expired')"));
     }
 
     #[test]
@@ -1458,6 +1482,74 @@ This requirement describes a changed verifiable behavior that must be implemente
     }
 
     #[test]
+    fn design_import_accepts_explicit_requirement_supersession_link() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            r#"## REQ-002: Preserve cleanup behavior with explicit scope
+```yaml agent-workbench
+type: requirement
+key: REQ-002
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+supersedes: [REQ-001]
+status: active
+```
+
+This requirement replaces the previous cleanup behavior with explicit scope.
+"#,
+        )
+        .unwrap();
+
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let supersedes_key: String = conn
+            .query_row(
+                r#"
+                select previous.requirement_key
+                from design_requirements current
+                join design_requirements previous on previous.id = current.supersedes_requirement_id
+                where current.design_version_id = ?1 and current.requirement_key = 'REQ-002'
+                "#,
+                params![import.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(supersedes_key, "REQ-001");
+    }
+
+    #[test]
     fn design_exception_acceptance_allows_pre_import_size_exceptions() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -1570,6 +1662,61 @@ status: active
             Some("REQ-001")
         );
         assert_eq!(requirement_import.requirement_count, 1);
+    }
+
+    #[test]
+    fn design_import_reports_size_warnings_without_blocking() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "size-warning",
+                title: "Size Warning",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("01-introduction-goals.md"),
+            std::iter::repeat("line")
+                .take(501)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let requirement_body = std::iter::repeat("Requirement detail.")
+            .take(81)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            format!(
+                r#"## REQ-001: Preserve cleanup behavior
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+{requirement_body}
+"#
+            ),
+        )
+        .unwrap();
+
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        assert_eq!(import.warning_count, 2);
     }
 
     #[test]
@@ -1955,6 +2102,41 @@ Body.
                 temp.path(),
                 DesignPackageImport {
                     package_path: &bad_heading_level.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let bad_arc42_block = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "bad-arc42-block",
+                title: "Bad Arc42 Block",
+            },
+        )
+        .unwrap();
+        fs::write(
+            bad_arc42_block.package_path.join("02-constraints.md"),
+            r#"## REQ-001: Wrong section
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+priority: high
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &bad_arc42_block.package_path,
                     status: "draft",
                 },
             )

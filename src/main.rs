@@ -1302,6 +1302,7 @@ fn main() -> Result<()> {
                     "validation_gate_template_count: {}",
                     outcome.validation_gate_template_count
                 );
+                println!("warning_count: {}", outcome.warning_count);
                 println!("content_hash: {}", outcome.content_hash);
             }
             DesignCommand::Approve(args) => {
