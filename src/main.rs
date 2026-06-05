@@ -5,20 +5,21 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    CommandUsageListQuery, DesignPackageImport, DesignReadyCheck, DesignRequirementListQuery,
-    DesignVersionApproval, KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation,
-    NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage, NewKptItem, NewKptReview,
-    NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
-    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
-    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
-    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
-    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    approve_design_version, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_task, create_follow_up_work, create_work_record, design_ready,
-    export_work_record_markdown, fork_work, import_design_package, init_design_package,
-    init_project, interrupt_work, list_authority_events, list_command_profiles,
-    list_command_usages, list_decisions, list_design_requirements, list_kpt_items,
-    list_kpt_reviews, list_tasks, list_user_corrections, list_work_records, next_action,
+    CommandUsageListQuery, DesignDecisionListQuery, DesignPackageImport, DesignReadyCheck,
+    DesignRequirementListQuery, DesignVersionApproval, KptItemTaskConversion, NewAuthorityEvent,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage,
+    NewKptItem, NewKptReview, NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord,
+    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
+    TaskListQuery, ValidationGateTemplateListQuery, WorkForkSource, accept_task_out_of_scope,
+    add_authority_event, add_command_deviation, add_command_usage, add_decision, add_fixed_command,
+    add_kpt_item, add_task, add_user_correction, add_work_record_command, add_work_record_commit,
+    add_work_record_file, applicable_rules, approve_design_version, close_active_work,
+    close_kpt_review, close_task, convert_kpt_item_to_task, create_follow_up_work,
+    create_work_record, design_ready, export_work_record_markdown, fork_work,
+    import_design_package, init_design_package, init_project, interrupt_work,
+    list_authority_events, list_command_profiles, list_command_usages, list_decisions,
+    list_design_decisions, list_design_requirements, list_kpt_items, list_kpt_reviews, list_tasks,
+    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
     project_status, reopen_work, resume_check, resume_ready, resume_work, start_kpt_review,
     start_work, suspend_work,
 };
@@ -94,6 +95,16 @@ enum Command {
     Requirement {
         #[command(subcommand)]
         command: RequirementCommand,
+    },
+    /// List design decisions imported from a design version.
+    DesignDecision {
+        #[command(subcommand)]
+        command: DesignDecisionCommand,
+    },
+    /// List validation gate templates imported from a design version.
+    GateTemplate {
+        #[command(subcommand)]
+        command: GateTemplateCommand,
     },
     /// Manage authority events.
     Authority {
@@ -567,6 +578,28 @@ enum RequirementCommand {
 
 #[derive(Debug, Args)]
 struct RequirementListArgs {
+    #[arg(long)]
+    design: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum DesignDecisionCommand {
+    List(DesignDecisionListArgs),
+}
+
+#[derive(Debug, Args)]
+struct DesignDecisionListArgs {
+    #[arg(long)]
+    design: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum GateTemplateCommand {
+    List(GateTemplateListArgs),
+}
+
+#[derive(Debug, Args)]
+struct GateTemplateListArgs {
     #[arg(long)]
     design: i64,
 }
@@ -1239,6 +1272,11 @@ fn main() -> Result<()> {
                 println!("version_number: {}", outcome.version_number);
                 println!("file_count: {}", outcome.file_count);
                 println!("requirement_count: {}", outcome.requirement_count);
+                println!("decision_count: {}", outcome.decision_count);
+                println!(
+                    "validation_gate_template_count: {}",
+                    outcome.validation_gate_template_count
+                );
                 println!("content_hash: {}", outcome.content_hash);
             }
             DesignCommand::Approve(args) => {
@@ -1273,6 +1311,54 @@ fn main() -> Result<()> {
                         record.priority,
                         record.status,
                         record.revision,
+                        record.source_section,
+                        record.source_path
+                    );
+                }
+            }
+        },
+        Command::DesignDecision { command } => match command {
+            DesignDecisionCommand::List(args) => {
+                let records = list_design_decisions(
+                    &root,
+                    DesignDecisionListQuery {
+                        design_version_id: args.design,
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no design decisions");
+                }
+                for record in records {
+                    println!(
+                        "{} [{}:{}] {} ({})",
+                        record.decision_key,
+                        record.topic,
+                        record.status,
+                        record.source_section,
+                        record.source_path
+                    );
+                }
+            }
+        },
+        Command::GateTemplate { command } => match command {
+            GateTemplateCommand::List(args) => {
+                let records = list_validation_gate_templates(
+                    &root,
+                    ValidationGateTemplateListQuery {
+                        design_version_id: args.design,
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no validation gate templates");
+                }
+                for record in records {
+                    let command = record.command.as_deref().unwrap_or("-");
+                    println!(
+                        "{} [{}:{} command={}] {} ({})",
+                        record.gate_key,
+                        record.stage,
+                        record.status,
+                        command,
                         record.source_section,
                         record.source_path
                     );

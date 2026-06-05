@@ -544,8 +544,10 @@ create table if not exists decisions (
 create table if not exists acceptance_records (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
-    target_type text not null check (target_type in ('task')),
+    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template')),
     task_id integer references tasks(id),
+    design_requirement_id integer,
+    validation_gate_template_id integer,
     acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
     reason text not null,
     scope text,
@@ -751,6 +753,39 @@ create table if not exists design_requirements (
     status text not null check (status in ('active', 'superseded', 'accepted_out_of_scope')),
     created_at text not null,
     unique(design_version_id, requirement_key)
+);
+
+create table if not exists design_decisions (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_version_id integer not null references design_versions(id) on delete cascade,
+    source_design_file_id integer not null references design_files(id) on delete cascade,
+    source_section text not null,
+    decision_key text not null,
+    decision_hash text not null,
+    topic text not null,
+    decision_text text not null,
+    rationale text,
+    status text not null check (status in ('accepted', 'rejected', 'superseded')),
+    created_at text not null,
+    unique(design_version_id, decision_key)
+);
+
+create table if not exists validation_gate_templates (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_version_id integer not null references design_versions(id) on delete cascade,
+    source_design_file_id integer not null references design_files(id) on delete cascade,
+    source_section text not null,
+    gate_key text not null,
+    gate_hash text not null,
+    stage text not null check (stage in ('design-ready', 'implementation-ready', 'close-ready', 'resume-ready')),
+    command text,
+    requirement_keys text,
+    gate_text text not null,
+    status text not null check (status in ('active', 'superseded', 'accepted_out_of_scope')),
+    created_at text not null,
+    unique(design_version_id, gate_key)
 );
 
 create table if not exists kpt_reviews (

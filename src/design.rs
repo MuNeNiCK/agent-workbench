@@ -212,6 +212,8 @@ pub fn import_design_package(
     )?;
     let design_version_id = tx.last_insert_rowid();
     let mut requirement_count = 0usize;
+    let mut decision_count = 0usize;
+    let mut validation_gate_template_count = 0usize;
     for file in &imported_files {
         tx.execute(
             r#"
@@ -262,6 +264,61 @@ pub fn import_design_package(
                     ],
                 )?;
             }
+        } else if file.section_key == "arc42.decisions" {
+            let decisions = extract_design_decisions(&file.content, file)?;
+            decision_count += decisions.len();
+            for decision in decisions {
+                tx.execute(
+                    r#"
+                    insert into design_decisions(
+                        project_id, design_version_id, source_design_file_id,
+                        source_section, decision_key, decision_hash, topic,
+                        decision_text, rationale, status, created_at
+                    )
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+                    "#,
+                    params![
+                        project_id,
+                        design_version_id,
+                        design_file_id,
+                        decision.source_section,
+                        decision.decision_key,
+                        decision.decision_hash,
+                        decision.topic,
+                        decision.decision_text,
+                        decision.rationale,
+                        decision.status,
+                    ],
+                )?;
+            }
+        } else if file.section_key == "validation" {
+            let templates = extract_validation_gate_templates(&file.content, file)?;
+            validation_gate_template_count += templates.len();
+            for template in templates {
+                tx.execute(
+                    r#"
+                    insert into validation_gate_templates(
+                        project_id, design_version_id, source_design_file_id,
+                        source_section, gate_key, gate_hash, stage, command,
+                        requirement_keys, gate_text, status, created_at
+                    )
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, current_timestamp)
+                    "#,
+                    params![
+                        project_id,
+                        design_version_id,
+                        design_file_id,
+                        template.source_section,
+                        template.gate_key,
+                        template.gate_hash,
+                        template.stage,
+                        template.command,
+                        template.requirement_keys,
+                        template.gate_text,
+                        template.status,
+                    ],
+                )?;
+            }
         }
     }
     tx.execute(
@@ -281,6 +338,8 @@ pub fn import_design_package(
         content_hash,
         file_count: imported_files.len(),
         requirement_count,
+        decision_count,
+        validation_gate_template_count,
     })
 }
 
@@ -317,6 +376,87 @@ pub fn list_design_requirements(
             required_surfaces: row.get(9)?,
             validation_expectation: row.get(10)?,
             status: row.get(11)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub fn list_design_decisions(
+    root: &Path,
+    input: DesignDecisionListQuery,
+) -> Result<Vec<DesignDecisionRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            d.id, d.design_version_id, d.source_design_file_id,
+            f.relative_path, d.source_section, d.decision_key,
+            d.topic, d.decision_text, d.rationale, d.status
+        from design_decisions d
+        join design_files f on f.id = d.source_design_file_id
+        where d.project_id = ?1 and d.design_version_id = ?2
+        order by d.decision_key
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, input.design_version_id], |row| {
+        Ok(DesignDecisionRecord {
+            id: row.get(0)?,
+            design_version_id: row.get(1)?,
+            source_design_file_id: row.get(2)?,
+            source_path: row.get(3)?,
+            source_section: row.get(4)?,
+            decision_key: row.get(5)?,
+            topic: row.get(6)?,
+            decision_text: row.get(7)?,
+            rationale: row.get(8)?,
+            status: row.get(9)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub fn list_validation_gate_templates(
+    root: &Path,
+    input: ValidationGateTemplateListQuery,
+) -> Result<Vec<ValidationGateTemplateRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            g.id, g.design_version_id, g.source_design_file_id,
+            f.relative_path, g.source_section, g.gate_key,
+            g.stage, g.command, g.requirement_keys, g.gate_text, g.status
+        from validation_gate_templates g
+        join design_files f on f.id = g.source_design_file_id
+        where g.project_id = ?1 and g.design_version_id = ?2
+        order by g.gate_key
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, input.design_version_id], |row| {
+        Ok(ValidationGateTemplateRecord {
+            id: row.get(0)?,
+            design_version_id: row.get(1)?,
+            source_design_file_id: row.get(2)?,
+            source_path: row.get(3)?,
+            source_section: row.get(4)?,
+            gate_key: row.get(5)?,
+            stage: row.get(6)?,
+            command: row.get(7)?,
+            requirement_keys: row.get(8)?,
+            gate_text: row.get(9)?,
+            status: row.get(10)?,
         })
     })?;
 
@@ -654,6 +794,7 @@ fn extract_design_requirements(
     content: &str,
     file: &ImportedDesignFile,
 ) -> Result<Vec<ExtractedDesignRequirement>> {
+    reject_legacy_headings(content, file, &["R-"], "REQ-")?;
     let lines: Vec<&str> = content.lines().collect();
     let mut requirements = Vec::new();
     let mut seen_keys = BTreeSet::new();
@@ -771,6 +912,250 @@ fn validate_requirement_metadata(
     Ok(())
 }
 
+fn extract_design_decisions(
+    content: &str,
+    file: &ImportedDesignFile,
+) -> Result<Vec<ExtractedDesignDecision>> {
+    reject_legacy_headings(content, file, &["D-"], "DEC-")?;
+    let blocks = extract_agent_workbench_blocks(content, file, "DEC-", "decision")?;
+    let mut decisions = Vec::with_capacity(blocks.len());
+    let mut seen_keys = BTreeSet::new();
+    for block in blocks {
+        let metadata: DecisionMetadata =
+            yaml_serde::from_str(&block.metadata_text).with_context(|| {
+                format!(
+                    "failed to parse decision metadata for {} in {}",
+                    block.source_section, file.relative_path
+                )
+            })?;
+        validate_decision_metadata(&block.source_section, &metadata, &mut seen_keys)?;
+        let body = block.body.trim().to_string();
+        if body.is_empty() {
+            bail!(
+                "decision {} in {} must have body text",
+                metadata.key,
+                file.relative_path
+            );
+        }
+        if body.lines().count() > 150 {
+            bail!(
+                "decision {} exceeds 150 lines in {}",
+                metadata.key,
+                file.relative_path
+            );
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(block.metadata_text.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(body.as_bytes());
+        let digest = hasher.finalize();
+        decisions.push(ExtractedDesignDecision {
+            source_section: block.source_section,
+            decision_key: metadata.key,
+            decision_hash: hex_digest(&digest),
+            topic: metadata.topic,
+            decision_text: body,
+            rationale: metadata.rationale,
+            status: metadata.status,
+        });
+    }
+    Ok(decisions)
+}
+
+fn validate_decision_metadata(
+    source_section: &str,
+    metadata: &DecisionMetadata,
+    seen_keys: &mut BTreeSet<String>,
+) -> Result<()> {
+    if metadata.record_type != "decision" {
+        bail!("decision metadata type must be decision");
+    }
+    if !metadata.key.starts_with("DEC-") {
+        bail!("decision key must start with DEC-");
+    }
+    if !source_section.starts_with(&metadata.key) {
+        bail!("decision heading must start with metadata key");
+    }
+    if !seen_keys.insert(metadata.key.clone()) {
+        bail!("duplicate decision key: {}", metadata.key);
+    }
+    if metadata.topic.trim().is_empty() {
+        bail!("decision topic is required");
+    }
+    match metadata.status.as_str() {
+        "accepted" | "rejected" | "superseded" => {}
+        _ => bail!("invalid decision status: {}", metadata.status),
+    }
+    Ok(())
+}
+
+fn extract_validation_gate_templates(
+    content: &str,
+    file: &ImportedDesignFile,
+) -> Result<Vec<ExtractedValidationGateTemplate>> {
+    reject_legacy_headings(content, file, &["VG-", "VAL-"], "GATE-")?;
+    let blocks = extract_agent_workbench_blocks(content, file, "GATE-", "validation gate")?;
+    let mut templates = Vec::with_capacity(blocks.len());
+    let mut seen_keys = BTreeSet::new();
+    for block in blocks {
+        let metadata: ValidationGateTemplateMetadata = yaml_serde::from_str(&block.metadata_text)
+            .with_context(|| {
+            format!(
+                "failed to parse validation gate metadata for {} in {}",
+                block.source_section, file.relative_path
+            )
+        })?;
+        validate_validation_gate_template_metadata(
+            &block.source_section,
+            &metadata,
+            &mut seen_keys,
+        )?;
+        let body = block.body.trim().to_string();
+        if body.is_empty() {
+            bail!(
+                "validation gate {} in {} must have body text",
+                metadata.key,
+                file.relative_path
+            );
+        }
+        if body.lines().count() > 150 {
+            bail!(
+                "validation gate {} exceeds 150 lines in {}",
+                metadata.key,
+                file.relative_path
+            );
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(block.metadata_text.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(body.as_bytes());
+        let digest = hasher.finalize();
+        templates.push(ExtractedValidationGateTemplate {
+            source_section: block.source_section,
+            gate_key: metadata.key,
+            gate_hash: hex_digest(&digest),
+            stage: metadata.stage,
+            command: metadata.command,
+            requirement_keys: join_metadata_list(&metadata.requirements),
+            gate_text: body,
+            status: metadata.status,
+        });
+    }
+    Ok(templates)
+}
+
+fn validate_validation_gate_template_metadata(
+    source_section: &str,
+    metadata: &ValidationGateTemplateMetadata,
+    seen_keys: &mut BTreeSet<String>,
+) -> Result<()> {
+    if metadata.record_type != "validation_gate_template" {
+        bail!("validation gate metadata type must be validation_gate_template");
+    }
+    if !metadata.key.starts_with("GATE-") {
+        bail!("validation gate key must start with GATE-");
+    }
+    if !source_section.starts_with(&metadata.key) {
+        bail!("validation gate heading must start with metadata key");
+    }
+    if !seen_keys.insert(metadata.key.clone()) {
+        bail!("duplicate validation gate key: {}", metadata.key);
+    }
+    match metadata.stage.as_str() {
+        "design-ready" | "implementation-ready" | "close-ready" | "resume-ready" => {}
+        _ => bail!("invalid validation gate stage: {}", metadata.stage),
+    }
+    match metadata.status.as_str() {
+        "active" | "superseded" | "accepted_out_of_scope" => {}
+        _ => bail!("invalid validation gate status: {}", metadata.status),
+    }
+    if metadata.requirements.is_empty() && metadata.status == "active" {
+        bail!("active validation gate must declare requirements metadata");
+    }
+    Ok(())
+}
+
+fn reject_legacy_headings(
+    content: &str,
+    file: &ImportedDesignFile,
+    legacy_prefixes: &[&str],
+    required_prefix: &str,
+) -> Result<()> {
+    for line in content.lines() {
+        if !line.starts_with("## ") {
+            continue;
+        }
+        let heading = line.trim_start_matches("## ").trim();
+        if legacy_prefixes
+            .iter()
+            .any(|prefix| heading.starts_with(prefix))
+        {
+            bail!(
+                "unsupported legacy design heading {} in {}; use {} keys",
+                heading,
+                file.relative_path,
+                required_prefix
+            );
+        }
+    }
+    Ok(())
+}
+
+fn extract_agent_workbench_blocks(
+    content: &str,
+    file: &ImportedDesignFile,
+    heading_prefix: &str,
+    label: &str,
+) -> Result<Vec<ExtractedBlock>> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut blocks = Vec::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("## ") {
+            index += 1;
+            continue;
+        }
+        let source_section = line.trim_start_matches("## ").trim().to_string();
+        if !source_section.starts_with(heading_prefix) {
+            index += 1;
+            continue;
+        }
+        let fence_start = index + 1;
+        if lines.get(fence_start).map(|line| line.trim()) != Some("```yaml agent-workbench") {
+            bail!(
+                "{} {} in {} must be followed by a yaml agent-workbench block",
+                label,
+                source_section,
+                file.relative_path
+            );
+        }
+        let mut fence_end = fence_start + 1;
+        while fence_end < lines.len() && lines[fence_end].trim() != "```" {
+            fence_end += 1;
+        }
+        if fence_end == lines.len() {
+            bail!(
+                "{} {} in {} has an unterminated yaml block",
+                label,
+                source_section,
+                file.relative_path
+            );
+        }
+        let mut body_end = fence_end + 1;
+        while body_end < lines.len() && !lines[body_end].starts_with("## ") {
+            body_end += 1;
+        }
+        blocks.push(ExtractedBlock {
+            source_section,
+            metadata_text: lines[fence_start + 1..fence_end].join("\n"),
+            body: lines[fence_end + 1..body_end].join("\n"),
+        });
+        index = body_end;
+    }
+    Ok(blocks)
+}
+
 fn join_metadata_list(values: &[String]) -> Option<String> {
     if values.is_empty() {
         None
@@ -879,6 +1264,30 @@ struct RequirementMetadata {
     status: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DecisionMetadata {
+    #[serde(rename = "type")]
+    record_type: String,
+    key: String,
+    topic: String,
+    #[serde(default)]
+    rationale: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidationGateTemplateMetadata {
+    #[serde(rename = "type")]
+    record_type: String,
+    key: String,
+    stage: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    requirements: Vec<String>,
+    status: String,
+}
+
 impl DesignManifest {
     fn design_files(&self) -> Vec<ManifestDesignFile> {
         let mut files = Vec::new();
@@ -935,6 +1344,33 @@ struct ExtractedDesignRequirement {
     status: String,
 }
 
+struct ExtractedDesignDecision {
+    source_section: String,
+    decision_key: String,
+    decision_hash: String,
+    topic: String,
+    decision_text: String,
+    rationale: Option<String>,
+    status: String,
+}
+
+struct ExtractedValidationGateTemplate {
+    source_section: String,
+    gate_key: String,
+    gate_hash: String,
+    stage: String,
+    command: Option<String>,
+    requirement_keys: Option<String>,
+    gate_text: String,
+    status: String,
+}
+
+struct ExtractedBlock {
+    source_section: String,
+    metadata_text: String,
+    body: String,
+}
+
 struct StoredDesignVersion {
     design_version_id: i64,
     design_package_id: i64,
@@ -967,6 +1403,14 @@ pub struct DesignRequirementListQuery {
     pub design_version_id: i64,
 }
 
+pub struct DesignDecisionListQuery {
+    pub design_version_id: i64,
+}
+
+pub struct ValidationGateTemplateListQuery {
+    pub design_version_id: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DesignPackageInitOutcome {
     pub package_path: PathBuf,
@@ -980,6 +1424,8 @@ pub struct DesignPackageImportOutcome {
     pub content_hash: String,
     pub file_count: usize,
     pub requirement_count: usize,
+    pub decision_count: usize,
+    pub validation_gate_template_count: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1035,6 +1481,35 @@ pub struct DesignRequirementRecord {
     pub priority: String,
     pub required_surfaces: Option<String>,
     pub validation_expectation: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DesignDecisionRecord {
+    pub id: i64,
+    pub design_version_id: i64,
+    pub source_design_file_id: i64,
+    pub source_path: String,
+    pub source_section: String,
+    pub decision_key: String,
+    pub topic: String,
+    pub decision_text: String,
+    pub rationale: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationGateTemplateRecord {
+    pub id: i64,
+    pub design_version_id: i64,
+    pub source_design_file_id: i64,
+    pub source_path: String,
+    pub source_section: String,
+    pub gate_key: String,
+    pub stage: String,
+    pub command: Option<String>,
+    pub requirement_keys: Option<String>,
+    pub gate_text: String,
     pub status: String,
 }
 

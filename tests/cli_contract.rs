@@ -64,6 +64,50 @@ This requirement describes one verifiable behavior that must be implemented.
     .unwrap();
 }
 
+fn write_decision(root: &Path) {
+    std::fs::write(
+        root.join(".agent-workbench")
+            .join("designs")
+            .join("storage-lifecycle")
+            .join("09-decisions.md"),
+        r#"## DEC-001: Keep project-local ledger
+```yaml agent-workbench
+type: decision
+key: DEC-001
+topic: database
+rationale: one ledger keeps project state isolated
+status: accepted
+```
+
+Use one SQLite ledger per project.
+"#,
+    )
+    .unwrap();
+}
+
+fn write_gate_template(root: &Path) {
+    std::fs::write(
+        root.join(".agent-workbench")
+            .join("designs")
+            .join("storage-lifecycle")
+            .join("validation")
+            .join("gates.md"),
+        r#"## GATE-001: Unit test command
+```yaml agent-workbench
+type: validation_gate_template
+key: GATE-001
+stage: implementation-ready
+command: cargo test
+requirements: [REQ-001]
+status: active
+```
+
+Run the project test suite before implementation handoff.
+"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn init_creates_workbench_artifact_directories() {
     let temp = tempfile::tempdir().unwrap();
@@ -119,6 +163,8 @@ fn design_import_records_design_version() {
         ],
     );
     write_requirement(temp.path());
+    write_decision(temp.path());
+    write_gate_template(temp.path());
 
     let output = ok(
         temp.path(),
@@ -136,6 +182,8 @@ fn design_import_records_design_version() {
     assert!(output.contains("design_version_id: 1"));
     assert!(output.contains("file_count: 14"));
     assert!(output.contains("requirement_count: 1"));
+    assert!(output.contains("decision_count: 1"));
+    assert!(output.contains("validation_gate_template_count: 1"));
 
     let conn = conn(temp.path());
     let current_version: i64 = conn
@@ -162,6 +210,43 @@ fn design_import_records_design_version() {
         )
         .unwrap();
     assert_eq!(requirement_count, 1);
+}
+
+#[test]
+fn design_import_lists_decisions_and_gate_templates() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_decision(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let decisions = ok(temp.path(), &["design-decision", "list", "--design", "1"]);
+    assert!(decisions.contains("DEC-001 [database:accepted]"));
+    assert!(decisions.contains("09-decisions.md"));
+
+    let gates = ok(temp.path(), &["gate-template", "list", "--design", "1"]);
+    assert!(gates.contains("GATE-001 [implementation-ready:active command=cargo test]"));
+    assert!(gates.contains("validation/gates.md"));
 }
 
 #[test]

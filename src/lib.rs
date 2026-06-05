@@ -24,10 +24,13 @@ pub use db::{
     project_status,
 };
 pub use design::{
-    DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, DesignReadyCheck,
-    DesignReadyItem, DesignReadyOutcome, DesignRequirementListQuery, DesignRequirementRecord,
-    DesignVersionApproval, DesignVersionApprovalOutcome, NewDesignPackage, approve_design_version,
-    design_ready, import_design_package, init_design_package, list_design_requirements,
+    DesignDecisionListQuery, DesignDecisionRecord, DesignPackageImport, DesignPackageImportOutcome,
+    DesignPackageInitOutcome, DesignReadyCheck, DesignReadyItem, DesignReadyOutcome,
+    DesignRequirementListQuery, DesignRequirementRecord, DesignVersionApproval,
+    DesignVersionApprovalOutcome, NewDesignPackage, ValidationGateTemplateListQuery,
+    ValidationGateTemplateRecord, approve_design_version, design_ready, import_design_package,
+    init_design_package, list_design_decisions, list_design_requirements,
+    list_validation_gate_templates,
 };
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
@@ -979,12 +982,20 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let short_file_hashes: i64 = conn
+            .query_row(
+                "select count(*) from design_files where design_version_id = ?1 and length(content_hash) != 64",
+                params![import.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert_eq!(package.0, "storage-lifecycle");
         assert_eq!(package.1, "Storage Lifecycle");
         assert_eq!(package.2, "draft");
         assert_eq!(package.3, import.design_version_id);
         assert_eq!(file_count, 14);
+        assert_eq!(short_file_hashes, 0);
     }
 
     #[test]
@@ -1037,6 +1048,62 @@ mod tests {
     }
 
     #[test]
+    fn design_import_extracts_decisions_and_validation_gate_templates() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(init.package_path.join("09-decisions.md"), decision_doc()).unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let decisions = list_design_decisions(
+            temp.path(),
+            DesignDecisionListQuery {
+                design_version_id: import.design_version_id,
+            },
+        )
+        .unwrap();
+        let gates = list_validation_gate_templates(
+            temp.path(),
+            ValidationGateTemplateListQuery {
+                design_version_id: import.design_version_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(import.decision_count, 1);
+        assert_eq!(import.validation_gate_template_count, 1);
+        assert_eq!(decisions[0].decision_key, "DEC-001");
+        assert_eq!(decisions[0].topic, "database");
+        assert_eq!(gates[0].gate_key, "GATE-001");
+        assert_eq!(gates[0].stage, "implementation-ready");
+        assert_eq!(gates[0].requirement_keys.as_deref(), Some("REQ-001"));
+    }
+
+    #[test]
     fn design_import_rejects_external_or_duplicate_package() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -1075,6 +1142,217 @@ mod tests {
                 temp.path(),
                 DesignPackageImport {
                     package_path: &init.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn design_import_rejects_invalid_phase3_design_blocks() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "missing-field",
+                title: "Missing Field",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            r#"## REQ-001: Missing priority
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &init.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "invalid-prefix",
+                title: "Invalid Prefix",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("BAD-001", "Bad prefix", "high").replace("## BAD-001", "## REQ-001"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &init.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "legacy-doc",
+                title: "Legacy Doc",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            r#"## R-001: Legacy key
+```yaml agent-workbench
+type: requirement
+key: R-001
+priority: high
+surfaces: [cli]
+validation: [GATE-001]
+status: active
+```
+
+Body.
+"#,
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &init.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn design_import_rejects_duplicate_decisions_gates_and_oversized_files() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let duplicate_decision = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "duplicate-decision",
+                title: "Duplicate Decision",
+            },
+        )
+        .unwrap();
+        fs::write(
+            duplicate_decision
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            duplicate_decision.package_path.join("09-decisions.md"),
+            format!("{}\n{}", decision_doc(), decision_doc()),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &duplicate_decision.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let duplicate_gate = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "duplicate-gate",
+                title: "Duplicate Gate",
+            },
+        )
+        .unwrap();
+        fs::write(
+            duplicate_gate
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            duplicate_gate
+                .package_path
+                .join("validation")
+                .join("gates.md"),
+            format!(
+                "{}\n{}",
+                validation_gate_doc("GATE-001"),
+                validation_gate_doc("GATE-001")
+            ),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &duplicate_gate.package_path,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        let oversized = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "oversized-file",
+                title: "Oversized File",
+            },
+        )
+        .unwrap();
+        fs::write(
+            oversized
+                .package_path
+                .join("requirements")
+                .join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            oversized.package_path.join("01-introduction-goals.md"),
+            std::iter::repeat("line")
+                .take(1001)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &oversized.package_path,
                     status: "draft",
                 },
             )
@@ -1224,6 +1502,38 @@ status: active
 ```
 
 This requirement describes one verifiable behavior that must be implemented.
+"#
+        )
+    }
+
+    fn decision_doc() -> String {
+        r#"## DEC-001: Keep project-local ledger
+```yaml agent-workbench
+type: decision
+key: DEC-001
+topic: database
+rationale: one ledger keeps project state isolated
+status: accepted
+```
+
+Use one SQLite ledger per project.
+"#
+        .to_string()
+    }
+
+    fn validation_gate_doc(key: &str) -> String {
+        format!(
+            r#"## {key}: Unit test command
+```yaml agent-workbench
+type: validation_gate_template
+key: {key}
+stage: implementation-ready
+command: cargo test
+requirements: [REQ-001]
+status: active
+```
+
+Run the project test suite before implementation handoff.
 "#
         )
     }
