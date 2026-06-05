@@ -150,12 +150,13 @@ fn insert_command_usage(root: &Path, input: CommandUsageInput<'_>) -> Result<Com
     conn.execute(
         r#"
         insert into command_usages(
-            command_profile_id, work_unit_id, work_unit_activation_id,
+            project_id, command_profile_id, work_unit_id, work_unit_activation_id,
             command, result, log_path, repository_snapshot_id, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, current_timestamp)
         "#,
         params![
+            project_id,
             command_profile_id,
             work_unit_id,
             activation_id,
@@ -189,7 +190,7 @@ pub fn list_command_usages(
         (Some(command_profile_id), Some(work_unit_id)) => {
             let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_FILTERED)?;
             let rows = stmt.query_map(
-                params![command_profile_id, work_unit_id],
+                params![project_id, command_profile_id, work_unit_id],
                 command_usage_record,
             )?;
             for row in rows {
@@ -198,21 +199,24 @@ pub fn list_command_usages(
         }
         (Some(command_profile_id), None) => {
             let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_BY_PROFILE)?;
-            let rows = stmt.query_map(params![command_profile_id], command_usage_record)?;
+            let rows = stmt.query_map(
+                params![project_id, command_profile_id],
+                command_usage_record,
+            )?;
             for row in rows {
                 records.push(row?);
             }
         }
         (None, Some(work_unit_id)) => {
             let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_BY_WORK_UNIT)?;
-            let rows = stmt.query_map(params![work_unit_id], command_usage_record)?;
+            let rows = stmt.query_map(params![project_id, work_unit_id], command_usage_record)?;
             for row in rows {
                 records.push(row?);
             }
         }
         (None, None) => {
             let mut stmt = conn.prepare(COMMAND_USAGE_SELECT_ALL)?;
-            let rows = stmt.query_map([], command_usage_record)?;
+            let rows = stmt.query_map(params![project_id], command_usage_record)?;
             for row in rows {
                 records.push(row?);
             }
@@ -387,27 +391,28 @@ fn command_usage_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandUsag
 const COMMAND_USAGE_SELECT_ALL: &str = r#"
 select id, command_profile_id, work_unit_id, command, result, log_path, created_at
 from command_usages
+where project_id = ?1
 order by id
 "#;
 
 const COMMAND_USAGE_SELECT_BY_PROFILE: &str = r#"
 select id, command_profile_id, work_unit_id, command, result, log_path, created_at
 from command_usages
-where command_profile_id = ?1
+where project_id = ?1 and command_profile_id = ?2
 order by id
 "#;
 
 const COMMAND_USAGE_SELECT_BY_WORK_UNIT: &str = r#"
 select id, command_profile_id, work_unit_id, command, result, log_path, created_at
 from command_usages
-where work_unit_id = ?1
+where project_id = ?1 and work_unit_id = ?2
 order by id
 "#;
 
 const COMMAND_USAGE_SELECT_FILTERED: &str = r#"
 select id, command_profile_id, work_unit_id, command, result, log_path, created_at
 from command_usages
-where command_profile_id = ?1 and work_unit_id = ?2
+where project_id = ?1 and command_profile_id = ?2 and work_unit_id = ?3
 order by id
 "#;
 

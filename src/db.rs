@@ -138,14 +138,18 @@ pub(crate) fn open_existing_project(root: &Path) -> Result<Connection> {
 
 fn migrate(conn: &Connection) -> Result<()> {
     prepare_acceptance_records_for_schema(conn)?;
+    prepare_project_scoped_ledger_rows_for_schema(conn)?;
     conn.execute_batch(SCHEMA)?;
     migrate_acceptance_records(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
     validate_review_required_links(conn)?;
     refresh_review_integrity_triggers(conn)?;
+    refresh_ledger_integrity_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
+    ensure_column(conn, "work_records", "project_id", "integer")?;
+    ensure_column(conn, "command_usages", "project_id", "integer")?;
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
@@ -248,6 +252,70 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
     ensure_column(conn, "acceptance_records", "coverage_item_id", "integer")?;
+    Ok(())
+}
+
+fn prepare_project_scoped_ledger_rows_for_schema(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "work_records")? {
+        ensure_column(conn, "work_records", "project_id", "integer")?;
+        conn.execute(
+            r#"
+            update work_records
+            set project_id = coalesce(
+                (select project_id from work_units where id = work_records.work_unit_id),
+                (select id from projects order by id limit 1)
+            )
+            where project_id is null
+            "#,
+            [],
+        )?;
+    }
+    if table_exists(conn, "command_usages")? {
+        ensure_column(conn, "command_usages", "project_id", "integer")?;
+        conn.execute(
+            r#"
+            update command_usages
+            set project_id = coalesce(
+                (select project_id from command_profiles where id = command_usages.command_profile_id),
+                (select project_id from work_units where id = command_usages.work_unit_id),
+                (select project_id from work_unit_activations where id = command_usages.work_unit_activation_id),
+                (
+                    select r.project_id
+                    from repository_snapshots s
+                    join repositories r on r.id = s.repository_id
+                    where s.id = command_usages.repository_snapshot_id
+                ),
+                (select id from projects order by id limit 1)
+            )
+            where project_id is null
+            "#,
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn refresh_ledger_integrity_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_command_usage_project_insert;
+        drop trigger if exists trg_command_usage_project_update;
+        drop trigger if exists trg_command_usage_repository_snapshot_insert;
+        drop trigger if exists trg_command_usage_repository_snapshot_update;
+        drop trigger if exists trg_work_record_project_insert;
+        drop trigger if exists trg_work_record_project_update;
+        drop trigger if exists trg_work_record_command_project_insert;
+        drop trigger if exists trg_work_record_command_project_update;
+        drop trigger if exists trg_work_record_commit_git_insert;
+        drop trigger if exists trg_work_record_commit_git_update;
+        drop trigger if exists trg_work_record_file_git_insert;
+        drop trigger if exists trg_work_record_file_git_update;
+        drop trigger if exists trg_work_record_fork_repository_git_insert;
+        drop trigger if exists trg_work_record_fork_repository_git_update;
+        drop trigger if exists trg_implementation_evidence_project_insert;
+        drop trigger if exists trg_implementation_evidence_project_update;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -1236,6 +1304,7 @@ end;
 
 create table if not exists command_usages (
     id integer primary key,
+    project_id integer references projects(id) on delete cascade,
     command_profile_id integer references command_profiles(id),
     work_unit_id integer references work_units(id),
     work_unit_activation_id integer references work_unit_activations(id),
@@ -1249,7 +1318,9 @@ create table if not exists command_usages (
 create trigger if not exists trg_command_usage_project_insert
 before insert on command_usages
 for each row
-when (new.command_profile_id is not null and not exists (
+when new.project_id is null
+  or not exists (select 1 from projects where id = new.project_id)
+  or (new.command_profile_id is not null and not exists (
       select 1 from command_profiles where id = new.command_profile_id
   ))
   or (new.work_unit_id is not null and not exists (
@@ -1258,6 +1329,18 @@ when (new.command_profile_id is not null and not exists (
   or (new.work_unit_activation_id is not null and not exists (
       select 1 from work_unit_activations where id = new.work_unit_activation_id
   ))
+  or (
+      new.command_profile_id is not null
+      and new.project_id != (select project_id from command_profiles where id = new.command_profile_id)
+  )
+  or (
+      new.work_unit_id is not null
+      and new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  )
+  or (
+      new.work_unit_activation_id is not null
+      and new.project_id != (select project_id from work_unit_activations where id = new.work_unit_activation_id)
+  )
   or (
       new.command_profile_id is not null
       and new.work_unit_id is not null
@@ -1284,9 +1367,11 @@ begin
 end;
 
 create trigger if not exists trg_command_usage_project_update
-before update of command_profile_id, work_unit_id, work_unit_activation_id on command_usages
+before update of project_id, command_profile_id, work_unit_id, work_unit_activation_id on command_usages
 for each row
-when (new.command_profile_id is not null and not exists (
+when new.project_id is null
+  or not exists (select 1 from projects where id = new.project_id)
+  or (new.command_profile_id is not null and not exists (
       select 1 from command_profiles where id = new.command_profile_id
   ))
   or (new.work_unit_id is not null and not exists (
@@ -1295,6 +1380,18 @@ when (new.command_profile_id is not null and not exists (
   or (new.work_unit_activation_id is not null and not exists (
       select 1 from work_unit_activations where id = new.work_unit_activation_id
   ))
+  or (
+      new.command_profile_id is not null
+      and new.project_id != (select project_id from command_profiles where id = new.command_profile_id)
+  )
+  or (
+      new.work_unit_id is not null
+      and new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  )
+  or (
+      new.work_unit_activation_id is not null
+      and new.project_id != (select project_id from work_unit_activations where id = new.work_unit_activation_id)
+  )
   or (
       new.command_profile_id is not null
       and new.work_unit_id is not null
@@ -1337,7 +1434,12 @@ for each row
 when new.repository_snapshot_id is not null
   and (
       not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
-      or (new.command_profile_id is null and new.work_unit_id is null and new.work_unit_activation_id is null)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
       or (
           new.command_profile_id is not null
           and (select project_id from command_profiles where id = new.command_profile_id) != (
@@ -1371,12 +1473,17 @@ begin
 end;
 
 create trigger if not exists trg_command_usage_repository_snapshot_update
-before update of command_profile_id, work_unit_id, work_unit_activation_id, repository_snapshot_id on command_usages
+before update of project_id, command_profile_id, work_unit_id, work_unit_activation_id, repository_snapshot_id on command_usages
 for each row
 when new.repository_snapshot_id is not null
   and (
       not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
-      or (new.command_profile_id is null and new.work_unit_id is null and new.work_unit_activation_id is null)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
       or (
           new.command_profile_id is not null
           and (select project_id from command_profiles where id = new.command_profile_id) != (
@@ -1411,6 +1518,7 @@ end;
 
 create table if not exists work_records (
     id integer primary key,
+    project_id integer references projects(id) on delete cascade,
     work_unit_id integer references work_units(id) on delete cascade,
     topic text not null,
     work_performed text,
@@ -1419,6 +1527,38 @@ create table if not exists work_records (
     export_path text,
     created_at text not null
 );
+
+create trigger if not exists trg_work_record_project_insert
+before insert on work_records
+for each row
+when new.project_id is null
+  or not exists (select 1 from projects where id = new.project_id)
+  or (
+      new.work_unit_id is not null
+      and (
+          not exists (select 1 from work_units where id = new.work_unit_id)
+          or new.project_id != (select project_id from work_units where id = new.work_unit_id)
+      )
+  )
+begin
+    select raise(abort, 'work record project_id must match referenced work unit');
+end;
+
+create trigger if not exists trg_work_record_project_update
+before update of project_id, work_unit_id on work_records
+for each row
+when new.project_id is null
+  or not exists (select 1 from projects where id = new.project_id)
+  or (
+      new.work_unit_id is not null
+      and (
+          not exists (select 1 from work_units where id = new.work_unit_id)
+          or new.project_id != (select project_id from work_units where id = new.work_unit_id)
+      )
+  )
+begin
+    select raise(abort, 'work record project_id must match referenced work unit');
+end;
 
 create table if not exists work_record_commands (
     id integer primary key,
@@ -1487,23 +1627,14 @@ before insert on work_record_commands
 for each row
 when (new.command_usage_id is not null and (
       not exists (select 1 from command_usages where id = new.command_usage_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select coalesce(
-              (select project_id from work_units where id = (select work_unit_id from command_usages where id = new.command_usage_id)),
-              (select project_id from command_profiles where id = (select command_profile_id from command_usages where id = new.command_usage_id))
-          )) != (
-              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
-          )
+      or (select project_id from command_usages where id = new.command_usage_id) != (
+          select project_id from work_records where id = new.work_record_id
       )
   ))
   or (new.command_profile_id is not null and (
       not exists (select 1 from command_profiles where id = new.command_profile_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select project_id from command_profiles where id = new.command_profile_id) != (
-              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
-          )
+      or (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_records where id = new.work_record_id
       )
   ))
 begin
@@ -1515,23 +1646,14 @@ before update of work_record_id, command_usage_id, command_profile_id on work_re
 for each row
 when (new.command_usage_id is not null and (
       not exists (select 1 from command_usages where id = new.command_usage_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select coalesce(
-              (select project_id from work_units where id = (select work_unit_id from command_usages where id = new.command_usage_id)),
-              (select project_id from command_profiles where id = (select command_profile_id from command_usages where id = new.command_usage_id))
-          )) != (
-              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
-          )
+      or (select project_id from command_usages where id = new.command_usage_id) != (
+          select project_id from work_records where id = new.work_record_id
       )
   ))
   or (new.command_profile_id is not null and (
       not exists (select 1 from command_profiles where id = new.command_profile_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select project_id from command_profiles where id = new.command_profile_id) != (
-              select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)
-          )
+      or (select project_id from command_profiles where id = new.command_profile_id) != (
+          select project_id from work_records where id = new.work_record_id
       )
   ))
 begin
@@ -1546,14 +1668,11 @@ when new.git_commit_id is not null
       not exists (select 1 from git_commits where id = new.git_commit_id)
       or new.commit_sha is null
       or new.commit_sha != (select commit_sha from git_commits where id = new.git_commit_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
-              select r.project_id
-              from git_commits c
-              join repositories r on r.id = c.repository_id
-              where c.id = new.git_commit_id
-          )
+      or (select project_id from work_records where id = new.work_record_id) != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.git_commit_id
       )
   )
 begin
@@ -1568,14 +1687,11 @@ when new.git_commit_id is not null
       not exists (select 1 from git_commits where id = new.git_commit_id)
       or new.commit_sha is null
       or new.commit_sha != (select commit_sha from git_commits where id = new.git_commit_id)
-      or (
-          (select work_unit_id from work_records where id = new.work_record_id) is not null
-          and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
-              select r.project_id
-              from git_commits c
-              join repositories r on r.id = c.repository_id
-              where c.id = new.git_commit_id
-          )
+      or (select project_id from work_records where id = new.work_record_id) != (
+          select r.project_id
+          from git_commits c
+          join repositories r on r.id = c.repository_id
+          where c.id = new.git_commit_id
       )
   )
 begin
@@ -1597,8 +1713,7 @@ when (new.repository_id is not null and not exists (select 1 from repositories w
   )
   or (
       new.repository_id is not null
-      and (select work_unit_id from work_records where id = new.work_record_id) is not null
-      and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+      and (select project_id from work_records where id = new.work_record_id) != (
           select project_id from repositories where id = new.repository_id
       )
   )
@@ -1621,8 +1736,7 @@ when (new.repository_id is not null and not exists (select 1 from repositories w
   )
   or (
       new.repository_id is not null
-      and (select work_unit_id from work_records where id = new.work_record_id) is not null
-      and (select project_id from work_units where id = (select work_unit_id from work_records where id = new.work_record_id)) != (
+      and (select project_id from work_records where id = new.work_record_id) != (
           select project_id from repositories where id = new.repository_id
       )
   )
@@ -1668,13 +1782,8 @@ when new.forked_work_unit_id is null
   ))
   or (new.source_work_record_id is not null and (
       not exists (select 1 from work_records where id = new.source_work_record_id)
-      or (
-          (select work_unit_id from work_records where id = new.source_work_record_id) is not null
-          and new.project_id != (
-              select project_id from work_units where id = (
-                  select work_unit_id from work_records where id = new.source_work_record_id
-              )
-          )
+      or new.project_id != (
+          select project_id from work_records where id = new.source_work_record_id
       )
   ))
   or (new.source_repository_snapshot_id is not null and (
@@ -1722,13 +1831,8 @@ when new.forked_work_unit_id is null
   ))
   or (new.source_work_record_id is not null and (
       not exists (select 1 from work_records where id = new.source_work_record_id)
-      or (
-          (select work_unit_id from work_records where id = new.source_work_record_id) is not null
-          and new.project_id != (
-              select project_id from work_units where id = (
-                  select work_unit_id from work_records where id = new.source_work_record_id
-              )
-          )
+      or new.project_id != (
+          select project_id from work_records where id = new.source_work_record_id
       )
   ))
   or (new.source_repository_snapshot_id is not null and (
@@ -2158,9 +2262,12 @@ end;
 create trigger if not exists trg_implementation_evidence_project_insert
 before insert on implementation_evidence
 for each row
-when (new.task_id is not null and new.project_id != coalesce(
-      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
-      (select id from projects order by id limit 1)
+when (new.task_id is not null and (
+      not exists (select 1 from tasks where id = new.task_id)
+      or (select work_unit_id from tasks where id = new.task_id) is null
+      or new.project_id != (
+          select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
+      )
   ))
   or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
 begin
@@ -2170,9 +2277,12 @@ end;
 create trigger if not exists trg_implementation_evidence_project_update
 before update of project_id, task_id, design_requirement_id on implementation_evidence
 for each row
-when (new.task_id is not null and new.project_id != coalesce(
-      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
-      (select id from projects order by id limit 1)
+when (new.task_id is not null and (
+      not exists (select 1 from tasks where id = new.task_id)
+      or (select work_unit_id from tasks where id = new.task_id) is null
+      or new.project_id != (
+          select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
+      )
   ))
   or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
 begin

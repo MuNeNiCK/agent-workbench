@@ -217,11 +217,18 @@ fn insert_implementation_evidence(
     let project_id = project_id(&tx)?;
     let task_id = match input.task_id {
         Some(id) => {
-            tx.query_row("select id from tasks where id = ?1", params![id], |row| {
-                row.get::<_, i64>(0)
-            })
+            tx.query_row(
+                r#"
+                select 1
+                from tasks t
+                join work_units w on w.id = t.work_unit_id
+                where t.id = ?1 and w.project_id = ?2
+                "#,
+                params![id, project_id],
+                |_| Ok(()),
+            )
             .optional()?
-            .context("task not found")?;
+            .context("implementation evidence task must belong to a work unit in this project")?;
             Some(id)
         }
         None => None,

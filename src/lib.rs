@@ -7570,8 +7570,8 @@ Run the project test suite before implementation handoff.
 
         let dangling_usage_snapshot = conn.execute(
             r#"
-            insert into command_usages(command, result, repository_snapshot_id, created_at)
-            values ('cargo test', 'pass', 999, current_timestamp)
+            insert into command_usages(project_id, command, result, repository_snapshot_id, created_at)
+            values (1, 'cargo test', 'pass', 999, current_timestamp)
             "#,
             [],
         );
@@ -7642,8 +7642,8 @@ Run the project test suite before implementation handoff.
         .unwrap();
         conn.execute(
             r#"
-            insert into command_usages(command_profile_id, work_unit_id, command, result, created_at)
-            values (1, 2, 'cargo test', 'pass', current_timestamp)
+            insert into command_usages(project_id, command_profile_id, work_unit_id, command, result, created_at)
+            values (2, 1, 2, 'cargo test', 'pass', current_timestamp)
             "#,
             [],
         )
@@ -7689,7 +7689,7 @@ Run the project test suite before implementation handoff.
         )
         .unwrap();
         conn.execute(
-            "insert into work_records(work_unit_id, topic, created_at) values (1, 'other record', current_timestamp)",
+            "insert into work_records(project_id, work_unit_id, topic, created_at) values (2, 1, 'other record', current_timestamp)",
             [],
         )
         .unwrap();
@@ -7827,8 +7827,8 @@ Run the project test suite before implementation handoff.
 
         let cross_project_usage = conn.execute(
             r#"
-            insert into command_usages(command_profile_id, work_unit_id, command, result, created_at)
-            values (1, 1, 'cargo test', 'pass', current_timestamp)
+            insert into command_usages(project_id, command_profile_id, work_unit_id, command, result, created_at)
+            values (1, 1, 1, 'cargo test', 'pass', current_timestamp)
             "#,
             [],
         );
@@ -7942,6 +7942,194 @@ Run the project test suite before implementation handoff.
         assert!(cross_repository_profile.is_err());
         assert!(empty_command_link.is_err());
         assert!(empty_commit_link.is_err());
+    }
+
+    #[test]
+    fn ledger_rows_require_project_identity_even_without_work_unit_links() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: None,
+                topic: "project scoped record",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let usage = add_command_usage(
+            temp.path(),
+            NewCommandUsage {
+                profile: None,
+                command: Some("cargo test"),
+                result: "pass",
+                log_path: None,
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-projectless', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let projectless_record = conn.execute(
+            "insert into work_records(topic, created_at) values ('missing project', current_timestamp)",
+            [],
+        );
+        let projectless_usage = conn.execute(
+            "insert into command_usages(command, result, created_at) values ('cargo test', 'pass', current_timestamp)",
+            [],
+        );
+        conn.execute(
+            "insert into command_usages(project_id, command, result, created_at) values (2, 'cargo test', 'pass', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        let other_project_usage = conn.last_insert_rowid();
+        let cross_usage_link = conn.execute(
+            "insert into work_record_commands(work_record_id, command_usage_id) values (?1, ?2)",
+            params![record.work_record_id, other_project_usage],
+        );
+
+        assert!(projectless_record.is_err());
+        assert!(projectless_usage.is_err());
+        assert!(cross_usage_link.is_err());
+
+        let visible = list_command_usages(
+            temp.path(),
+            CommandUsageListQuery {
+                profile: None,
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, usage.command_usage_id);
+    }
+
+    #[test]
+    fn project_scoped_record_without_work_unit_cannot_fork_another_project() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-record-fork', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_records(project_id, topic, created_at) values (2, 'other record', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let cross_record = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "bad record fork",
+                source: WorkForkSource::Record(1),
+                reason: "redo from unrelated project",
+                discard_policy: "keep_history",
+            },
+        );
+
+        assert!(cross_record.is_err());
+    }
+
+    #[test]
+    fn implementation_evidence_rejects_tasks_without_work_units() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into tasks(title, priority, source) values ('detached task', 'medium', 'user')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let api_result = add_implementation_evidence(
+            temp.path(),
+            NewImplementationEvidence {
+                task_id: Some(1),
+                design_version_id: None,
+                requirement_key: None,
+                evidence_type: "manual_note",
+                commit_sha: None,
+                file_path: None,
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: Some("detached tasks cannot own implementation evidence"),
+            },
+        );
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let direct_result = conn.execute(
+            r#"
+            insert into implementation_evidence(project_id, task_id, evidence_type, note, created_at)
+            values (1, 1, 'manual_note', 'detached task evidence', current_timestamp)
+            "#,
+            [],
+        );
+
+        assert!(api_result.is_err());
+        assert!(direct_result.is_err());
+    }
+
+    #[test]
+    fn fork_work_normalizes_freeform_reason_to_other_code() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "freeform fork reason", None).unwrap();
+        let record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "fork source",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        suspend_work(temp.path(), "pause before fork", "fork from record").unwrap();
+
+        let fork = fork_work(
+            temp.path(),
+            NewWorkFork {
+                title: "redo branch",
+                source: WorkForkSource::Record(record.work_record_id),
+                reason: "redo from bad implementation",
+                discard_policy: "keep_history",
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let stored_reason: String = conn
+            .query_row(
+                "select fork_reason from work_record_forks where id = ?1",
+                params![fork.fork_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let work_reason: String = conn
+            .query_row(
+                "select interrupt_reason from work_units where id = ?1",
+                params![fork.work_unit_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(stored_reason, "other");
+        assert_eq!(work_reason, "redo from bad implementation");
     }
 
     #[test]

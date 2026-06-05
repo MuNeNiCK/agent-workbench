@@ -796,8 +796,7 @@ fn import_work_records_as_kpt_items(
             r#"
             select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
             from work_records r
-            left join work_units w on w.id = r.work_unit_id
-            where coalesce(w.project_id, ?1) = ?1
+            where r.project_id = ?1
               and r.created_at >= datetime('now', ?2)
               and (coalesce(r.next_actions, '') != '' or coalesce(r.notable_operations, '') != '')
             order by r.id
@@ -807,8 +806,7 @@ fn import_work_records_as_kpt_items(
             r#"
             select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
             from work_records r
-            left join work_units w on w.id = r.work_unit_id
-            where coalesce(w.project_id, ?1) = ?1
+            where r.project_id = ?1
               and (coalesce(r.next_actions, '') != '' or coalesce(r.notable_operations, '') != '')
             order by r.id
             "#

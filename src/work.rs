@@ -607,6 +607,7 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
     }
 
     let source = resolve_fork_source(&tx, project_id, input.source)?;
+    let fork_reason = fork_reason_code(input.reason);
     tx.execute(
         r#"
         insert into work_units(
@@ -669,7 +670,7 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
             source.source_git_commit_id,
             source.source_git_commit_sha,
             forked_work_unit_id,
-            input.reason,
+            fork_reason,
             input.discard_policy,
         ],
     )?;
@@ -761,9 +762,7 @@ fn resolve_fork_source(
                     r#"
                     select wr.work_unit_id
                     from work_records wr
-                    left join work_units w on w.id = wr.work_unit_id
-                    where wr.id = ?1
-                      and (wr.work_unit_id is null or w.project_id = ?2)
+                    where wr.id = ?1 and wr.project_id = ?2
                     "#,
                     params![work_record_id, project_id],
                     |row| row.get::<_, Option<i64>>(0),
@@ -868,6 +867,18 @@ fn resolve_fork_source(
                 source_git_commit_sha: None,
             })
         }
+    }
+}
+
+fn fork_reason_code(reason: &str) -> &str {
+    match reason {
+        "design_changed"
+        | "agent_drift"
+        | "invalid_assumption"
+        | "failed_validation"
+        | "user_requested_redo"
+        | "other" => reason,
+        _ => "other",
     }
 }
 

@@ -8,20 +8,31 @@ use crate::db::{active_activation, open_existing_project, project_id};
 pub fn create_work_record(root: &Path, input: NewWorkRecord<'_>) -> Result<WorkRecordOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
     let work_unit_id = match input.work_unit_id {
         Some(work_unit_id) => Some(work_unit_id),
         None => active_activation(&tx)?.map(|active| active.work_unit_id),
     };
+    if let Some(work_unit_id) = work_unit_id {
+        tx.query_row(
+            "select 1 from work_units where id = ?1 and project_id = ?2",
+            params![work_unit_id, project_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("work unit not found")?;
+    }
 
     tx.execute(
         r#"
         insert into work_records(
-            work_unit_id, topic, work_performed, next_actions, notable_operations,
+            project_id, work_unit_id, topic, work_performed, next_actions, notable_operations,
             export_path, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
         "#,
         params![
+            project_id,
             work_unit_id,
             input.topic,
             input.work_performed,
@@ -41,6 +52,7 @@ pub fn create_work_record(root: &Path, input: NewWorkRecord<'_>) -> Result<WorkR
 
 pub fn list_work_records(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<WorkRecordEntry>> {
     let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
     let mut records = Vec::new();
 
     match work_unit_id {
@@ -49,11 +61,11 @@ pub fn list_work_records(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<W
                 r#"
                 select id, work_unit_id, topic, work_performed, next_actions, created_at
                 from work_records
-                where work_unit_id = ?1
+                where project_id = ?1 and work_unit_id = ?2
                 order by id
                 "#,
             )?;
-            let rows = stmt.query_map(params![work_unit_id], work_record_record)?;
+            let rows = stmt.query_map(params![project_id, work_unit_id], work_record_record)?;
             for row in rows {
                 records.push(row?);
             }
@@ -63,10 +75,11 @@ pub fn list_work_records(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<W
                 r#"
                 select id, work_unit_id, topic, work_performed, next_actions, created_at
                 from work_records
+                where project_id = ?1
                 order by id
                 "#,
             )?;
-            let rows = stmt.query_map([], work_record_record)?;
+            let rows = stmt.query_map(params![project_id], work_record_record)?;
             for row in rows {
                 records.push(row?);
             }
@@ -336,12 +349,7 @@ fn ensure_work_record_exists(conn: &Connection, work_record_id: i64) -> Result<(
 
 fn work_record_project_id(conn: &Connection, work_record_id: i64) -> Result<Option<i64>> {
     conn.query_row(
-        r#"
-        select w.project_id
-        from work_records wr
-        left join work_units w on w.id = wr.work_unit_id
-        where wr.id = ?1
-        "#,
+        "select project_id from work_records where id = ?1",
         params![work_record_id],
         |row| row.get::<_, Option<i64>>(0),
     )
@@ -357,10 +365,7 @@ fn ensure_command_usage_project(
     let usage_project_id = conn
         .query_row(
             r#"
-            select coalesce(
-                (select project_id from work_units where id = cu.work_unit_id),
-                (select project_id from command_profiles where id = cu.command_profile_id)
-            )
+            select project_id
             from command_usages cu
             where cu.id = ?1
             "#,
