@@ -47,6 +47,9 @@ cargo run -- task add "write parser tests" --priority high --source design
 cargo run -- task list --status open
 cargo run -- decision add --topic database --decision "use one sqlite ledger per project"
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
+cargo run -- kpt start --scope project --summary "process review"
+cargo run -- kpt item add --type try --title "stabilize validation command"
+cargo run -- kpt item convert --item 1 --to task --priority high
 ```
 
 ## Local Preview

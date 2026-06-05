@@ -1,6 +1,7 @@
 mod authority;
 mod commands;
 mod db;
+mod kpt;
 mod planning;
 mod records;
 mod rules;
@@ -18,6 +19,11 @@ pub use commands::{
 pub use db::{
     ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_ledger_path, init_project,
     next_action, project_status,
+};
+pub use kpt::{
+    KptItemConversionOutcome, KptItemOutcome, KptItemTaskConversion, KptReviewCloseOutcome,
+    KptReviewOutcome, NewKptItem, NewKptReview, add_kpt_item, close_kpt_review,
+    convert_kpt_item_to_task, start_kpt_review,
 };
 pub use planning::{
     DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskCloseOutcome, TaskListQuery,
@@ -505,6 +511,56 @@ mod tests {
             rules[0].authority_event_id,
             Some(authority.authority_event_id)
         );
+    }
+
+    #[test]
+    fn kpt_item_can_convert_to_task() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let review = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("monthly review"),
+            },
+        )
+        .unwrap();
+        let item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(review.kpt_review_id),
+                item_type: "try",
+                title: "stabilize validation command",
+                details: Some("command drift keeps happening"),
+                severity: "high",
+                proposed_action: Some("fix command profile"),
+            },
+        )
+        .unwrap();
+        let conversion = convert_kpt_item_to_task(
+            temp.path(),
+            KptItemTaskConversion {
+                kpt_item_id: item.kpt_item_id,
+                task_title: None,
+                details: None,
+                priority: "high",
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        let tasks = list_tasks(
+            temp.path(),
+            TaskListQuery {
+                status: Some("open"),
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, conversion.task_id);
+        assert_eq!(tasks[0].title, "stabilize validation command");
     }
 
     #[test]

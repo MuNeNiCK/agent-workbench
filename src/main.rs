@@ -5,15 +5,17 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewAuthorityEvent, NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
-    NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
-    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
-    add_authority_event, add_command_deviation, add_command_usage, add_decision, add_fixed_command,
+    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
+    NewCommandUsage, NewDecision, NewKptItem, NewKptReview, NewTask, NewUserCorrection,
+    NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile,
+    NextAction, RuleQuery, TaskListQuery, WorkForkSource, add_authority_event,
+    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
     add_task, add_user_correction, add_work_record_command, add_work_record_commit,
-    add_work_record_file, applicable_rules, close_active_work, close_task, create_work_record,
-    fork_work, init_project, interrupt_work, list_authority_events, list_command_profiles,
-    list_decisions, list_tasks, list_user_corrections, list_work_records, next_action,
-    project_status, resume_check_basic, resume_work, start_work, suspend_work,
+    add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_task, create_work_record, fork_work, init_project, interrupt_work,
+    list_authority_events, list_command_profiles, list_decisions, list_tasks,
+    list_user_corrections, list_work_records, next_action, project_status, resume_check_basic,
+    resume_work, start_kpt_review, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -77,6 +79,11 @@ enum Command {
     Authority {
         #[command(subcommand)]
         command: AuthorityCommand,
+    },
+    /// Manage KPT reviews.
+    Kpt {
+        #[command(subcommand)]
+        command: KptCommand,
     },
 }
 
@@ -467,6 +474,67 @@ struct AuthorityEventAddArgs {
 struct AuthorityListArgs {
     #[arg(long)]
     scope: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum KptCommand {
+    Start(KptStartArgs),
+    Close(KptCloseArgs),
+    Item {
+        #[command(subcommand)]
+        command: KptItemCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+struct KptStartArgs {
+    #[arg(long)]
+    scope: Option<String>,
+    #[arg(long)]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct KptCloseArgs {
+    kpt_review_id: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum KptItemCommand {
+    Add(KptItemAddArgs),
+    Convert(KptItemConvertArgs),
+}
+
+#[derive(Debug, Args)]
+struct KptItemAddArgs {
+    #[arg(long = "type")]
+    item_type: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    review: Option<i64>,
+    #[arg(long)]
+    details: Option<String>,
+    #[arg(long, default_value = "medium")]
+    severity: String,
+    #[arg(long)]
+    proposed_action: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct KptItemConvertArgs {
+    #[arg(long)]
+    item: i64,
+    #[arg(long = "to")]
+    target_type: String,
+    #[arg(long)]
+    title: Option<String>,
+    #[arg(long)]
+    details: Option<String>,
+    #[arg(long, default_value = "medium")]
+    priority: String,
+    #[arg(long)]
+    work_unit: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -910,6 +978,60 @@ fn main() -> Result<()> {
                     );
                 }
             }
+        },
+        Command::Kpt { command } => match command {
+            KptCommand::Start(args) => {
+                let outcome = start_kpt_review(
+                    &root,
+                    NewKptReview {
+                        scope: args.scope.as_deref(),
+                        summary: args.summary.as_deref(),
+                    },
+                )?;
+                println!("started kpt review");
+                println!("kpt_review_id: {}", outcome.kpt_review_id);
+            }
+            KptCommand::Close(args) => {
+                let outcome = close_kpt_review(&root, args.kpt_review_id)?;
+                println!("closed kpt review");
+                println!("kpt_review_id: {}", outcome.kpt_review_id);
+            }
+            KptCommand::Item { command } => match command {
+                KptItemCommand::Add(args) => {
+                    let outcome = add_kpt_item(
+                        &root,
+                        NewKptItem {
+                            kpt_review_id: args.review,
+                            item_type: &args.item_type,
+                            title: &args.title,
+                            details: args.details.as_deref(),
+                            severity: &args.severity,
+                            proposed_action: args.proposed_action.as_deref(),
+                        },
+                    )?;
+                    println!("added kpt item");
+                    println!("kpt_item_id: {}", outcome.kpt_item_id);
+                    println!("kpt_review_id: {}", outcome.kpt_review_id);
+                }
+                KptItemCommand::Convert(args) => {
+                    if args.target_type != "task" {
+                        anyhow::bail!("only --to task is implemented");
+                    }
+                    let outcome = convert_kpt_item_to_task(
+                        &root,
+                        KptItemTaskConversion {
+                            kpt_item_id: args.item,
+                            task_title: args.title.as_deref(),
+                            details: args.details.as_deref(),
+                            priority: &args.priority,
+                            work_unit_id: args.work_unit,
+                        },
+                    )?;
+                    println!("converted kpt item");
+                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                    println!("task_id: {}", outcome.task_id);
+                }
+            },
         },
     }
 
