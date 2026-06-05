@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::db::{active_activation, open_existing_project};
+use crate::db::{active_activation, open_existing_project, project_id};
 
 pub fn create_work_record(root: &Path, input: NewWorkRecord<'_>) -> Result<WorkRecordOutcome> {
     let mut conn = open_existing_project(root)?;
@@ -117,13 +117,17 @@ pub fn add_work_record_commit(
 ) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
     ensure_work_record_exists(&conn, input.work_record_id)?;
+    if let Some(git_commit_id) = input.git_commit_id {
+        ensure_git_commit_matches(&conn, git_commit_id, input.commit_sha)?;
+    }
     conn.execute(
         r#"
-        insert into work_record_commits(work_record_id, commit_sha, role, note)
-        values (?1, ?2, ?3, ?4)
+        insert into work_record_commits(work_record_id, git_commit_id, commit_sha, role, note)
+        values (?1, ?2, ?3, ?4, ?5)
         "#,
         params![
             input.work_record_id,
+            input.git_commit_id,
             input.commit_sha,
             input.role,
             input.note
@@ -141,12 +145,36 @@ pub fn add_work_record_file(
 ) -> Result<WorkRecordLinkOutcome> {
     let conn = open_existing_project(root)?;
     ensure_work_record_exists(&conn, input.work_record_id)?;
+    let repository_id = match input.git_file_change_id {
+        Some(git_file_change_id) => {
+            let stored = ensure_git_file_change_matches(&conn, git_file_change_id, input.path)?;
+            if let Some(repository_id) = input.repository_id
+                && repository_id != stored.repository_id
+            {
+                anyhow::bail!("work record file repository must match git file change");
+            }
+            Some(input.repository_id.unwrap_or(stored.repository_id))
+        }
+        None => input.repository_id,
+    };
+    if let Some(repository_id) = repository_id {
+        ensure_repository_exists(&conn, repository_id)?;
+    }
     conn.execute(
         r#"
-        insert into work_record_files(work_record_id, path, role, note)
-        values (?1, ?2, ?3, ?4)
+        insert into work_record_files(
+            work_record_id, git_file_change_id, repository_id, path, role, note
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
-        params![input.work_record_id, input.path, input.role, input.note],
+        params![
+            input.work_record_id,
+            input.git_file_change_id,
+            repository_id,
+            input.path,
+            input.role,
+            input.note
+        ],
     )?;
 
     Ok(WorkRecordLinkOutcome {
@@ -241,6 +269,72 @@ fn ensure_command_usage_exists(conn: &Connection, command_usage_id: i64) -> Resu
         )
         .optional()?;
     exists.context("command usage not found")
+}
+
+fn ensure_git_commit_matches(
+    conn: &Connection,
+    git_commit_id: i64,
+    commit_sha: &str,
+) -> Result<()> {
+    let current_project_id = project_id(conn)?;
+    let stored_sha = conn
+        .query_row(
+            r#"
+            select c.commit_sha
+            from git_commits c
+            join repositories r on r.id = c.repository_id
+            where c.id = ?1 and r.project_id = ?2
+            "#,
+            params![git_commit_id, current_project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("git commit not found")?;
+    if stored_sha != commit_sha {
+        anyhow::bail!("work record commit sha must match git commit");
+    }
+    Ok(())
+}
+
+fn ensure_git_file_change_matches(
+    conn: &Connection,
+    git_file_change_id: i64,
+    path: &str,
+) -> Result<StoredGitFileChange> {
+    let current_project_id = project_id(conn)?;
+    let stored = conn
+        .query_row(
+            r#"
+            select f.repository_id, f.path
+            from git_file_changes f
+            join repositories r on r.id = f.repository_id
+            where f.id = ?1 and r.project_id = ?2
+            "#,
+            params![git_file_change_id, current_project_id],
+            |row| {
+                Ok(StoredGitFileChange {
+                    repository_id: row.get(0)?,
+                    path: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .context("git file change not found")?;
+    if stored.path != path {
+        anyhow::bail!("work record file path must match git file change");
+    }
+    Ok(stored)
+}
+
+fn ensure_repository_exists(conn: &Connection, repository_id: i64) -> Result<()> {
+    let current_project_id = project_id(conn)?;
+    conn.query_row(
+        "select 1 from repositories where id = ?1 and project_id = ?2",
+        params![repository_id, current_project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("repository not found")
 }
 
 fn work_record_commands(conn: &Connection, work_record_id: i64) -> Result<Vec<String>> {
@@ -424,6 +518,7 @@ pub struct NewWorkRecordCommand<'a> {
 
 pub struct NewWorkRecordCommit<'a> {
     pub work_record_id: i64,
+    pub git_commit_id: Option<i64>,
     pub commit_sha: &'a str,
     pub role: &'a str,
     pub note: Option<&'a str>,
@@ -431,9 +526,16 @@ pub struct NewWorkRecordCommit<'a> {
 
 pub struct NewWorkRecordFile<'a> {
     pub work_record_id: i64,
+    pub git_file_change_id: Option<i64>,
+    pub repository_id: Option<i64>,
     pub path: &'a str,
     pub role: &'a str,
     pub note: Option<&'a str>,
+}
+
+struct StoredGitFileChange {
+    repository_id: i64,
+    path: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

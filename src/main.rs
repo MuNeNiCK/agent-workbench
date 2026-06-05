@@ -12,14 +12,17 @@ use agent_workbench::{
     KptItemReviewPolicyConversion, KptItemTaskConversion, NewAuthorityEvent, NewClosure,
     NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewCoverageItem, NewDecision,
     NewDesignExceptionAcceptance, NewDesignPackage, NewFinding, NewFindingVerification,
-    NewImplementationEvidence, NewKptItem, NewKptReview, NewReviewPlan, NewReviewPolicy,
-    NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork,
-    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction,
-    RuleQuery, TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
-    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
-    accept_task_out_of_scope, add_authority_event, add_closure, add_command_deviation,
-    add_command_usage, add_coverage_item, add_decision, add_finding, add_finding_verification,
-    add_fixed_command, add_implementation_evidence, add_kpt_item, add_review_plan,
+    NewGitCommit, NewGitFileChange, NewImplementationEvidence, NewKptItem, NewKptReview,
+    NewRepository, NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
+    NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation,
+    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
+    ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
+    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
+    add_command_deviation, add_command_usage, add_coverage_item, add_decision, add_finding,
+    add_finding_verification, add_fixed_command, add_git_commit, add_git_file_change,
+    add_implementation_evidence, add_kpt_item, add_repository, add_repository_dirty_entry,
+    add_repository_snapshot, add_repository_snapshot_comparison, add_review_plan,
     add_review_policy, add_review_run, add_task, add_user_correction, add_work_record_command,
     add_work_record_commit, add_work_record_file, applicable_rules, approve_design_version,
     classify_finding, close_active_work, close_kpt_review, close_task,
@@ -30,12 +33,12 @@ use agent_workbench::{
     implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
     list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
     list_decisions, list_design_decisions, list_design_requirements, list_findings,
-    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_review_plan_targets,
-    list_review_plans, list_review_policies, list_review_runs, list_review_scopes,
-    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
-    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
-    resume_work, select_validation_gate, start_kpt_review, start_review_scope, start_work,
-    suspend_work,
+    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_repositories,
+    list_repository_snapshots, list_review_plan_targets, list_review_plans, list_review_policies,
+    list_review_runs, list_review_scopes, list_task_derivations, list_tasks, list_user_corrections,
+    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
+    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review,
+    start_review_scope, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -90,6 +93,11 @@ enum Command {
     WorkRecord {
         #[command(subcommand)]
         command: WorkRecordCommand,
+    },
+    /// Record repository state, snapshots, and Git evidence.
+    Repository {
+        #[command(subcommand)]
+        command: RepositoryCommand,
     },
     /// Manage task ledger entries.
     Task {
@@ -516,6 +524,8 @@ enum WorkRecordCommitCommand {
 #[derive(Debug, Args)]
 struct WorkRecordCommitAddArgs {
     work_record_id: i64,
+    #[arg(long)]
+    git_commit: Option<i64>,
     #[arg(long, alias = "commit")]
     sha: String,
     #[arg(long, default_value = "referenced")]
@@ -533,11 +543,172 @@ enum WorkRecordFileCommand {
 struct WorkRecordFileAddArgs {
     work_record_id: i64,
     #[arg(long)]
+    git_file_change: Option<i64>,
+    #[arg(long)]
+    repository_id: Option<i64>,
+    #[arg(long)]
     path: String,
     #[arg(long, default_value = "changed")]
     role: String,
     #[arg(long)]
     note: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryCommand {
+    Add(RepositoryAddArgs),
+    List,
+    Snapshot {
+        #[command(subcommand)]
+        command: RepositorySnapshotCommand,
+    },
+    Dirty {
+        #[command(subcommand)]
+        command: RepositoryDirtyCommand,
+    },
+    Commit {
+        #[command(subcommand)]
+        command: RepositoryCommitCommand,
+    },
+    File {
+        #[command(subcommand)]
+        command: RepositoryFileCommand,
+    },
+    Compare {
+        #[command(subcommand)]
+        command: RepositoryCompareCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+struct RepositoryAddArgs {
+    name: String,
+    #[arg(long)]
+    path: String,
+    #[arg(long)]
+    head: Option<String>,
+    #[arg(long)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositorySnapshotCommand {
+    Add(RepositorySnapshotAddArgs),
+    List(RepositorySnapshotListArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositorySnapshotAddArgs {
+    #[arg(long)]
+    repository: String,
+    #[arg(long)]
+    activation: Option<i64>,
+    #[arg(long)]
+    head: Option<String>,
+    #[arg(long)]
+    branch: Option<String>,
+    #[arg(long)]
+    status: Option<String>,
+    #[arg(long)]
+    clean: bool,
+}
+
+#[derive(Debug, Args)]
+struct RepositorySnapshotListArgs {
+    #[arg(long)]
+    repository: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryDirtyCommand {
+    Add(RepositoryDirtyAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositoryDirtyAddArgs {
+    #[arg(long)]
+    snapshot: i64,
+    #[arg(long)]
+    path: String,
+    #[arg(long = "type")]
+    change_type: String,
+    #[arg(long)]
+    staged: bool,
+    #[arg(long)]
+    hash: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryCommitCommand {
+    Add(RepositoryCommitAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositoryCommitAddArgs {
+    #[arg(long)]
+    repository: String,
+    #[arg(long, alias = "commit")]
+    sha: String,
+    #[arg(long)]
+    short: Option<String>,
+    #[arg(long)]
+    subject: Option<String>,
+    #[arg(long)]
+    author_name: Option<String>,
+    #[arg(long)]
+    author_email: Option<String>,
+    #[arg(long)]
+    committed_at: Option<String>,
+    #[arg(long)]
+    parents: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryFileCommand {
+    Add(RepositoryFileAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositoryFileAddArgs {
+    #[arg(long)]
+    commit: i64,
+    #[arg(long)]
+    repository: Option<String>,
+    #[arg(long)]
+    path: String,
+    #[arg(long)]
+    old_path: Option<String>,
+    #[arg(long = "type")]
+    change_type: String,
+    #[arg(long)]
+    additions: Option<i64>,
+    #[arg(long)]
+    deletions: Option<i64>,
+    #[arg(long)]
+    hash: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryCompareCommand {
+    Add(RepositoryCompareAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositoryCompareAddArgs {
+    #[arg(long)]
+    base: i64,
+    #[arg(long)]
+    current: i64,
+    #[arg(long = "type")]
+    comparison_type: String,
+    #[arg(long)]
+    head_changed: bool,
+    #[arg(long)]
+    dirty_changed: bool,
+    #[arg(long)]
+    nested_changed: bool,
+    #[arg(long)]
+    result: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1672,6 +1843,7 @@ fn main() -> Result<()> {
                         &root,
                         NewWorkRecordCommit {
                             work_record_id: args.work_record_id,
+                            git_commit_id: args.git_commit,
                             commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
@@ -1687,6 +1859,8 @@ fn main() -> Result<()> {
                         &root,
                         NewWorkRecordFile {
                             work_record_id: args.work_record_id,
+                            git_file_change_id: args.git_file_change,
+                            repository_id: args.repository_id,
                             path: &args.path,
                             role: &args.role,
                             note: args.note.as_deref(),
@@ -1694,6 +1868,154 @@ fn main() -> Result<()> {
                     )?;
                     println!("linked work record file");
                     println!("work_record_file_id: {}", outcome.link_id);
+                }
+            },
+        },
+        Command::Repository { command } => match command {
+            RepositoryCommand::Add(args) => {
+                let outcome = add_repository(
+                    &root,
+                    NewRepository {
+                        name: &args.name,
+                        path: &args.path,
+                        current_head: args.head.as_deref(),
+                        status_summary: args.status.as_deref(),
+                    },
+                )?;
+                println!("added repository");
+                println!("repository_id: {}", outcome.repository_id);
+            }
+            RepositoryCommand::List => {
+                let records = list_repositories(&root)?;
+                if records.is_empty() {
+                    println!("no repositories");
+                }
+                for record in records {
+                    let head = record.current_head.as_deref().unwrap_or("-");
+                    let status = record.status_summary.as_deref().unwrap_or("-");
+                    println!(
+                        "{} [{} head={}] {}",
+                        record.id, record.name, head, record.path
+                    );
+                    println!("status: {status}");
+                }
+            }
+            RepositoryCommand::Snapshot { command } => match command {
+                RepositorySnapshotCommand::Add(args) => {
+                    let outcome = add_repository_snapshot(
+                        &root,
+                        NewRepositorySnapshot {
+                            repository: &args.repository,
+                            work_unit_activation_id: args.activation,
+                            head_sha: args.head.as_deref(),
+                            branch: args.branch.as_deref(),
+                            status_summary: args.status.as_deref(),
+                            is_clean: args.clean,
+                        },
+                    )?;
+                    println!("added repository snapshot");
+                    println!("repository_snapshot_id: {}", outcome.repository_snapshot_id);
+                    println!("repository_id: {}", outcome.repository_id);
+                }
+                RepositorySnapshotCommand::List(args) => {
+                    let records = list_repository_snapshots(&root, args.repository.as_deref())?;
+                    if records.is_empty() {
+                        println!("no repository snapshots");
+                    }
+                    for record in records {
+                        let head = record.head_sha.as_deref().unwrap_or("-");
+                        let branch = record.branch.as_deref().unwrap_or("-");
+                        let status = record.status_summary.as_deref().unwrap_or("-");
+                        println!(
+                            "{} [repository={} clean={} branch={} head={}] {}",
+                            record.id,
+                            record.repository_name,
+                            record.is_clean,
+                            branch,
+                            head,
+                            status
+                        );
+                    }
+                }
+            },
+            RepositoryCommand::Dirty { command } => match command {
+                RepositoryDirtyCommand::Add(args) => {
+                    let outcome = add_repository_dirty_entry(
+                        &root,
+                        NewRepositoryDirtyEntry {
+                            repository_snapshot_id: args.snapshot,
+                            path: &args.path,
+                            change_type: &args.change_type,
+                            staged: args.staged,
+                            content_hash: args.hash.as_deref(),
+                        },
+                    )?;
+                    println!("added repository dirty entry");
+                    println!(
+                        "repository_dirty_entry_id: {}",
+                        outcome.repository_dirty_entry_id
+                    );
+                }
+            },
+            RepositoryCommand::Commit { command } => match command {
+                RepositoryCommitCommand::Add(args) => {
+                    let outcome = add_git_commit(
+                        &root,
+                        NewGitCommit {
+                            repository: &args.repository,
+                            commit_sha: &args.sha,
+                            short_sha: args.short.as_deref(),
+                            subject: args.subject.as_deref(),
+                            author_name: args.author_name.as_deref(),
+                            author_email: args.author_email.as_deref(),
+                            committed_at: args.committed_at.as_deref(),
+                            parent_shas: args.parents.as_deref(),
+                        },
+                    )?;
+                    println!("added git commit");
+                    println!("git_commit_id: {}", outcome.git_commit_id);
+                    println!("repository_id: {}", outcome.repository_id);
+                }
+            },
+            RepositoryCommand::File { command } => match command {
+                RepositoryFileCommand::Add(args) => {
+                    let outcome = add_git_file_change(
+                        &root,
+                        NewGitFileChange {
+                            git_commit_id: args.commit,
+                            repository: args.repository.as_deref(),
+                            path: &args.path,
+                            old_path: args.old_path.as_deref(),
+                            change_type: &args.change_type,
+                            additions: args.additions,
+                            deletions: args.deletions,
+                            content_hash: args.hash.as_deref(),
+                        },
+                    )?;
+                    println!("added git file change");
+                    println!("git_file_change_id: {}", outcome.git_file_change_id);
+                    println!("repository_id: {}", outcome.repository_id);
+                }
+            },
+            RepositoryCommand::Compare { command } => match command {
+                RepositoryCompareCommand::Add(args) => {
+                    let outcome = add_repository_snapshot_comparison(
+                        &root,
+                        NewRepositorySnapshotComparison {
+                            base_repository_snapshot_id: args.base,
+                            current_repository_snapshot_id: args.current,
+                            comparison_type: &args.comparison_type,
+                            head_changed: args.head_changed,
+                            dirty_state_changed: args.dirty_changed,
+                            nested_repository_changed: args.nested_changed,
+                            result: &args.result,
+                        },
+                    )?;
+                    println!("added repository snapshot comparison");
+                    println!(
+                        "repository_snapshot_comparison_id: {}",
+                        outcome.repository_snapshot_comparison_id
+                    );
                 }
             },
         },

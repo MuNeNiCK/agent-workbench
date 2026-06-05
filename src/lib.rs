@@ -6,6 +6,7 @@ mod design;
 mod kpt;
 mod planning;
 mod records;
+mod repository;
 mod review;
 mod rules;
 mod traceability;
@@ -59,6 +60,15 @@ pub use records::{
     NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, WorkRecordEntry,
     WorkRecordLinkOutcome, WorkRecordOutcome, add_work_record_command, add_work_record_commit,
     add_work_record_file, create_work_record, export_work_record_markdown, list_work_records,
+};
+pub use repository::{
+    GitCommitOutcome, GitFileChangeOutcome, NewGitCommit, NewGitFileChange, NewRepository,
+    NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
+    RepositoryDirtyEntryOutcome, RepositoryOutcome, RepositoryRecord,
+    RepositorySnapshotComparisonOutcome, RepositorySnapshotOutcome, RepositorySnapshotRecord,
+    add_git_commit, add_git_file_change, add_repository, add_repository_dirty_entry,
+    add_repository_snapshot, add_repository_snapshot_comparison, list_repositories,
+    list_repository_snapshots,
 };
 pub use review::{
     ClosureOutcome, FindingClassificationOutcome, FindingOutcome, FindingRecord,
@@ -2875,6 +2885,7 @@ This requirement describes changed cleanup behavior that must be implemented.
             temp.path(),
             NewWorkRecordCommit {
                 work_record_id: work_record.work_record_id,
+                git_commit_id: None,
                 commit_sha: "abc123",
                 role: "created",
                 note: None,
@@ -2885,6 +2896,8 @@ This requirement describes changed cleanup behavior that must be implemented.
             temp.path(),
             NewWorkRecordFile {
                 work_record_id: work_record.work_record_id,
+                git_file_change_id: None,
+                repository_id: None,
                 path: "src/lib.rs",
                 role: "changed",
                 note: None,
@@ -6666,6 +6679,348 @@ Run the project test suite before implementation handoff.
         );
 
         assert!(cross_project.is_err());
+    }
+
+    #[test]
+    fn repository_records_snapshots_dirty_entries_and_git_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let repo = add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: Some("abc123"),
+                status_summary: Some("dirty"),
+            },
+        )
+        .unwrap();
+        let snapshot = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: None,
+                head_sha: Some("abc123"),
+                branch: Some("master"),
+                status_summary: Some("M src/lib.rs"),
+                is_clean: false,
+            },
+        )
+        .unwrap();
+        let dirty = add_repository_dirty_entry(
+            temp.path(),
+            NewRepositoryDirtyEntry {
+                repository_snapshot_id: snapshot.repository_snapshot_id,
+                path: "src/lib.rs",
+                change_type: "modified",
+                staged: false,
+                content_hash: Some("hash-a"),
+            },
+        )
+        .unwrap();
+        let commit = add_git_commit(
+            temp.path(),
+            NewGitCommit {
+                repository: "main",
+                commit_sha: "abc123",
+                short_sha: Some("abc123"),
+                subject: Some("initial"),
+                author_name: None,
+                author_email: None,
+                committed_at: None,
+                parent_shas: None,
+            },
+        )
+        .unwrap();
+        let file = add_git_file_change(
+            temp.path(),
+            NewGitFileChange {
+                git_commit_id: commit.git_commit_id,
+                repository: None,
+                path: "src/lib.rs",
+                old_path: None,
+                change_type: "modified",
+                additions: Some(2),
+                deletions: Some(1),
+                content_hash: Some("hash-b"),
+            },
+        )
+        .unwrap();
+        let work_record = create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: None,
+                topic: "repository evidence",
+                work_performed: None,
+                next_actions: None,
+                notable_operations: None,
+                export_path: None,
+            },
+        )
+        .unwrap();
+        add_work_record_commit(
+            temp.path(),
+            NewWorkRecordCommit {
+                work_record_id: work_record.work_record_id,
+                git_commit_id: Some(commit.git_commit_id),
+                commit_sha: "abc123",
+                role: "created",
+                note: None,
+            },
+        )
+        .unwrap();
+        add_work_record_file(
+            temp.path(),
+            NewWorkRecordFile {
+                work_record_id: work_record.work_record_id,
+                git_file_change_id: Some(file.git_file_change_id),
+                repository_id: None,
+                path: "src/lib.rs",
+                role: "changed",
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let repos = list_repositories(temp.path()).unwrap();
+        let snapshots = list_repository_snapshots(temp.path(), Some("main")).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let linked_commit_id: i64 = conn
+            .query_row(
+                "select git_commit_id from work_record_commits where work_record_id = ?1",
+                params![work_record.work_record_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let linked_file: (i64, i64) = conn
+            .query_row(
+                "select git_file_change_id, repository_id from work_record_files where work_record_id = ?1",
+                params![work_record.work_record_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(repo.repository_id, 1);
+        assert_eq!(snapshot.repository_id, repo.repository_id);
+        assert_eq!(dirty.repository_dirty_entry_id, 1);
+        assert_eq!(commit.repository_id, repo.repository_id);
+        assert_eq!(file.repository_id, repo.repository_id);
+        assert_eq!(linked_commit_id, commit.git_commit_id);
+        assert_eq!(linked_file, (file.git_file_change_id, repo.repository_id));
+        assert_eq!(repos[0].name, "main");
+        assert_eq!(repos[0].current_head.as_deref(), Some("abc123"));
+        assert_eq!(snapshots[0].repository_name, "main");
+        assert!(!snapshots[0].is_clean);
+    }
+
+    #[test]
+    fn repository_snapshot_comparisons_require_one_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "submodule",
+                path: "vendor/submodule",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let first = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: None,
+                head_sha: Some("a"),
+                branch: None,
+                status_summary: None,
+                is_clean: true,
+            },
+        )
+        .unwrap();
+        let second = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: None,
+                head_sha: Some("b"),
+                branch: None,
+                status_summary: None,
+                is_clean: true,
+            },
+        )
+        .unwrap();
+        let other = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "submodule",
+                work_unit_activation_id: None,
+                head_sha: Some("c"),
+                branch: None,
+                status_summary: None,
+                is_clean: true,
+            },
+        )
+        .unwrap();
+
+        let valid = add_repository_snapshot_comparison(
+            temp.path(),
+            NewRepositorySnapshotComparison {
+                base_repository_snapshot_id: first.repository_snapshot_id,
+                current_repository_snapshot_id: second.repository_snapshot_id,
+                comparison_type: "resume",
+                head_changed: true,
+                dirty_state_changed: false,
+                nested_repository_changed: false,
+                result: "changed_classified",
+            },
+        );
+        let invalid = add_repository_snapshot_comparison(
+            temp.path(),
+            NewRepositorySnapshotComparison {
+                base_repository_snapshot_id: first.repository_snapshot_id,
+                current_repository_snapshot_id: other.repository_snapshot_id,
+                comparison_type: "resume",
+                head_changed: true,
+                dirty_state_changed: false,
+                nested_repository_changed: false,
+                result: "changed_unclassified",
+            },
+        );
+
+        assert!(valid.is_ok());
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn repository_targets_can_attach_to_review_plan() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "implement repo ledger", None).unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "implementation-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let snapshot = add_repository_snapshot(
+            temp.path(),
+            NewRepositorySnapshot {
+                repository: "main",
+                work_unit_activation_id: Some(work.activation_id),
+                head_sha: Some("abc"),
+                branch: Some("master"),
+                status_summary: Some("clean"),
+                is_clean: true,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+
+        let same_project = conn.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, repository_snapshot_id)
+            values (?1, 'repository_snapshot', ?2)
+            "#,
+            params![plan.review_plan_id, snapshot.repository_snapshot_id],
+        );
+
+        assert!(same_project.is_ok());
+    }
+
+    #[test]
+    fn repository_integrity_rejects_cross_project_links() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_repository(
+            temp.path(),
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: None,
+                status_summary: None,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        conn.execute(
+            "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-repo', current_timestamp, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (2, 'other', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into work_unit_activations(project_id, work_unit_id, status, activation_reason, opened_at) values (2, 1, 'suspended', 'start', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into repositories(project_id, name, path, current_head, status_summary, last_checked_at) values (2, 'other', '../other', null, null, current_timestamp)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into git_commits(repository_id, commit_sha, created_at) values (1, 'abc', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+        let cross_activation = conn.execute(
+            r#"
+            insert into repository_snapshots(
+                repository_id, work_unit_activation_id, head_sha, is_clean, created_at
+            )
+            values (1, 1, 'abc', 1, current_timestamp)
+            "#,
+            [],
+        );
+        let cross_file_change = conn.execute(
+            r#"
+            insert into git_file_changes(
+                git_commit_id, repository_id, path, change_type
+            )
+            values (1, 2, 'src/lib.rs', 'modified')
+            "#,
+            [],
+        );
+
+        assert!(cross_activation.is_err());
+        assert!(cross_file_change.is_err());
     }
 
     #[test]

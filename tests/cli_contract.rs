@@ -212,6 +212,143 @@ fn design_import_records_design_version() {
 }
 
 #[test]
+fn repository_commands_record_state_and_git_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    let repo = ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--head",
+            "abc123",
+            "--status",
+            "dirty",
+        ],
+    );
+    let snapshot = ok(
+        temp.path(),
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "M src/lib.rs",
+        ],
+    );
+    let dirty = ok(
+        temp.path(),
+        &[
+            "repository",
+            "dirty",
+            "add",
+            "--snapshot",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--type",
+            "modified",
+        ],
+    );
+    let commit = ok(
+        temp.path(),
+        &[
+            "repository",
+            "commit",
+            "add",
+            "--repository",
+            "main",
+            "--sha",
+            "abc123",
+            "--subject",
+            "initial",
+        ],
+    );
+    let file = ok(
+        temp.path(),
+        &[
+            "repository",
+            "file",
+            "add",
+            "--commit",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--type",
+            "modified",
+            "--additions",
+            "1",
+            "--deletions",
+            "0",
+        ],
+    );
+    let record = ok(
+        temp.path(),
+        &[
+            "record",
+            "create",
+            "--topic",
+            "repository evidence",
+            "--work-performed",
+            "recorded repository state",
+        ],
+    );
+    let record_commit = ok(
+        temp.path(),
+        &[
+            "record",
+            "commit",
+            "add",
+            "1",
+            "--git-commit",
+            "1",
+            "--sha",
+            "abc123",
+            "--role",
+            "created",
+        ],
+    );
+    let record_file = ok(
+        temp.path(),
+        &[
+            "record",
+            "file",
+            "add",
+            "1",
+            "--git-file-change",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--role",
+            "changed",
+        ],
+    );
+    let list = ok(temp.path(), &["repository", "list"]);
+    let snapshots = ok(temp.path(), &["repository", "snapshot", "list"]);
+
+    assert!(repo.contains("repository_id: 1"));
+    assert!(snapshot.contains("repository_snapshot_id: 1"));
+    assert!(dirty.contains("repository_dirty_entry_id: 1"));
+    assert!(commit.contains("git_commit_id: 1"));
+    assert!(file.contains("git_file_change_id: 1"));
+    assert!(record.contains("work_record_id: 1"));
+    assert!(record_commit.contains("work_record_commit_id: 1"));
+    assert!(record_file.contains("work_record_file_id: 1"));
+    assert!(list.contains("main"));
+    assert!(snapshots.contains("repository=main"));
+}
+
+#[test]
 fn design_import_lists_decisions_and_gate_templates() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

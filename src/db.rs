@@ -731,6 +731,166 @@ create table if not exists projects (
     updated_at text not null
 );
 
+create table if not exists repositories (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    name text not null,
+    path text not null,
+    current_head text,
+    status_summary text,
+    last_checked_at text,
+    unique(project_id, name),
+    unique(project_id, path)
+);
+
+create table if not exists repository_snapshots (
+    id integer primary key,
+    repository_id integer not null references repositories(id) on delete cascade,
+    work_unit_activation_id integer references work_unit_activations(id),
+    head_sha text,
+    branch text,
+    status_summary text,
+    is_clean integer not null check (is_clean in (0, 1)),
+    created_at text not null
+);
+
+create table if not exists repository_dirty_entries (
+    id integer primary key,
+    repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+    path text not null,
+    change_type text not null check (change_type in ('modified', 'added', 'deleted', 'renamed', 'untracked', 'ignored')),
+    staged integer not null default 0 check (staged in (0, 1)),
+    content_hash text
+);
+
+create table if not exists repository_state_classifications (
+    id integer primary key,
+    repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+    dirty_entry_id integer references repository_dirty_entries(id) on delete cascade,
+    classification text not null check (classification in ('expected', 'unrelated', 'generated', 'requires_action', 'accepted_exception')),
+    reason text not null,
+    acceptance_record_id integer references acceptance_records(id),
+    created_at text not null
+);
+
+create table if not exists repository_snapshot_comparisons (
+    id integer primary key,
+    base_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+    current_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+    comparison_type text not null check (comparison_type in ('resume', 'close', 'validation', 'inspection')),
+    head_changed integer not null check (head_changed in (0, 1)),
+    dirty_state_changed integer not null check (dirty_state_changed in (0, 1)),
+    nested_repository_changed integer not null default 0 check (nested_repository_changed in (0, 1)),
+    result text not null check (result in ('same', 'changed_classified', 'changed_unclassified')),
+    created_at text not null
+);
+
+create table if not exists git_commits (
+    id integer primary key,
+    repository_id integer not null references repositories(id) on delete cascade,
+    commit_sha text not null,
+    short_sha text,
+    subject text,
+    author_name text,
+    author_email text,
+    committed_at text,
+    parent_shas text,
+    created_at text not null,
+    unique(repository_id, commit_sha)
+);
+
+create table if not exists git_file_changes (
+    id integer primary key,
+    git_commit_id integer not null references git_commits(id) on delete cascade,
+    repository_id integer not null references repositories(id) on delete cascade,
+    path text not null,
+    old_path text,
+    change_type text not null check (change_type in ('added', 'modified', 'deleted', 'renamed', 'copied')),
+    additions integer,
+    deletions integer,
+    content_hash text
+);
+
+create trigger if not exists trg_repository_snapshot_activation_project_insert
+before insert on repository_snapshots
+for each row
+when new.work_unit_activation_id is not null
+  and (select project_id from repositories where id = new.repository_id)
+      != (select project_id from work_unit_activations where id = new.work_unit_activation_id)
+begin
+    select raise(abort, 'repository snapshot activation must match repository project_id');
+end;
+
+create trigger if not exists trg_repository_snapshot_activation_project_update
+before update of repository_id, work_unit_activation_id on repository_snapshots
+for each row
+when new.work_unit_activation_id is not null
+  and (select project_id from repositories where id = new.repository_id)
+      != (select project_id from work_unit_activations where id = new.work_unit_activation_id)
+begin
+    select raise(abort, 'repository snapshot activation must match repository project_id');
+end;
+
+create trigger if not exists trg_repository_state_classification_dirty_insert
+before insert on repository_state_classifications
+for each row
+when new.dirty_entry_id is not null
+  and new.repository_snapshot_id != (
+      select repository_snapshot_id
+      from repository_dirty_entries
+      where id = new.dirty_entry_id
+  )
+begin
+    select raise(abort, 'repository state classification dirty entry must match snapshot');
+end;
+
+create trigger if not exists trg_repository_state_classification_dirty_update
+before update of repository_snapshot_id, dirty_entry_id on repository_state_classifications
+for each row
+when new.dirty_entry_id is not null
+  and new.repository_snapshot_id != (
+      select repository_snapshot_id
+      from repository_dirty_entries
+      where id = new.dirty_entry_id
+  )
+begin
+    select raise(abort, 'repository state classification dirty entry must match snapshot');
+end;
+
+create trigger if not exists trg_repository_snapshot_comparison_repository_insert
+before insert on repository_snapshot_comparisons
+for each row
+when (select repository_id from repository_snapshots where id = new.base_repository_snapshot_id)
+  != (select repository_id from repository_snapshots where id = new.current_repository_snapshot_id)
+begin
+    select raise(abort, 'repository snapshot comparison requires one repository');
+end;
+
+create trigger if not exists trg_repository_snapshot_comparison_repository_update
+before update of base_repository_snapshot_id, current_repository_snapshot_id on repository_snapshot_comparisons
+for each row
+when (select repository_id from repository_snapshots where id = new.base_repository_snapshot_id)
+  != (select repository_id from repository_snapshots where id = new.current_repository_snapshot_id)
+begin
+    select raise(abort, 'repository snapshot comparison requires one repository');
+end;
+
+create trigger if not exists trg_git_file_change_repository_insert
+before insert on git_file_changes
+for each row
+when new.repository_id != (select repository_id from git_commits where id = new.git_commit_id)
+begin
+    select raise(abort, 'git file change repository must match git commit repository');
+end;
+
+create trigger if not exists trg_git_file_change_repository_update
+before update of git_commit_id, repository_id on git_file_changes
+for each row
+when new.repository_id != (select repository_id from git_commits where id = new.git_commit_id)
+begin
+    select raise(abort, 'git file change repository must match git commit repository');
+end;
+
 create table if not exists authority_events (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
@@ -1857,6 +2017,13 @@ when (new.target_type = 'design_version' and not (
         and new.task_id is null
         and new.work_unit_id is null
         and new.repository_snapshot_id is not null
+        and exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+        and new.project_id = (
+            select r.project_id
+            from repository_snapshots s
+            join repositories r on r.id = s.repository_id
+            where s.id = new.repository_snapshot_id
+        )
     ))
   or (new.target_type in ('file', 'symbol') and not (
         new.design_version_id is null
@@ -1923,6 +2090,13 @@ when (new.target_type = 'design_version' and not (
         and new.task_id is null
         and new.work_unit_id is null
         and new.repository_snapshot_id is not null
+        and exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+        and new.project_id = (
+            select r.project_id
+            from repository_snapshots s
+            join repositories r on r.id = s.repository_id
+            where s.id = new.repository_snapshot_id
+        )
     ))
   or (new.target_type in ('file', 'symbol') and not (
         new.design_version_id is null
@@ -2064,7 +2238,15 @@ when (new.target_type = 'design_version' and (select project_id from review_plan
       (select id from projects order by id limit 1)
   ))
   or (new.target_type = 'work_unit' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from work_units where id = new.work_unit_id))
-  or new.target_type = 'repository_snapshot'
+  or (new.target_type = 'repository_snapshot' and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (select project_id from review_plans where id = new.review_plan_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
 begin
     select raise(abort, 'review plan target project_id must match review plan project_id');
 end;
@@ -2079,7 +2261,15 @@ when (new.target_type = 'design_version' and (select project_id from review_plan
       (select id from projects order by id limit 1)
   ))
   or (new.target_type = 'work_unit' and (select project_id from review_plans where id = new.review_plan_id) != (select project_id from work_units where id = new.work_unit_id))
-  or new.target_type = 'repository_snapshot'
+  or (new.target_type = 'repository_snapshot' and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or (select project_id from review_plans where id = new.review_plan_id) != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
 begin
     select raise(abort, 'review plan target project_id must match review plan project_id');
 end;
