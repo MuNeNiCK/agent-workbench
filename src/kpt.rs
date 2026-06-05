@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
+use crate::rules::{RuleBindingInput, insert_rule_binding, scope_type_for};
 
 pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptReviewOutcome> {
     let mut conn = open_existing_project(root)?;
@@ -26,11 +27,9 @@ pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptRevie
     )?;
     let kpt_review_id = tx.last_insert_rowid();
 
+    let sources = parse_kpt_sources(input.from)?;
     let mut generated_item_count = 0;
-    if input
-        .from
-        .is_some_and(|source| source.split(',').any(|part| part.trim() == "corrections"))
-    {
+    if sources.contains(&KptSource::Corrections) {
         generated_item_count += import_corrections_as_kpt_items(
             &tx,
             kpt_review_id,
@@ -39,11 +38,32 @@ pub fn start_kpt_review(root: &Path, input: NewKptReview<'_>) -> Result<KptRevie
             period_modifier.as_deref(),
         )?;
     }
-    if input
-        .from
-        .is_some_and(|source| source.split(',').any(|part| part.trim() == "findings"))
-    {
+    if sources.contains(&KptSource::Findings) {
         generated_item_count += import_findings_as_kpt_items(&tx, kpt_review_id, project_id)?;
+    }
+    if sources.contains(&KptSource::Commands) {
+        generated_item_count += import_commands_as_kpt_items(
+            &tx,
+            kpt_review_id,
+            project_id,
+            period_modifier.as_deref(),
+        )?;
+    }
+    if sources.contains(&KptSource::ReviewRuns) {
+        generated_item_count += import_review_runs_as_kpt_items(
+            &tx,
+            kpt_review_id,
+            project_id,
+            period_modifier.as_deref(),
+        )?;
+    }
+    if sources.contains(&KptSource::WorkRecords) {
+        generated_item_count += import_work_records_as_kpt_items(
+            &tx,
+            kpt_review_id,
+            project_id,
+            period_modifier.as_deref(),
+        )?;
     }
 
     tx.commit()?;
@@ -375,6 +395,76 @@ pub fn convert_kpt_item_to_design_version(
     })
 }
 
+pub fn convert_kpt_item_to_command_profile(
+    root: &Path,
+    input: KptItemCommandProfileConversion<'_>,
+) -> Result<KptItemCommandProfileConversionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let item = convertible_kpt_item(&tx, input.kpt_item_id)?;
+    let name = input.name.unwrap_or(&item.title);
+    let command = input
+        .command
+        .or(item.proposed_action.as_deref())
+        .or(item.details.as_deref())
+        .context("command profile conversion requires --command or item action/details")?;
+    tx.execute(
+        r#"
+        insert into command_profiles(
+            project_id, name, command, command_type, scope, status, stability,
+            timeout, expected_result, source, created_at, updated_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'agent_observed', current_timestamp, current_timestamp)
+        "#,
+        params![
+            project_id,
+            name,
+            command,
+            input.command_type,
+            input.scope,
+            input.status,
+            input.stability,
+            input.timeout,
+            input.expected_result,
+        ],
+    )?;
+    let command_profile_id = tx.last_insert_rowid();
+    if matches!(input.status, "fixed" | "preferred") {
+        insert_rule_binding(
+            &tx,
+            RuleBindingInput {
+                project_id,
+                rule_source_type: "command_profile",
+                authority_event_id: None,
+                user_correction_id: None,
+                command_profile_id: Some(command_profile_id),
+                work_unit_id: None,
+                scope_type: scope_type_for(input.scope.unwrap_or("command")),
+                scope_key: input.scope,
+                precedence: if input.status == "fixed" { 70 } else { 55 },
+            },
+        )?;
+    }
+    tx.execute(
+        r#"
+        insert into kpt_item_conversions(kpt_item_id, target_type, command_profile_id, created_at)
+        values (?1, 'command_profile', ?2, current_timestamp)
+        "#,
+        params![item.id, command_profile_id],
+    )?;
+    let conversion_id = tx.last_insert_rowid();
+    tx.execute(
+        "update kpt_items set status = 'converted' where id = ?1",
+        params![item.id],
+    )?;
+    tx.commit()?;
+    Ok(KptItemCommandProfileConversionOutcome {
+        kpt_item_conversion_id: conversion_id,
+        command_profile_id,
+    })
+}
+
 fn convertible_kpt_item(conn: &rusqlite::Connection, kpt_item_id: i64) -> Result<StoredKptItem> {
     conn.query_row(
         r#"
@@ -404,6 +494,33 @@ fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
     )
     .optional()?
     .context("no open kpt review; run kpt start first")
+}
+
+fn parse_kpt_sources(input: Option<&str>) -> Result<Vec<KptSource>> {
+    let Some(input) = input else {
+        return Ok(Vec::new());
+    };
+    let mut sources = Vec::new();
+    for raw in input.split(',') {
+        let source = raw.trim();
+        if source.is_empty() {
+            continue;
+        }
+        let parsed = match source {
+            "corrections" => KptSource::Corrections,
+            "findings" => KptSource::Findings,
+            "commands" | "command-drift" => KptSource::Commands,
+            "reviews" | "review-runs" | "review-outcomes" => KptSource::ReviewRuns,
+            "work-records" | "work-units" | "work-unit-outcomes" | "outcomes" => {
+                KptSource::WorkRecords
+            }
+            _ => bail!("unsupported kpt source: {source}"),
+        };
+        if !sources.contains(&parsed) {
+            sources.push(parsed);
+        }
+    }
+    Ok(sources)
 }
 
 fn import_findings_as_kpt_items(
@@ -494,6 +611,215 @@ fn import_corrections_as_kpt_items(
     }
 
     Ok(corrections.len() as i64)
+}
+
+fn import_commands_as_kpt_items(
+    conn: &Connection,
+    kpt_review_id: i64,
+    project_id: i64,
+    period_modifier: Option<&str>,
+) -> Result<i64> {
+    let mut records = Vec::new();
+    match period_modifier {
+        Some(period_modifier) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select d.id, d.command_profile_id, p.name, d.reason, d.status
+                from command_deviations d
+                join command_profiles p on p.id = d.command_profile_id
+                where p.project_id = ?1 and d.created_at >= datetime('now', ?2)
+                order by d.id
+                "#,
+            )?;
+            let rows =
+                stmt.query_map(params![project_id, period_modifier], command_drift_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                r#"
+                select d.id, d.command_profile_id, p.name, d.reason, d.status
+                from command_deviations d
+                join command_profiles p on p.id = d.command_profile_id
+                where p.project_id = ?1
+                order by d.id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![project_id], command_drift_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    for record in &records {
+        let title = format!("Command drift: {}", record.profile_name);
+        let details = format!(
+            "deviation_id: {}\nstatus: {}\nreason: {}",
+            record.id, record.status, record.reason
+        );
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, details, severity,
+                linked_command_profile_id, proposed_action, status, created_at
+            )
+            values (?1, 'problem', ?2, ?3, 'medium', ?4, ?5, 'open', current_timestamp)
+            "#,
+            params![
+                kpt_review_id,
+                title,
+                details,
+                record.command_profile_id,
+                "decide whether to update, keep, or deprecate this command profile",
+            ],
+        )?;
+    }
+
+    Ok(records.len() as i64)
+}
+
+fn import_review_runs_as_kpt_items(
+    conn: &Connection,
+    kpt_review_id: i64,
+    project_id: i64,
+    period_modifier: Option<&str>,
+) -> Result<i64> {
+    let sql = match period_modifier {
+        Some(_) => {
+            r#"
+            select id, review_plan_id, run_type, run_purpose, status,
+                   new_findings_count, carried_findings_checked, clean_run,
+                   coalesce(result_summary, '')
+            from review_runs
+            where project_id = ?1
+              and created_at >= datetime('now', ?2)
+              and (status != 'completed' or clean_run = 0 or new_findings_count > 0)
+            order by id
+            "#
+        }
+        None => {
+            r#"
+            select id, review_plan_id, run_type, run_purpose, status,
+                   new_findings_count, carried_findings_checked, clean_run,
+                   coalesce(result_summary, '')
+            from review_runs
+            where project_id = ?1
+              and (status != 'completed' or clean_run = 0 or new_findings_count > 0)
+            order by id
+            "#
+        }
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = match period_modifier {
+        Some(period_modifier) => {
+            stmt.query_map(params![project_id, period_modifier], review_run_kpt_record)?
+        }
+        None => stmt.query_map(params![project_id], review_run_kpt_record)?,
+    };
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    for record in &records {
+        let title = format!("Review outcome: {} {}", record.run_type, record.id);
+        let details = format!(
+            "plan: {}\npurpose: {}\nstatus: {}\nnew_findings: {}\ncarried_checked: {}\nclean: {}\nsummary: {}",
+            record
+                .review_plan_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            record.run_purpose,
+            record.status,
+            record.new_findings_count,
+            record.carried_findings_checked,
+            record.clean_run,
+            record.result_summary,
+        );
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, details, severity,
+                proposed_action, status, created_at
+            )
+            values (?1, 'problem', ?2, ?3, ?4, ?5, 'open', current_timestamp)
+            "#,
+            params![
+                kpt_review_id,
+                title,
+                details,
+                review_outcome_severity(record),
+                "classify the review outcome and adjust tasks, policy, or design if needed",
+            ],
+        )?;
+    }
+    Ok(records.len() as i64)
+}
+
+fn import_work_records_as_kpt_items(
+    conn: &Connection,
+    kpt_review_id: i64,
+    project_id: i64,
+    period_modifier: Option<&str>,
+) -> Result<i64> {
+    let sql = match period_modifier {
+        Some(_) => {
+            r#"
+            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
+            from work_records r
+            left join work_units w on w.id = r.work_unit_id
+            where coalesce(w.project_id, ?1) = ?1
+              and r.created_at >= datetime('now', ?2)
+              and (coalesce(r.next_actions, '') != '' or coalesce(r.notable_operations, '') != '')
+            order by r.id
+            "#
+        }
+        None => {
+            r#"
+            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
+            from work_records r
+            left join work_units w on w.id = r.work_unit_id
+            where coalesce(w.project_id, ?1) = ?1
+              and (coalesce(r.next_actions, '') != '' or coalesce(r.notable_operations, '') != '')
+            order by r.id
+            "#
+        }
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = match period_modifier {
+        Some(period_modifier) => {
+            stmt.query_map(params![project_id, period_modifier], work_record_kpt_record)?
+        }
+        None => stmt.query_map(params![project_id], work_record_kpt_record)?,
+    };
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    for record in &records {
+        let details = format!(
+            "work_record_id: {}\nnext_actions: {}\nnotable_operations: {}",
+            record.id, record.next_actions, record.notable_operations
+        );
+        conn.execute(
+            r#"
+            insert into kpt_items(
+                kpt_review_id, item_type, title, details, severity,
+                proposed_action, status, created_at
+            )
+            values (?1, 'try', ?2, ?3, 'medium', ?4, 'open', current_timestamp)
+            "#,
+            params![
+                kpt_review_id,
+                format!("Work outcome: {}", record.topic),
+                details,
+                "convert unresolved next actions into tasks or decisions",
+            ],
+        )?;
+    }
+    Ok(records.len() as i64)
 }
 
 fn corrections_for_kpt(
@@ -633,6 +959,58 @@ fn stored_correction_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredC
     })
 }
 
+fn command_drift_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCommandDrift> {
+    Ok(StoredCommandDrift {
+        id: row.get(0)?,
+        command_profile_id: row.get(1)?,
+        profile_name: row.get(2)?,
+        reason: row.get(3)?,
+        status: row.get(4)?,
+    })
+}
+
+fn review_run_kpt_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredReviewRunOutcome> {
+    Ok(StoredReviewRunOutcome {
+        id: row.get(0)?,
+        review_plan_id: row.get(1)?,
+        run_type: row.get(2)?,
+        run_purpose: row.get(3)?,
+        status: row.get(4)?,
+        new_findings_count: row.get(5)?,
+        carried_findings_checked: row.get(6)?,
+        clean_run: row.get::<_, i64>(7)? == 1,
+        result_summary: row.get(8)?,
+    })
+}
+
+fn work_record_kpt_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredWorkRecordOutcome> {
+    Ok(StoredWorkRecordOutcome {
+        id: row.get(0)?,
+        topic: row.get(1)?,
+        next_actions: row.get(2)?,
+        notable_operations: row.get(3)?,
+    })
+}
+
+fn review_outcome_severity(record: &StoredReviewRunOutcome) -> &'static str {
+    if record.status == "failed" || record.new_findings_count > 0 {
+        "high"
+    } else if !record.clean_run {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KptSource {
+    Corrections,
+    Findings,
+    Commands,
+    ReviewRuns,
+    WorkRecords,
+}
+
 struct StoredKptItem {
     id: i64,
     title: String,
@@ -656,6 +1034,33 @@ struct StoredFinding {
     description: String,
     classification: String,
     status: String,
+}
+
+struct StoredCommandDrift {
+    id: i64,
+    command_profile_id: i64,
+    profile_name: String,
+    reason: String,
+    status: String,
+}
+
+struct StoredReviewRunOutcome {
+    id: i64,
+    review_plan_id: Option<i64>,
+    run_type: String,
+    run_purpose: String,
+    status: String,
+    new_findings_count: i64,
+    carried_findings_checked: i64,
+    clean_run: bool,
+    result_summary: String,
+}
+
+struct StoredWorkRecordOutcome {
+    id: i64,
+    topic: String,
+    next_actions: String,
+    notable_operations: String,
 }
 
 pub struct NewKptReview<'a> {
@@ -736,6 +1141,18 @@ pub struct KptItemReviewPolicyConversion<'a> {
     pub on_max_agents_exceeded: &'a str,
 }
 
+pub struct KptItemCommandProfileConversion<'a> {
+    pub kpt_item_id: i64,
+    pub name: Option<&'a str>,
+    pub command: Option<&'a str>,
+    pub command_type: &'a str,
+    pub scope: Option<&'a str>,
+    pub status: &'a str,
+    pub stability: &'a str,
+    pub timeout: Option<&'a str>,
+    pub expected_result: Option<&'a str>,
+}
+
 pub struct KptItemDecisionConversion<'a> {
     pub kpt_item_id: i64,
     pub decision_key: Option<&'a str>,
@@ -761,6 +1178,12 @@ pub struct KptItemConversionOutcome {
 pub struct KptItemReviewPolicyConversionOutcome {
     pub kpt_item_conversion_id: i64,
     pub review_policy_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct KptItemCommandProfileConversionOutcome {
+    pub kpt_item_conversion_id: i64,
+    pub command_profile_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

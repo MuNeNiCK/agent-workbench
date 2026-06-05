@@ -40,13 +40,15 @@ pub use design::{
     list_design_decisions, list_design_requirements, list_validation_gate_templates,
 };
 pub use kpt::{
+    KptItemCommandProfileConversion, KptItemCommandProfileConversionOutcome,
     KptItemConversionOutcome, KptItemDecisionConversion, KptItemDecisionConversionOutcome,
     KptItemDesignVersionConversion, KptItemDesignVersionConversionOutcome, KptItemOutcome,
     KptItemRecord, KptItemReviewPolicyConversion, KptItemReviewPolicyConversionOutcome,
     KptItemTaskConversion, KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem,
-    NewKptReview, add_kpt_item, close_kpt_review, convert_kpt_item_to_decision,
-    convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
-    convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews, start_kpt_review,
+    NewKptReview, add_kpt_item, close_kpt_review, convert_kpt_item_to_command_profile,
+    convert_kpt_item_to_decision, convert_kpt_item_to_design_version,
+    convert_kpt_item_to_review_policy, convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews,
+    start_kpt_review,
 };
 pub use planning::{
     DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskAcceptanceOutcome, TaskCloseOutcome,
@@ -5137,6 +5139,187 @@ Run the project test suite before implementation handoff.
     }
 
     #[test]
+    fn kpt_review_rejects_unknown_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let result = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("bad source"),
+                from: Some("unknown-source"),
+                period: None,
+            },
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn kpt_review_can_import_command_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        add_fixed_command(
+            temp.path(),
+            NewCommandProfile {
+                name: "validation",
+                command_type: "test",
+                scope: "project",
+                command: "cargo test",
+                timeout: None,
+                expected_result: Some("pass"),
+            },
+        )
+        .unwrap();
+        let usage = add_command_usage(
+            temp.path(),
+            NewCommandUsage {
+                profile: Some("validation"),
+                command: None,
+                result: "fail",
+                log_path: None,
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        add_command_deviation(
+            temp.path(),
+            NewCommandDeviation {
+                profile: "validation",
+                command_usage_id: Some(usage.command_usage_id),
+                reason: "workspace needs nextest command",
+            },
+        )
+        .unwrap();
+
+        let kpt = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("command drift"),
+                from: Some("commands"),
+                period: None,
+            },
+        )
+        .unwrap();
+
+        let items = list_kpt_items(temp.path(), Some(kpt.kpt_review_id)).unwrap();
+        assert_eq!(kpt.generated_item_count, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_type, "problem");
+        assert_eq!(items[0].title, "Command drift: validation");
+
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let linked_profile: i64 = conn
+            .query_row(
+                "select linked_command_profile_id from kpt_items where id = ?1",
+                params![items[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked_profile, 1);
+    }
+
+    #[test]
+    fn kpt_review_can_import_review_and_work_outcomes() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let work = start_work(temp.path(), "triage outcomes", None).unwrap();
+        let policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "outcome-import",
+                review_type: "implementation_review",
+                max_fresh_agents: 2,
+                max_resume_agents: 1,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 1,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: false,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "fresh",
+            },
+        )
+        .unwrap();
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("HEAD"),
+                prompt_deviations: None,
+                result_summary: Some("not clean"),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        create_work_record(
+            temp.path(),
+            NewWorkRecord {
+                work_unit_id: Some(work.work_unit_id),
+                topic: "outcome follow-up",
+                work_performed: Some("captured pending work"),
+                next_actions: Some("convert missing check into task"),
+                notable_operations: Some("cargo test"),
+                export_path: None,
+            },
+        )
+        .unwrap();
+
+        let kpt = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("outcome import"),
+                from: Some("review-runs,work-records"),
+                period: None,
+            },
+        )
+        .unwrap();
+
+        let items = list_kpt_items(temp.path(), Some(kpt.kpt_review_id)).unwrap();
+        assert_eq!(kpt.generated_item_count, 2);
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .any(|item| item.title == "Review outcome: fresh 1")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.title == "Work outcome: outcome follow-up")
+        );
+    }
+
+    #[test]
     fn kpt_review_can_import_open_findings() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -5235,6 +5418,82 @@ Run the project test suite before implementation handoff.
             )
             .unwrap();
         assert_eq!(linked_finding, 1);
+    }
+
+    #[test]
+    fn kpt_item_can_convert_to_fixed_command_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let kpt = start_kpt_review(
+            temp.path(),
+            NewKptReview {
+                scope: Some("project"),
+                summary: Some("command profile"),
+                from: None,
+                period: None,
+            },
+        )
+        .unwrap();
+        let item = add_kpt_item(
+            temp.path(),
+            NewKptItem {
+                kpt_review_id: Some(kpt.kpt_review_id),
+                item_type: "try",
+                title: "stable validation command",
+                details: Some("cargo test --workspace"),
+                severity: "medium",
+                proposed_action: None,
+            },
+        )
+        .unwrap();
+
+        let conversion = convert_kpt_item_to_command_profile(
+            temp.path(),
+            KptItemCommandProfileConversion {
+                kpt_item_id: item.kpt_item_id,
+                name: Some("workspace-tests"),
+                command: None,
+                command_type: "test",
+                scope: Some("project"),
+                status: "fixed",
+                stability: "stable",
+                timeout: Some("120s"),
+                expected_result: Some("pass"),
+            },
+        )
+        .unwrap();
+
+        let commands = list_command_profiles(temp.path(), Some("test")).unwrap();
+        let rules = applicable_rules(
+            temp.path(),
+            RuleQuery {
+                scope_key: Some("project"),
+                work_unit_id: None,
+            },
+        )
+        .unwrap();
+        let items = list_kpt_items(temp.path(), Some(kpt.kpt_review_id)).unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let conversion_target: (String, i64) = conn
+            .query_row(
+                "select target_type, command_profile_id from kpt_item_conversions where id = ?1",
+                params![conversion.kpt_item_conversion_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].id, conversion.command_profile_id);
+        assert_eq!(commands[0].name, "workspace-tests");
+        assert_eq!(commands[0].command, "cargo test --workspace");
+        assert_eq!(commands[0].status, "fixed");
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.command_profile_id == Some(conversion.command_profile_id))
+        );
+        assert_eq!(items[0].status, "converted");
+        assert_eq!(conversion_target, ("command_profile".to_string(), 1));
     }
 
     #[test]

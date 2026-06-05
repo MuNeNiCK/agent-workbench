@@ -8,32 +8,34 @@ use agent_workbench::{
     CommandUsageListQuery, CoverageItemListQuery, DesignDecisionListQuery, DesignPackageImport,
     DesignReadyCheck, DesignRequirementListQuery, DesignVersionApproval,
     ImplementationEvidenceListQuery, ImplementationEvidenceRecord, ImplementationReadyCheck,
-    KptItemDecisionConversion, KptItemDesignVersionConversion, KptItemReviewPolicyConversion,
-    KptItemTaskConversion, NewAuthorityEvent, NewClosure, NewCommandDeviation, NewCommandProfile,
-    NewCommandUsage, NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage,
-    NewFinding, NewFindingVerification, NewImplementationEvidence, NewKptItem, NewKptReview,
-    NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation,
-    NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
-    ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
-    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
-    add_command_deviation, add_command_usage, add_coverage_item, add_decision, add_finding,
-    add_finding_verification, add_fixed_command, add_implementation_evidence, add_kpt_item,
-    add_review_plan, add_review_policy, add_review_run, add_task, add_user_correction,
-    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    approve_design_version, classify_finding, close_active_work, close_kpt_review, close_task,
-    convert_kpt_item_to_decision, convert_kpt_item_to_design_version,
-    convert_kpt_item_to_review_policy, convert_kpt_item_to_task, create_follow_up_work,
-    create_work_record, derive_task_from_requirement, design_ready, export_work_record_markdown,
-    fork_work, implementation_ready, import_design_package, init_design_package, init_project,
-    interrupt_work, list_authority_events, list_command_profiles, list_command_usages,
-    list_coverage_items, list_decisions, list_design_decisions, list_design_requirements,
-    list_findings, list_implementation_evidence, list_kpt_items, list_kpt_reviews,
-    list_review_plan_targets, list_review_plans, list_review_policies, list_review_runs,
-    list_review_scopes, list_task_derivations, list_tasks, list_user_corrections,
-    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
-    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review,
-    start_review_scope, start_work, suspend_work,
+    KptItemCommandProfileConversion, KptItemDecisionConversion, KptItemDesignVersionConversion,
+    KptItemReviewPolicyConversion, KptItemTaskConversion, NewAuthorityEvent, NewClosure,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewCoverageItem, NewDecision,
+    NewDesignExceptionAcceptance, NewDesignPackage, NewFinding, NewFindingVerification,
+    NewImplementationEvidence, NewKptItem, NewKptReview, NewReviewPlan, NewReviewPolicy,
+    NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork,
+    NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction,
+    RuleQuery, TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
+    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
+    accept_task_out_of_scope, add_authority_event, add_closure, add_command_deviation,
+    add_command_usage, add_coverage_item, add_decision, add_finding, add_finding_verification,
+    add_fixed_command, add_implementation_evidence, add_kpt_item, add_review_plan,
+    add_review_policy, add_review_run, add_task, add_user_correction, add_work_record_command,
+    add_work_record_commit, add_work_record_file, applicable_rules, approve_design_version,
+    classify_finding, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_command_profile, convert_kpt_item_to_decision,
+    convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
+    implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
+    list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
+    list_decisions, list_design_decisions, list_design_requirements, list_findings,
+    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_review_plan_targets,
+    list_review_plans, list_review_policies, list_review_runs, list_review_scopes,
+    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
+    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
+    resume_work, select_validation_gate, start_kpt_review, start_review_scope, start_work,
+    suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -1147,6 +1149,20 @@ struct KptItemConvertArgs {
     work_unit: Option<i64>,
     #[arg(long)]
     name: Option<String>,
+    #[arg(long)]
+    command: Option<String>,
+    #[arg(long, default_value = "other")]
+    command_type: String,
+    #[arg(long)]
+    scope: Option<String>,
+    #[arg(long, default_value = "candidate")]
+    command_status: String,
+    #[arg(long, default_value = "context_dependent")]
+    stability: String,
+    #[arg(long)]
+    timeout: Option<String>,
+    #[arg(long)]
+    expected_result: Option<String>,
     #[arg(long = "review-type")]
     review_type: Option<String>,
     #[arg(long, default_value_t = 1)]
@@ -2495,6 +2511,25 @@ fn main() -> Result<()> {
                         println!("converted kpt item");
                         println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
                         println!("review_policy_id: {}", outcome.review_policy_id);
+                    }
+                    "command-profile" | "command_profile" => {
+                        let outcome = convert_kpt_item_to_command_profile(
+                            &root,
+                            KptItemCommandProfileConversion {
+                                kpt_item_id: args.item,
+                                name: args.name.as_deref().or(args.title.as_deref()),
+                                command: args.command.as_deref().or(args.details.as_deref()),
+                                command_type: &args.command_type,
+                                scope: args.scope.as_deref(),
+                                status: &args.command_status,
+                                stability: &args.stability,
+                                timeout: args.timeout.as_deref(),
+                                expected_result: args.expected_result.as_deref(),
+                            },
+                        )?;
+                        println!("converted kpt item");
+                        println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
+                        println!("command_profile_id: {}", outcome.command_profile_id);
                     }
                     "decision" => {
                         let outcome = convert_kpt_item_to_decision(

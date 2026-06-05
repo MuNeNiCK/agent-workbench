@@ -1066,3 +1066,65 @@ fn review_flow_records_policy_runs_findings_and_verification() {
     assert!(plans.contains("1 [implementation_review:clean required=true]"));
     assert!(findings.contains("1 [run=1 implementation_finding:high closed]"));
 }
+
+#[test]
+fn kpt_item_convert_can_create_fixed_command_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "kpt",
+            "start",
+            "--scope",
+            "project",
+            "--summary",
+            "command tuning",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "kpt",
+            "item",
+            "add",
+            "--type",
+            "try",
+            "--title",
+            "stable validation command",
+            "--details",
+            "cargo test --workspace",
+        ],
+    );
+
+    let converted = ok(
+        temp.path(),
+        &[
+            "kpt",
+            "item",
+            "convert",
+            "--item",
+            "1",
+            "--to",
+            "command-profile",
+            "--name",
+            "workspace-tests",
+            "--command-type",
+            "test",
+            "--scope",
+            "project",
+            "--command-status",
+            "fixed",
+            "--stability",
+            "stable",
+            "--expected-result",
+            "pass",
+        ],
+    );
+    let commands = ok(temp.path(), &["command", "list", "--type", "test"]);
+    let rules = ok(temp.path(), &["rules", "applicable", "--scope", "project"]);
+
+    assert!(converted.contains("command_profile_id: 1"));
+    assert!(commands.contains("1 [test:fixed] workspace-tests = cargo test --workspace"));
+    assert!(rules.contains("[command_profile:project precedence=70]"));
+}
