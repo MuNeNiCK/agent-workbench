@@ -782,19 +782,31 @@ fn count_stale_validation_gates(
         r#"
         select count(*)
         from validation_gates vg
+        join validation_gate_templates gt on gt.id = vg.template_id
         join design_requirements r on r.id = vg.design_requirement_id
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
           and vg.status = 'active'
-          and p.current_design_version_id != r.design_version_id
-          and not exists (
-            select 1
-            from design_requirements current_r
-            where current_r.design_version_id = p.current_design_version_id
-              and current_r.requirement_key = r.requirement_key
-              and current_r.requirement_hash = r.requirement_hash
-              and current_r.status = 'active'
+          and (p.current_design_version_id != r.design_version_id
+               or p.current_design_version_id != gt.design_version_id)
+          and (
+            not exists (
+              select 1
+              from design_requirements current_r
+              where current_r.design_version_id = p.current_design_version_id
+                and current_r.requirement_key = r.requirement_key
+                and current_r.requirement_hash = r.requirement_hash
+                and current_r.status = 'active'
+            )
+            or not exists (
+              select 1
+              from validation_gate_templates current_gt
+              where current_gt.design_version_id = p.current_design_version_id
+                and current_gt.gate_key = gt.gate_key
+                and current_gt.gate_hash = gt.gate_hash
+                and current_gt.status = 'active'
+            )
           )
         "#,
         params![design_package_id],
@@ -812,7 +824,6 @@ fn count_stale_coverage_items(conn: &rusqlite::Connection, design_package_id: i6
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
-          and c.status not in ('accepted_out_of_scope')
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -964,7 +975,7 @@ fn count_closed_derived_tasks_missing_coverage(
             from coverage_items c
             where c.design_requirement_id = r.id
               and (c.task_id = td.task_id or c.task_id is null)
-              and c.status in ('covered', 'accepted_out_of_scope')
+              and c.status = 'covered'
           )
         "#,
         params![design_version_id],

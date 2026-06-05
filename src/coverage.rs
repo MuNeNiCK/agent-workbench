@@ -9,6 +9,9 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    if input.status == "accepted_out_of_scope" {
+        bail!("coverage accepted_out_of_scope requires an approved acceptance record");
+    }
     let design_requirement_id = tx
         .query_row(
             r#"

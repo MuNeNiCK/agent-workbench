@@ -612,6 +612,23 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         temp.path(),
         &["coverage", "list", "--design", "1", "--status", "covered"],
     );
+    let raw_out_of_scope_coverage = err(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--status",
+            "accepted_out_of_scope",
+            "--requirement-text",
+            "cleanup behavior is out of scope",
+        ],
+    );
     ok(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
     let passed_after_close = ok(
         temp.path(),
@@ -640,6 +657,7 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(coverage.contains("added coverage item"));
     assert!(coverage.contains("coverage_item_id: 1"));
     assert!(coverage_list.contains("1 [covered] requirement=REQ-001"));
+    assert!(raw_out_of_scope_coverage.contains("requires an approved acceptance record"));
     assert!(passed_after_close.contains("result: pass"));
     assert!(passed_after_close.contains("implementation_evidence_present: pass"));
     assert!(passed_after_close.contains("coverage_items_present: pass"));

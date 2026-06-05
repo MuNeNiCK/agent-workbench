@@ -1687,10 +1687,28 @@ mod tests {
                 status: "covered",
             },
         );
+        let raw_out_of_scope_coverage = add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task_one.task_id),
+                requirement: "cleanup behavior is accepted out of scope",
+                runtime_boundary_evidence: None,
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: None,
+                missing_or_unverified: Some("not verified"),
+                status: "accepted_out_of_scope",
+            },
+        );
 
         assert!(mismatched_evidence.is_err());
         assert!(mismatched_gate.is_err());
         assert!(mismatched_coverage.is_err());
+        assert!(raw_out_of_scope_coverage.is_err());
     }
 
     #[test]
@@ -1782,6 +1800,122 @@ mod tests {
             outcome.items.iter().any(|item| {
                 item.name == "completion_conditions_present" && item.result == "fail"
             })
+        );
+    }
+
+    #[test]
+    fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let first_import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: first_import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: first_import.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        select_validation_gate(
+            temp.path(),
+            ValidationGateSelection {
+                design_version_id: first_import.design_version_id,
+                gate_key: "GATE-001",
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                command: None,
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001").replace(
+                "Run the project test suite",
+                "Run the full project test suite",
+            ),
+        )
+        .unwrap();
+        let second_import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: second_import.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+
+        let outcome = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(second_import.design_version_id),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            outcome
+                .items
+                .iter()
+                .any(|item| { item.name == "validation_gates_current" && item.result == "fail" })
         );
     }
 

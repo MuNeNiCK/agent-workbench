@@ -875,13 +875,15 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         .transpose()?;
     let mut trace_allowed = true;
     if let Some(trace_counts) = trace_counts {
+        let stale_design_total =
+            trace_counts.stale_design_records + trace_counts.stale_coverage_items;
         let trace_items = [
             (
                 "design_version_current",
-                trace_counts.stale_design_records == 0,
+                stale_design_total == 0,
                 format!(
-                    "{} design-derived records reference changed requirements",
-                    trace_counts.stale_design_records
+                    "{} design-derived records and {} coverage items reference changed requirements",
+                    trace_counts.stale_design_records, trace_counts.stale_coverage_items
                 ),
             ),
             (
@@ -1002,6 +1004,7 @@ fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResu
         stale_task_derivations: count_stale_task_derivations_for_work(conn, work_unit_id)?,
         stale_checklists: count_stale_checklists_for_work(conn, work_unit_id)?,
         stale_selected_gates: count_stale_selected_gates_for_work(conn, work_unit_id)?,
+        stale_coverage_items: count_stale_coverage_items_for_work(conn, work_unit_id)?,
     })
 }
 
@@ -1091,12 +1094,50 @@ fn count_stale_selected_gates_for_work(conn: &Connection, work_unit_id: i64) -> 
         r#"
         select count(*)
         from validation_gates vg
+        join validation_gate_templates gt on gt.id = vg.template_id
         join design_requirements r on r.id = vg.design_requirement_id
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         left join tasks t on t.id = vg.task_id
         where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
           and vg.status = 'active'
+          and (p.current_design_version_id != r.design_version_id
+               or p.current_design_version_id != gt.design_version_id)
+          and (
+            not exists (
+              select 1
+              from design_requirements current_r
+              where current_r.design_version_id = p.current_design_version_id
+                and current_r.requirement_key = r.requirement_key
+                and current_r.requirement_hash = r.requirement_hash
+                and current_r.status = 'active'
+            )
+            or not exists (
+              select 1
+              from validation_gate_templates current_gt
+              where current_gt.design_version_id = p.current_design_version_id
+                and current_gt.gate_key = gt.gate_key
+                and current_gt.gate_hash = gt.gate_hash
+                and current_gt.status = 'active'
+            )
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_stale_coverage_items_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from coverage_items c
+        join design_requirements r on r.id = c.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        left join tasks t on t.id = c.task_id
+        where coalesce(c.work_unit_id, t.work_unit_id) = ?1
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -1141,6 +1182,7 @@ struct TraceResumeCounts {
     stale_task_derivations: i64,
     stale_checklists: i64,
     stale_selected_gates: i64,
+    stale_coverage_items: i64,
 }
 
 struct StoredForkSource {

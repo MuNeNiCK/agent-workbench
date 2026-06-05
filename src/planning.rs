@@ -239,7 +239,7 @@ fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -
             from coverage_items c
             where c.design_requirement_id = td.design_requirement_id
               and (c.task_id = td.task_id or c.task_id is null)
-              and c.status in ('covered', 'accepted_out_of_scope')
+              and c.status = 'covered'
           )
         "#,
         params![task_id],
