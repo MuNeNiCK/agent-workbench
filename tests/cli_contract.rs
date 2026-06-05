@@ -41,6 +41,29 @@ fn conn(root: &Path) -> Connection {
         .expect("failed to open ledger")
 }
 
+fn write_requirement(root: &Path) {
+    std::fs::write(
+        root.join(".agent-workbench")
+            .join("designs")
+            .join("storage-lifecycle")
+            .join("requirements")
+            .join("README.md"),
+        r#"## REQ-001: Preserve cleanup behavior
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+This requirement describes one verifiable behavior that must be implemented.
+"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn init_creates_workbench_artifact_directories() {
     let temp = tempfile::tempdir().unwrap();
@@ -95,6 +118,7 @@ fn design_import_records_design_version() {
             "Storage Lifecycle",
         ],
     );
+    write_requirement(temp.path());
 
     let output = ok(
         temp.path(),
@@ -111,6 +135,7 @@ fn design_import_records_design_version() {
     assert!(output.contains("design_package_id: 1"));
     assert!(output.contains("design_version_id: 1"));
     assert!(output.contains("file_count: 14"));
+    assert!(output.contains("requirement_count: 1"));
 
     let conn = conn(temp.path());
     let current_version: i64 = conn
@@ -129,6 +154,47 @@ fn design_import_records_design_version() {
         .unwrap();
     assert_eq!(current_version, 1);
     assert_eq!(file_count, 14);
+    let requirement_count: i64 = conn
+        .query_row(
+            "select count(*) from design_requirements where design_version_id = ?1",
+            [current_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(requirement_count, 1);
+}
+
+#[test]
+fn requirement_list_prints_imported_requirements() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let output = ok(temp.path(), &["requirement", "list", "--design", "1"]);
+
+    assert!(output.contains("REQ-001"));
+    assert!(output.contains("[high:active rev=1]"));
+    assert!(output.contains("requirements/README.md"));
 }
 
 #[test]
@@ -145,6 +211,7 @@ fn design_approve_allows_design_ready_gate_to_pass() {
             "Storage Lifecycle",
         ],
     );
+    write_requirement(temp.path());
     ok(
         temp.path(),
         &[

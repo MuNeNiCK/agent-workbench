@@ -9,7 +9,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -732,6 +732,25 @@ create table if not exists design_files (
     content_hash text not null,
     line_count integer not null,
     unique(design_version_id, relative_path)
+);
+
+create table if not exists design_requirements (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_version_id integer not null references design_versions(id) on delete cascade,
+    source_design_file_id integer not null references design_files(id) on delete cascade,
+    source_section text not null,
+    requirement_key text not null,
+    revision integer not null default 1,
+    requirement_hash text not null,
+    supersedes_requirement_id integer references design_requirements(id),
+    requirement_text text not null,
+    priority text not null check (priority in ('critical', 'high', 'medium', 'low')),
+    required_surfaces text,
+    validation_expectation text,
+    status text not null check (status in ('active', 'superseded', 'accepted_out_of_scope')),
+    created_at text not null,
+    unique(design_version_id, requirement_key)
 );
 
 create table if not exists kpt_reviews (

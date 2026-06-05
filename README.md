@@ -55,6 +55,7 @@ cargo run -- task accept-out-of-scope 1 --reason "not required for current scope
 cargo run -- decision add --topic database --decision "use one sqlite ledger per project"
 cargo run -- design init storage-lifecycle --title "Storage Lifecycle"
 cargo run -- design import .agent-workbench/designs/storage-lifecycle --status draft
+cargo run -- requirement list --design 1
 cargo run -- design approve 1 --summary "design passed document checks"
 cargo run -- gate design-ready --design-version 1 --dry-run
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"

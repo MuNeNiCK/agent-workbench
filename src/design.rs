@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -149,6 +150,7 @@ pub fn import_design_package(
             relative_path: design_file.relative_path,
             content_hash,
             line_count,
+            content,
         });
     }
     let package_digest = package_hasher.finalize();
@@ -209,6 +211,7 @@ pub fn import_design_package(
         ],
     )?;
     let design_version_id = tx.last_insert_rowid();
+    let mut requirement_count = 0usize;
     for file in &imported_files {
         tx.execute(
             r#"
@@ -228,6 +231,38 @@ pub fn import_design_package(
                 file.line_count,
             ],
         )?;
+        let design_file_id = tx.last_insert_rowid();
+        if file.section_key == "requirements" {
+            let requirements = extract_design_requirements(&file.content, file)?;
+            requirement_count += requirements.len();
+            for requirement in requirements {
+                tx.execute(
+                    r#"
+                    insert into design_requirements(
+                        project_id, design_version_id, source_design_file_id,
+                        source_section, requirement_key, revision, requirement_hash,
+                        requirement_text, priority, required_surfaces,
+                        validation_expectation, status, created_at
+                    )
+                    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, current_timestamp)
+                    "#,
+                    params![
+                        project_id,
+                        design_version_id,
+                        design_file_id,
+                        requirement.source_section,
+                        requirement.requirement_key,
+                        requirement.revision,
+                        requirement.requirement_hash,
+                        requirement.requirement_text,
+                        requirement.priority,
+                        requirement.required_surfaces,
+                        requirement.validation_expectation,
+                        requirement.status,
+                    ],
+                )?;
+            }
+        }
     }
     tx.execute(
         r#"
@@ -245,7 +280,51 @@ pub fn import_design_package(
         version_number,
         content_hash,
         file_count: imported_files.len(),
+        requirement_count,
     })
+}
+
+pub fn list_design_requirements(
+    root: &Path,
+    input: DesignRequirementListQuery,
+) -> Result<Vec<DesignRequirementRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            r.id, r.design_version_id, r.source_design_file_id,
+            f.relative_path, r.source_section, r.requirement_key,
+            r.revision, r.requirement_text, r.priority,
+            r.required_surfaces, r.validation_expectation, r.status
+        from design_requirements r
+        join design_files f on f.id = r.source_design_file_id
+        where r.project_id = ?1 and r.design_version_id = ?2
+        order by r.requirement_key
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, input.design_version_id], |row| {
+        Ok(DesignRequirementRecord {
+            id: row.get(0)?,
+            design_version_id: row.get(1)?,
+            source_design_file_id: row.get(2)?,
+            source_path: row.get(3)?,
+            source_section: row.get(4)?,
+            requirement_key: row.get(5)?,
+            revision: row.get(6)?,
+            requirement_text: row.get(7)?,
+            priority: row.get(8)?,
+            required_surfaces: row.get(9)?,
+            validation_expectation: row.get(10)?,
+            status: row.get(11)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
 }
 
 pub fn approve_design_version(
@@ -369,6 +448,46 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
         items.push(DesignReadyItem::fail(
             "design_files_imported",
             Some("imported design version has no files"),
+        ));
+    }
+
+    let active_requirement_count: i64 = conn.query_row(
+        "select count(*) from design_requirements where design_version_id = ?1 and status = 'active'",
+        params![version.design_version_id],
+        |row| row.get(0),
+    )?;
+    if active_requirement_count > 0 {
+        items.push(DesignReadyItem::pass(
+            "active_requirements_extracted",
+            Some(format!("{active_requirement_count} requirements")),
+        ));
+    } else {
+        items.push(DesignReadyItem::fail(
+            "active_requirements_extracted",
+            Some("add requirement records to requirements/*.md"),
+        ));
+    }
+
+    let missing_validation_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from design_requirements
+        where design_version_id = ?1
+          and status = 'active'
+          and (validation_expectation is null or validation_expectation = '')
+        "#,
+        params![version.design_version_id],
+        |row| row.get(0),
+    )?;
+    if missing_validation_count == 0 {
+        items.push(DesignReadyItem::pass(
+            "requirement_validation_defined",
+            None,
+        ));
+    } else {
+        items.push(DesignReadyItem::fail(
+            "requirement_validation_defined",
+            Some("every active requirement needs validation metadata"),
         ));
     }
 
@@ -531,6 +650,135 @@ fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
     })
 }
 
+fn extract_design_requirements(
+    content: &str,
+    file: &ImportedDesignFile,
+) -> Result<Vec<ExtractedDesignRequirement>> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut requirements = Vec::new();
+    let mut seen_keys = BTreeSet::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("## ") {
+            index += 1;
+            continue;
+        }
+        let source_section = line.trim_start_matches("## ").trim().to_string();
+        if !source_section.starts_with("REQ-") {
+            index += 1;
+            continue;
+        }
+        let fence_start = index + 1;
+        if lines.get(fence_start).map(|line| line.trim()) != Some("```yaml agent-workbench") {
+            bail!(
+                "requirement {} in {} must be followed by a yaml agent-workbench block",
+                source_section,
+                file.relative_path
+            );
+        }
+        let mut fence_end = fence_start + 1;
+        while fence_end < lines.len() && lines[fence_end].trim() != "```" {
+            fence_end += 1;
+        }
+        if fence_end == lines.len() {
+            bail!(
+                "requirement {} in {} has an unterminated yaml block",
+                source_section,
+                file.relative_path
+            );
+        }
+        let metadata_text = lines[fence_start + 1..fence_end].join("\n");
+        let metadata: RequirementMetadata =
+            yaml_serde::from_str(&metadata_text).with_context(|| {
+                format!(
+                    "failed to parse requirement metadata for {} in {}",
+                    source_section, file.relative_path
+                )
+            })?;
+        validate_requirement_metadata(&source_section, &metadata, &mut seen_keys)?;
+
+        let mut body_end = fence_end + 1;
+        while body_end < lines.len() && !lines[body_end].starts_with("## ") {
+            body_end += 1;
+        }
+        let body = lines[fence_end + 1..body_end].join("\n").trim().to_string();
+        if body.is_empty() {
+            bail!(
+                "requirement {} in {} must have body text",
+                metadata.key,
+                file.relative_path
+            );
+        }
+        let body_line_count = body.lines().count();
+        if body_line_count > 150 {
+            bail!(
+                "requirement {} exceeds 150 lines in {}",
+                metadata.key,
+                file.relative_path
+            );
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(metadata_text.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(body.as_bytes());
+        let digest = hasher.finalize();
+        requirements.push(ExtractedDesignRequirement {
+            source_section,
+            requirement_key: metadata.key,
+            revision: metadata.revision.unwrap_or(1),
+            requirement_hash: hex_digest(&digest),
+            requirement_text: body,
+            priority: metadata.priority,
+            required_surfaces: join_metadata_list(&metadata.surfaces),
+            validation_expectation: join_metadata_list(&metadata.validation),
+            status: metadata.status,
+        });
+        index = body_end;
+    }
+    Ok(requirements)
+}
+
+fn validate_requirement_metadata(
+    source_section: &str,
+    metadata: &RequirementMetadata,
+    seen_keys: &mut BTreeSet<String>,
+) -> Result<()> {
+    if metadata.record_type != "requirement" {
+        bail!("requirement metadata type must be requirement");
+    }
+    if !metadata.key.starts_with("REQ-") {
+        bail!("requirement key must start with REQ-");
+    }
+    if !source_section.starts_with(&metadata.key) {
+        bail!("requirement heading must start with metadata key");
+    }
+    if !seen_keys.insert(metadata.key.clone()) {
+        bail!("duplicate requirement key: {}", metadata.key);
+    }
+    match metadata.priority.as_str() {
+        "critical" | "high" | "medium" | "low" => {}
+        _ => bail!("invalid requirement priority: {}", metadata.priority),
+    }
+    match metadata.status.as_str() {
+        "active" | "superseded" | "accepted_out_of_scope" => {}
+        _ => bail!("invalid requirement status: {}", metadata.status),
+    }
+    if metadata.validation.is_empty() && metadata.status == "active" {
+        bail!("active requirement must declare validation metadata");
+    }
+    Ok(())
+}
+
+fn join_metadata_list(values: &[String]) -> Option<String> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.join(","))
+    }
+}
+
 fn design_manifest(design_id: &str, title: &str) -> String {
     let design_id = yaml_string(design_id);
     let title = yaml_string(title);
@@ -616,6 +864,21 @@ struct DesignManifest {
     validation: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RequirementMetadata {
+    #[serde(rename = "type")]
+    record_type: String,
+    key: String,
+    #[serde(default)]
+    revision: Option<i64>,
+    priority: String,
+    #[serde(default)]
+    surfaces: Vec<String>,
+    #[serde(default)]
+    validation: Vec<String>,
+    status: String,
+}
+
 impl DesignManifest {
     fn design_files(&self) -> Vec<ManifestDesignFile> {
         let mut files = Vec::new();
@@ -657,6 +920,19 @@ struct ImportedDesignFile {
     relative_path: String,
     content_hash: String,
     line_count: i64,
+    content: String,
+}
+
+struct ExtractedDesignRequirement {
+    source_section: String,
+    requirement_key: String,
+    revision: i64,
+    requirement_hash: String,
+    requirement_text: String,
+    priority: String,
+    required_surfaces: Option<String>,
+    validation_expectation: Option<String>,
+    status: String,
 }
 
 struct StoredDesignVersion {
@@ -687,6 +963,10 @@ pub struct DesignReadyCheck {
     pub design_version_id: Option<i64>,
 }
 
+pub struct DesignRequirementListQuery {
+    pub design_version_id: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct DesignPackageInitOutcome {
     pub package_path: PathBuf,
@@ -699,6 +979,7 @@ pub struct DesignPackageImportOutcome {
     pub version_number: i64,
     pub content_hash: String,
     pub file_count: usize,
+    pub requirement_count: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -739,6 +1020,22 @@ pub struct DesignReadyItem {
     pub name: String,
     pub result: String,
     pub detail: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DesignRequirementRecord {
+    pub id: i64,
+    pub design_version_id: i64,
+    pub source_design_file_id: i64,
+    pub source_path: String,
+    pub source_section: String,
+    pub requirement_key: String,
+    pub revision: i64,
+    pub requirement_text: String,
+    pub priority: String,
+    pub required_surfaces: Option<String>,
+    pub validation_expectation: Option<String>,
+    pub status: String,
 }
 
 impl DesignReadyItem {

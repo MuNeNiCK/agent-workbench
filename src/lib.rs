@@ -25,9 +25,9 @@ pub use db::{
 };
 pub use design::{
     DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, DesignReadyCheck,
-    DesignReadyItem, DesignReadyOutcome, DesignVersionApproval, DesignVersionApprovalOutcome,
-    NewDesignPackage, approve_design_version, design_ready, import_design_package,
-    init_design_package,
+    DesignReadyItem, DesignReadyOutcome, DesignRequirementListQuery, DesignRequirementRecord,
+    DesignVersionApproval, DesignVersionApprovalOutcome, NewDesignPackage, approve_design_version,
+    design_ready, import_design_package, init_design_package, list_design_requirements,
 };
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
@@ -988,6 +988,55 @@ mod tests {
     }
 
     #[test]
+    fn design_import_extracts_machine_readable_requirements() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        let requirements = list_design_requirements(
+            temp.path(),
+            DesignRequirementListQuery {
+                design_version_id: import.design_version_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(import.requirement_count, 1);
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].requirement_key, "REQ-001");
+        assert_eq!(requirements[0].priority, "high");
+        assert_eq!(
+            requirements[0].validation_expectation.as_deref(),
+            Some("GATE-001")
+        );
+        assert!(
+            requirements[0]
+                .requirement_text
+                .contains("verifiable behavior")
+        );
+    }
+
+    #[test]
     fn design_import_rejects_external_or_duplicate_package() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -1043,6 +1092,11 @@ mod tests {
                 design_id: "storage-lifecycle",
                 title: "Storage Lifecycle",
             },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
         )
         .unwrap();
         let import = import_design_package(
@@ -1109,6 +1163,11 @@ mod tests {
             },
         )
         .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
         let import = import_design_package(
             temp.path(),
             DesignPackageImport {
@@ -1150,6 +1209,23 @@ mod tests {
         );
         assert_eq!(passed.result, "pass");
         assert!(passed.items.iter().all(|item| item.result == "pass"));
+    }
+
+    fn requirement_doc(key: &str, title: &str, priority: &str) -> String {
+        format!(
+            r#"## {key}: {title}
+```yaml agent-workbench
+type: requirement
+key: {key}
+priority: {priority}
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+This requirement describes one verifiable behavior that must be implemented.
+"#
+        )
     }
 
     #[test]
