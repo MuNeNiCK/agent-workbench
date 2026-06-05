@@ -712,6 +712,137 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
     Ok(records)
 }
 
+pub fn create_handoff(root: &Path, input: NewHandoff<'_>) -> Result<HandoffOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let work_unit_id = match input.work_unit_id {
+        Some(work_unit_id) => Some(work_unit_id),
+        None => active_activation(&tx)?.map(|active| active.work_unit_id),
+    };
+
+    tx.execute(
+        r#"
+        insert into handoffs(
+            work_unit_id, topic, work_performed, next_actions, notable_operations,
+            export_path, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+        "#,
+        params![
+            work_unit_id,
+            input.topic,
+            input.work_performed,
+            input.next_actions,
+            input.notable_operations,
+            input.export_path,
+        ],
+    )?;
+    let handoff_id = tx.last_insert_rowid();
+    tx.commit()?;
+
+    Ok(HandoffOutcome {
+        handoff_id,
+        work_unit_id,
+    })
+}
+
+pub fn list_handoffs(root: &Path, work_unit_id: Option<i64>) -> Result<Vec<HandoffRecord>> {
+    let conn = open_existing_project(root)?;
+    let mut records = Vec::new();
+
+    match work_unit_id {
+        Some(work_unit_id) => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, work_unit_id, topic, work_performed, next_actions, created_at
+                from handoffs
+                where work_unit_id = ?1
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![work_unit_id], handoff_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                r#"
+                select id, work_unit_id, topic, work_performed, next_actions, created_at
+                from handoffs
+                order by id
+                "#,
+            )?;
+            let rows = stmt.query_map([], handoff_record)?;
+            for row in rows {
+                records.push(row?);
+            }
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn add_handoff_command(
+    root: &Path,
+    input: NewHandoffCommand<'_>,
+) -> Result<HandoffLinkOutcome> {
+    let conn = open_existing_project(root)?;
+    ensure_handoff_exists(&conn, input.handoff_id)?;
+    conn.execute(
+        r#"
+        insert into handoff_commands(
+            handoff_id, command_profile_id, command, result, log_path, note
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+        params![
+            input.handoff_id,
+            input.command_profile_id,
+            input.command,
+            input.result,
+            input.log_path,
+            input.note,
+        ],
+    )?;
+
+    Ok(HandoffLinkOutcome {
+        link_id: conn.last_insert_rowid(),
+    })
+}
+
+pub fn add_handoff_commit(root: &Path, input: NewHandoffCommit<'_>) -> Result<HandoffLinkOutcome> {
+    let conn = open_existing_project(root)?;
+    ensure_handoff_exists(&conn, input.handoff_id)?;
+    conn.execute(
+        r#"
+        insert into handoff_commits(handoff_id, commit_sha, role, note)
+        values (?1, ?2, ?3, ?4)
+        "#,
+        params![input.handoff_id, input.commit_sha, input.role, input.note],
+    )?;
+
+    Ok(HandoffLinkOutcome {
+        link_id: conn.last_insert_rowid(),
+    })
+}
+
+pub fn add_handoff_file(root: &Path, input: NewHandoffFile<'_>) -> Result<HandoffLinkOutcome> {
+    let conn = open_existing_project(root)?;
+    ensure_handoff_exists(&conn, input.handoff_id)?;
+    conn.execute(
+        r#"
+        insert into handoff_files(handoff_id, path, role, note)
+        values (?1, ?2, ?3, ?4)
+        "#,
+        params![input.handoff_id, input.path, input.role, input.note],
+    )?;
+
+    Ok(HandoffLinkOutcome {
+        link_id: conn.last_insert_rowid(),
+    })
+}
+
 fn open_ledger(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .with_context(|| format!("failed to open ledger {}", path.display()))?;
@@ -988,6 +1119,28 @@ fn command_profile_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandPr
     })
 }
 
+fn handoff_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<HandoffRecord> {
+    Ok(HandoffRecord {
+        id: row.get(0)?,
+        work_unit_id: row.get(1)?,
+        topic: row.get(2)?,
+        work_performed: row.get(3)?,
+        next_actions: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+fn ensure_handoff_exists(conn: &Connection, handoff_id: i64) -> Result<()> {
+    let exists = conn
+        .query_row(
+            "select 1 from handoffs where id = ?1",
+            params![handoff_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    exists.context("handoff not found")
+}
+
 struct NewEvent<'a> {
     work_unit_id: i64,
     activation_id: Option<i64>,
@@ -1169,6 +1322,59 @@ pub struct RuleRecord {
     pub user_correction_id: Option<i64>,
     pub command_profile_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+}
+
+pub struct NewHandoff<'a> {
+    pub work_unit_id: Option<i64>,
+    pub topic: &'a str,
+    pub work_performed: Option<&'a str>,
+    pub next_actions: Option<&'a str>,
+    pub notable_operations: Option<&'a str>,
+    pub export_path: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HandoffOutcome {
+    pub handoff_id: i64,
+    pub work_unit_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HandoffRecord {
+    pub id: i64,
+    pub work_unit_id: Option<i64>,
+    pub topic: String,
+    pub work_performed: Option<String>,
+    pub next_actions: Option<String>,
+    pub created_at: String,
+}
+
+pub struct NewHandoffCommand<'a> {
+    pub handoff_id: i64,
+    pub command_profile_id: Option<i64>,
+    pub command: &'a str,
+    pub result: Option<&'a str>,
+    pub log_path: Option<&'a str>,
+    pub note: Option<&'a str>,
+}
+
+pub struct NewHandoffCommit<'a> {
+    pub handoff_id: i64,
+    pub commit_sha: &'a str,
+    pub role: &'a str,
+    pub note: Option<&'a str>,
+}
+
+pub struct NewHandoffFile<'a> {
+    pub handoff_id: i64,
+    pub path: &'a str,
+    pub role: &'a str,
+    pub note: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HandoffLinkOutcome {
+    pub link_id: i64,
 }
 
 const SCHEMA: &str = r#"
@@ -1719,6 +1925,66 @@ mod tests {
             rules[0].command_profile_id,
             Some(command.command_profile_id)
         );
+    }
+
+    #[test]
+    fn handoff_records_are_created_and_linked_separately() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let started = start_work(temp.path(), "implement handoff ledger", None).unwrap();
+
+        let handoff = create_handoff(
+            temp.path(),
+            NewHandoff {
+                work_unit_id: None,
+                topic: "handoff ledger",
+                work_performed: Some("created structured records"),
+                next_actions: Some("export records"),
+                notable_operations: Some("cargo test"),
+                export_path: None,
+            },
+        )
+        .unwrap();
+        let command = add_handoff_command(
+            temp.path(),
+            NewHandoffCommand {
+                handoff_id: handoff.handoff_id,
+                command_profile_id: None,
+                command: "cargo test",
+                result: Some("pass"),
+                log_path: None,
+                note: Some("verification"),
+            },
+        )
+        .unwrap();
+        let commit = add_handoff_commit(
+            temp.path(),
+            NewHandoffCommit {
+                handoff_id: handoff.handoff_id,
+                commit_sha: "abc123",
+                role: "created",
+                note: None,
+            },
+        )
+        .unwrap();
+        let file = add_handoff_file(
+            temp.path(),
+            NewHandoffFile {
+                handoff_id: handoff.handoff_id,
+                path: "src/lib.rs",
+                role: "changed",
+                note: None,
+            },
+        )
+        .unwrap();
+        let handoffs = list_handoffs(temp.path(), Some(started.work_unit_id)).unwrap();
+
+        assert_eq!(handoff.work_unit_id, Some(started.work_unit_id));
+        assert_eq!(handoffs.len(), 1);
+        assert_eq!(handoffs[0].topic, "handoff ledger");
+        assert_eq!(command.link_id, 1);
+        assert_eq!(commit.link_id, 1);
+        assert_eq!(file.link_id, 1);
     }
 
     #[test]

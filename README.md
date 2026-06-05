@@ -36,6 +36,10 @@ cargo run -- resume-check --maturity basic
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
 cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
 cargo run -- rules applicable --scope project
+cargo run -- handoff create --topic "current work" --work-performed "implemented feature" --next-actions "run review"
+cargo run -- handoff command add 1 --command "cargo test" --result pass
+cargo run -- handoff commit add 1 --sha "$(git rev-parse --short HEAD)" --role created
+cargo run -- handoff file add 1 --path src/lib.rs --role changed
 ```
 
 ## Local Preview

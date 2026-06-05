@@ -5,10 +5,12 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NewCommandProfile, NewUserCorrection, NextAction, RuleQuery, add_fixed_command,
-    add_user_correction, applicable_rules, close_active_work, init_project, interrupt_work,
-    list_command_profiles, list_user_corrections, next_action, project_status, resume_check_basic,
-    resume_work, start_work, suspend_work,
+    NewCommandProfile, NewHandoff, NewHandoffCommand, NewHandoffCommit, NewHandoffFile,
+    NewUserCorrection, NextAction, RuleQuery, add_fixed_command, add_handoff_command,
+    add_handoff_commit, add_handoff_file, add_user_correction, applicable_rules, close_active_work,
+    create_handoff, init_project, interrupt_work, list_command_profiles, list_handoffs,
+    list_user_corrections, next_action, project_status, resume_check_basic, resume_work,
+    start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -51,6 +53,11 @@ enum Command {
     Rules {
         #[command(subcommand)]
         command: RulesCommand,
+    },
+    /// Record and link structured handoff evidence.
+    Handoff {
+        #[command(subcommand)]
+        command: HandoffCommand,
     },
 }
 
@@ -185,6 +192,98 @@ struct RulesApplicableArgs {
     scope: Option<String>,
     #[arg(long)]
     work_unit: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HandoffCommand {
+    Create(HandoffCreateArgs),
+    List(HandoffListArgs),
+    Command {
+        #[command(subcommand)]
+        command: HandoffCommandLinkCommand,
+    },
+    Commit {
+        #[command(subcommand)]
+        command: HandoffCommitCommand,
+    },
+    File {
+        #[command(subcommand)]
+        command: HandoffFileCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+struct HandoffCreateArgs {
+    #[arg(long)]
+    topic: String,
+    #[arg(long)]
+    work_performed: Option<String>,
+    #[arg(long)]
+    next_actions: Option<String>,
+    #[arg(long)]
+    notable_operations: Option<String>,
+    #[arg(long)]
+    work_unit: Option<i64>,
+    #[arg(long)]
+    export_path: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct HandoffListArgs {
+    #[arg(long)]
+    work_unit: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HandoffCommandLinkCommand {
+    Add(HandoffCommandAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct HandoffCommandAddArgs {
+    handoff_id: i64,
+    #[arg(long)]
+    command: String,
+    #[arg(long)]
+    result: Option<String>,
+    #[arg(long)]
+    profile: Option<i64>,
+    #[arg(long)]
+    log_path: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HandoffCommitCommand {
+    Add(HandoffCommitAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct HandoffCommitAddArgs {
+    handoff_id: i64,
+    #[arg(long)]
+    sha: String,
+    #[arg(long, default_value = "referenced")]
+    role: String,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HandoffFileCommand {
+    Add(HandoffFileAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct HandoffFileAddArgs {
+    handoff_id: i64,
+    #[arg(long)]
+    path: String,
+    #[arg(long, default_value = "changed")]
+    role: String,
+    #[arg(long)]
+    note: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -368,6 +467,86 @@ fn main() -> Result<()> {
                     );
                 }
             }
+        },
+        Command::Handoff { command } => match command {
+            HandoffCommand::Create(args) => {
+                let outcome = create_handoff(
+                    &root,
+                    NewHandoff {
+                        work_unit_id: args.work_unit,
+                        topic: &args.topic,
+                        work_performed: args.work_performed.as_deref(),
+                        next_actions: args.next_actions.as_deref(),
+                        notable_operations: args.notable_operations.as_deref(),
+                        export_path: args.export_path.as_deref(),
+                    },
+                )?;
+                println!("created handoff");
+                println!("handoff_id: {}", outcome.handoff_id);
+                if let Some(work_unit_id) = outcome.work_unit_id {
+                    println!("work_unit_id: {work_unit_id}");
+                }
+            }
+            HandoffCommand::List(args) => {
+                let records = list_handoffs(&root, args.work_unit)?;
+                if records.is_empty() {
+                    println!("no handoffs");
+                }
+                for record in records {
+                    let work_unit = record
+                        .work_unit_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    println!("{} [work_unit={}] {}", record.id, work_unit, record.topic);
+                }
+            }
+            HandoffCommand::Command { command } => match command {
+                HandoffCommandLinkCommand::Add(args) => {
+                    let outcome = add_handoff_command(
+                        &root,
+                        NewHandoffCommand {
+                            handoff_id: args.handoff_id,
+                            command_profile_id: args.profile,
+                            command: &args.command,
+                            result: args.result.as_deref(),
+                            log_path: args.log_path.as_deref(),
+                            note: args.note.as_deref(),
+                        },
+                    )?;
+                    println!("linked handoff command");
+                    println!("handoff_command_id: {}", outcome.link_id);
+                }
+            },
+            HandoffCommand::Commit { command } => match command {
+                HandoffCommitCommand::Add(args) => {
+                    let outcome = add_handoff_commit(
+                        &root,
+                        NewHandoffCommit {
+                            handoff_id: args.handoff_id,
+                            commit_sha: &args.sha,
+                            role: &args.role,
+                            note: args.note.as_deref(),
+                        },
+                    )?;
+                    println!("linked handoff commit");
+                    println!("handoff_commit_id: {}", outcome.link_id);
+                }
+            },
+            HandoffCommand::File { command } => match command {
+                HandoffFileCommand::Add(args) => {
+                    let outcome = add_handoff_file(
+                        &root,
+                        NewHandoffFile {
+                            handoff_id: args.handoff_id,
+                            path: &args.path,
+                            role: &args.role,
+                            note: args.note.as_deref(),
+                        },
+                    )?;
+                    println!("linked handoff file");
+                    println!("handoff_file_id: {}", outcome.link_id);
+                }
+            },
         },
     }
 
