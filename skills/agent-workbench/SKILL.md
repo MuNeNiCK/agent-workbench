@@ -1,14 +1,15 @@
 ---
 name: agent-workbench
-description: Use when managing long-running coding-agent work with structured project memory, task ledgers, design decisions, review loops, handoff records, and Markdown exports for Codex or Claude Code workflows.
+description: Use when managing long-running coding-agent work with structured project memory, task ledgers, design decisions, review loops, work records, and Markdown exports for Codex or Claude Code workflows.
 license: MIT
 ---
 
 # Agent Workbench
 
 Use this skill when a project needs durable agent operating state: checklists,
-design decisions, review findings, handoffs, or compatibility notes that should
-survive across sessions without forcing the agent to grep old Markdown logs.
+design decisions, review findings, work records, or compatibility notes that
+should survive across sessions without forcing the agent to grep old Markdown
+logs.
 
 ## Current Scope
 

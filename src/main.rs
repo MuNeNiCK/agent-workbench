@@ -775,6 +775,9 @@ fn main() -> Result<()> {
         }
         Command::Gate { command } => match command {
             GateCommand::ResumeReady(args) => {
+                if !args.dry_run {
+                    anyhow::bail!("gate resume-ready is read-only in phase 2; pass --dry-run");
+                }
                 let outcome = resume_ready(&root, &args.maturity)?;
                 println!("gate: resume-ready");
                 println!("maturity: {}", args.maturity);
