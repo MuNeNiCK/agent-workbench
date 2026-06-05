@@ -9,7 +9,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -691,6 +691,47 @@ create table if not exists work_record_forks (
     created_by_authority_event_id integer references authority_events(id),
     created_at text not null,
     closed_at text
+);
+
+create table if not exists design_packages (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_key text not null,
+    title text not null,
+    status text not null default 'draft' check (status in ('draft', 'imported', 'approved', 'superseded', 'archived')),
+    current_design_version_id integer,
+    created_at text not null,
+    updated_at text not null,
+    unique(project_id, design_key)
+);
+
+create table if not exists design_versions (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_package_id integer not null references design_packages(id) on delete cascade,
+    version_number integer not null,
+    content_hash text not null,
+    package_path text not null,
+    manifest_path text not null,
+    format text not null,
+    manifest_version integer not null,
+    status text not null default 'draft' check (status in ('draft', 'imported', 'approved', 'superseded', 'rejected')),
+    imported_at text not null,
+    approved_by_authority_event_id integer references authority_events(id),
+    unique(design_package_id, version_number),
+    unique(design_package_id, content_hash)
+);
+
+create table if not exists design_files (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    design_package_id integer not null references design_packages(id) on delete cascade,
+    design_version_id integer not null references design_versions(id) on delete cascade,
+    section_key text not null,
+    relative_path text not null,
+    content_hash text not null,
+    line_count integer not null,
+    unique(design_version_id, relative_path)
 );
 
 create table if not exists kpt_reviews (

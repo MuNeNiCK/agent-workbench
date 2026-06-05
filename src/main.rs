@@ -5,18 +5,19 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    CommandUsageListQuery, KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation,
-    NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage, NewKptItem, NewKptReview,
-    NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord, NewWorkRecordCommand,
-    NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery, TaskListQuery, WorkForkSource,
-    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
-    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
-    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    close_active_work, close_kpt_review, close_task, convert_kpt_item_to_task,
-    create_follow_up_work, create_work_record, export_work_record_markdown, fork_work,
-    init_design_package, init_project, interrupt_work, list_authority_events,
-    list_command_profiles, list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews,
-    list_tasks, list_user_corrections, list_work_records, next_action, project_status, reopen_work,
+    CommandUsageListQuery, DesignPackageImport, KptItemTaskConversion, NewAuthorityEvent,
+    NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision, NewDesignPackage,
+    NewKptItem, NewKptReview, NewTask, NewUserCorrection, NewWorkFork, NewWorkRecord,
+    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
+    TaskListQuery, WorkForkSource, accept_task_out_of_scope, add_authority_event,
+    add_command_deviation, add_command_usage, add_decision, add_fixed_command, add_kpt_item,
+    add_task, add_user_correction, add_work_record_command, add_work_record_commit,
+    add_work_record_file, applicable_rules, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    export_work_record_markdown, fork_work, import_design_package, init_design_package,
+    init_project, interrupt_work, list_authority_events, list_command_profiles,
+    list_command_usages, list_decisions, list_kpt_items, list_kpt_reviews, list_tasks,
+    list_user_corrections, list_work_records, next_action, project_status, reopen_work,
     resume_check, resume_ready, resume_work, start_kpt_review, start_work, suspend_work,
 };
 
@@ -517,6 +518,7 @@ struct DecisionSearchArgs {
 #[derive(Debug, Subcommand)]
 enum DesignCommand {
     Init(DesignInitArgs),
+    Import(DesignImportArgs),
 }
 
 #[derive(Debug, Args)]
@@ -524,6 +526,13 @@ struct DesignInitArgs {
     design_id: String,
     #[arg(long)]
     title: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DesignImportArgs {
+    package_path: PathBuf,
+    #[arg(long, default_value = "draft")]
+    status: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1150,6 +1159,21 @@ fn main() -> Result<()> {
                 )?;
                 println!("initialized design package");
                 println!("path: {}", outcome.package_path.display());
+            }
+            DesignCommand::Import(args) => {
+                let outcome = import_design_package(
+                    &root,
+                    DesignPackageImport {
+                        package_path: &args.package_path,
+                        status: &args.status,
+                    },
+                )?;
+                println!("imported design package");
+                println!("design_package_id: {}", outcome.design_package_id);
+                println!("design_version_id: {}", outcome.design_version_id);
+                println!("version_number: {}", outcome.version_number);
+                println!("file_count: {}", outcome.file_count);
+                println!("content_hash: {}", outcome.content_hash);
             }
         },
         Command::Authority { command } => match command {

@@ -82,6 +82,56 @@ fn design_init_creates_package_under_workbench() {
 }
 
 #[test]
+fn design_import_records_design_version() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+
+    let output = ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    assert!(output.contains("imported design package"));
+    assert!(output.contains("design_package_id: 1"));
+    assert!(output.contains("design_version_id: 1"));
+    assert!(output.contains("file_count: 14"));
+
+    let conn = conn(temp.path());
+    let current_version: i64 = conn
+        .query_row(
+            "select current_design_version_id from design_packages where design_key = 'storage-lifecycle'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let file_count: i64 = conn
+        .query_row(
+            "select count(*) from design_files where design_version_id = ?1",
+            [current_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(current_version, 1);
+    assert_eq!(file_count, 14);
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

@@ -23,7 +23,10 @@ pub use db::{
     default_export_root, default_ledger_path, default_log_root, init_project, next_action,
     project_status,
 };
-pub use design::{DesignPackageInitOutcome, NewDesignPackage, init_design_package};
+pub use design::{
+    DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, NewDesignPackage,
+    import_design_package, init_design_package,
+};
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
     KptReviewCloseOutcome, KptReviewOutcome, KptReviewRecord, NewKptItem, NewKptReview,
@@ -921,6 +924,107 @@ mod tests {
                 NewDesignPackage {
                     design_id: "storage-lifecycle",
                     title: "Storage",
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn design_import_records_package_version_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+
+        let import = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+
+        assert_eq!(import.design_package_id, 1);
+        assert_eq!(import.design_version_id, 1);
+        assert_eq!(import.version_number, 1);
+        assert_eq!(import.file_count, 14);
+        assert_eq!(import.content_hash.len(), 64);
+
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let package: (String, String, String, i64) = conn
+            .query_row(
+                r#"
+                select design_key, title, status, current_design_version_id
+                from design_packages
+                where id = ?1
+                "#,
+                params![import.design_package_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let file_count: i64 = conn
+            .query_row(
+                "select count(*) from design_files where design_version_id = ?1",
+                params![import.design_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(package.0, "storage-lifecycle");
+        assert_eq!(package.1, "Storage Lifecycle");
+        assert_eq!(package.2, "draft");
+        assert_eq!(package.3, import.design_version_id);
+        assert_eq!(file_count, 14);
+    }
+
+    #[test]
+    fn design_import_rejects_external_or_duplicate_package() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        let external = temp.path().join("external-design");
+        fs::create_dir_all(&external).unwrap();
+
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &external,
+                    status: "draft",
+                },
+            )
+            .is_err()
+        );
+
+        import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        assert!(
+            import_design_package(
+                temp.path(),
+                DesignPackageImport {
+                    package_path: &init.package_path,
+                    status: "draft",
                 },
             )
             .is_err()
