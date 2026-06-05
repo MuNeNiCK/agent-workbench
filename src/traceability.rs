@@ -160,6 +160,122 @@ pub fn list_task_derivations(
     Ok(records)
 }
 
+pub fn add_implementation_evidence(
+    root: &Path,
+    input: NewImplementationEvidence<'_>,
+) -> Result<ImplementationEvidenceOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let task_id = match input.task_id {
+        Some(id) => {
+            tx.query_row("select id from tasks where id = ?1", params![id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .context("task not found")?;
+            Some(id)
+        }
+        None => None,
+    };
+    let design_requirement_id = match (input.design_version_id, input.requirement_key) {
+        (Some(design_version_id), Some(requirement_key)) => Some(
+            tx.query_row(
+                r#"
+                select id
+                from design_requirements
+                where project_id = ?1
+                  and design_version_id = ?2
+                  and requirement_key = ?3
+                  and status = 'active'
+                "#,
+                params![project_id, design_version_id, requirement_key],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .context("active design requirement not found")?,
+        ),
+        (None, None) => None,
+        _ => bail!("--design and --requirement must be provided together"),
+    };
+    if task_id.is_none() && design_requirement_id.is_none() {
+        bail!("implementation evidence requires --task or --design with --requirement");
+    }
+
+    tx.execute(
+        r#"
+        insert into implementation_evidence(
+            project_id, task_id, design_requirement_id, evidence_type,
+            commit_sha, file_path, line_ref, symbol, artifact_path, note, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+        "#,
+        params![
+            project_id,
+            task_id,
+            design_requirement_id,
+            input.evidence_type,
+            input.commit_sha,
+            input.file_path,
+            input.line_ref,
+            input.symbol,
+            input.artifact_path,
+            input.note,
+        ],
+    )?;
+    let implementation_evidence_id = tx.last_insert_rowid();
+    tx.commit()?;
+
+    Ok(ImplementationEvidenceOutcome {
+        implementation_evidence_id,
+        task_id,
+        design_requirement_id,
+    })
+}
+
+pub fn list_implementation_evidence(
+    root: &Path,
+    input: ImplementationEvidenceListQuery,
+) -> Result<Vec<ImplementationEvidenceRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            e.id, e.task_id, r.requirement_key, e.evidence_type,
+            e.commit_sha, e.file_path, e.line_ref, e.symbol, e.artifact_path, e.note
+        from implementation_evidence e
+        left join design_requirements r on r.id = e.design_requirement_id
+        where e.project_id = ?1
+          and (?2 is null or e.task_id = ?2)
+          and (?3 is null or r.design_version_id = ?3)
+        order by e.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, input.task_id, input.design_version_id],
+        |row| {
+            Ok(ImplementationEvidenceRecord {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                requirement_key: row.get(2)?,
+                evidence_type: row.get(3)?,
+                commit_sha: row.get(4)?,
+                file_path: row.get(5)?,
+                line_ref: row.get(6)?,
+                symbol: row.get(7)?,
+                artifact_path: row.get(8)?,
+                note: row.get(9)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 pub fn select_validation_gate(
     root: &Path,
     input: ValidationGateSelection<'_>,
@@ -365,6 +481,22 @@ pub fn implementation_ready(
             "validation_gates_selected",
             Some(format!(
                 "{missing_selected_gate_count} active task derivations have no selected validation gate"
+            )),
+        ));
+    }
+
+    let missing_evidence_count =
+        count_closed_derived_tasks_missing_evidence(&conn, version.design_version_id)?;
+    if missing_evidence_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "implementation_evidence_present",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "implementation_evidence_present",
+            Some(format!(
+                "{missing_evidence_count} closed design-derived tasks have no implementation evidence"
             )),
         ));
     }
@@ -586,6 +718,33 @@ fn count_missing_selected_gates(
     .map_err(Into::into)
 }
 
+fn count_closed_derived_tasks_missing_evidence(
+    conn: &rusqlite::Connection,
+    design_version_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join design_requirements r on r.id = td.design_requirement_id
+        join tasks t on t.id = td.task_id
+        where r.design_version_id = ?1
+          and r.status = 'active'
+          and td.status = 'active'
+          and t.status = 'closed'
+          and not exists (
+            select 1
+            from implementation_evidence e
+            where e.task_id = td.task_id
+               or e.design_requirement_id = r.id
+          )
+        "#,
+        params![design_version_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 fn resolved_design_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedDesignVersion> {
     Ok(ResolvedDesignVersion {
         design_version_id: row.get(0)?,
@@ -649,6 +808,24 @@ pub struct ValidationGateSelection<'a> {
     pub command: Option<&'a str>,
 }
 
+pub struct NewImplementationEvidence<'a> {
+    pub task_id: Option<i64>,
+    pub design_version_id: Option<i64>,
+    pub requirement_key: Option<&'a str>,
+    pub evidence_type: &'a str,
+    pub commit_sha: Option<&'a str>,
+    pub file_path: Option<&'a str>,
+    pub line_ref: Option<&'a str>,
+    pub symbol: Option<&'a str>,
+    pub artifact_path: Option<&'a str>,
+    pub note: Option<&'a str>,
+}
+
+pub struct ImplementationEvidenceListQuery {
+    pub task_id: Option<i64>,
+    pub design_version_id: Option<i64>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct TaskDerivationOutcome {
     pub task_derivation_id: i64,
@@ -667,6 +844,27 @@ pub struct TaskDerivationRecord {
     pub checklist_item_id: Option<i64>,
     pub checklist_item_title: Option<String>,
     pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ImplementationEvidenceOutcome {
+    pub implementation_evidence_id: i64,
+    pub task_id: Option<i64>,
+    pub design_requirement_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ImplementationEvidenceRecord {
+    pub id: i64,
+    pub task_id: Option<i64>,
+    pub requirement_key: Option<String>,
+    pub evidence_type: String,
+    pub commit_sha: Option<String>,
+    pub file_path: Option<String>,
+    pub line_ref: Option<String>,
+    pub symbol: Option<String>,
+    pub artifact_path: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -6,25 +6,27 @@ use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
     CommandUsageListQuery, DesignDecisionListQuery, DesignPackageImport, DesignReadyCheck,
-    DesignRequirementListQuery, DesignVersionApproval, ImplementationReadyCheck,
-    KptItemTaskConversion, NewAuthorityEvent, NewCommandDeviation, NewCommandProfile,
-    NewCommandUsage, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage, NewKptItem,
+    DesignRequirementListQuery, DesignVersionApproval, ImplementationEvidenceListQuery,
+    ImplementationEvidenceRecord, ImplementationReadyCheck, KptItemTaskConversion,
+    NewAuthorityEvent, NewCommandDeviation, NewCommandProfile, NewCommandUsage, NewDecision,
+    NewDesignExceptionAcceptance, NewDesignPackage, NewImplementationEvidence, NewKptItem,
     NewKptReview, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork, NewWorkRecord,
     NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
     TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
     ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
     accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
-    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
-    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
-    approve_design_version, close_active_work, close_kpt_review, close_task,
+    add_decision, add_fixed_command, add_implementation_evidence, add_kpt_item, add_task,
+    add_user_correction, add_work_record_command, add_work_record_commit, add_work_record_file,
+    applicable_rules, approve_design_version, close_active_work, close_kpt_review, close_task,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
     derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
     implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
     list_authority_events, list_command_profiles, list_command_usages, list_decisions,
-    list_design_decisions, list_design_requirements, list_kpt_items, list_kpt_reviews,
-    list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
-    list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
-    resume_work, select_validation_gate, start_kpt_review, start_work, suspend_work,
+    list_design_decisions, list_design_requirements, list_implementation_evidence, list_kpt_items,
+    list_kpt_reviews, list_task_derivations, list_tasks, list_user_corrections,
+    list_validation_gate_templates, list_work_records, next_action, project_status, reopen_work,
+    resume_check, resume_ready, resume_work, select_validation_gate, start_kpt_review, start_work,
+    suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -113,6 +115,11 @@ enum Command {
     Trace {
         #[command(subcommand)]
         command: TraceCommand,
+    },
+    /// Record or list implementation evidence.
+    Evidence {
+        #[command(subcommand)]
+        command: EvidenceCommand,
     },
     /// Accept explicit design exceptions.
     Acceptance {
@@ -679,6 +686,44 @@ enum TraceDerivationCommand {
 struct TraceDerivationListArgs {
     #[arg(long)]
     design: i64,
+}
+
+#[derive(Debug, Subcommand)]
+enum EvidenceCommand {
+    Add(EvidenceAddArgs),
+    List(EvidenceListArgs),
+}
+
+#[derive(Debug, Args)]
+struct EvidenceAddArgs {
+    #[arg(long)]
+    task: Option<i64>,
+    #[arg(long)]
+    design: Option<i64>,
+    #[arg(long)]
+    requirement: Option<String>,
+    #[arg(long = "type")]
+    evidence_type: String,
+    #[arg(long)]
+    commit: Option<String>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    line: Option<String>,
+    #[arg(long)]
+    symbol: Option<String>,
+    #[arg(long)]
+    artifact: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct EvidenceListArgs {
+    #[arg(long)]
+    task: Option<i64>,
+    #[arg(long)]
+    design: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1562,6 +1607,60 @@ fn main() -> Result<()> {
                 }
             },
         },
+        Command::Evidence { command } => match command {
+            EvidenceCommand::Add(args) => {
+                let outcome = add_implementation_evidence(
+                    &root,
+                    NewImplementationEvidence {
+                        task_id: args.task,
+                        design_version_id: args.design,
+                        requirement_key: args.requirement.as_deref(),
+                        evidence_type: &args.evidence_type,
+                        commit_sha: args.commit.as_deref(),
+                        file_path: args.file.as_deref(),
+                        line_ref: args.line.as_deref(),
+                        symbol: args.symbol.as_deref(),
+                        artifact_path: args.artifact.as_deref(),
+                        note: args.note.as_deref(),
+                    },
+                )?;
+                println!("added implementation evidence");
+                println!(
+                    "implementation_evidence_id: {}",
+                    outcome.implementation_evidence_id
+                );
+                if let Some(task_id) = outcome.task_id {
+                    println!("task_id: {task_id}");
+                }
+                if let Some(design_requirement_id) = outcome.design_requirement_id {
+                    println!("design_requirement_id: {design_requirement_id}");
+                }
+            }
+            EvidenceCommand::List(args) => {
+                let records = list_implementation_evidence(
+                    &root,
+                    ImplementationEvidenceListQuery {
+                        task_id: args.task,
+                        design_version_id: args.design,
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no implementation evidence");
+                }
+                for record in records {
+                    let task = record
+                        .task_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let requirement = record.requirement_key.as_deref().unwrap_or("-");
+                    let detail = evidence_detail(&record);
+                    println!(
+                        "{} [{}] task={} requirement={} {}",
+                        record.id, record.evidence_type, task, requirement, detail
+                    );
+                }
+            }
+        },
         Command::Acceptance { command } => match command {
             AcceptanceCommand::Add(args) => {
                 let outcome = accept_design_exception(
@@ -1734,4 +1833,29 @@ fn print_decisions(records: Vec<agent_workbench::DecisionRecord>) {
             record.id, key, record.status, record.decision
         );
     }
+}
+
+fn evidence_detail(record: &ImplementationEvidenceRecord) -> String {
+    if let Some(commit_sha) = &record.commit_sha {
+        return format!("commit={commit_sha}");
+    }
+    if let Some(file_path) = &record.file_path {
+        let line = record
+            .line_ref
+            .as_ref()
+            .map(|value| format!(":{value}"))
+            .unwrap_or_default();
+        return format!("file={file_path}{line}");
+    }
+    if let Some(symbol) = &record.symbol {
+        return format!("symbol={symbol}");
+    }
+    if let Some(artifact_path) = &record.artifact_path {
+        return format!("artifact={artifact_path}");
+    }
+    record
+        .note
+        .as_ref()
+        .map(|note| format!("note={note}"))
+        .unwrap_or_else(|| "detail=-".to_string())
 }

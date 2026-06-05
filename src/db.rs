@@ -985,6 +985,25 @@ create table if not exists validation_gates (
     created_at text not null
 );
 
+create table if not exists implementation_evidence (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    task_id integer references tasks(id) on delete cascade,
+    design_requirement_id integer references design_requirements(id) on delete cascade,
+    evidence_type text not null check (evidence_type in ('commit', 'file', 'symbol', 'test', 'artifact', 'command_output', 'manual_note')),
+    repository_id integer,
+    git_commit_id integer,
+    git_file_change_id integer,
+    commit_sha text,
+    file_path text,
+    line_ref text,
+    symbol text,
+    artifact_path text,
+    note text,
+    created_at text not null,
+    check (task_id is not null or design_requirement_id is not null)
+);
+
 create trigger if not exists trg_gate_template_requirement_project_insert
 before insert on validation_gate_template_requirements
 for each row
@@ -1099,6 +1118,30 @@ when (new.template_id is not null and new.project_id != (select project_id from 
   or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
 begin
     select raise(abort, 'validation gate project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_implementation_evidence_project_insert
+before insert on implementation_evidence
+for each row
+when (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+begin
+    select raise(abort, 'implementation evidence project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_implementation_evidence_project_update
+before update of project_id, task_id, design_requirement_id on implementation_evidence
+for each row
+when (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+begin
+    select raise(abort, 'implementation evidence project_id must match referenced rows');
 end;
 
 create trigger if not exists trg_acceptance_design_requirement_project_insert

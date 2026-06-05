@@ -571,6 +571,34 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "--dry-run",
         ],
     );
+    ok(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
+    let without_evidence = ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
+    let evidence = ok(
+        temp.path(),
+        &[
+            "evidence", "add", "--task", "1", "--type", "commit", "--commit", "abc123",
+        ],
+    );
+    let evidence_list = ok(temp.path(), &["evidence", "list", "--task", "1"]);
+    let passed_with_evidence = ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
 
     assert!(derivation.contains("derived task from requirement"));
     assert!(derivation.contains("task_derivation_id: 1"));
@@ -581,6 +609,12 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("task_derivations_exist: pass"));
     assert!(passed.contains("validation_gates_selected: pass"));
+    assert!(without_evidence.contains("implementation_evidence_present: fail"));
+    assert!(evidence.contains("added implementation evidence"));
+    assert!(evidence.contains("implementation_evidence_id: 1"));
+    assert!(evidence_list.contains("1 [commit] task=1 requirement=- commit=abc123"));
+    assert!(passed_with_evidence.contains("result: pass"));
+    assert!(passed_with_evidence.contains("implementation_evidence_present: pass"));
 }
 
 #[test]

@@ -54,10 +54,12 @@ pub use rules::{
     add_user_correction, applicable_rules, list_user_corrections,
 };
 pub use traceability::{
+    ImplementationEvidenceListQuery, ImplementationEvidenceOutcome, ImplementationEvidenceRecord,
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
-    NewTaskDerivation, TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord,
-    ValidationGateSelection, ValidationGateSelectionOutcome, derive_task_from_requirement,
-    implementation_ready, list_task_derivations, select_validation_gate,
+    NewImplementationEvidence, NewTaskDerivation, TaskDerivationListQuery, TaskDerivationOutcome,
+    TaskDerivationRecord, ValidationGateSelection, ValidationGateSelectionOutcome,
+    add_implementation_evidence, derive_task_from_requirement, implementation_ready,
+    list_implementation_evidence, list_task_derivations, select_validation_gate,
 };
 pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
@@ -1443,6 +1445,45 @@ mod tests {
             },
         )
         .unwrap();
+        close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
+        let blocked_without_evidence = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+        let evidence = add_implementation_evidence(
+            temp.path(),
+            NewImplementationEvidence {
+                task_id: Some(task.task_id),
+                design_version_id: None,
+                requirement_key: None,
+                evidence_type: "commit",
+                commit_sha: Some("abc123"),
+                file_path: None,
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let passed_with_evidence = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+        let evidence_records = list_implementation_evidence(
+            temp.path(),
+            ImplementationEvidenceListQuery {
+                task_id: Some(task.task_id),
+                design_version_id: None,
+            },
+        )
+        .unwrap();
         let records = list_task_derivations(
             temp.path(),
             TaskDerivationListQuery {
@@ -1470,6 +1511,14 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].requirement_key, "REQ-001");
         assert_eq!(passed.result, "pass");
+        assert_eq!(blocked_without_evidence.result, "blocked");
+        assert!(blocked_without_evidence.items.iter().any(|item| {
+            item.name == "implementation_evidence_present" && item.result == "fail"
+        }));
+        assert_eq!(evidence.task_id, Some(task.task_id));
+        assert_eq!(evidence_records.len(), 1);
+        assert_eq!(evidence_records[0].commit_sha.as_deref(), Some("abc123"));
+        assert_eq!(passed_with_evidence.result, "pass");
     }
 
     #[test]
