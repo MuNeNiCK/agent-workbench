@@ -1240,6 +1240,12 @@ This requirement describes changed cleanup behavior that must be implemented.
             [],
         )
         .unwrap();
+        conn.execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'same project other target', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+        let same_project_work_unit_id = conn.last_insert_rowid();
 
         let plan_project_break = conn.execute(
             "update review_plans set work_unit_id = 2 where id = ?1",
@@ -1265,6 +1271,14 @@ This requirement describes changed cleanup behavior that must be implemented.
             "update review_runs set work_unit_id = 2 where id = ?1",
             params![run.review_run_id],
         );
+        let run_plan_target_update_break = conn.execute(
+            "update review_runs set work_unit_id = ?1, target_ref = ?2 where id = ?3",
+            params![
+                same_project_work_unit_id,
+                format!("work_unit:{same_project_work_unit_id}"),
+                run.review_run_id,
+            ],
+        );
         let run_target_insert_break = conn.execute(
             r#"
             insert into review_runs(
@@ -1275,6 +1289,22 @@ This requirement describes changed cleanup behavior that must be implemented.
             values (1, ?1, ?2, 'fresh', 'new_unbiased_review', 'work_unit', 2, 'work_unit:2', 0, 0, 0, 'completed', current_timestamp)
             "#,
             params![scope.review_scope_id, plan.review_plan_id],
+        );
+        let run_plan_target_insert_break = conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, review_scope_id, review_plan_id, run_type, run_purpose,
+                target_type, work_unit_id, target_ref, new_findings_count,
+                carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, ?1, ?2, 'fresh', 'new_unbiased_review', 'work_unit', ?3, ?4, 0, 0, 0, 'completed', current_timestamp)
+            "#,
+            params![
+                scope.review_scope_id,
+                plan.review_plan_id,
+                same_project_work_unit_id,
+                format!("work_unit:{same_project_work_unit_id}"),
+            ],
         );
         let finding_project_break = conn.execute(
             "update findings set project_id = 2 where id = ?1",
@@ -1291,7 +1321,9 @@ This requirement describes changed cleanup behavior that must be implemented.
         assert!(scope_type_break.is_err());
         assert!(run_project_break.is_err());
         assert!(run_target_update_break.is_err());
+        assert!(run_plan_target_update_break.is_err());
         assert!(run_target_insert_break.is_err());
+        assert!(run_plan_target_insert_break.is_err());
         assert!(finding_project_break.is_err());
         assert!(closure_project_break.is_err());
     }
@@ -1987,6 +2019,41 @@ This requirement describes changed cleanup behavior that must be implemented.
             },
         );
         assert!(finding.is_err());
+
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let direct_resume_count_insert = conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, review_plan_id, run_type, run_purpose, target_type,
+                work_unit_id, target_ref, new_findings_count,
+                carried_findings_checked, clean_run, status, created_at
+            )
+            values (1, ?1, 'resume', 'finding_fix_verification', 'work_unit', ?2, ?3, 1, 0, 0, 'completed', current_timestamp)
+            "#,
+            params![
+                plan.review_plan_id,
+                work.work_unit_id,
+                format!("work_unit:{}", work.work_unit_id),
+            ],
+        );
+        let direct_resume_count_update = conn.execute(
+            "update review_runs set new_findings_count = 1 where id = ?1",
+            params![resume.review_run_id],
+        );
+        let direct_resume_finding_insert = conn.execute(
+            r#"
+            insert into findings(
+                project_id, review_run_id, finding_type, severity,
+                description, classification, status, created_at
+            )
+            values (1, ?1, 'implementation_finding', 'medium', 'direct resume finding', 'unclassified', 'open', current_timestamp)
+            "#,
+            params![resume.review_run_id],
+        );
+
+        assert!(direct_resume_count_insert.is_err());
+        assert!(direct_resume_count_update.is_err());
+        assert!(direct_resume_finding_insert.is_err());
     }
 
     #[test]

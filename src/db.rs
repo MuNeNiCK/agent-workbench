@@ -1498,6 +1498,22 @@ begin
     select raise(abort, 'review policy update would break referenced review plans');
 end;
 
+create trigger if not exists trg_review_policy_resume_findings_update
+before update of allow_new_findings_in_resume on review_policies
+for each row
+when new.allow_new_findings_in_resume = 0
+  and exists (
+      select 1
+      from review_plans p
+      join review_runs r on r.review_plan_id = p.id
+      where p.review_policy_id = old.id
+        and r.run_type = 'resume'
+        and r.new_findings_count > 0
+  )
+begin
+    select raise(abort, 'review policy update would conflict with resume findings');
+end;
+
 create trigger if not exists trg_review_scope_referenced_update
 before update of project_id, review_type on review_scopes
 for each row
@@ -1799,6 +1815,50 @@ begin
     select raise(abort, 'review run target must match target_type and project_id');
 end;
 
+create trigger if not exists trg_review_run_plan_target_insert
+before insert on review_runs
+for each row
+when new.review_plan_id is not null
+  and not exists (
+      select 1
+      from review_plan_targets t
+      where t.review_plan_id = new.review_plan_id
+        and (
+            (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
+            or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
+            or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
+            or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
+            or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
+            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.target_ref)
+            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.target_ref)
+        )
+  )
+begin
+    select raise(abort, 'review run target must be included in review plan targets');
+end;
+
+create trigger if not exists trg_review_run_plan_target_update
+before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, target_ref on review_runs
+for each row
+when new.review_plan_id is not null
+  and not exists (
+      select 1
+      from review_plan_targets t
+      where t.review_plan_id = new.review_plan_id
+        and (
+            (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
+            or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
+            or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
+            or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
+            or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
+            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.target_ref)
+            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.target_ref)
+        )
+  )
+begin
+    select raise(abort, 'review run target must be included in review plan targets');
+end;
+
 create trigger if not exists trg_review_run_type_purpose_insert
 before insert on review_runs
 for each row
@@ -1821,6 +1881,30 @@ when not (
 )
 begin
     select raise(abort, 'review run type must match purpose');
+end;
+
+create trigger if not exists trg_review_run_resume_policy_insert
+before insert on review_runs
+for each row
+when new.run_type = 'resume'
+  and new.new_findings_count > 0
+  and (select allow_new_findings_in_resume
+       from review_policies
+       where id = (select review_policy_id from review_plans where id = new.review_plan_id)) = 0
+begin
+    select raise(abort, 'new findings are disabled for resume review by policy');
+end;
+
+create trigger if not exists trg_review_run_resume_policy_update
+before update of review_plan_id, run_type, new_findings_count on review_runs
+for each row
+when new.run_type = 'resume'
+  and new.new_findings_count > 0
+  and (select allow_new_findings_in_resume
+       from review_policies
+       where id = (select review_policy_id from review_plans where id = new.review_plan_id)) = 0
+begin
+    select raise(abort, 'new findings are disabled for resume review by policy');
 end;
 
 create trigger if not exists trg_review_run_result_insert
@@ -1916,6 +2000,38 @@ for each row
 when (select clean_run from review_runs where id = new.review_run_id) = 1
 begin
     select raise(abort, 'cannot attach finding to clean review run');
+end;
+
+create trigger if not exists trg_finding_resume_policy_insert
+before insert on findings
+for each row
+when exists (
+    select 1
+    from review_runs r
+    join review_plans p on p.id = r.review_plan_id
+    join review_policies rp on rp.id = p.review_policy_id
+    where r.id = new.review_run_id
+      and r.run_type = 'resume'
+      and rp.allow_new_findings_in_resume = 0
+)
+begin
+    select raise(abort, 'new findings are disabled for resume review by policy');
+end;
+
+create trigger if not exists trg_finding_resume_policy_update
+before update of review_run_id on findings
+for each row
+when exists (
+    select 1
+    from review_runs r
+    join review_plans p on p.id = r.review_plan_id
+    join review_policies rp on rp.id = p.review_policy_id
+    where r.id = new.review_run_id
+      and r.run_type = 'resume'
+      and rp.allow_new_findings_in_resume = 0
+)
+begin
+    select raise(abort, 'new findings are disabled for resume review by policy');
 end;
 
 create trigger if not exists trg_closure_project_insert
