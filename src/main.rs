@@ -5,8 +5,10 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use agent_workbench::{
-    NextAction, close_active_work, init_project, interrupt_work, next_action, project_status,
-    resume_check_basic, resume_work, start_work, suspend_work,
+    NewCommandProfile, NewUserCorrection, NextAction, RuleQuery, add_fixed_command,
+    add_user_correction, applicable_rules, close_active_work, init_project, interrupt_work,
+    list_command_profiles, list_user_corrections, next_action, project_status, resume_check_basic,
+    resume_work, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -35,6 +37,21 @@ enum Command {
     },
     /// Record a basic resume check for the latest suspended activation.
     ResumeCheck(ResumeCheckArgs),
+    /// Record or list user corrections.
+    Correction {
+        #[command(subcommand)]
+        command: CorrectionCommand,
+    },
+    /// Record or list reusable project commands.
+    Command {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
+    /// Query applicable rules.
+    Rules {
+        #[command(subcommand)]
+        command: RulesCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,6 +108,83 @@ struct WorkCloseArgs {
 struct ResumeCheckArgs {
     #[arg(long, default_value = "basic")]
     maturity: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum CorrectionCommand {
+    Add(CorrectionAddArgs),
+    List(CorrectionListArgs),
+}
+
+#[derive(Debug, Args)]
+struct CorrectionAddArgs {
+    #[arg(long)]
+    scope: String,
+    #[arg(long = "type")]
+    correction_type: String,
+    #[arg(long)]
+    pattern: String,
+    #[arg(long)]
+    correction: String,
+    #[arg(long, default_value = "project")]
+    applies_to: String,
+    #[arg(long, default_value = "medium")]
+    severity: String,
+}
+
+#[derive(Debug, Args)]
+struct CorrectionListArgs {
+    #[arg(long)]
+    scope: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum MemoryCommand {
+    Fixed {
+        #[command(subcommand)]
+        command: FixedCommand,
+    },
+    List(CommandListArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum FixedCommand {
+    Add(CommandFixedAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct CommandFixedAddArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long = "type")]
+    command_type: String,
+    #[arg(long)]
+    scope: String,
+    #[arg(long)]
+    command: String,
+    #[arg(long)]
+    timeout: Option<String>,
+    #[arg(long)]
+    expected_result: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CommandListArgs {
+    #[arg(long = "type")]
+    command_type: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RulesCommand {
+    Applicable(RulesApplicableArgs),
+}
+
+#[derive(Debug, Args)]
+struct RulesApplicableArgs {
+    #[arg(long)]
+    scope: Option<String>,
+    #[arg(long)]
+    work_unit: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -190,6 +284,91 @@ fn main() -> Result<()> {
                 println!("blocking_reason: {reason}");
             }
         }
+        Command::Correction { command } => match command {
+            CorrectionCommand::Add(args) => {
+                let outcome = add_user_correction(
+                    &root,
+                    NewUserCorrection {
+                        scope: &args.scope,
+                        correction_type: &args.correction_type,
+                        mistake_pattern: &args.pattern,
+                        correction: &args.correction,
+                        applies_to: &args.applies_to,
+                        severity: &args.severity,
+                    },
+                )?;
+                println!("added correction");
+                println!("user_correction_id: {}", outcome.user_correction_id);
+            }
+            CorrectionCommand::List(args) => {
+                let records = list_user_corrections(&root, args.scope.as_deref())?;
+                if records.is_empty() {
+                    println!("no corrections");
+                }
+                for record in records {
+                    println!(
+                        "{} [{}:{}] {} -> {}",
+                        record.id,
+                        record.scope,
+                        record.severity,
+                        record.mistake_pattern,
+                        record.correction
+                    );
+                }
+            }
+        },
+        Command::Command { command } => match command {
+            MemoryCommand::Fixed { command } => match command {
+                FixedCommand::Add(args) => {
+                    let outcome = add_fixed_command(
+                        &root,
+                        NewCommandProfile {
+                            name: &args.name,
+                            command_type: &args.command_type,
+                            scope: &args.scope,
+                            command: &args.command,
+                            timeout: args.timeout.as_deref(),
+                            expected_result: args.expected_result.as_deref(),
+                        },
+                    )?;
+                    println!("added fixed command");
+                    println!("command_profile_id: {}", outcome.command_profile_id);
+                }
+            },
+            MemoryCommand::List(args) => {
+                let records = list_command_profiles(&root, args.command_type.as_deref())?;
+                if records.is_empty() {
+                    println!("no command profiles");
+                }
+                for record in records {
+                    println!(
+                        "{} [{}:{}] {} = {}",
+                        record.id, record.command_type, record.status, record.name, record.command
+                    );
+                }
+            }
+        },
+        Command::Rules { command } => match command {
+            RulesCommand::Applicable(args) => {
+                let scope = args.scope.as_deref().filter(|scope| *scope != "current");
+                let records = applicable_rules(
+                    &root,
+                    RuleQuery {
+                        scope_key: scope,
+                        work_unit_id: args.work_unit,
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no applicable rules");
+                }
+                for record in records {
+                    println!(
+                        "{} [{}:{} precedence={}]",
+                        record.id, record.rule_source_type, record.scope_type, record.precedence
+                    );
+                }
+            }
+        },
     }
 
     Ok(())

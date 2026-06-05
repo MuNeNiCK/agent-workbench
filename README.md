@@ -33,6 +33,9 @@ cargo run -- next
 cargo run -- work start "current task"
 cargo run -- work suspend --reason "interrupting issue" --next "resume current task"
 cargo run -- resume-check --maturity basic
+cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
+cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
+cargo run -- rules applicable --scope project
 ```
 
 ## Local Preview
