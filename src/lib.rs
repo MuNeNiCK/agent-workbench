@@ -352,6 +352,141 @@ mod tests {
     }
 
     #[test]
+    fn trace_aware_resume_blocks_stale_coverage_items() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+        let task = add_task(
+            temp.path(),
+            NewTask {
+                title: "implement cleanup",
+                priority: "high",
+                source: "design",
+                work_unit_id: None,
+                details: None,
+                completion_condition: Some("cleanup behavior is covered"),
+            },
+        )
+        .unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id: "storage-lifecycle",
+                title: "Storage Lifecycle",
+            },
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+        )
+        .unwrap();
+        fs::write(
+            init.package_path.join("validation").join("gates.md"),
+            validation_gate_doc("GATE-001"),
+        )
+        .unwrap();
+        let import_a = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import_a.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: import_a.design_version_id,
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                derivation_reason: None,
+                checklist_title: None,
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+        add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import_a.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task.task_id),
+                requirement: "cleanup behavior is connected",
+                runtime_boundary_evidence: None,
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: Some("GATE-001"),
+                missing_or_unverified: None,
+                status: "covered",
+            },
+        )
+        .unwrap();
+        suspend_work(temp.path(), "design changed", "resume after trace check").unwrap();
+        fs::write(
+            init.package_path.join("requirements").join("README.md"),
+            r#"## REQ-001: Preserve cleanup behavior
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+revision: 2
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+This requirement describes changed cleanup behavior that must be implemented.
+"#,
+        )
+        .unwrap();
+        let import_b = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        approve_design_version(
+            temp.path(),
+            DesignVersionApproval {
+                design_version_id: import_b.design_version_id,
+                summary: None,
+            },
+        )
+        .unwrap();
+
+        let check = resume_check(temp.path(), "trace-aware").unwrap();
+
+        assert_eq!(check.result, "blocked");
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        let design_current_result: String = conn
+            .query_row(
+                r#"
+                select result
+                from resume_check_items
+                where resume_check_id = ?1 and check_name = 'design_version_current'
+                "#,
+                params![check.resume_check_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(design_current_result, "fail");
+    }
+
+    #[test]
     fn interrupt_blocks_parent_until_child_is_closed() {
         let temp = tempfile::tempdir().unwrap();
         init_project(temp.path()).unwrap();
@@ -2119,6 +2254,24 @@ mod tests {
             },
         )
         .unwrap();
+        add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id: import_a.design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task.task_id),
+                requirement: "cleanup behavior is connected",
+                runtime_boundary_evidence: None,
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: Some("GATE-001"),
+                missing_or_unverified: None,
+                status: "covered",
+            },
+        )
+        .unwrap();
         fs::write(
             init.package_path.join("requirements").join("README.md"),
             r#"## REQ-001: Preserve cleanup behavior
@@ -2173,6 +2326,12 @@ This requirement describes changed cleanup behavior that must be implemented.
                 .items
                 .iter()
                 .any(|item| { item.name == "checklists_current" && item.result == "fail" })
+        );
+        assert!(
+            blocked
+                .items
+                .iter()
+                .any(|item| { item.name == "coverage_items_current" && item.result == "fail" })
         );
     }
 
