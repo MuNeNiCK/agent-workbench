@@ -360,10 +360,10 @@ fn work_record_tasks(conn: &Connection, work_unit_id: i64) -> Result<Vec<String>
 }
 
 fn push_optional_section(out: &mut String, title: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        if !value.trim().is_empty() {
-            out.push_str(&format!("\n## {title}\n\n{value}\n"));
-        }
+    if let Some(value) = value
+        && !value.trim().is_empty()
+    {
+        out.push_str(&format!("\n## {title}\n\n{value}\n"));
     }
 }
 

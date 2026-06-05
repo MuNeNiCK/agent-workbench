@@ -1918,8 +1918,7 @@ This requirement replaces the previous cleanup behavior with explicit scope.
         .unwrap();
         fs::write(
             file_package.package_path.join("01-introduction-goals.md"),
-            std::iter::repeat("line")
-                .take(1001)
+            std::iter::repeat_n("line", 1001)
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
@@ -1952,8 +1951,7 @@ This requirement replaces the previous cleanup behavior with explicit scope.
             },
         )
         .unwrap();
-        let oversized_body = std::iter::repeat("Requirement detail.")
-            .take(151)
+        let oversized_body = std::iter::repeat_n("Requirement detail.", 151)
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(
@@ -2025,14 +2023,12 @@ status: active
         .unwrap();
         fs::write(
             init.package_path.join("01-introduction-goals.md"),
-            std::iter::repeat("line")
-                .take(501)
+            std::iter::repeat_n("line", 501)
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
         .unwrap();
-        let requirement_body = std::iter::repeat("Requirement detail.")
-            .take(81)
+        let requirement_body = std::iter::repeat_n("Requirement detail.", 81)
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(
@@ -2229,8 +2225,7 @@ Body.
                 .package_path
                 .join("requirements")
                 .join("README.md"),
-            requirement_doc("REQ-001 extra", "Bad key", "high")
-                .replace("## REQ-001 extra", "## REQ-001 extra"),
+            requirement_doc("REQ-001 extra", "Bad key", "high"),
         )
         .unwrap();
         assert!(
@@ -2686,8 +2681,7 @@ Body.
         .unwrap();
         fs::write(
             oversized.package_path.join("01-introduction-goals.md"),
-            std::iter::repeat("line")
-                .take(1001)
+            std::iter::repeat_n("line", 1001)
                 .collect::<Vec<_>>()
                 .join("\n"),
         )

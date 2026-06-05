@@ -42,6 +42,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Command {
     /// Initialize the project-local ledger.
     Init,

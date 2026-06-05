@@ -316,8 +316,7 @@ fn acceptance_add_records_package_scoped_design_exception() {
             .join("designs")
             .join("oversized-file")
             .join("01-introduction-goals.md"),
-        std::iter::repeat("line")
-            .take(1001)
+        std::iter::repeat_n("line", 1001)
             .collect::<Vec<_>>()
             .join("\n"),
     )
