@@ -18,8 +18,9 @@ pub use commands::{
     list_command_profiles, list_command_usages,
 };
 pub use db::{
-    ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_ledger_path, init_project,
-    next_action, project_status,
+    ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_design_root,
+    default_export_root, default_ledger_path, default_log_root, init_project, next_action,
+    project_status,
 };
 pub use kpt::{
     KptItemConversionOutcome, KptItemOutcome, KptItemRecord, KptItemTaskConversion,
@@ -62,6 +63,9 @@ mod tests {
         let outcome = init_project(temp.path()).unwrap();
 
         assert!(outcome.ledger_path.exists());
+        assert!(default_design_root(temp.path()).exists());
+        assert!(default_export_root(temp.path()).exists());
+        assert!(default_log_root(temp.path()).exists());
         let status = project_status(temp.path()).unwrap();
         assert!(status.initialized);
         assert_eq!(status.schema_version, Some(SCHEMA_VERSION));
@@ -348,7 +352,7 @@ mod tests {
                 profile: Some("unit-tests"),
                 command: None,
                 result: "pass",
-                log_path: Some("local/logs/unit-tests.log"),
+                log_path: Some(".agent-workbench/logs/unit-tests.log"),
                 work_unit_id: None,
             },
         )

@@ -6,10 +6,25 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub const LEDGER_DIR: &str = ".agent-workbench";
 pub const LEDGER_FILE: &str = "ledger.sqlite";
+pub const DESIGN_DIR: &str = "designs";
+pub const EXPORT_DIR: &str = "exports";
+pub const LOG_DIR: &str = "logs";
 pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
+}
+
+pub fn default_design_root(root: &Path) -> PathBuf {
+    root.join(LEDGER_DIR).join(DESIGN_DIR)
+}
+
+pub fn default_export_root(root: &Path) -> PathBuf {
+    root.join(LEDGER_DIR).join(EXPORT_DIR)
+}
+
+pub fn default_log_root(root: &Path) -> PathBuf {
+    root.join(LEDGER_DIR).join(LOG_DIR)
 }
 
 pub fn init_project(root: &Path) -> Result<InitOutcome> {
@@ -17,6 +32,14 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
     if let Some(parent) = ledger_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create ledger directory {}", parent.display()))?;
+    }
+    for directory in [
+        default_design_root(root),
+        default_export_root(root),
+        default_log_root(root),
+    ] {
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("failed to create directory {}", directory.display()))?;
     }
 
     let conn = open_ledger(&ledger_path)?;

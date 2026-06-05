@@ -42,6 +42,17 @@ fn conn(root: &Path) -> Connection {
 }
 
 #[test]
+fn init_creates_workbench_artifact_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    assert!(temp.path().join(".agent-workbench/ledger.sqlite").exists());
+    assert!(temp.path().join(".agent-workbench/designs").is_dir());
+    assert!(temp.path().join(".agent-workbench/exports").is_dir());
+    assert!(temp.path().join(".agent-workbench/logs").is_dir());
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

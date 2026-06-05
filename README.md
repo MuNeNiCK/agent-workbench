@@ -38,7 +38,7 @@ cargo run -- work reopen 1 --reason "closure evidence was invalid"
 cargo run -- work follow-up 1 "related follow-up" --reason "later work found a related issue"
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
 cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
-cargo run -- command usage add --profile tests --result pass --log local/logs/tests.log
+cargo run -- command usage add --profile tests --result pass --log .agent-workbench/logs/tests.log
 cargo run -- command usage list --profile tests
 cargo run -- command deviation add --profile tests --usage 1 --reason "platform-specific path"
 cargo run -- rules applicable --scope project
