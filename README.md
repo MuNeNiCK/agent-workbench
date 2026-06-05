@@ -30,6 +30,9 @@ The `agent-workbench` CLI stores project-local state in
 cargo run -- init
 cargo run -- status
 cargo run -- next
+cargo run -- work start "current task"
+cargo run -- work suspend --reason "interrupting issue" --next "resume current task"
+cargo run -- resume-check --maturity basic
 ```
 
 ## Local Preview

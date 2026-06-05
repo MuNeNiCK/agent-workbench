@@ -2,9 +2,12 @@ use std::env;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-use agent_workbench::{NextAction, init_project, next_action, project_status};
+use agent_workbench::{
+    NextAction, close_active_work, init_project, interrupt_work, next_action, project_status,
+    resume_check_basic, resume_work, start_work, suspend_work,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-workbench")]
@@ -25,6 +28,69 @@ enum Command {
     Status,
     /// Print the next suggested action.
     Next,
+    /// Manage work units and activation state.
+    Work {
+        #[command(subcommand)]
+        command: WorkCommand,
+    },
+    /// Record a basic resume check for the latest suspended activation.
+    ResumeCheck(ResumeCheckArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkCommand {
+    /// Start a new active work unit.
+    Start(WorkStartArgs),
+    /// Suspend the active work unit.
+    Suspend(WorkSuspendArgs),
+    /// Interrupt active work with a child work unit.
+    Interrupt(WorkInterruptArgs),
+    /// Resume a suspended activation using an allowed resume check.
+    Resume(WorkResumeArgs),
+    /// Close the active work unit.
+    Close(WorkCloseArgs),
+}
+
+#[derive(Debug, Args)]
+struct WorkStartArgs {
+    title: String,
+    #[arg(long)]
+    responsibility: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct WorkSuspendArgs {
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    next: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkInterruptArgs {
+    title: String,
+    #[arg(long)]
+    reason: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkResumeArgs {
+    #[arg(long)]
+    check: i64,
+}
+
+#[derive(Debug, Args)]
+struct WorkCloseArgs {
+    #[arg(long)]
+    summary: String,
+    #[arg(long)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ResumeCheckArgs {
+    #[arg(long, default_value = "basic")]
+    maturity: String,
 }
 
 fn main() -> Result<()> {
@@ -74,6 +140,56 @@ fn main() -> Result<()> {
                 println!("title: {}", work_unit.title);
             }
         },
+        Command::Work { command } => match command {
+            WorkCommand::Start(args) => {
+                let outcome = start_work(&root, &args.title, args.responsibility.as_deref())?;
+                println!("started work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+            WorkCommand::Suspend(args) => {
+                let outcome = suspend_work(&root, &args.reason, &args.next)?;
+                println!("suspended work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+                println!("suspend_snapshot_id: {}", outcome.suspend_snapshot_id);
+            }
+            WorkCommand::Interrupt(args) => {
+                let outcome = interrupt_work(&root, &args.title, &args.reason)?;
+                println!("interrupted active work");
+                println!("parent_work_unit_id: {}", outcome.parent_work_unit_id);
+                println!("parent_activation_id: {}", outcome.parent_activation_id);
+                println!(
+                    "parent_suspend_snapshot_id: {}",
+                    outcome.parent_suspend_snapshot_id
+                );
+                println!("child_work_unit_id: {}", outcome.child_work_unit_id);
+                println!("child_activation_id: {}", outcome.child_activation_id);
+            }
+            WorkCommand::Resume(args) => {
+                let outcome = resume_work(&root, args.check)?;
+                println!("resumed work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+            WorkCommand::Close(args) => {
+                let outcome = close_active_work(&root, &args.summary, args.commit.as_deref())?;
+                println!("closed work unit");
+                println!("work_unit_id: {}", outcome.work_unit_id);
+                println!("activation_id: {}", outcome.activation_id);
+            }
+        },
+        Command::ResumeCheck(args) => {
+            if args.maturity != "basic" {
+                anyhow::bail!("only --maturity basic is implemented");
+            }
+            let outcome = resume_check_basic(&root)?;
+            println!("resume_check_id: {}", outcome.resume_check_id);
+            println!("result: {}", outcome.result);
+            if let Some(reason) = outcome.blocking_reason {
+                println!("blocking_reason: {reason}");
+            }
+        }
     }
 
     Ok(())

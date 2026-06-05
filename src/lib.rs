@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub const LEDGER_DIR: &str = ".agent-workbench";
@@ -98,11 +98,421 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     })
 }
 
+pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Result<WorkOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot start work while another activation is active");
+    }
+
+    tx.execute(
+        r#"
+        insert into work_units(project_id, title, status, responsibility, started_at)
+        values (?1, ?2, 'open', ?3, current_timestamp)
+        "#,
+        params![project_id, title, responsibility],
+    )?;
+    let work_unit_id = tx.last_insert_rowid();
+
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+        )
+        values (?1, ?2, 0, 'active', 'start', current_timestamp)
+        "#,
+        params![project_id, work_unit_id],
+    )?;
+    let activation_id = tx.last_insert_rowid();
+
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id,
+            activation_id: Some(activation_id),
+            related_activation_id: None,
+            event_type: "opened",
+            reason: responsibility,
+            status_domain: "work_unit",
+            previous_status: None,
+            next_status: Some("open"),
+        },
+    )?;
+
+    tx.commit()?;
+
+    Ok(WorkOutcome {
+        work_unit_id,
+        activation_id,
+    })
+}
+
+pub fn suspend_work(root: &Path, reason: &str, next_action: &str) -> Result<SuspendOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let active = active_activation(&tx)?.context("no active activation to suspend")?;
+    let snapshot_id = suspend_active_activation(&tx, &active, reason, next_action)?;
+    tx.commit()?;
+
+    Ok(SuspendOutcome {
+        work_unit_id: active.work_unit_id,
+        activation_id: active.activation_id,
+        suspend_snapshot_id: snapshot_id,
+    })
+}
+
+pub fn interrupt_work(root: &Path, title: &str, reason: &str) -> Result<InterruptOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let parent = active_activation(&tx)?.context("no active activation to interrupt")?;
+    let next_action = format!("resume work unit {}", parent.work_unit_id);
+    let parent_snapshot_id = suspend_active_activation(&tx, &parent, reason, &next_action)?;
+
+    tx.execute(
+        r#"
+        insert into work_units(
+            project_id, parent_work_unit_id, title, status, interrupt_reason, started_at
+        )
+        values (?1, ?2, ?3, 'open', ?4, current_timestamp)
+        "#,
+        params![project_id, parent.work_unit_id, title, reason],
+    )?;
+    let child_work_unit_id = tx.last_insert_rowid();
+
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, parent_activation_id, stack_depth, status,
+            activation_reason, opened_at
+        )
+        values (?1, ?2, ?3, ?4, 'active', 'interrupt', current_timestamp)
+        "#,
+        params![
+            project_id,
+            child_work_unit_id,
+            parent.activation_id,
+            parent.stack_depth + 1
+        ],
+    )?;
+    let child_activation_id = tx.last_insert_rowid();
+
+    tx.execute(
+        "update work_unit_activations set suspended_by_activation_id = ?1 where id = ?2",
+        params![child_activation_id, parent.activation_id],
+    )?;
+
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: child_work_unit_id,
+            activation_id: Some(child_activation_id),
+            related_activation_id: Some(parent.activation_id),
+            event_type: "opened",
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: None,
+            next_status: Some("open"),
+        },
+    )?;
+
+    tx.execute(
+        r#"
+        insert into work_unit_dependencies(
+            work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+            status, created_at
+        )
+        values (?1, ?2, 'blocks', ?3, 'open', current_timestamp)
+        "#,
+        params![parent.work_unit_id, child_work_unit_id, reason],
+    )?;
+
+    tx.commit()?;
+
+    Ok(InterruptOutcome {
+        parent_work_unit_id: parent.work_unit_id,
+        parent_activation_id: parent.activation_id,
+        parent_suspend_snapshot_id: parent_snapshot_id,
+        child_work_unit_id,
+        child_activation_id,
+    })
+}
+
+pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Result<CloseOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let active = active_activation(&tx)?.context("no active activation to close")?;
+    let close_summary = match commit {
+        Some(commit) => format!("{summary}\ncommit: {commit}"),
+        None => summary.to_string(),
+    };
+
+    tx.execute(
+        "update work_units set status = 'closed', closed_at = current_timestamp, close_summary = ?1 where id = ?2",
+        params![close_summary, active.work_unit_id],
+    )?;
+    tx.execute(
+        "update work_unit_activations set status = 'completed', completed_at = current_timestamp where id = ?1",
+        params![active.activation_id],
+    )?;
+
+    let reason = commit
+        .map(|commit| format!("{summary}; commit {commit}"))
+        .unwrap_or_else(|| summary.to_string());
+    let event_id = insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: active.work_unit_id,
+            activation_id: Some(active.activation_id),
+            related_activation_id: None,
+            event_type: "closed",
+            reason: Some(&reason),
+            status_domain: "work_unit",
+            previous_status: Some("open"),
+            next_status: Some("closed"),
+        },
+    )?;
+
+    tx.execute(
+        r#"
+        update work_unit_dependencies
+        set status = 'resolved', resolved_at = current_timestamp, resolved_by_work_unit_event_id = ?1
+        where depends_on_work_unit_id = ?2 and status = 'open'
+        "#,
+        params![event_id, active.work_unit_id],
+    )?;
+
+    tx.commit()?;
+
+    Ok(CloseOutcome {
+        work_unit_id: active.work_unit_id,
+        activation_id: active.activation_id,
+    })
+}
+
+pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let target = suspended_activation(&tx)?.context("no suspended activation to resume")?;
+    let snapshot = suspend_snapshot(&tx, target.activation_id)?;
+    let stack_revision = max_id(&tx, "work_unit_events")?;
+    let authority_high_watermark = max_id(&tx, "authority_events")?;
+
+    let deeper_open = tx.query_row(
+        r#"
+        select count(*)
+        from work_unit_activations
+        where project_id = ?1
+          and stack_depth > ?2
+          and status not in ('completed', 'abandoned')
+        "#,
+        params![target.project_id, target.stack_depth],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let blocking_dependencies = tx.query_row(
+        r#"
+        select count(*)
+        from work_unit_dependencies
+        where work_unit_id = ?1
+          and dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+          and status = 'open'
+        "#,
+        params![target.work_unit_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    let checks = [
+        (
+            "resume_target_suspended",
+            target.status == "suspended",
+            "target activation must be suspended",
+        ),
+        (
+            "snapshot_exists",
+            true,
+            "suspend snapshot must exist for target activation",
+        ),
+        (
+            "suspend_reason_exists",
+            !snapshot.reason.trim().is_empty(),
+            "suspend snapshot must include a reason",
+        ),
+        (
+            "next_action_exists",
+            !snapshot.next_action.trim().is_empty(),
+            "suspend snapshot must include a next action",
+        ),
+        (
+            "deeper_frames_closed",
+            deeper_open == 0,
+            "deeper activation frames must be completed or abandoned",
+        ),
+        (
+            "blocking_dependencies_clear",
+            blocking_dependencies == 0,
+            "blocking dependencies must be resolved",
+        ),
+    ];
+    let allowed = checks.iter().all(|(_, pass, _)| *pass);
+    let blocking_reason = checks
+        .iter()
+        .find_map(|(_, pass, message)| (!pass).then_some(*message));
+
+    tx.execute(
+        r#"
+        insert into resume_checks(
+            work_unit_id, work_unit_activation_id, suspend_snapshot_id, maturity,
+            status, result, authority_event_high_watermark, activation_stack_revision,
+            allowed_next_action, blocking_reason, created_at
+        )
+        values (?1, ?2, ?3, 'basic', 'pending', ?4, ?5, ?6, ?7, ?8, current_timestamp)
+        "#,
+        params![
+            target.work_unit_id,
+            target.activation_id,
+            snapshot.id,
+            if allowed { "allowed" } else { "blocked" },
+            authority_high_watermark,
+            stack_revision,
+            if allowed {
+                Some(snapshot.next_action.as_str())
+            } else {
+                None
+            },
+            blocking_reason,
+        ],
+    )?;
+    let resume_check_id = tx.last_insert_rowid();
+
+    for (name, pass, message) in checks {
+        tx.execute(
+            r#"
+            insert into resume_check_items(
+                resume_check_id, check_name, result, blocking_action, details
+            )
+            values (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                resume_check_id,
+                name,
+                if pass { "pass" } else { "fail" },
+                if pass { None } else { Some(message) },
+                message,
+            ],
+        )?;
+    }
+
+    tx.commit()?;
+
+    Ok(ResumeCheckOutcome {
+        resume_check_id,
+        result: if allowed {
+            "allowed".to_string()
+        } else {
+            "blocked".to_string()
+        },
+        blocking_reason: blocking_reason.map(str::to_string),
+    })
+}
+
+pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+
+    let check = tx
+        .query_row(
+            r#"
+            select id, work_unit_id, work_unit_activation_id, result, status,
+                   authority_event_high_watermark, activation_stack_revision
+            from resume_checks
+            where id = ?1
+            "#,
+            params![resume_check_id],
+            |row| {
+                Ok(StoredResumeCheck {
+                    id: row.get(0)?,
+                    work_unit_id: row.get(1)?,
+                    activation_id: row.get(2)?,
+                    result: row.get(3)?,
+                    status: row.get(4)?,
+                    authority_event_high_watermark: row.get(5)?,
+                    activation_stack_revision: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .context("resume check not found")?;
+
+    if check.status != "pending" || check.result != "allowed" {
+        bail!("resume check must be pending and allowed");
+    }
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot resume while another activation is active");
+    }
+    if max_id(&tx, "authority_events")? != check.authority_event_high_watermark.unwrap_or(0)
+        || max_id(&tx, "work_unit_events")? != check.activation_stack_revision.unwrap_or(0)
+    {
+        tx.execute(
+            "update resume_checks set status = 'stale' where id = ?1",
+            params![check.id],
+        )?;
+        tx.commit()?;
+        bail!("resume check is stale");
+    }
+
+    let status: String = tx.query_row(
+        "select status from work_unit_activations where id = ?1",
+        params![check.activation_id],
+        |row| row.get(0),
+    )?;
+    if status != "suspended" {
+        bail!("resume target activation is not suspended");
+    }
+
+    tx.execute(
+        "update work_unit_activations set status = 'active' where id = ?1",
+        params![check.activation_id],
+    )?;
+    let event_id = insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: check.work_unit_id,
+            activation_id: Some(check.activation_id),
+            related_activation_id: None,
+            event_type: "resumed",
+            reason: Some("resume check allowed"),
+            status_domain: "activation",
+            previous_status: Some("suspended"),
+            next_status: Some("active"),
+        },
+    )?;
+    tx.execute(
+        "update resume_checks set status = 'consumed', consumed_at = current_timestamp, consumed_by_work_unit_event_id = ?1 where id = ?2",
+        params![event_id, check.id],
+    )?;
+    tx.commit()?;
+
+    Ok(ResumeOutcome {
+        work_unit_id: check.work_unit_id,
+        activation_id: check.activation_id,
+    })
+}
+
 fn open_ledger(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .with_context(|| format!("failed to open ledger {}", path.display()))?;
     conn.pragma_update(None, "foreign_keys", true)?;
     Ok(conn)
+}
+
+fn open_existing_project(root: &Path) -> Result<Connection> {
+    let ledger_path = default_ledger_path(root);
+    if !ledger_path.exists() {
+        bail!("project is not initialized; run agent-workbench init");
+    }
+    open_ledger(&ledger_path)
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -156,6 +566,197 @@ fn count_rows(conn: &Connection, table: &str, predicate: &str) -> Result<i64> {
     Ok(count)
 }
 
+fn project_id(conn: &Connection) -> Result<i64> {
+    conn.query_row("select id from projects order by id limit 1", [], |row| {
+        row.get(0)
+    })
+    .context("project row not found; run agent-workbench init")
+}
+
+fn max_id(conn: &Connection, table: &str) -> Result<i64> {
+    let sql = format!("select coalesce(max(id), 0) from {table}");
+    let id = conn.query_row(&sql, [], |row| row.get(0))?;
+    Ok(id)
+}
+
+fn active_activation(conn: &Connection) -> Result<Option<StoredActivation>> {
+    conn.query_row(
+        r#"
+        select a.id, a.project_id, a.work_unit_id, a.stack_depth, a.status
+        from work_unit_activations a
+        where a.status = 'active'
+        order by a.id desc
+        limit 1
+        "#,
+        [],
+        stored_activation,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn suspended_activation(conn: &Connection) -> Result<Option<StoredActivation>> {
+    conn.query_row(
+        r#"
+        select a.id, a.project_id, a.work_unit_id, a.stack_depth, a.status
+        from work_unit_activations a
+        where a.status = 'suspended'
+        order by a.stack_depth desc, a.id desc
+        limit 1
+        "#,
+        [],
+        stored_activation,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn stored_activation(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredActivation> {
+    Ok(StoredActivation {
+        activation_id: row.get(0)?,
+        project_id: row.get(1)?,
+        work_unit_id: row.get(2)?,
+        stack_depth: row.get(3)?,
+        status: row.get(4)?,
+    })
+}
+
+fn suspend_snapshot(conn: &Connection, activation_id: i64) -> Result<StoredSuspendSnapshot> {
+    conn.query_row(
+        r#"
+        select id, reason, next_action
+        from suspend_snapshots
+        where work_unit_activation_id = ?1
+        order by id desc
+        limit 1
+        "#,
+        params![activation_id],
+        |row| {
+            Ok(StoredSuspendSnapshot {
+                id: row.get(0)?,
+                reason: row.get(1)?,
+                next_action: row.get(2)?,
+            })
+        },
+    )
+    .optional()?
+    .context("suspend snapshot not found")
+}
+
+fn suspend_active_activation(
+    conn: &Connection,
+    active: &StoredActivation,
+    reason: &str,
+    next_action: &str,
+) -> Result<i64> {
+    if reason.trim().is_empty() {
+        bail!("suspend reason is required");
+    }
+    if next_action.trim().is_empty() {
+        bail!("suspend next action is required");
+    }
+
+    conn.execute(
+        "update work_unit_activations set status = 'suspended', suspended_at = current_timestamp where id = ?1",
+        params![active.activation_id],
+    )?;
+    conn.execute(
+        r#"
+        insert into suspend_snapshots(
+            work_unit_activation_id, work_unit_id, reason, next_action, created_at
+        )
+        values (?1, ?2, ?3, ?4, current_timestamp)
+        "#,
+        params![
+            active.activation_id,
+            active.work_unit_id,
+            reason,
+            next_action
+        ],
+    )?;
+    let snapshot_id = conn.last_insert_rowid();
+    conn.execute(
+        "update work_unit_activations set suspend_snapshot_id = ?1 where id = ?2",
+        params![snapshot_id, active.activation_id],
+    )?;
+    insert_event(
+        conn,
+        NewEvent {
+            work_unit_id: active.work_unit_id,
+            activation_id: Some(active.activation_id),
+            related_activation_id: None,
+            event_type: "suspended",
+            reason: Some(reason),
+            status_domain: "activation",
+            previous_status: Some("active"),
+            next_status: Some("suspended"),
+        },
+    )?;
+
+    Ok(snapshot_id)
+}
+
+fn insert_event(conn: &Connection, event: NewEvent<'_>) -> Result<i64> {
+    conn.execute(
+        r#"
+        insert into work_unit_events(
+            work_unit_id, work_unit_activation_id, related_activation_id,
+            event_type, reason, status_domain, previous_status, next_status, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, current_timestamp)
+        "#,
+        params![
+            event.work_unit_id,
+            event.activation_id,
+            event.related_activation_id,
+            event.event_type,
+            event.reason,
+            event.status_domain,
+            event.previous_status,
+            event.next_status,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+struct NewEvent<'a> {
+    work_unit_id: i64,
+    activation_id: Option<i64>,
+    related_activation_id: Option<i64>,
+    event_type: &'a str,
+    reason: Option<&'a str>,
+    status_domain: &'a str,
+    previous_status: Option<&'a str>,
+    next_status: Option<&'a str>,
+}
+
+#[derive(Debug)]
+struct StoredActivation {
+    activation_id: i64,
+    project_id: i64,
+    work_unit_id: i64,
+    stack_depth: i64,
+    status: String,
+}
+
+#[derive(Debug)]
+struct StoredSuspendSnapshot {
+    id: i64,
+    reason: String,
+    next_action: String,
+}
+
+#[derive(Debug)]
+struct StoredResumeCheck {
+    id: i64,
+    work_unit_id: i64,
+    activation_id: i64,
+    result: String,
+    status: String,
+    authority_event_high_watermark: Option<i64>,
+    activation_stack_revision: Option<i64>,
+}
+
 #[derive(Debug)]
 pub struct InitOutcome {
     pub ledger_path: PathBuf,
@@ -182,6 +783,47 @@ pub enum NextAction {
 pub struct ActiveWorkUnit {
     pub id: i64,
     pub title: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SuspendOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+    pub suspend_snapshot_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InterruptOutcome {
+    pub parent_work_unit_id: i64,
+    pub parent_activation_id: i64,
+    pub parent_suspend_snapshot_id: i64,
+    pub child_work_unit_id: i64,
+    pub child_activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CloseOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResumeCheckOutcome {
+    pub resume_check_id: i64,
+    pub result: String,
+    pub blocking_reason: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResumeOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
 }
 
 const SCHEMA: &str = r#"
@@ -577,6 +1219,84 @@ mod tests {
         let next = next_action(temp.path()).unwrap();
 
         assert_eq!(next, NextAction::NoActiveWorkUnit);
+    }
+
+    #[test]
+    fn work_start_creates_active_work_unit() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+
+        let started = start_work(temp.path(), "write lifecycle test", Some("test first")).unwrap();
+        let next = next_action(temp.path()).unwrap();
+
+        assert_eq!(started.work_unit_id, 1);
+        assert_eq!(started.activation_id, 1);
+        assert_eq!(
+            next,
+            NextAction::ContinueActive {
+                work_unit: ActiveWorkUnit {
+                    id: 1,
+                    title: "write lifecycle test".to_string()
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn work_start_refuses_second_active_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        start_work(temp.path(), "one", None).unwrap();
+
+        let second = start_work(temp.path(), "two", None);
+
+        assert!(second.is_err());
+    }
+
+    #[test]
+    fn suspend_and_resume_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let started = start_work(temp.path(), "implement resume", None).unwrap();
+
+        let suspended = suspend_work(
+            temp.path(),
+            "need to validate assumption",
+            "continue implementation",
+        )
+        .unwrap();
+        let check = resume_check_basic(temp.path()).unwrap();
+        let resumed = resume_work(temp.path(), check.resume_check_id).unwrap();
+
+        assert_eq!(suspended.work_unit_id, started.work_unit_id);
+        assert_eq!(check.result, "allowed");
+        assert_eq!(resumed.activation_id, started.activation_id);
+        assert!(matches!(
+            next_action(temp.path()).unwrap(),
+            NextAction::ContinueActive { .. }
+        ));
+    }
+
+    #[test]
+    fn interrupt_blocks_parent_until_child_is_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let parent = start_work(temp.path(), "parent", None).unwrap();
+
+        let interrupt = interrupt_work(temp.path(), "child", "blocks parent").unwrap();
+        let blocked = resume_check_basic(temp.path()).unwrap();
+        close_active_work(temp.path(), "child done", None).unwrap();
+        let allowed = resume_check_basic(temp.path()).unwrap();
+        let resumed = resume_work(temp.path(), allowed.resume_check_id).unwrap();
+
+        assert_eq!(interrupt.parent_work_unit_id, parent.work_unit_id);
+        assert_eq!(blocked.result, "blocked");
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("deeper activation frames must be completed or abandoned")
+        );
+        assert_eq!(allowed.result, "allowed");
+        assert_eq!(resumed.activation_id, parent.activation_id);
     }
 
     #[test]
