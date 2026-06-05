@@ -1506,9 +1506,10 @@ when new.allow_new_findings_in_resume = 0
       select 1
       from review_plans p
       join review_runs r on r.review_plan_id = p.id
+      left join findings f on f.review_run_id = r.id
       where p.review_policy_id = old.id
         and r.run_type = 'resume'
-        and r.new_findings_count > 0
+        and (r.new_findings_count > 0 or f.id is not null)
   )
 begin
     select raise(abort, 'review policy update would conflict with resume findings');
@@ -1681,6 +1682,22 @@ when (new.review_policy_id is not null and new.review_type != (select review_typ
   or (new.review_scope_id is not null and new.review_type != (select review_type from review_scopes where id = new.review_scope_id))
 begin
     select raise(abort, 'review plan type must match policy and scope type');
+end;
+
+create trigger if not exists trg_review_plan_resume_policy_update
+before update of review_policy_id on review_plans
+for each row
+when (select allow_new_findings_in_resume from review_policies where id = new.review_policy_id) = 0
+  and exists (
+      select 1
+      from review_runs r
+      left join findings f on f.review_run_id = r.id
+      where r.review_plan_id = new.id
+        and r.run_type = 'resume'
+        and (r.new_findings_count > 0 or f.id is not null)
+  )
+begin
+    select raise(abort, 'review plan policy update would conflict with resume findings');
 end;
 
 create trigger if not exists trg_review_run_project_insert
@@ -1899,10 +1916,13 @@ create trigger if not exists trg_review_run_resume_policy_update
 before update of review_plan_id, run_type, new_findings_count on review_runs
 for each row
 when new.run_type = 'resume'
-  and new.new_findings_count > 0
   and (select allow_new_findings_in_resume
        from review_policies
        where id = (select review_policy_id from review_plans where id = new.review_plan_id)) = 0
+  and (
+      new.new_findings_count > 0
+      or exists (select 1 from findings where review_run_id = new.id)
+  )
 begin
     select raise(abort, 'new findings are disabled for resume review by policy');
 end;

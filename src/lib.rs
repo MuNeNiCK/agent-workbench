@@ -2054,6 +2054,107 @@ This requirement describes changed cleanup behavior that must be implemented.
         assert!(direct_resume_count_insert.is_err());
         assert!(direct_resume_count_update.is_err());
         assert!(direct_resume_finding_insert.is_err());
+
+        let permissive_policy = add_review_policy(
+            temp.path(),
+            NewReviewPolicy {
+                name: "resume-allows-new",
+                review_type: "implementation_review",
+                max_fresh_agents: 1,
+                max_resume_agents: 3,
+                max_parallel_agents: 1,
+                required_consecutive_clean_fresh_runs: 0,
+                required_consecutive_clean_resume_runs: 0,
+                stop_on_severity: "none",
+                allow_resume_review: true,
+                allow_fresh_review: true,
+                allow_new_findings_in_resume: true,
+                on_max_agents_exceeded: "block",
+                run_count_scope: "review_plan",
+                default_run_mode: "resume",
+            },
+        )
+        .unwrap();
+        let permissive_plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(permissive_policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        let counted_resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: permissive_plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: Some("allowed count"),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        let actual_resume = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id: permissive_plan.review_plan_id,
+                run_type: "resume",
+                run_purpose: "finding_fix_verification",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: Some("allowed finding"),
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+        add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: actual_resume.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "medium",
+                description: "allowed resume finding",
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        let policy_tighten_with_actual_finding = conn.execute(
+            "update review_policies set allow_new_findings_in_resume = 0 where id = ?1",
+            params![permissive_policy.review_policy_id],
+        );
+        let plan_policy_swap_with_count = conn.execute(
+            "update review_plans set review_policy_id = ?1 where id = ?2",
+            params![policy.review_policy_id, permissive_plan.review_plan_id],
+        );
+        let run_plan_swap_with_count = conn.execute(
+            "update review_runs set review_plan_id = ?1 where id = ?2",
+            params![plan.review_plan_id, counted_resume.review_run_id],
+        );
+
+        assert!(policy_tighten_with_actual_finding.is_err());
+        assert!(plan_policy_swap_with_count.is_err());
+        assert!(run_plan_swap_with_count.is_err());
     }
 
     #[test]
