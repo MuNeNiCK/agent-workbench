@@ -11,11 +11,12 @@ use agent_workbench::{
     NewCommandUsage, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage, NewKptItem,
     NewKptReview, NewTask, NewTaskDerivation, NewUserCorrection, NewWorkFork, NewWorkRecord,
     NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NextAction, RuleQuery,
-    TaskDerivationListQuery, TaskListQuery, ValidationGateTemplateListQuery, WorkForkSource,
-    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_command_deviation,
-    add_command_usage, add_decision, add_fixed_command, add_kpt_item, add_task,
-    add_user_correction, add_work_record_command, add_work_record_commit, add_work_record_file,
-    applicable_rules, approve_design_version, close_active_work, close_kpt_review, close_task,
+    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
+    ValidationGateTemplateListQuery, WorkForkSource, accept_design_exception,
+    accept_task_out_of_scope, add_authority_event, add_command_deviation, add_command_usage,
+    add_decision, add_fixed_command, add_kpt_item, add_task, add_user_correction,
+    add_work_record_command, add_work_record_commit, add_work_record_file, applicable_rules,
+    approve_design_version, close_active_work, close_kpt_review, close_task,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
     derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
     implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
@@ -23,7 +24,7 @@ use agent_workbench::{
     list_design_decisions, list_design_requirements, list_kpt_items, list_kpt_reviews,
     list_task_derivations, list_tasks, list_user_corrections, list_validation_gate_templates,
     list_work_records, next_action, project_status, reopen_work, resume_check, resume_ready,
-    resume_work, start_kpt_review, start_work, suspend_work,
+    resume_work, select_validation_gate, start_kpt_review, start_work, suspend_work,
 };
 
 #[derive(Debug, Parser)]
@@ -224,6 +225,8 @@ struct ResumeCheckArgs {
 
 #[derive(Debug, Subcommand)]
 enum GateCommand {
+    /// Select a validation gate from an imported template.
+    Select(GateSelectArgs),
     /// Check whether a suspended activation can resume without writing ledger rows.
     ResumeReady(GateResumeReadyArgs),
     /// Check whether an imported design version is ready for implementation planning.
@@ -254,6 +257,20 @@ struct GateImplementationReadyArgs {
     design_version: Option<i64>,
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct GateSelectArgs {
+    #[arg(long)]
+    design: i64,
+    #[arg(long)]
+    template: String,
+    #[arg(long)]
+    requirement: String,
+    #[arg(long)]
+    task: i64,
+    #[arg(long)]
+    command: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -948,6 +965,26 @@ fn main() -> Result<()> {
             }
         }
         Command::Gate { command } => match command {
+            GateCommand::Select(args) => {
+                let outcome = select_validation_gate(
+                    &root,
+                    ValidationGateSelection {
+                        design_version_id: args.design,
+                        gate_key: &args.template,
+                        requirement_key: &args.requirement,
+                        task_id: args.task,
+                        command: args.command.as_deref(),
+                    },
+                )?;
+                println!("selected validation gate");
+                println!("validation_gate_id: {}", outcome.validation_gate_id);
+                println!(
+                    "validation_gate_template_id: {}",
+                    outcome.validation_gate_template_id
+                );
+                println!("design_requirement_id: {}", outcome.design_requirement_id);
+                println!("task_id: {}", outcome.task_id);
+            }
             GateCommand::ResumeReady(args) => {
                 if !args.dry_run {
                     anyhow::bail!("gate resume-ready is read-only; pass --dry-run");

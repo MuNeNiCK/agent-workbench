@@ -56,7 +56,8 @@ pub use rules::{
 pub use traceability::{
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
     NewTaskDerivation, TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord,
-    derive_task_from_requirement, implementation_ready, list_task_derivations,
+    ValidationGateSelection, ValidationGateSelectionOutcome, derive_task_from_requirement,
+    implementation_ready, list_task_derivations, select_validation_gate,
 };
 pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
@@ -1417,6 +1418,24 @@ mod tests {
             },
         )
         .unwrap();
+        let blocked_without_gate = implementation_ready(
+            temp.path(),
+            ImplementationReadyCheck {
+                design_version_id: Some(import.design_version_id),
+            },
+        )
+        .unwrap();
+        let gate = select_validation_gate(
+            temp.path(),
+            ValidationGateSelection {
+                design_version_id: import.design_version_id,
+                gate_key: "GATE-001",
+                requirement_key: "REQ-001",
+                task_id: task.task_id,
+                command: None,
+            },
+        )
+        .unwrap();
         let passed = implementation_ready(
             temp.path(),
             ImplementationReadyCheck {
@@ -1440,6 +1459,14 @@ mod tests {
                 .any(|item| { item.name == "task_derivations_exist" && item.result == "fail" })
         );
         assert_eq!(derivation.task_id, task.task_id);
+        assert_eq!(gate.task_id, task.task_id);
+        assert_eq!(blocked_without_gate.result, "blocked");
+        assert!(
+            blocked_without_gate
+                .items
+                .iter()
+                .any(|item| { item.name == "validation_gates_selected" && item.result == "fail" })
+        );
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].requirement_key, "REQ-001");
         assert_eq!(passed.result, "pass");

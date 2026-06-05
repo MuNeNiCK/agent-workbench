@@ -966,6 +966,25 @@ create table if not exists task_derivations (
     unique(design_requirement_id, task_id)
 );
 
+create table if not exists validation_gates (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    gate_key text not null,
+    template_id integer references validation_gate_templates(id),
+    work_unit_id integer references work_units(id) on delete cascade,
+    task_id integer references tasks(id) on delete cascade,
+    design_requirement_id integer references design_requirements(id) on delete cascade,
+    command_profile_id integer references command_profiles(id),
+    command text,
+    expected_result text not null,
+    environment text,
+    timeout text,
+    artifact_requirements text,
+    selected_before_edit integer not null default 1 check (selected_before_edit in (0, 1)),
+    status text not null default 'active' check (status in ('active', 'stale', 'closed')),
+    created_at text not null
+);
+
 create trigger if not exists trg_gate_template_requirement_project_insert
 before insert on validation_gate_template_requirements
 for each row
@@ -1052,6 +1071,34 @@ when new.project_id != (select project_id from design_requirements where id = ne
   or (new.checklist_item_id is not null and new.project_id != (select project_id from checklist_items where id = new.checklist_item_id))
 begin
     select raise(abort, 'task derivation project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_validation_gate_project_insert
+before insert on validation_gates
+for each row
+when (new.template_id is not null and new.project_id != (select project_id from validation_gate_templates where id = new.template_id))
+  or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+begin
+    select raise(abort, 'validation gate project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_validation_gate_project_update
+before update of project_id, template_id, work_unit_id, task_id, design_requirement_id on validation_gates
+for each row
+when (new.template_id is not null and new.project_id != (select project_id from validation_gate_templates where id = new.template_id))
+  or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or (new.task_id is not null and new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      (select id from projects order by id limit 1)
+  ))
+  or (new.design_requirement_id is not null and new.project_id != (select project_id from design_requirements where id = new.design_requirement_id))
+begin
+    select raise(abort, 'validation gate project_id must match referenced rows');
 end;
 
 create trigger if not exists trg_acceptance_design_requirement_project_insert

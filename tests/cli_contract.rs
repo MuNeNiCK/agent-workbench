@@ -536,6 +536,31 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         temp.path(),
         &["trace", "derivation", "list", "--design", "1"],
     );
+    let without_gate = ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
+    let selected = ok(
+        temp.path(),
+        &[
+            "gate",
+            "select",
+            "--design",
+            "1",
+            "--template",
+            "GATE-001",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+        ],
+    );
     let passed = ok(
         temp.path(),
         &[
@@ -550,8 +575,12 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(derivation.contains("derived task from requirement"));
     assert!(derivation.contains("task_derivation_id: 1"));
     assert!(list.contains("requirement=REQ-001 task=1"));
+    assert!(without_gate.contains("validation_gates_selected: fail"));
+    assert!(selected.contains("selected validation gate"));
+    assert!(selected.contains("validation_gate_id: 1"));
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("task_derivations_exist: pass"));
+    assert!(passed.contains("validation_gates_selected: pass"));
 }
 
 #[test]

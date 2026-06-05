@@ -160,6 +160,98 @@ pub fn list_task_derivations(
     Ok(records)
 }
 
+pub fn select_validation_gate(
+    root: &Path,
+    input: ValidationGateSelection<'_>,
+) -> Result<ValidationGateSelectionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let template = tx
+        .query_row(
+            r#"
+            select id, gate_key, command, expected_result
+            from validation_gate_templates
+            where project_id = ?1
+              and design_version_id = ?2
+              and gate_key = ?3
+              and status = 'active'
+            "#,
+            params![project_id, input.design_version_id, input.gate_key],
+            |row| {
+                Ok(ResolvedGateTemplate {
+                    id: row.get(0)?,
+                    gate_key: row.get(1)?,
+                    command: row.get(2)?,
+                    expected_result: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .context("active validation gate template not found")?;
+    let requirement_id: i64 = tx
+        .query_row(
+            r#"
+            select r.id
+            from design_requirements r
+            join validation_gate_template_requirements gr
+              on gr.design_requirement_id = r.id
+            where r.project_id = ?1
+              and r.design_version_id = ?2
+              and r.requirement_key = ?3
+              and gr.validation_gate_template_id = ?4
+              and r.status = 'active'
+            "#,
+            params![
+                project_id,
+                input.design_version_id,
+                input.requirement_key,
+                template.id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("active requirement is not covered by the validation gate template")?;
+    let task_work_unit_id: Option<i64> = tx
+        .query_row(
+            "select work_unit_id from tasks where id = ?1",
+            params![input.task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("task not found")?;
+    let command = input.command.or(template.command.as_deref());
+    tx.execute(
+        r#"
+        insert into validation_gates(
+            project_id, gate_key, template_id, work_unit_id, task_id,
+            design_requirement_id, command, expected_result,
+            selected_before_edit, status, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'active', current_timestamp)
+        "#,
+        params![
+            project_id,
+            template.gate_key,
+            template.id,
+            task_work_unit_id,
+            input.task_id,
+            requirement_id,
+            command,
+            template.expected_result,
+        ],
+    )?;
+    let validation_gate_id = tx.last_insert_rowid();
+    tx.commit()?;
+
+    Ok(ValidationGateSelectionOutcome {
+        validation_gate_id,
+        validation_gate_template_id: template.id,
+        design_requirement_id: requirement_id,
+        task_id: input.task_id,
+    })
+}
+
 pub fn implementation_ready(
     root: &Path,
     input: ImplementationReadyCheck,
@@ -257,6 +349,22 @@ pub fn implementation_ready(
             "validation_expectations_linked",
             Some(format!(
                 "{missing_validation_count} active requirements have no linked validation template"
+            )),
+        ));
+    }
+
+    let missing_selected_gate_count =
+        count_missing_selected_gates(&conn, version.design_version_id)?;
+    if missing_selected_gate_count == 0 {
+        items.push(ImplementationReadyItem::pass(
+            "validation_gates_selected",
+            None,
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "validation_gates_selected",
+            Some(format!(
+                "{missing_selected_gate_count} active task derivations have no selected validation gate"
             )),
         ));
     }
@@ -451,6 +559,33 @@ fn count_missing_validation_links(
     .map_err(Into::into)
 }
 
+fn count_missing_selected_gates(
+    conn: &rusqlite::Connection,
+    design_version_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join design_requirements r on r.id = td.design_requirement_id
+        where r.design_version_id = ?1
+          and r.status = 'active'
+          and td.status = 'active'
+          and not exists (
+            select 1
+            from validation_gates vg
+            where vg.design_requirement_id = r.id
+              and vg.task_id = td.task_id
+              and vg.selected_before_edit = 1
+              and vg.status = 'active'
+          )
+        "#,
+        params![design_version_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 fn resolved_design_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedDesignVersion> {
     Ok(ResolvedDesignVersion {
         design_version_id: row.get(0)?,
@@ -471,6 +606,13 @@ struct ResolvedTask {
     work_unit_id: Option<i64>,
     title: String,
     completion_condition: Option<String>,
+}
+
+struct ResolvedGateTemplate {
+    id: i64,
+    gate_key: String,
+    command: Option<String>,
+    expected_result: String,
 }
 
 struct ResolvedDesignVersion {
@@ -499,6 +641,14 @@ pub struct ImplementationReadyCheck {
     pub design_version_id: Option<i64>,
 }
 
+pub struct ValidationGateSelection<'a> {
+    pub design_version_id: i64,
+    pub gate_key: &'a str,
+    pub requirement_key: &'a str,
+    pub task_id: i64,
+    pub command: Option<&'a str>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct TaskDerivationOutcome {
     pub task_derivation_id: i64,
@@ -517,6 +667,14 @@ pub struct TaskDerivationRecord {
     pub checklist_item_id: Option<i64>,
     pub checklist_item_title: Option<String>,
     pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationGateSelectionOutcome {
+    pub validation_gate_id: i64,
+    pub validation_gate_template_id: i64,
+    pub design_requirement_id: i64,
+    pub task_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
