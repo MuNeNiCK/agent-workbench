@@ -1122,6 +1122,27 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
                 details,
             });
         }
+        let review_state = review_plan_resume_state(conn, target.work_unit_id)?;
+        let review_pass = review_state.required_plan_count == 0
+            || (review_state.incomplete_required_plan_count == 0
+                && review_state.stale_target_count == 0);
+        if !review_pass {
+            trace_allowed = false;
+            blocking_reason.get_or_insert_with(|| "trace-aware resume checks failed".to_string());
+        }
+        items.push(ResumeReadyItem {
+            name: "review_plan_current".to_string(),
+            result: if review_pass { "pass" } else { "fail" }.to_string(),
+            blocking_action: (!review_pass).then_some(
+                "complete required resume-ready plans or refresh stale targets".to_string(),
+            ),
+            details: format!(
+                "{} required resume-ready plans, {} incomplete, {} stale targets",
+                review_state.required_plan_count,
+                review_state.incomplete_required_plan_count,
+                review_state.stale_target_count
+            ),
+        });
     } else {
         let later_items = [
             (
@@ -1139,6 +1160,10 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             (
                 "selected_gate_current",
                 "trace-aware validation gate check was not requested",
+            ),
+            (
+                "review_plan_current",
+                "trace-aware review plan check was not requested",
             ),
         ];
         items.extend(
@@ -1194,32 +1219,30 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         });
     }
 
-    let remaining_later_items = [
-        (
-            "review_plan_current",
-            "trace-aware review plan check is not implemented yet",
-        ),
-        (
-            "assumptions_current",
-            "repo-aware assumptions check is not implemented yet",
-        ),
-    ];
-    items.extend(
-        remaining_later_items
-            .into_iter()
-            .map(|(name, details)| ResumeReadyItem {
-                name: name.to_string(),
-                result: "not_checked".to_string(),
-                blocking_action: None,
-                details: details.to_string(),
-            }),
-    );
-
-    let known_maturity = matches!(maturity, "basic" | "trace-aware" | "repo-aware");
-    if !known_maturity {
-        blocking_reason.get_or_insert_with(|| format!("{maturity} checks are not implemented yet"));
+    if repo_maturity {
+        let invalidated_assumptions = open_assumption_invalidations(conn, target.work_unit_id)?;
+        let pass = invalidated_assumptions == 0;
+        if !pass {
+            repo_allowed = false;
+            blocking_reason.get_or_insert_with(|| "repo-aware resume checks failed".to_string());
+        }
+        items.push(ResumeReadyItem {
+            name: "assumptions_current".to_string(),
+            result: if pass { "pass" } else { "fail" }.to_string(),
+            blocking_action: (!pass)
+                .then_some("resolve open assumption invalidation dependencies".to_string()),
+            details: format!("{invalidated_assumptions} open assumption invalidations"),
+        });
+    } else {
+        items.push(ResumeReadyItem {
+            name: "assumptions_current".to_string(),
+            result: "not_checked".to_string(),
+            blocking_action: None,
+            details: "repo-aware assumptions check was not requested".to_string(),
+        });
     }
-    let allowed = basic_allowed && trace_allowed && repo_allowed && known_maturity;
+
+    let allowed = basic_allowed && trace_allowed && repo_allowed;
     Ok(ResumeGateEvaluation {
         work_unit_id: target.work_unit_id,
         activation_id: target.activation_id,
@@ -1451,6 +1474,179 @@ fn repository_close_state(
     })
 }
 
+fn review_plan_resume_state(conn: &Connection, work_unit_id: i64) -> Result<ReviewPlanResumeState> {
+    let mut stmt = conn.prepare(
+        r#"
+        select id, status
+        from review_plans
+        where work_unit_id = ?1
+          and stage = 'resume-ready'
+          and required = 1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut state = ReviewPlanResumeState::default();
+    for row in rows {
+        let (review_plan_id, status) = row?;
+        state.required_plan_count += 1;
+        if !matches!(
+            status.as_str(),
+            "clean" | "accepted_exception" | "not_required"
+        ) {
+            state.incomplete_required_plan_count += 1;
+        }
+        state.stale_target_count += stale_review_plan_target_count(conn, review_plan_id)?;
+    }
+    Ok(state)
+}
+
+fn stale_review_plan_target_count(conn: &Connection, review_plan_id: i64) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        r#"
+        select target_type, design_version_id, design_requirement_id, repository_snapshot_id
+        from review_plan_targets
+        where review_plan_id = ?1
+        "#,
+    )?;
+    let rows = stmt.query_map(params![review_plan_id], |row| {
+        Ok(ReviewPlanTargetForResume {
+            target_type: row.get(0)?,
+            design_version_id: row.get(1)?,
+            design_requirement_id: row.get(2)?,
+            repository_snapshot_id: row.get(3)?,
+        })
+    })?;
+    let mut stale = 0;
+    for row in rows {
+        if review_plan_target_stale(conn, row?)? {
+            stale += 1;
+        }
+    }
+    Ok(stale)
+}
+
+fn review_plan_target_stale(conn: &Connection, target: ReviewPlanTargetForResume) -> Result<bool> {
+    match target.target_type.as_str() {
+        "design_version" => match target.design_version_id {
+            Some(design_version_id) => design_version_stale(conn, design_version_id),
+            None => Ok(true),
+        },
+        "design_requirement" => match target.design_requirement_id {
+            Some(design_requirement_id) => design_requirement_stale(conn, design_requirement_id),
+            None => Ok(true),
+        },
+        "repository_snapshot" => match target.repository_snapshot_id {
+            Some(repository_snapshot_id) => {
+                repository_snapshot_target_stale(conn, repository_snapshot_id)
+            }
+            None => Ok(true),
+        },
+        _ => Ok(false),
+    }
+}
+
+fn design_version_stale(conn: &Connection, design_version_id: i64) -> Result<bool> {
+    let current_id = conn
+        .query_row(
+            r#"
+            select p.current_design_version_id
+            from design_versions v
+            join design_packages p on p.id = v.design_package_id
+            where v.id = ?1
+            "#,
+            params![design_version_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(current_id != Some(design_version_id))
+}
+
+fn design_requirement_stale(conn: &Connection, design_requirement_id: i64) -> Result<bool> {
+    conn.query_row(
+        r#"
+        select not exists (
+            select 1
+            from design_requirements old_r
+            join design_versions old_v on old_v.id = old_r.design_version_id
+            join design_packages p on p.id = old_v.design_package_id
+            join design_requirements current_r
+              on current_r.design_version_id = p.current_design_version_id
+             and current_r.requirement_key = old_r.requirement_key
+             and current_r.requirement_hash = old_r.requirement_hash
+             and current_r.status = 'active'
+            where old_r.id = ?1
+        )
+        "#,
+        params![design_requirement_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn repository_snapshot_target_stale(
+    conn: &Connection,
+    repository_snapshot_id: i64,
+) -> Result<bool> {
+    let Some((repository_id, latest_snapshot_id)) = conn
+        .query_row(
+            r#"
+            select s.repository_id, (
+                select max(current_s.id)
+                from repository_snapshots current_s
+                where current_s.repository_id = s.repository_id
+            )
+            from repository_snapshots s
+            where s.id = ?1
+            "#,
+            params![repository_snapshot_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(true);
+    };
+    let _ = repository_id;
+    if latest_snapshot_id == repository_snapshot_id {
+        return Ok(false);
+    }
+    let classified_comparison = conn
+        .query_row(
+            r#"
+            select 1
+            from repository_snapshot_comparisons
+            where base_repository_snapshot_id = ?1
+              and current_repository_snapshot_id = ?2
+              and comparison_type = 'resume'
+              and result in ('same', 'changed_classified')
+            order by id desc
+            limit 1
+            "#,
+            params![repository_snapshot_id, latest_snapshot_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(!classified_comparison)
+}
+
+fn open_assumption_invalidations(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from work_unit_dependencies
+        where work_unit_id = ?1
+          and dependency_type = 'invalidates_assumption'
+          and status = 'open'
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResumeCounts> {
     Ok(TraceResumeCounts {
         stale_design_records: count_stale_design_records_for_work(conn, work_unit_id)?,
@@ -1649,6 +1845,20 @@ struct RepositoryCloseState {
     repository_count: i64,
     missing_snapshot_count: i64,
     unclassified_dirty_state_count: i64,
+}
+
+#[derive(Default)]
+struct ReviewPlanResumeState {
+    required_plan_count: i64,
+    incomplete_required_plan_count: i64,
+    stale_target_count: i64,
+}
+
+struct ReviewPlanTargetForResume {
+    target_type: String,
+    design_version_id: Option<i64>,
+    design_requirement_id: Option<i64>,
+    repository_snapshot_id: Option<i64>,
 }
 
 #[derive(Default)]

@@ -512,3 +512,103 @@ fn close_ready_requires_validation_runs_for_selected_gates() {
             .any(|item| item.name == "validation_runs_recorded" && item.result == "pass")
     );
 }
+
+#[test]
+fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "resume plan work", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "resume-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    suspend_work(temp.path(), "pause for plan", "resume after plan").unwrap();
+
+    let blocked = resume_ready(temp.path(), "trace-aware").unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let allowed = resume_ready(temp.path(), "trace-aware").unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "review_plan_current" && item.result == "fail")
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "review_plan_current" && item.result == "pass")
+    );
+}
+
+#[test]
+fn repo_aware_resume_reports_open_assumption_invalidations() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "assumption work", None).unwrap();
+    suspend_work(
+        temp.path(),
+        "pause with assumption",
+        "resume after assumption check",
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id, title, status, started_at) values (1, 'invalidator', 'open', current_timestamp)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_dependencies(
+            work_unit_id, depends_on_work_unit_id, dependency_type, reason, status, created_at
+        )
+        values (?1, 2, 'invalidates_assumption', 'assumption no longer holds', 'open', current_timestamp)
+        "#,
+        params![work.work_unit_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let blocked = resume_ready(temp.path(), "repo-aware").unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "assumptions_current" && item.result == "fail")
+    );
+}
