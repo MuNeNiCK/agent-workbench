@@ -346,6 +346,12 @@ fn backfill_work_record_commits(
           and work_record_id in (
               select id from work_records where project_id = ?3
           )
+          and (
+              select count(*)
+              from git_commits c
+              join repositories r on r.id = c.repository_id
+              where r.project_id = ?3 and c.commit_sha = ?2
+          ) = 1
         "#,
         params![git_commit_id, commit_sha, project_id],
     )?;

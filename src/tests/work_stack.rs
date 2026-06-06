@@ -524,6 +524,101 @@ fn repo_aware_resume_requires_snapshots_for_all_repositories() {
 }
 
 #[test]
+fn repo_aware_resume_counts_base_snapshots_by_repository() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repo aware duplicate base", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: Some("def456"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("early clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let main_base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("latest clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    suspend_work(
+        temp.path(),
+        "pause with duplicate repository snapshots",
+        "resume repo work",
+    )
+    .unwrap();
+    let main_current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: main_base.repository_snapshot_id,
+            current_repository_snapshot_id: main_current.repository_snapshot_id,
+            comparison_type: "resume",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+
+    let blocked = resume_ready(temp.path(), "repo-aware").unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_current"
+                && item.result == "fail"
+                && item.details.contains("1 suspend snapshots")
+                && item.details.contains("1 missing base snapshots"))
+    );
+}
+
+#[test]
 fn close_ready_requires_validation_runs_for_selected_gates() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -857,6 +952,103 @@ fn close_ready_requires_close_repository_comparisons_for_changed_snapshots() {
         NewRepositorySnapshotComparison {
             base_repository_snapshot_id: base.repository_snapshot_id,
             current_repository_snapshot_id: current.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: true,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "changed_classified",
+        },
+    )
+    .unwrap();
+    let allowed = close_ready(temp.path()).unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "fail")
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "pass")
+    );
+}
+
+#[test]
+fn close_ready_uses_pre_activation_repository_snapshot_as_comparison_base() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "close comparison baseline", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let baseline = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let active_intermediate = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let active_latest = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: active_intermediate.repository_snapshot_id,
+            current_repository_snapshot_id: active_latest.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: baseline.repository_snapshot_id,
+            current_repository_snapshot_id: active_latest.repository_snapshot_id,
             comparison_type: "close",
             head_changed: true,
             dirty_state_changed: false,

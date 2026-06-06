@@ -1308,6 +1308,12 @@ fn repository_resume_state(
         from repository_snapshots s
         join repositories r on r.id = s.repository_id
         where r.project_id = ?1 and s.work_unit_activation_id = ?2
+          and s.id = (
+              select max(inner_s.id)
+              from repository_snapshots inner_s
+              where inner_s.repository_id = s.repository_id
+                and inner_s.work_unit_activation_id = ?2
+          )
         order by s.id
         "#,
     )?;
@@ -1524,9 +1530,12 @@ fn repository_close_state(
         {
             unclassified_dirty_state_count += 1;
         }
-        if let Some(base_snapshot_id) =
-            previous_repository_snapshot(conn, repository_id, repository_snapshot_id)?
-        {
+        if let Some(base_snapshot_id) = previous_repository_snapshot(
+            conn,
+            repository_id,
+            repository_snapshot_id,
+            active.activation_id,
+        )? {
             match close_repository_snapshot_comparison(
                 conn,
                 base_snapshot_id,
@@ -1554,14 +1563,20 @@ fn previous_repository_snapshot(
     conn: &Connection,
     repository_id: i64,
     repository_snapshot_id: i64,
+    active_activation_id: i64,
 ) -> Result<Option<i64>> {
     conn.query_row(
         r#"
         select max(id)
         from repository_snapshots
-        where repository_id = ?1 and id < ?2
+        where repository_id = ?1
+          and id < ?2
+          and (
+              work_unit_activation_id is null
+              or work_unit_activation_id != ?3
+          )
         "#,
-        params![repository_id, repository_snapshot_id],
+        params![repository_id, repository_snapshot_id, active_activation_id],
         |row| row.get::<_, Option<i64>>(0),
     )
     .map_err(Into::into)

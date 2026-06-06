@@ -229,6 +229,93 @@ fn git_import_backfills_manual_work_record_links() {
 }
 
 #[test]
+fn git_import_does_not_backfill_ambiguous_manual_commit_links() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "ambiguous manual commit evidence",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_commit(
+        temp.path(),
+        NewWorkRecordCommit {
+            work_record_id: work_record.work_record_id,
+            commit_sha: "abc123",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+    add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked_commit_id: Option<i64> = conn
+        .query_row(
+            "select git_commit_id from work_record_commits where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(linked_commit_id.is_none());
+}
+
+#[test]
 fn git_import_does_not_backfill_ambiguous_manual_file_links() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -2169,6 +2256,30 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
         },
     )
     .unwrap();
+    let other_snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let other_usage = add_command_usage_with_repository_snapshot(
+        temp.path(),
+        NewCommandUsageWithRepositorySnapshot {
+            profile: None,
+            command: Some("cargo test"),
+            result: "pass",
+            log_path: Some(".agent-workbench/logs/other-test.log"),
+            work_unit_id: Some(work.work_unit_id),
+            repository_snapshot_id: Some(other_snapshot.repository_snapshot_id),
+        },
+    )
+    .unwrap();
 
     let run = add_validation_run(
         temp.path(),
@@ -2227,6 +2338,82 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
         [],
     )
     .unwrap();
+    let mismatched_usage_artifact = conn.execute(
+        r#"
+        insert into artifacts(
+            project_id, artifact_type, identity_key, artifact_path,
+            validation_run_id, command_usage_id, repository_snapshot_id, created_at
+        )
+        values (1, 'validation_output', 'usage-mismatch', 'usage-mismatch.log', ?1, ?2, ?3, current_timestamp)
+        "#,
+        params![
+            run.validation_run_id,
+            other_usage.command_usage_id,
+            snapshot.repository_snapshot_id
+        ],
+    );
+    let mismatched_snapshot_artifact = conn.execute(
+        r#"
+        insert into artifacts(
+            project_id, artifact_type, identity_key, artifact_path,
+            validation_run_id, command_usage_id, repository_snapshot_id, created_at
+        )
+        values (1, 'validation_output', 'snapshot-mismatch', 'snapshot-mismatch.log', ?1, ?2, ?3, current_timestamp)
+        "#,
+        params![
+            run.validation_run_id,
+            usage.command_usage_id,
+            other_snapshot.repository_snapshot_id
+        ],
+    );
+    let validation_snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("ghi789"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: Some(validation_snapshot.repository_snapshot_id),
+            result: "pass",
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("snapshot-only validation"),
+        },
+    )
+    .unwrap();
+    let artifact_snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("jkl012"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        insert into artifacts(
+            project_id, artifact_type, identity_key, artifact_path,
+            repository_snapshot_id, created_at
+        )
+        values (1, 'other', 'manual-artifact', 'manual-artifact.log', ?1, current_timestamp)
+        "#,
+        params![artifact_snapshot.repository_snapshot_id],
+    )
+    .unwrap();
     let cross_project_run = conn.execute(
         r#"
         insert into validation_runs(
@@ -2265,6 +2452,22 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
             usage.command_usage_id,
             snapshot.repository_snapshot_id
         )
+    );
+    assert!(mismatched_usage_artifact.is_err());
+    assert!(mismatched_snapshot_artifact.is_err());
+    assert!(
+        conn.execute(
+            "delete from repository_snapshots where id = ?1",
+            params![validation_snapshot.repository_snapshot_id],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "delete from repository_snapshots where id = ?1",
+            params![artifact_snapshot.repository_snapshot_id],
+        )
+        .is_err()
     );
     assert!(cross_project_run.is_err());
 }

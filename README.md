@@ -45,7 +45,7 @@ cargo run -- rules applicable --scope project
 cargo run -- record create --topic "current work" --work-performed "implemented feature" --next-actions "run review"
 cargo run -- record command add 1 --command "cargo test" --result pass
 cargo run -- record command add 1 --usage 1
-cargo run -- record commit add 1 --sha "$(git rev-parse --short HEAD)" --role created
+cargo run -- record commit add 1 --sha "$(git rev-parse HEAD)" --role created
 cargo run -- record file add 1 --path src/lib.rs --role changed
 cargo run -- record export 1
 cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift

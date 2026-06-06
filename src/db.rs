@@ -2331,6 +2331,18 @@ when (new.validation_run_id is not null and (
           where s.id = new.repository_snapshot_id
       )
   ))
+  or (
+      new.validation_run_id is not null
+      and new.command_usage_id is not (
+          select command_usage_id from validation_runs where id = new.validation_run_id
+      )
+  )
+  or (
+      new.validation_run_id is not null
+      and new.repository_snapshot_id is not (
+          select repository_snapshot_id from validation_runs where id = new.validation_run_id
+      )
+  )
 begin
     select raise(abort, 'artifact project_id must match referenced rows');
 end;
@@ -2355,6 +2367,18 @@ when (new.validation_run_id is not null and (
           where s.id = new.repository_snapshot_id
       )
   ))
+  or (
+      new.validation_run_id is not null
+      and new.command_usage_id is not (
+          select command_usage_id from validation_runs where id = new.validation_run_id
+      )
+  )
+  or (
+      new.validation_run_id is not null
+      and new.repository_snapshot_id is not (
+          select repository_snapshot_id from validation_runs where id = new.validation_run_id
+      )
+  )
 begin
     select raise(abort, 'artifact project_id must match referenced rows');
 end;
@@ -3603,6 +3627,8 @@ before delete on repository_snapshots
 for each row
 when exists (select 1 from resume_checks where repository_snapshot_id = old.id)
   or exists (select 1 from command_usages where repository_snapshot_id = old.id)
+  or exists (select 1 from validation_runs where repository_snapshot_id = old.id)
+  or exists (select 1 from artifacts where repository_snapshot_id = old.id)
   or exists (select 1 from review_plan_targets where repository_snapshot_id = old.id)
   or exists (select 1 from review_runs where repository_snapshot_id = old.id)
   or exists (select 1 from work_record_forks where source_repository_snapshot_id = old.id)
