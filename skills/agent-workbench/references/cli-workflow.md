@@ -37,4 +37,4 @@ snapshots.
 2. Run `agent-workbench gate close-ready --dry-run`.
 3. If blocked, perform the blocking action printed by the gate before closing.
 4. Close tasks before closing the work unit.
-5. Create or export work records when the user expects handoff-style output.
+5. Create or export work records when the user expects human-readable output.

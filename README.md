@@ -1,11 +1,11 @@
 # agent-workbench
 
-Agent Workbench is a Codex/Claude Code skill scaffold for structured
-long-running agent work.
+Agent Workbench is a Codex/Claude Code skill and Rust CLI for structured
+long-running coding-agent work.
 
-The intended direction is a skill plus a SQLite-backed memory CLI for tasks,
-decisions, reviews, commands, and work records. This repository currently
-contains the minimal distributable skill structure and an initial Rust CLI.
+It provides project-local SQLite-backed memory for work stacks, design packages,
+tasks, traceability, validation gates, repository state, Git evidence, reusable
+commands, review loops, KPT checks, and work records.
 
 ## Layout
 
@@ -49,6 +49,11 @@ cargo run -- record commit add 1 --sha "$(git rev-parse --short HEAD)" --role cr
 cargo run -- record file add 1 --path src/lib.rs --role changed
 cargo run -- record export 1
 cargo run -- work fork "redo from record" --from-record 1 --reason agent_drift
+cargo run -- repository add main --path . --head "$(git rev-parse HEAD)" --status clean
+cargo run -- repository snapshot add --repository main --head "$(git rev-parse HEAD)" --branch main --status clean --clean
+cargo run -- repository commit add --repository main --sha "$(git rev-parse HEAD)" --short "$(git rev-parse --short HEAD)" --subject "current change"
+cargo run -- repository file add --commit 1 --path src/lib.rs --type modified
+cargo run -- repository compare add --base 1 --current 2 --type resume --result same
 cargo run -- task add "write parser tests" --priority high --source design
 cargo run -- task list --status open
 cargo run -- task accept-out-of-scope 1 --reason "not required for current scope"
@@ -61,6 +66,8 @@ cargo run -- gate-template list --design 1
 cargo run -- acceptance add --design 1 --target requirement:REQ-001 --type accepted_out_of_scope --reason "not needed for current scope"
 cargo run -- design approve 1 --summary "design passed document checks"
 cargo run -- gate design-ready --design-version 1 --dry-run
+cargo run -- gate implementation-ready --dry-run
+cargo run -- gate close-ready --dry-run
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
 cargo run -- kpt start --scope project --from corrections --period 30d --summary "process review"
 cargo run -- kpt item add --type try --title "stabilize validation command"
