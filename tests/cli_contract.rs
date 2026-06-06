@@ -936,6 +936,166 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
 }
 
 #[test]
+fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(
+        temp.path(),
+        &[
+            "task",
+            "add",
+            "implement cleanup",
+            "--priority",
+            "high",
+            "--source",
+            "design",
+            "--completion-condition",
+            "cleanup behavior is covered",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "trace",
+            "derive-task",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "gate",
+            "select",
+            "--design",
+            "1",
+            "--template",
+            "GATE-001",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--command",
+            "cargo test",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--head",
+            "abc123",
+            "--status",
+            "clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "clean",
+            "--clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "command",
+            "usage",
+            "add",
+            "--command",
+            "cargo test",
+            "--result",
+            "pass",
+            "--work-unit",
+            "1",
+            "--snapshot",
+            "1",
+            "--log",
+            ".agent-workbench/logs/cargo-test.log",
+        ],
+    );
+
+    let record = ok(
+        temp.path(),
+        &[
+            "gate",
+            "record",
+            "--gate",
+            "1",
+            "--result",
+            "pass",
+            "--usage",
+            "1",
+            "--snapshot",
+            "1",
+            "--artifact",
+            ".agent-workbench/logs/cargo-test.log",
+            "--artifact-hash",
+            "sha256:abc",
+            "--notes",
+            "full test suite passed",
+        ],
+    );
+    let list = ok(temp.path(), &["gate", "run", "list", "--gate", "1"]);
+    let conn = conn(temp.path());
+    let linked: (i64, i64, String) = conn
+        .query_row(
+            "select command_usage_id, repository_snapshot_id, result from validation_runs where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert!(record.contains("recorded validation run"));
+    assert!(record.contains("validation_run_id: 1"));
+    assert!(record.contains("work_unit_id: 1"));
+    assert!(record.contains("task_id: 1"));
+    assert!(list.contains("1 [gate=1 GATE-001:pass] usage=1 snapshot=1"));
+    assert_eq!(linked, (1, 1, "pass".to_string()));
+}
+
+#[test]
 fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

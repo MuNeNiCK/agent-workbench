@@ -1782,3 +1782,172 @@ fn activation_unique_active_constraint_is_enforced() {
 
     assert!(duplicate.is_err());
 }
+
+#[test]
+fn validation_runs_record_gate_results_and_enforce_project_links() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "validation run work", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "validate cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("validation run is recorded"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("design task decomposition"),
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let usage = add_command_usage_with_repository_snapshot(
+        temp.path(),
+        NewCommandUsageWithRepositorySnapshot {
+            profile: None,
+            command: Some("cargo test"),
+            result: "pass",
+            log_path: Some(".agent-workbench/logs/cargo-test.log"),
+            work_unit_id: Some(work.work_unit_id),
+            repository_snapshot_id: Some(snapshot.repository_snapshot_id),
+        },
+    )
+    .unwrap();
+
+    let run = add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: Some(usage.command_usage_id),
+            repository_snapshot_id: Some(snapshot.repository_snapshot_id),
+            result: "pass",
+            artifact_path: Some(".agent-workbench/logs/cargo-test.log"),
+            artifact_hash: Some("sha256:abc"),
+            notes: Some("full test suite passed"),
+        },
+    )
+    .unwrap();
+    let records = list_validation_runs(
+        temp.path(),
+        ValidationRunListQuery {
+            validation_gate_id: Some(gate.validation_gate_id),
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-validation-run', current_timestamp, current_timestamp)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into work_units(project_id, title, status, started_at) values (2, 'other work', 'open', current_timestamp)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into validation_gates(project_id, gate_key, work_unit_id, task_id, expected_result, status, created_at) values (2, 'OTHER-GATE', 2, null, 'pass', 'active', current_timestamp)",
+        [],
+    )
+    .unwrap();
+    let cross_project_run = conn.execute(
+        r#"
+        insert into validation_runs(
+            project_id, validation_gate_id, work_unit_id, command_usage_id,
+            repository_snapshot_id, result, created_at
+        )
+        values (1, 2, ?1, ?2, ?3, 'pass', current_timestamp)
+        "#,
+        params![
+            work.work_unit_id,
+            usage.command_usage_id,
+            snapshot.repository_snapshot_id
+        ],
+    );
+
+    assert_eq!(run.work_unit_id, Some(work.work_unit_id));
+    assert_eq!(run.task_id, Some(task.task_id));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].command_usage_id, Some(usage.command_usage_id));
+    assert_eq!(
+        records[0].repository_snapshot_id,
+        Some(snapshot.repository_snapshot_id)
+    );
+    assert_eq!(records[0].result, "pass");
+    assert_eq!(
+        records[0].artifact_path.as_deref(),
+        Some(".agent-workbench/logs/cargo-test.log")
+    );
+    assert!(cross_project_run.is_err());
+}

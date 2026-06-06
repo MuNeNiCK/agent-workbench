@@ -91,10 +91,12 @@ pub use traceability::{
     ImplementationEvidenceListQuery, ImplementationEvidenceOutcome, ImplementationEvidenceRecord,
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
     NewImplementationEvidence, NewImplementationEvidenceWithGit, NewTaskDerivation,
-    TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord, ValidationGateSelection,
-    ValidationGateSelectionOutcome, add_implementation_evidence,
-    add_implementation_evidence_with_git, derive_task_from_requirement, implementation_ready,
-    list_implementation_evidence, list_task_derivations, select_validation_gate,
+    NewValidationRun, TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord,
+    ValidationGateSelection, ValidationGateSelectionOutcome, ValidationRunListQuery,
+    ValidationRunOutcome, ValidationRunRecord, add_implementation_evidence,
+    add_implementation_evidence_with_git, add_validation_run, derive_task_from_requirement,
+    implementation_ready, list_implementation_evidence, list_task_derivations,
+    list_validation_runs, select_validation_gate,
 };
 pub use work::{
     CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,

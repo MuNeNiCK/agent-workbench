@@ -552,6 +552,126 @@ pub fn select_validation_gate(
     })
 }
 
+pub fn add_validation_run(
+    root: &Path,
+    input: NewValidationRun<'_>,
+) -> Result<ValidationRunOutcome> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let gate = conn
+        .query_row(
+            r#"
+            select work_unit_id, task_id
+            from validation_gates
+            where id = ?1 and project_id = ?2 and status = 'active'
+            "#,
+            params![input.validation_gate_id, project_id],
+            |row| {
+                Ok(ResolvedValidationGate {
+                    work_unit_id: row.get(0)?,
+                    task_id: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .context("active validation gate not found")?;
+    if let Some(command_usage_id) = input.command_usage_id {
+        conn.query_row(
+            "select 1 from command_usages where id = ?1 and project_id = ?2",
+            params![command_usage_id, project_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("command usage not found")?;
+    }
+    if let Some(repository_snapshot_id) = input.repository_snapshot_id {
+        conn.query_row(
+            r#"
+            select 1
+            from repository_snapshots s
+            join repositories r on r.id = s.repository_id
+            where s.id = ?1 and r.project_id = ?2
+            "#,
+            params![repository_snapshot_id, project_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("repository snapshot not found")?;
+    }
+
+    conn.execute(
+        r#"
+        insert into validation_runs(
+            project_id, validation_gate_id, work_unit_id, task_id,
+            command_usage_id, repository_snapshot_id, result,
+            artifact_path, artifact_hash, notes, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.validation_gate_id,
+            gate.work_unit_id,
+            gate.task_id,
+            input.command_usage_id,
+            input.repository_snapshot_id,
+            input.result,
+            input.artifact_path,
+            input.artifact_hash,
+            input.notes,
+        ],
+    )?;
+
+    Ok(ValidationRunOutcome {
+        validation_run_id: conn.last_insert_rowid(),
+        validation_gate_id: input.validation_gate_id,
+        work_unit_id: gate.work_unit_id,
+        task_id: gate.task_id,
+    })
+}
+
+pub fn list_validation_runs(
+    root: &Path,
+    input: ValidationRunListQuery,
+) -> Result<Vec<ValidationRunRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            vr.id, vr.validation_gate_id, vg.gate_key, vr.work_unit_id,
+            vr.task_id, vr.command_usage_id, vr.repository_snapshot_id,
+            vr.result, vr.artifact_path, vr.artifact_hash, vr.notes, vr.created_at
+        from validation_runs vr
+        join validation_gates vg on vg.id = vr.validation_gate_id
+        where vr.project_id = ?1
+          and (?2 is null or vr.validation_gate_id = ?2)
+        order by vr.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, input.validation_gate_id], |row| {
+        Ok(ValidationRunRecord {
+            id: row.get(0)?,
+            validation_gate_id: row.get(1)?,
+            gate_key: row.get(2)?,
+            work_unit_id: row.get(3)?,
+            task_id: row.get(4)?,
+            command_usage_id: row.get(5)?,
+            repository_snapshot_id: row.get(6)?,
+            result: row.get(7)?,
+            artifact_path: row.get(8)?,
+            artifact_hash: row.get(9)?,
+            notes: row.get(10)?,
+            created_at: row.get(11)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 pub fn implementation_ready(
     root: &Path,
     input: ImplementationReadyCheck,
@@ -1206,6 +1326,11 @@ struct ResolvedGateTemplate {
     expected_result: String,
 }
 
+struct ResolvedValidationGate {
+    work_unit_id: Option<i64>,
+    task_id: Option<i64>,
+}
+
 struct ResolvedDesignVersion {
     design_version_id: i64,
     design_package_id: i64,
@@ -1238,6 +1363,20 @@ pub struct ValidationGateSelection<'a> {
     pub requirement_key: &'a str,
     pub task_id: i64,
     pub command: Option<&'a str>,
+}
+
+pub struct NewValidationRun<'a> {
+    pub validation_gate_id: i64,
+    pub command_usage_id: Option<i64>,
+    pub repository_snapshot_id: Option<i64>,
+    pub result: &'a str,
+    pub artifact_path: Option<&'a str>,
+    pub artifact_hash: Option<&'a str>,
+    pub notes: Option<&'a str>,
+}
+
+pub struct ValidationRunListQuery {
+    pub validation_gate_id: Option<i64>,
 }
 
 pub struct NewImplementationEvidence<'a> {
@@ -1357,6 +1496,30 @@ pub struct ValidationGateSelectionOutcome {
     pub validation_gate_template_id: i64,
     pub design_requirement_id: i64,
     pub task_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationRunOutcome {
+    pub validation_run_id: i64,
+    pub validation_gate_id: i64,
+    pub work_unit_id: Option<i64>,
+    pub task_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationRunRecord {
+    pub id: i64,
+    pub validation_gate_id: i64,
+    pub gate_key: String,
+    pub work_unit_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub command_usage_id: Option<i64>,
+    pub repository_snapshot_id: Option<i64>,
+    pub result: String,
+    pub artifact_path: Option<String>,
+    pub artifact_hash: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

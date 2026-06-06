@@ -16,29 +16,31 @@ use agent_workbench::{
     NewImplementationEvidenceWithGit, NewKptItem, NewKptReview, NewRepository,
     NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison, NewReviewPlan,
     NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation, NewUserCorrection,
-    NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile,
-    NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery, TaskDerivationListQuery,
-    TaskListQuery, ValidationGateSelection, ValidationGateTemplateListQuery, WorkForkSource,
+    NewValidationRun, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
+    NewWorkRecordFile, NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery,
+    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
+    ValidationGateTemplateListQuery, ValidationRunListQuery, WorkForkSource,
     accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
     add_command_deviation, add_command_usage, add_command_usage_with_repository_snapshot,
     add_coverage_item, add_decision, add_finding, add_finding_verification, add_fixed_command,
     add_git_commit, add_git_file_change, add_implementation_evidence,
     add_implementation_evidence_with_git, add_kpt_item, add_repository, add_repository_dirty_entry,
     add_repository_snapshot, add_repository_snapshot_comparison, add_review_plan,
-    add_review_policy, add_review_run, add_task, add_user_correction, add_work_record_command,
-    add_work_record_commit, add_work_record_file, add_work_record_git_commit,
-    add_work_record_git_file, applicable_rules, approve_design_version, classify_finding,
-    close_active_work, close_kpt_review, close_task, convert_kpt_item_to_command_profile,
-    convert_kpt_item_to_decision, convert_kpt_item_to_design_version,
-    convert_kpt_item_to_review_policy, convert_kpt_item_to_task, create_follow_up_work,
-    create_work_record, derive_task_from_requirement, design_ready, export_work_record_markdown,
-    fork_work, implementation_ready, import_design_package, init_design_package, init_project,
-    interrupt_work, list_authority_events, list_command_profiles, list_command_usages,
-    list_coverage_items, list_decisions, list_design_decisions, list_design_requirements,
-    list_findings, list_implementation_evidence, list_kpt_items, list_kpt_reviews,
-    list_repositories, list_repository_snapshots, list_review_plan_targets, list_review_plans,
-    list_review_policies, list_review_runs, list_review_scopes, list_task_derivations, list_tasks,
-    list_user_corrections, list_validation_gate_templates, list_work_records, next_action,
+    add_review_policy, add_review_run, add_task, add_user_correction, add_validation_run,
+    add_work_record_command, add_work_record_commit, add_work_record_file,
+    add_work_record_git_commit, add_work_record_git_file, applicable_rules, approve_design_version,
+    classify_finding, close_active_work, close_kpt_review, close_task,
+    convert_kpt_item_to_command_profile, convert_kpt_item_to_decision,
+    convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
+    convert_kpt_item_to_task, create_follow_up_work, create_work_record,
+    derive_task_from_requirement, design_ready, export_work_record_markdown, fork_work,
+    implementation_ready, import_design_package, init_design_package, init_project, interrupt_work,
+    list_authority_events, list_command_profiles, list_command_usages, list_coverage_items,
+    list_decisions, list_design_decisions, list_design_requirements, list_findings,
+    list_implementation_evidence, list_kpt_items, list_kpt_reviews, list_repositories,
+    list_repository_snapshots, list_review_plan_targets, list_review_plans, list_review_policies,
+    list_review_runs, list_review_scopes, list_task_derivations, list_tasks, list_user_corrections,
+    list_validation_gate_templates, list_validation_runs, list_work_records, next_action,
     project_status, reopen_work, resume_check, resume_ready, resume_work, select_validation_gate,
     start_kpt_review, start_review_scope, start_work, suspend_work,
 };
@@ -278,6 +280,13 @@ struct ResumeCheckArgs {
 enum GateCommand {
     /// Select a validation gate from an imported template.
     Select(GateSelectArgs),
+    /// Record a validation result for a selected gate.
+    Record(GateRecordArgs),
+    /// List recorded validation runs.
+    Run {
+        #[command(subcommand)]
+        command: GateRunCommand,
+    },
     /// Check whether a suspended activation can resume without writing ledger rows.
     ResumeReady(GateResumeReadyArgs),
     /// Check whether an imported design version is ready for implementation planning.
@@ -322,6 +331,35 @@ struct GateSelectArgs {
     task: i64,
     #[arg(long)]
     command: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct GateRecordArgs {
+    #[arg(long)]
+    gate: i64,
+    #[arg(long)]
+    result: String,
+    #[arg(long)]
+    usage: Option<i64>,
+    #[arg(long)]
+    snapshot: Option<i64>,
+    #[arg(long)]
+    artifact: Option<String>,
+    #[arg(long)]
+    artifact_hash: Option<String>,
+    #[arg(long)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum GateRunCommand {
+    List(GateRunListArgs),
+}
+
+#[derive(Debug, Args)]
+struct GateRunListArgs {
+    #[arg(long)]
+    gate: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1560,6 +1598,63 @@ fn main() -> Result<()> {
                 println!("design_requirement_id: {}", outcome.design_requirement_id);
                 println!("task_id: {}", outcome.task_id);
             }
+            GateCommand::Record(args) => {
+                let outcome = add_validation_run(
+                    &root,
+                    NewValidationRun {
+                        validation_gate_id: args.gate,
+                        command_usage_id: args.usage,
+                        repository_snapshot_id: args.snapshot,
+                        result: &args.result,
+                        artifact_path: args.artifact.as_deref(),
+                        artifact_hash: args.artifact_hash.as_deref(),
+                        notes: args.notes.as_deref(),
+                    },
+                )?;
+                println!("recorded validation run");
+                println!("validation_run_id: {}", outcome.validation_run_id);
+                println!("validation_gate_id: {}", outcome.validation_gate_id);
+                if let Some(work_unit_id) = outcome.work_unit_id {
+                    println!("work_unit_id: {work_unit_id}");
+                }
+                if let Some(task_id) = outcome.task_id {
+                    println!("task_id: {task_id}");
+                }
+            }
+            GateCommand::Run { command } => match command {
+                GateRunCommand::List(args) => {
+                    let records = list_validation_runs(
+                        &root,
+                        ValidationRunListQuery {
+                            validation_gate_id: args.gate,
+                        },
+                    )?;
+                    if records.is_empty() {
+                        println!("no validation runs");
+                    }
+                    for record in records {
+                        let usage = record
+                            .command_usage_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let snapshot = record
+                            .repository_snapshot_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let artifact = record.artifact_path.as_deref().unwrap_or("-");
+                        println!(
+                            "{} [gate={} {}:{}] usage={} snapshot={} artifact={}",
+                            record.id,
+                            record.validation_gate_id,
+                            record.gate_key,
+                            record.result,
+                            usage,
+                            snapshot,
+                            artifact
+                        );
+                    }
+                }
+            },
             GateCommand::ResumeReady(args) => {
                 if !args.dry_run {
                     anyhow::bail!("gate resume-ready is read-only; pass --dry-run");

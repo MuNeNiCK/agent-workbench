@@ -2218,6 +2218,85 @@ create table if not exists validation_gates (
     created_at text not null
 );
 
+create table if not exists validation_runs (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    validation_gate_id integer not null references validation_gates(id) on delete cascade,
+    work_unit_id integer references work_units(id) on delete cascade,
+    task_id integer references tasks(id) on delete cascade,
+    command_usage_id integer references command_usages(id),
+    repository_snapshot_id integer,
+    result text not null check (result in ('pass', 'fail', 'timeout', 'cancelled', 'unknown')),
+    artifact_path text,
+    artifact_hash text,
+    notes text,
+    created_at text not null
+);
+
+create trigger if not exists trg_validation_run_project_insert
+before insert on validation_runs
+for each row
+when new.project_id != (select project_id from validation_gates where id = new.validation_gate_id)
+  or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or (new.task_id is not null and (
+      not exists (select 1 from tasks where id = new.task_id)
+      or (select work_unit_id from tasks where id = new.task_id) is null
+      or new.project_id != (
+          select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
+      )
+  ))
+  or (new.command_usage_id is not null and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
+  or (
+      new.command_usage_id is not null
+      and new.repository_snapshot_id is not null
+      and (select repository_snapshot_id from command_usages where id = new.command_usage_id) is not null
+      and new.repository_snapshot_id != (select repository_snapshot_id from command_usages where id = new.command_usage_id)
+  )
+begin
+    select raise(abort, 'validation run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_validation_run_project_update
+before update of project_id, validation_gate_id, work_unit_id, task_id, command_usage_id, repository_snapshot_id on validation_runs
+for each row
+when new.project_id != (select project_id from validation_gates where id = new.validation_gate_id)
+  or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
+  or (new.task_id is not null and (
+      not exists (select 1 from tasks where id = new.task_id)
+      or (select work_unit_id from tasks where id = new.task_id) is null
+      or new.project_id != (
+          select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
+      )
+  ))
+  or (new.command_usage_id is not null and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
+  or (
+      new.command_usage_id is not null
+      and new.repository_snapshot_id is not null
+      and (select repository_snapshot_id from command_usages where id = new.command_usage_id) is not null
+      and new.repository_snapshot_id != (select repository_snapshot_id from command_usages where id = new.command_usage_id)
+  )
+begin
+    select raise(abort, 'validation run project_id must match referenced rows');
+end;
+
 create table if not exists implementation_evidence (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
