@@ -1741,3 +1741,101 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
     assert!(commands.contains("1 [test:fixed] workspace-tests = cargo test --workspace"));
     assert!(rules.contains("[command_profile:project precedence=70]"));
 }
+
+#[test]
+fn cli_git_import_backfills_manual_work_record_links() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--status",
+            "clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "record",
+            "create",
+            "--topic",
+            "manual evidence before git import",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "record", "commit", "add", "1", "--sha", "abc123", "--role", "created",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "record",
+            "file",
+            "add",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--role",
+            "changed",
+        ],
+    );
+
+    let commit = ok(
+        temp.path(),
+        &[
+            "repository",
+            "commit",
+            "add",
+            "--repository",
+            "main",
+            "--sha",
+            "abc123",
+            "--short",
+            "abc123",
+            "--subject",
+            "backfill",
+        ],
+    );
+    let file = ok(
+        temp.path(),
+        &[
+            "repository",
+            "file",
+            "add",
+            "--commit",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--type",
+            "modified",
+        ],
+    );
+
+    let conn = conn(temp.path());
+    let linked_commit_id: i64 = conn
+        .query_row(
+            "select git_commit_id from work_record_commits where work_record_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let linked_file: (i64, i64) = conn
+        .query_row(
+            "select git_file_change_id, repository_id from work_record_files where work_record_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert!(commit.contains("git_commit_id: 1"));
+    assert!(file.contains("git_file_change_id: 1"));
+    assert_eq!(linked_commit_id, 1);
+    assert_eq!(linked_file, (1, 1));
+}
