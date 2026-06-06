@@ -1086,6 +1086,13 @@ fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
+    let artifact: (String, String, i64) = conn
+        .query_row(
+            "select artifact_type, identity_key, validation_run_id from artifacts where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
 
     assert!(record.contains("recorded validation run"));
     assert!(record.contains("validation_run_id: 1"));
@@ -1093,6 +1100,10 @@ fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
     assert!(record.contains("task_id: 1"));
     assert!(list.contains("1 [gate=1 GATE-001:pass] usage=1 snapshot=1"));
     assert_eq!(linked, (1, 1, "pass".to_string()));
+    assert_eq!(
+        artifact,
+        ("validation_output".to_string(), "sha256:abc".to_string(), 1)
+    );
 }
 
 #[test]

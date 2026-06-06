@@ -1979,6 +1979,27 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
     )
     .unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let artifact: (String, String, String, i64, i64, i64) = conn
+        .query_row(
+            r#"
+            select artifact_type, identity_key, artifact_path,
+                   validation_run_id, command_usage_id, repository_snapshot_id
+            from artifacts
+            where validation_run_id = ?1
+            "#,
+            params![run.validation_run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
     conn.execute(
         "insert into projects(name, root_path, created_at, updated_at) values ('other', '/tmp/other-awb-validation-run', current_timestamp, current_timestamp)",
         [],
@@ -2021,6 +2042,17 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
     assert_eq!(
         records[0].artifact_path.as_deref(),
         Some(".agent-workbench/logs/cargo-test.log")
+    );
+    assert_eq!(
+        artifact,
+        (
+            "validation_output".to_string(),
+            "sha256:abc".to_string(),
+            ".agent-workbench/logs/cargo-test.log".to_string(),
+            run.validation_run_id,
+            usage.command_usage_id,
+            snapshot.repository_snapshot_id
+        )
     );
     assert!(cross_project_run.is_err());
 }

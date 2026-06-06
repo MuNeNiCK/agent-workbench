@@ -2233,6 +2233,20 @@ create table if not exists validation_runs (
     created_at text not null
 );
 
+create table if not exists artifacts (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    artifact_type text not null check (artifact_type in ('validation_output', 'test_report', 'build_output', 'generated_file', 'other')),
+    identity_key text not null,
+    artifact_path text,
+    artifact_hash text,
+    validation_run_id integer references validation_runs(id) on delete cascade,
+    command_usage_id integer references command_usages(id),
+    repository_snapshot_id integer,
+    created_at text not null,
+    check (artifact_path is not null or artifact_hash is not null)
+);
+
 create trigger if not exists trg_validation_run_project_insert
 before insert on validation_runs
 for each row
@@ -2295,6 +2309,54 @@ when new.project_id != (select project_id from validation_gates where id = new.v
   )
 begin
     select raise(abort, 'validation run project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_artifact_project_insert
+before insert on artifacts
+for each row
+when (new.validation_run_id is not null and (
+      not exists (select 1 from validation_runs where id = new.validation_run_id)
+      or new.project_id != (select project_id from validation_runs where id = new.validation_run_id)
+  ))
+  or (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or new.project_id != (select project_id from command_usages where id = new.command_usage_id)
+  ))
+  or (new.repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
+begin
+    select raise(abort, 'artifact project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_artifact_project_update
+before update of project_id, validation_run_id, command_usage_id, repository_snapshot_id on artifacts
+for each row
+when (new.validation_run_id is not null and (
+      not exists (select 1 from validation_runs where id = new.validation_run_id)
+      or new.project_id != (select project_id from validation_runs where id = new.validation_run_id)
+  ))
+  or (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or new.project_id != (select project_id from command_usages where id = new.command_usage_id)
+  ))
+  or (new.repository_snapshot_id is not null and (
+      not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
+      or new.project_id != (
+          select r.project_id
+          from repository_snapshots s
+          join repositories r on r.id = s.repository_id
+          where s.id = new.repository_snapshot_id
+      )
+  ))
+begin
+    select raise(abort, 'artifact project_id must match referenced rows');
 end;
 
 create table if not exists implementation_evidence (

@@ -621,9 +621,35 @@ pub fn add_validation_run(
             input.notes,
         ],
     )?;
+    let validation_run_id = conn.last_insert_rowid();
+    if input.artifact_path.is_some() || input.artifact_hash.is_some() {
+        let identity_key = input
+            .artifact_hash
+            .or(input.artifact_path)
+            .context("artifact identity requires a path or hash")?;
+        conn.execute(
+            r#"
+            insert into artifacts(
+                project_id, artifact_type, identity_key, artifact_path,
+                artifact_hash, validation_run_id, command_usage_id,
+                repository_snapshot_id, created_at
+            )
+            values (?1, 'validation_output', ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
+            "#,
+            params![
+                project_id,
+                identity_key,
+                input.artifact_path,
+                input.artifact_hash,
+                validation_run_id,
+                input.command_usage_id,
+                input.repository_snapshot_id,
+            ],
+        )?;
+    }
 
     Ok(ValidationRunOutcome {
-        validation_run_id: conn.last_insert_rowid(),
+        validation_run_id,
         validation_gate_id: input.validation_gate_id,
         work_unit_id: gate.work_unit_id,
         task_id: gate.task_id,
