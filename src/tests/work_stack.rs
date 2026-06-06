@@ -392,3 +392,123 @@ fn repo_aware_resume_requires_classified_repository_comparison() {
     assert_eq!(repository_item.0, "pass");
     assert!(repository_item.1.contains("0 missing comparisons"));
 }
+
+#[test]
+fn close_ready_requires_validation_runs_for_selected_gates() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "close ready validation", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("validation run is recorded"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+
+    let missing = close_ready(temp.path()).unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("validation passed"),
+        },
+    )
+    .unwrap();
+    let recorded = close_ready(temp.path()).unwrap();
+
+    assert!(
+        missing
+            .items
+            .iter()
+            .any(|item| item.name == "validation_runs_recorded" && item.result == "fail")
+    );
+    assert!(
+        recorded
+            .items
+            .iter()
+            .any(|item| item.name == "validation_runs_recorded" && item.result == "pass")
+    );
+}

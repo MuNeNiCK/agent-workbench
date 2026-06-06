@@ -100,11 +100,11 @@ pub use traceability::{
     list_validation_runs, select_validation_gate,
 };
 pub use work::{
-    CloseOutcome, FollowUpOutcome, InterruptOutcome, NewWorkFork, ResumeCheckOutcome,
-    ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome, SuspendOutcome, WorkForkOutcome,
-    WorkForkSource, WorkOutcome, close_active_work, create_follow_up_work, fork_work,
-    interrupt_work, reopen_work, resume_check, resume_check_basic, resume_ready,
-    resume_ready_basic, resume_work, start_work, suspend_work,
+    CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,
+    NewWorkFork, ResumeCheckOutcome, ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome,
+    SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, close_active_work, close_ready,
+    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
+    resume_check_basic, resume_ready, resume_ready_basic, resume_work, start_work, suspend_work,
 };
 
 #[cfg(test)]

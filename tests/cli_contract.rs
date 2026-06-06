@@ -1111,6 +1111,58 @@ fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
 }
 
 #[test]
+fn gate_close_ready_reports_active_work_readiness() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    let error = err(temp.path(), &["gate", "close-ready"]);
+    assert!(error.contains("pass --dry-run"));
+
+    ok(temp.path(), &["work", "start", "close ready"]);
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--head",
+            "abc123",
+            "--status",
+            "clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--activation",
+            "1",
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "clean",
+            "--clean",
+        ],
+    );
+
+    let output = ok(temp.path(), &["gate", "close-ready", "--dry-run"]);
+
+    assert!(output.contains("gate: close-ready"));
+    assert!(output.contains("result: pass"));
+    assert!(output.contains("open_tasks_closed: pass"));
+    assert!(output.contains("validation_runs_recorded: pass"));
+    assert!(output.contains("repository_state_recorded: pass"));
+}
+
+#[test]
 fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

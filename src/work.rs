@@ -210,6 +210,112 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
     })
 }
 
+pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
+    let conn = open_existing_project(root)?;
+    let Some(active) = active_activation(&conn)? else {
+        return Ok(CloseReadyOutcome {
+            work_unit_id: None,
+            activation_id: None,
+            result: "blocked".to_string(),
+            blocking_reason: Some("no active work unit to close".to_string()),
+            items: vec![CloseReadyItem::fail(
+                "active_work_exists",
+                "start or resume work before checking close readiness",
+                "no active work unit to close",
+            )],
+        });
+    };
+
+    let open_tasks = conn.query_row(
+        "select count(*) from tasks where work_unit_id = ?1 and status in ('open', 'blocked')",
+        params![active.work_unit_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let validation = validation_close_state(&conn, active.work_unit_id)?;
+    let repository = repository_close_state(&conn, &active)?;
+    let mut items = Vec::new();
+    items.push(if open_tasks == 0 {
+        CloseReadyItem::pass(
+            "open_tasks_closed",
+            format!("{open_tasks} open or blocked tasks"),
+        )
+    } else {
+        CloseReadyItem::fail(
+            "open_tasks_closed",
+            "close or accept all open tasks before closing work",
+            format!("{open_tasks} open or blocked tasks"),
+        )
+    });
+    items.push(
+        if validation.missing_run_count == 0 && validation.non_passing_run_count == 0 {
+            CloseReadyItem::pass(
+                "validation_runs_recorded",
+                format!(
+                    "{} selected gates, {} missing runs, {} non-passing latest runs",
+                    validation.selected_gate_count,
+                    validation.missing_run_count,
+                    validation.non_passing_run_count
+                ),
+            )
+        } else {
+            CloseReadyItem::fail(
+                "validation_runs_recorded",
+                "record passing validation runs or classify the remaining failures",
+                format!(
+                    "{} selected gates, {} missing runs, {} non-passing latest runs",
+                    validation.selected_gate_count,
+                    validation.missing_run_count,
+                    validation.non_passing_run_count
+                ),
+            )
+        },
+    );
+    items.push(
+        if repository.repository_count == 0
+            || (repository.missing_snapshot_count == 0
+                && repository.unclassified_dirty_state_count == 0)
+        {
+            CloseReadyItem::pass(
+                "repository_state_recorded",
+                format!(
+                    "{} repositories, {} missing active snapshots, {} unclassified dirty states",
+                    repository.repository_count,
+                    repository.missing_snapshot_count,
+                    repository.unclassified_dirty_state_count
+                ),
+            )
+        } else {
+            CloseReadyItem::fail(
+                "repository_state_recorded",
+                "record active repository snapshots and classify dirty state before closing work",
+                format!(
+                    "{} repositories, {} missing active snapshots, {} unclassified dirty states",
+                    repository.repository_count,
+                    repository.missing_snapshot_count,
+                    repository.unclassified_dirty_state_count
+                ),
+            )
+        },
+    );
+
+    let blocking_reason = items
+        .iter()
+        .find_map(|item| item.blocking_action.clone())
+        .map(|_| "close-ready checks failed".to_string());
+    Ok(CloseReadyOutcome {
+        work_unit_id: Some(active.work_unit_id),
+        activation_id: Some(active.activation_id),
+        result: if blocking_reason.is_none() {
+            "pass"
+        } else {
+            "blocked"
+        }
+        .to_string(),
+        blocking_reason,
+        items,
+    })
+}
+
 pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
     resume_check(root, "basic")
 }
@@ -1256,6 +1362,95 @@ fn repository_snapshot_dirty_state_classified(
     Ok(unclassified_dirty_entries == 0)
 }
 
+fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<ValidationCloseState> {
+    conn.query_row(
+        r#"
+        select
+            count(*),
+            sum(case when latest_result is null then 1 else 0 end),
+            sum(case when latest_result is not null and latest_result != 'pass' then 1 else 0 end)
+        from (
+            select
+                vg.id,
+                (
+                    select vr.result
+                    from validation_runs vr
+                    where vr.validation_gate_id = vg.id
+                    order by vr.id desc
+                    limit 1
+                ) as latest_result
+            from validation_gates vg
+            left join tasks t on t.id = vg.task_id
+            where vg.status = 'active'
+              and coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+        )
+        "#,
+        params![work_unit_id],
+        |row| {
+            Ok(ValidationCloseState {
+                selected_gate_count: row.get(0)?,
+                missing_run_count: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                non_passing_run_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            })
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn repository_close_state(
+    conn: &Connection,
+    active: &StoredActivation,
+) -> Result<RepositoryCloseState> {
+    let repository_count = conn.query_row(
+        "select count(*) from repositories where project_id = ?1",
+        params![active.project_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let active_snapshot_count = conn.query_row(
+        r#"
+        select count(distinct s.repository_id)
+        from repository_snapshots s
+        join repositories r on r.id = s.repository_id
+        where r.project_id = ?1 and s.work_unit_activation_id = ?2
+        "#,
+        params![active.project_id, active.activation_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let mut stmt = conn.prepare(
+        r#"
+        select s.id, s.is_clean
+        from repository_snapshots s
+        join repositories r on r.id = s.repository_id
+        where r.project_id = ?1
+          and s.work_unit_activation_id = ?2
+          and s.id = (
+              select max(inner_s.id)
+              from repository_snapshots inner_s
+              where inner_s.repository_id = s.repository_id
+                and inner_s.work_unit_activation_id = ?2
+          )
+        "#,
+    )?;
+    let snapshots = stmt.query_map(params![active.project_id, active.activation_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut unclassified_dirty_state_count = 0;
+    for snapshot in snapshots {
+        let (repository_snapshot_id, is_clean) = snapshot?;
+        if is_clean == 0
+            && !repository_snapshot_dirty_state_classified(conn, repository_snapshot_id)?
+        {
+            unclassified_dirty_state_count += 1;
+        }
+    }
+
+    Ok(RepositoryCloseState {
+        repository_count,
+        missing_snapshot_count: repository_count.saturating_sub(active_snapshot_count),
+        unclassified_dirty_state_count,
+    })
+}
+
 fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResumeCounts> {
     Ok(TraceResumeCounts {
         stale_design_records: count_stale_design_records_for_work(conn, work_unit_id)?,
@@ -1444,6 +1639,18 @@ struct TraceResumeCounts {
     stale_coverage_items: i64,
 }
 
+struct ValidationCloseState {
+    selected_gate_count: i64,
+    missing_run_count: i64,
+    non_passing_run_count: i64,
+}
+
+struct RepositoryCloseState {
+    repository_count: i64,
+    missing_snapshot_count: i64,
+    unclassified_dirty_state_count: i64,
+}
+
 #[derive(Default)]
 struct RepositoryResumeState {
     repository_count: i64,
@@ -1490,6 +1697,43 @@ pub struct InterruptOutcome {
 pub struct CloseOutcome {
     pub work_unit_id: i64,
     pub activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CloseReadyOutcome {
+    pub work_unit_id: Option<i64>,
+    pub activation_id: Option<i64>,
+    pub result: String,
+    pub blocking_reason: Option<String>,
+    pub items: Vec<CloseReadyItem>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CloseReadyItem {
+    pub name: String,
+    pub result: String,
+    pub blocking_action: Option<String>,
+    pub details: String,
+}
+
+impl CloseReadyItem {
+    fn pass(name: &str, details: impl Into<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            result: "pass".to_string(),
+            blocking_action: None,
+            details: details.into(),
+        }
+    }
+
+    fn fail(name: &str, blocking_action: &str, details: impl Into<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            result: "fail".to_string(),
+            blocking_action: Some(blocking_action.to_string()),
+            details: details.into(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

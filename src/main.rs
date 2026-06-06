@@ -30,7 +30,7 @@ use agent_workbench::{
     add_review_policy, add_review_run, add_task, add_user_correction, add_validation_run,
     add_work_record_command, add_work_record_commit, add_work_record_file,
     add_work_record_git_commit, add_work_record_git_file, applicable_rules, approve_design_version,
-    classify_finding, close_active_work, close_kpt_review, close_task,
+    classify_finding, close_active_work, close_kpt_review, close_ready, close_task,
     convert_kpt_item_to_command_profile, convert_kpt_item_to_decision,
     convert_kpt_item_to_design_version, convert_kpt_item_to_review_policy,
     convert_kpt_item_to_task, create_follow_up_work, create_work_record,
@@ -279,6 +279,8 @@ struct ResumeCheckArgs {
 
 #[derive(Debug, Subcommand)]
 enum GateCommand {
+    /// Check whether the active work unit can close without writing ledger rows.
+    CloseReady(GateCloseReadyArgs),
     /// Select a validation gate from an imported template.
     Select(GateSelectArgs),
     /// Record a validation result for a selected gate.
@@ -300,6 +302,12 @@ enum GateCommand {
 struct GateResumeReadyArgs {
     #[arg(long, default_value = "basic")]
     maturity: String,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct GateCloseReadyArgs {
     #[arg(long)]
     dry_run: bool,
 }
@@ -1602,6 +1610,30 @@ fn main() -> Result<()> {
             }
         }
         Command::Gate { command } => match command {
+            GateCommand::CloseReady(args) => {
+                if !args.dry_run {
+                    anyhow::bail!("gate close-ready is read-only; pass --dry-run");
+                }
+                let outcome = close_ready(&root)?;
+                println!("gate: close-ready");
+                println!("dry_run: true");
+                if let Some(work_unit_id) = outcome.work_unit_id {
+                    println!("work_unit_id: {work_unit_id}");
+                }
+                if let Some(activation_id) = outcome.activation_id {
+                    println!("activation_id: {activation_id}");
+                }
+                println!("result: {}", outcome.result);
+                if let Some(reason) = outcome.blocking_reason {
+                    println!("blocking_reason: {reason}");
+                }
+                for item in outcome.items {
+                    match item.blocking_action {
+                        Some(action) => println!("{}: {} ({})", item.name, item.result, action),
+                        None => println!("{}: {}", item.name, item.result),
+                    }
+                }
+            }
             GateCommand::Select(args) => {
                 let outcome = select_validation_gate(
                     &root,
