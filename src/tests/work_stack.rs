@@ -682,6 +682,78 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
 }
 
 #[test]
+fn close_ready_requires_close_repository_comparisons_for_changed_snapshots() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "close comparison work", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: base.repository_snapshot_id,
+            current_repository_snapshot_id: current.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: true,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "changed_classified",
+        },
+    )
+    .unwrap();
+    let allowed = close_ready(temp.path()).unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "fail")
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "pass")
+    );
+}
+
+#[test]
 fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

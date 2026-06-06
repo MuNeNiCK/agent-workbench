@@ -276,15 +276,19 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     items.push(
         if repository.repository_count == 0
             || (repository.missing_snapshot_count == 0
-                && repository.unclassified_dirty_state_count == 0)
+                && repository.unclassified_dirty_state_count == 0
+                && repository.missing_comparison_count == 0
+                && repository.unclassified_comparison_count == 0)
         {
             CloseReadyItem::pass(
                 "repository_state_recorded",
                 format!(
-                    "{} repositories, {} missing active snapshots, {} unclassified dirty states",
+                    "{} repositories, {} missing active snapshots, {} unclassified dirty states, {} missing comparisons, {} unclassified comparisons",
                     repository.repository_count,
                     repository.missing_snapshot_count,
-                    repository.unclassified_dirty_state_count
+                    repository.unclassified_dirty_state_count,
+                    repository.missing_comparison_count,
+                    repository.unclassified_comparison_count
                 ),
             )
         } else {
@@ -292,10 +296,12 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "repository_state_recorded",
                 "record active repository snapshots and classify dirty state before closing work",
                 format!(
-                    "{} repositories, {} missing active snapshots, {} unclassified dirty states",
+                    "{} repositories, {} missing active snapshots, {} unclassified dirty states, {} missing comparisons, {} unclassified comparisons",
                     repository.repository_count,
                     repository.missing_snapshot_count,
-                    repository.unclassified_dirty_state_count
+                    repository.unclassified_dirty_state_count,
+                    repository.missing_comparison_count,
+                    repository.unclassified_comparison_count
                 ),
             )
         },
@@ -1486,7 +1492,7 @@ fn repository_close_state(
     )?;
     let mut stmt = conn.prepare(
         r#"
-        select s.id, s.is_clean
+        select s.id, s.repository_id, s.is_clean
         from repository_snapshots s
         join repositories r on r.id = s.repository_id
         where r.project_id = ?1
@@ -1500,15 +1506,36 @@ fn repository_close_state(
         "#,
     )?;
     let snapshots = stmt.query_map(params![active.project_id, active.activation_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })?;
     let mut unclassified_dirty_state_count = 0;
+    let mut missing_comparison_count = 0;
+    let mut unclassified_comparison_count = 0;
     for snapshot in snapshots {
-        let (repository_snapshot_id, is_clean) = snapshot?;
+        let (repository_snapshot_id, repository_id, is_clean) = snapshot?;
         if is_clean == 0
             && !repository_snapshot_dirty_state_classified(conn, repository_snapshot_id)?
         {
             unclassified_dirty_state_count += 1;
+        }
+        if let Some(base_snapshot_id) =
+            previous_repository_snapshot(conn, repository_id, repository_snapshot_id)?
+        {
+            match close_repository_snapshot_comparison(
+                conn,
+                base_snapshot_id,
+                repository_snapshot_id,
+            )?
+            .as_deref()
+            {
+                Some("same" | "changed_classified") => {}
+                Some("changed_unclassified") | Some(_) => unclassified_comparison_count += 1,
+                None => missing_comparison_count += 1,
+            }
         }
     }
 
@@ -1516,7 +1543,48 @@ fn repository_close_state(
         repository_count,
         missing_snapshot_count: repository_count.saturating_sub(active_snapshot_count),
         unclassified_dirty_state_count,
+        missing_comparison_count,
+        unclassified_comparison_count,
     })
+}
+
+fn previous_repository_snapshot(
+    conn: &Connection,
+    repository_id: i64,
+    repository_snapshot_id: i64,
+) -> Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        select max(id)
+        from repository_snapshots
+        where repository_id = ?1 and id < ?2
+        "#,
+        params![repository_id, repository_snapshot_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn close_repository_snapshot_comparison(
+    conn: &Connection,
+    base_snapshot_id: i64,
+    current_snapshot_id: i64,
+) -> Result<Option<String>> {
+    conn.query_row(
+        r#"
+        select result
+        from repository_snapshot_comparisons
+        where base_repository_snapshot_id = ?1
+          and current_repository_snapshot_id = ?2
+          and comparison_type = 'close'
+        order by id desc
+        limit 1
+        "#,
+        params![base_snapshot_id, current_snapshot_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn review_plan_stage_state(
@@ -1895,6 +1963,8 @@ struct RepositoryCloseState {
     repository_count: i64,
     missing_snapshot_count: i64,
     unclassified_dirty_state_count: i64,
+    missing_comparison_count: i64,
+    unclassified_comparison_count: i64,
 }
 
 #[derive(Default)]
