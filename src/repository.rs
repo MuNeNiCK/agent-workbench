@@ -235,10 +235,11 @@ pub fn add_repository_snapshot_comparison(
 }
 
 pub fn add_git_commit(root: &Path, input: NewGitCommit<'_>) -> Result<GitCommitOutcome> {
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    let repository_id = resolve_repository(&conn, project_id, input.repository)?;
-    conn.execute(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let repository_id = resolve_repository(&tx, project_id, input.repository)?;
+    tx.execute(
         r#"
         insert into git_commits(
             repository_id, commit_sha, short_sha, subject, author_name,
@@ -257,9 +258,12 @@ pub fn add_git_commit(root: &Path, input: NewGitCommit<'_>) -> Result<GitCommitO
             input.parent_shas,
         ],
     )?;
+    let git_commit_id = tx.last_insert_rowid();
+    backfill_work_record_commits(&tx, project_id, git_commit_id, input.commit_sha)?;
+    tx.commit()?;
 
     Ok(GitCommitOutcome {
-        git_commit_id: conn.last_insert_rowid(),
+        git_commit_id,
         repository_id,
     })
 }
@@ -268,9 +272,10 @@ pub fn add_git_file_change(
     root: &Path,
     input: NewGitFileChange<'_>,
 ) -> Result<GitFileChangeOutcome> {
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    let commit_repository_id = conn
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let commit_repository_id = tx
         .query_row(
             r#"
             select c.repository_id
@@ -284,14 +289,14 @@ pub fn add_git_file_change(
         .optional()?
         .context("git commit not found")?;
     let repository_id = match input.repository {
-        Some(repository) => resolve_repository(&conn, project_id, repository)?,
+        Some(repository) => resolve_repository(&tx, project_id, repository)?,
         None => commit_repository_id,
     };
     if repository_id != commit_repository_id {
         bail!("git file change repository must match git commit repository");
     }
 
-    conn.execute(
+    tx.execute(
         r#"
         insert into git_file_changes(
             git_commit_id, repository_id, path, old_path, change_type,
@@ -310,11 +315,83 @@ pub fn add_git_file_change(
             input.content_hash,
         ],
     )?;
+    let git_file_change_id = tx.last_insert_rowid();
+    backfill_work_record_files(
+        &tx,
+        project_id,
+        git_file_change_id,
+        repository_id,
+        input.path,
+    )?;
+    tx.commit()?;
 
     Ok(GitFileChangeOutcome {
-        git_file_change_id: conn.last_insert_rowid(),
+        git_file_change_id,
         repository_id,
     })
+}
+
+fn backfill_work_record_commits(
+    conn: &Connection,
+    project_id: i64,
+    git_commit_id: i64,
+    commit_sha: &str,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        update work_record_commits
+        set git_commit_id = ?1
+        where git_commit_id is null
+          and commit_sha = ?2
+          and work_record_id in (
+              select id from work_records where project_id = ?3
+          )
+        "#,
+        params![git_commit_id, commit_sha, project_id],
+    )?;
+    Ok(())
+}
+
+fn backfill_work_record_files(
+    conn: &Connection,
+    project_id: i64,
+    git_file_change_id: i64,
+    repository_id: i64,
+    path: &str,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        update work_record_files
+        set git_file_change_id = ?1,
+            repository_id = ?2
+        where git_file_change_id is null
+          and path = ?3
+          and work_record_id in (
+              select id from work_records where project_id = ?4
+          )
+          and (
+              (
+                  repository_id = ?2
+                  and (
+                      select count(*)
+                      from git_file_changes
+                      where repository_id = ?2 and path = ?3
+                  ) = 1
+              )
+              or (
+                  repository_id is null
+                  and (
+                      select count(*)
+                      from git_file_changes f
+                      join repositories r on r.id = f.repository_id
+                      where r.project_id = ?4 and f.path = ?3
+                  ) = 1
+              )
+          )
+        "#,
+        params![git_file_change_id, repository_id, path, project_id],
+    )?;
+    Ok(())
 }
 
 fn resolve_repository(conn: &Connection, project_id: i64, repository: &str) -> Result<i64> {

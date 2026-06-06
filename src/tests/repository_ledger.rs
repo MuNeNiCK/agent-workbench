@@ -133,6 +133,218 @@ fn repository_records_snapshots_dirty_entries_and_git_evidence() {
 }
 
 #[test]
+fn git_import_backfills_manual_work_record_links() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "manual evidence before git import",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_commit(
+        temp.path(),
+        NewWorkRecordCommit {
+            work_record_id: work_record.work_record_id,
+            commit_sha: "abc123",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+    add_work_record_file(
+        temp.path(),
+        NewWorkRecordFile {
+            work_record_id: work_record.work_record_id,
+            path: "src/lib.rs",
+            role: "changed",
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("backfill"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    let file = add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked_commit_id: i64 = conn
+        .query_row(
+            "select git_commit_id from work_record_commits where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let linked_file: (i64, i64) = conn
+        .query_row(
+            "select git_file_change_id, repository_id from work_record_files where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(linked_commit_id, commit.git_commit_id);
+    assert_eq!(linked_file, (file.git_file_change_id, file.repository_id));
+}
+
+#[test]
+fn git_import_does_not_backfill_ambiguous_manual_file_links() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let nested_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "def456",
+            short_sha: Some("def456"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: nested_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "ambiguous manual file evidence",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_file(
+        temp.path(),
+        NewWorkRecordFile {
+            work_record_id: work_record.work_record_id,
+            path: "src/lib.rs",
+            role: "changed",
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let main_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: main_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked_file_id: Option<i64> = conn
+        .query_row(
+            "select git_file_change_id from work_record_files where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(linked_file_id.is_none());
+}
+
+#[test]
 fn repository_snapshot_comparisons_require_one_repository() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
