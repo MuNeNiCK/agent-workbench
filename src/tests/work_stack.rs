@@ -394,6 +394,136 @@ fn repo_aware_resume_requires_classified_repository_comparison() {
 }
 
 #[test]
+fn repo_aware_resume_requires_snapshots_for_all_repositories() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repo aware nested resume", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: Some("def456"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let main_base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    suspend_work(
+        temp.path(),
+        "pause with partial repository state",
+        "resume repo work",
+    )
+    .unwrap();
+    let main_current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: main_base.repository_snapshot_id,
+            current_repository_snapshot_id: main_current.repository_snapshot_id,
+            comparison_type: "resume",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+
+    let blocked = resume_ready(temp.path(), "repo-aware").unwrap();
+
+    let nested_base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "nested",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let nested_current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "nested",
+            work_unit_activation_id: None,
+            head_sha: Some("def456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: nested_base.repository_snapshot_id,
+            current_repository_snapshot_id: nested_current.repository_snapshot_id,
+            comparison_type: "resume",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+    let allowed = resume_ready(temp.path(), "repo-aware").unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_current"
+                && item.result == "fail"
+                && item.details.contains("1 missing base snapshots"))
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_current"
+                && item.result == "pass"
+                && item.details.contains("0 missing base snapshots"))
+    );
+}
+
+#[test]
 fn close_ready_requires_validation_runs_for_selected_gates() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

@@ -1220,7 +1220,7 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         let repo_state = repository_resume_state(conn, &target)?;
         repository_snapshot_id = repo_state.latest_current_snapshot_id;
         let pass = repo_state.repository_count == 0
-            || (repo_state.base_snapshot_count > 0
+            || (repo_state.missing_base_snapshot_count == 0
                 && repo_state.missing_current_snapshot_count == 0
                 && repo_state.missing_comparison_count == 0
                 && repo_state.unclassified_comparison_count == 0
@@ -1236,9 +1236,10 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
                 "record current repository snapshots and classify resume differences".to_string(),
             ),
             details: format!(
-                "{} repositories, {} suspend snapshots, {} missing current snapshots, {} missing comparisons, {} unclassified comparisons, {} unclassified dirty states",
+                "{} repositories, {} suspend snapshots, {} missing base snapshots, {} missing current snapshots, {} missing comparisons, {} unclassified comparisons, {} unclassified dirty states",
                 repo_state.repository_count,
                 repo_state.base_snapshot_count,
+                repo_state.missing_base_snapshot_count,
                 repo_state.missing_current_snapshot_count,
                 repo_state.missing_comparison_count,
                 repo_state.unclassified_comparison_count,
@@ -1369,6 +1370,7 @@ fn repository_resume_state(
             state.unclassified_dirty_state_count += 1;
         }
     }
+    state.missing_base_snapshot_count = repository_count.saturating_sub(state.base_snapshot_count);
 
     Ok(state)
 }
@@ -1985,6 +1987,7 @@ struct ReviewPlanTargetForResume {
 struct RepositoryResumeState {
     repository_count: i64,
     base_snapshot_count: i64,
+    missing_base_snapshot_count: i64,
     missing_current_snapshot_count: i64,
     missing_comparison_count: i64,
     unclassified_comparison_count: i64,
