@@ -233,6 +233,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     )?;
     let validation = validation_close_state(&conn, active.work_unit_id)?;
     let repository = repository_close_state(&conn, &active)?;
+    let review = review_plan_stage_state(&conn, active.work_unit_id, "close-ready")?;
     let mut items = Vec::new();
     items.push(if open_tasks == 0 {
         CloseReadyItem::pass(
@@ -247,14 +248,15 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         )
     });
     items.push(
-        if validation.missing_run_count == 0 && validation.non_passing_run_count == 0 {
+        if validation.missing_run_count == 0 && validation.unaccepted_failure_count == 0 {
             CloseReadyItem::pass(
                 "validation_runs_recorded",
                 format!(
-                    "{} selected gates, {} missing runs, {} non-passing latest runs",
+                    "{} selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
                     validation.selected_gate_count,
                     validation.missing_run_count,
-                    validation.non_passing_run_count
+                    validation.accepted_failure_count,
+                    validation.unaccepted_failure_count
                 ),
             )
         } else {
@@ -262,10 +264,11 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "validation_runs_recorded",
                 "record passing validation runs or classify the remaining failures",
                 format!(
-                    "{} selected gates, {} missing runs, {} non-passing latest runs",
+                    "{} selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
                     validation.selected_gate_count,
                     validation.missing_run_count,
-                    validation.non_passing_run_count
+                    validation.accepted_failure_count,
+                    validation.unaccepted_failure_count
                 ),
             )
         },
@@ -293,6 +296,32 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                     repository.repository_count,
                     repository.missing_snapshot_count,
                     repository.unclassified_dirty_state_count
+                ),
+            )
+        },
+    );
+    items.push(
+        if review.required_plan_count == 0
+            || (review.incomplete_required_plan_count == 0 && review.stale_target_count == 0)
+        {
+            CloseReadyItem::pass(
+                "review_plans_clean",
+                format!(
+                    "{} required close-ready plans, {} incomplete, {} stale targets",
+                    review.required_plan_count,
+                    review.incomplete_required_plan_count,
+                    review.stale_target_count
+                ),
+            )
+        } else {
+            CloseReadyItem::fail(
+                "review_plans_clean",
+                "complete required close-ready plans or refresh stale targets",
+                format!(
+                    "{} required close-ready plans, {} incomplete, {} stale targets",
+                    review.required_plan_count,
+                    review.incomplete_required_plan_count,
+                    review.stale_target_count
                 ),
             )
         },
@@ -1122,7 +1151,7 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
                 details,
             });
         }
-        let review_state = review_plan_resume_state(conn, target.work_unit_id)?;
+        let review_state = review_plan_stage_state(conn, target.work_unit_id, "resume-ready")?;
         let review_pass = review_state.required_plan_count == 0
             || (review_state.incomplete_required_plan_count == 0
                 && review_state.stale_target_count == 0);
@@ -1391,7 +1420,14 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
         select
             count(*),
             sum(case when latest_result is null then 1 else 0 end),
-            sum(case when latest_result is not null and latest_result != 'pass' then 1 else 0 end)
+            sum(case
+                when latest_result is not null and latest_result != 'pass' and accepted_failure = 1
+                then 1 else 0
+            end),
+            sum(case
+                when latest_result is not null and latest_result != 'pass' and accepted_failure = 0
+                then 1 else 0
+            end)
         from (
             select
                 vg.id,
@@ -1401,7 +1437,15 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
                     where vr.validation_gate_id = vg.id
                     order by vr.id desc
                     limit 1
-                ) as latest_result
+                ) as latest_result,
+                exists (
+                    select 1
+                    from acceptance_records ar
+                    where ar.target_type = 'validation_gate_template'
+                      and ar.validation_gate_template_id = vg.template_id
+                      and ar.acceptance_type = 'explicit_exception'
+                      and ar.status = 'approved'
+                ) as accepted_failure
             from validation_gates vg
             left join tasks t on t.id = vg.task_id
             where vg.status = 'active'
@@ -1413,7 +1457,8 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
             Ok(ValidationCloseState {
                 selected_gate_count: row.get(0)?,
                 missing_run_count: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                non_passing_run_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                accepted_failure_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                unaccepted_failure_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
             })
         },
     )
@@ -1474,21 +1519,25 @@ fn repository_close_state(
     })
 }
 
-fn review_plan_resume_state(conn: &Connection, work_unit_id: i64) -> Result<ReviewPlanResumeState> {
+fn review_plan_stage_state(
+    conn: &Connection,
+    work_unit_id: i64,
+    stage: &str,
+) -> Result<ReviewPlanStageState> {
     let mut stmt = conn.prepare(
         r#"
         select id, status
         from review_plans
         where work_unit_id = ?1
-          and stage = 'resume-ready'
+          and stage = ?2
           and required = 1
         order by id
         "#,
     )?;
-    let rows = stmt.query_map(params![work_unit_id], |row| {
+    let rows = stmt.query_map(params![work_unit_id, stage], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })?;
-    let mut state = ReviewPlanResumeState::default();
+    let mut state = ReviewPlanStageState::default();
     for row in rows {
         let (review_plan_id, status) = row?;
         state.required_plan_count += 1;
@@ -1838,7 +1887,8 @@ struct TraceResumeCounts {
 struct ValidationCloseState {
     selected_gate_count: i64,
     missing_run_count: i64,
-    non_passing_run_count: i64,
+    accepted_failure_count: i64,
+    unaccepted_failure_count: i64,
 }
 
 struct RepositoryCloseState {
@@ -1848,7 +1898,7 @@ struct RepositoryCloseState {
 }
 
 #[derive(Default)]
-struct ReviewPlanResumeState {
+struct ReviewPlanStageState {
     required_plan_count: i64,
     incomplete_required_plan_count: i64,
     stale_target_count: i64,

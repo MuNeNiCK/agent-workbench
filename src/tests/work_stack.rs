@@ -514,6 +514,174 @@ fn close_ready_requires_validation_runs_for_selected_gates() {
 }
 
 #[test]
+fn close_ready_allows_explicitly_accepted_validation_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "accepted validation failure", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("validation failure is accepted"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "fail",
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("known external failure"),
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    accept_design_exception(
+        temp.path(),
+        NewDesignExceptionAcceptance {
+            design_version_id: Some(import.design_version_id),
+            design_package: None,
+            target: "gate:GATE-001",
+            acceptance_type: "explicit_exception",
+            reason: "known external failure accepted by user",
+        },
+    )
+    .unwrap();
+    let accepted = close_ready(temp.path()).unwrap();
+
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "validation_runs_recorded" && item.result == "fail")
+    );
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| item.name == "validation_runs_recorded" && item.result == "pass")
+    );
+}
+
+#[test]
+fn close_ready_requires_required_close_plans_to_be_clean() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "close plan work", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let allowed = close_ready(temp.path()).unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "review_plans_clean" && item.result == "fail")
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "review_plans_clean" && item.result == "pass")
+    );
+}
+
+#[test]
 fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

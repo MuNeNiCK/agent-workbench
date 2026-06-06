@@ -1160,6 +1160,7 @@ fn gate_close_ready_reports_active_work_readiness() {
     assert!(output.contains("open_tasks_closed: pass"));
     assert!(output.contains("validation_runs_recorded: pass"));
     assert!(output.contains("repository_state_recorded: pass"));
+    assert!(output.contains("review_plans_clean: pass"));
 }
 
 #[test]
