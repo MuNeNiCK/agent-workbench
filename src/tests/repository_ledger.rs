@@ -588,6 +588,79 @@ fn repository_classification_acceptance_project_is_db_enforced() {
 }
 
 #[test]
+fn repository_state_classification_records_snapshot_and_dirty_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("M src/lib.rs"),
+            is_clean: false,
+        },
+    )
+    .unwrap();
+    let dirty = add_repository_dirty_entry(
+        temp.path(),
+        NewRepositoryDirtyEntry {
+            repository_snapshot_id: snapshot.repository_snapshot_id,
+            path: "src/lib.rs",
+            change_type: "modified",
+            staged: false,
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let classification = add_repository_state_classification(
+        temp.path(),
+        NewRepositoryStateClassification {
+            repository_snapshot_id: snapshot.repository_snapshot_id,
+            dirty_entry_id: Some(dirty.repository_dirty_entry_id),
+            classification: "expected",
+            reason: "implementation edit",
+            acceptance_record_id: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let stored: (i64, i64, String, String) = conn
+        .query_row(
+            r#"
+            select repository_snapshot_id, dirty_entry_id, classification, reason
+            from repository_state_classifications
+            where id = ?1
+            "#,
+            params![classification.repository_state_classification_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+
+    assert_eq!(
+        stored,
+        (
+            snapshot.repository_snapshot_id,
+            dirty.repository_dirty_entry_id,
+            "expected".to_string(),
+            "implementation edit".to_string()
+        )
+    );
+}
+
+#[test]
 fn repository_classification_acceptance_type_is_db_enforced() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

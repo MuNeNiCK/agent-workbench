@@ -1172,8 +1172,21 @@ fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
             "--branch",
             "master",
             "--status",
-            "clean",
-            "--clean",
+            "M src/lib.rs",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "dirty",
+            "add",
+            "--snapshot",
+            "2",
+            "--path",
+            "src/lib.rs",
+            "--type",
+            "modified",
         ],
     );
 
@@ -1199,8 +1212,35 @@ fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
             "2",
             "--type",
             "resume",
+            "--dirty-changed",
             "--result",
-            "same",
+            "changed_classified",
+        ],
+    );
+    let still_blocked = ok(
+        temp.path(),
+        &[
+            "gate",
+            "resume-ready",
+            "--maturity",
+            "repo-aware",
+            "--dry-run",
+        ],
+    );
+    let classification = ok(
+        temp.path(),
+        &[
+            "repository",
+            "classify",
+            "add",
+            "--snapshot",
+            "2",
+            "--dirty-entry",
+            "1",
+            "--classification",
+            "expected",
+            "--reason",
+            "implementation edit",
         ],
     );
     let passed = ok(
@@ -1216,6 +1256,9 @@ fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
 
     assert!(blocked.contains("result: blocked"));
     assert!(blocked.contains("repository_state_current: fail"));
+    assert!(still_blocked.contains("result: blocked"));
+    assert!(still_blocked.contains("repository_state_current: fail"));
+    assert!(classification.contains("repository_state_classification_id: 1"));
     assert!(passed.contains("maturity: repo-aware"));
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("repository_state_current: pass"));

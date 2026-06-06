@@ -14,18 +14,19 @@ use agent_workbench::{
     NewCoverageItem, NewDecision, NewDesignExceptionAcceptance, NewDesignPackage, NewFinding,
     NewFindingVerification, NewGitCommit, NewGitFileChange, NewImplementationEvidence,
     NewImplementationEvidenceWithGit, NewKptItem, NewKptReview, NewRepository,
-    NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison, NewReviewPlan,
-    NewReviewPolicy, NewReviewRun, NewReviewScope, NewTask, NewTaskDerivation, NewUserCorrection,
-    NewValidationRun, NewWorkFork, NewWorkRecord, NewWorkRecordCommand, NewWorkRecordCommit,
-    NewWorkRecordFile, NewWorkRecordGitCommit, NewWorkRecordGitFile, NextAction, RuleQuery,
-    TaskDerivationListQuery, TaskListQuery, ValidationGateSelection,
-    ValidationGateTemplateListQuery, ValidationRunListQuery, WorkForkSource,
-    accept_design_exception, accept_task_out_of_scope, add_authority_event, add_closure,
-    add_command_deviation, add_command_usage, add_command_usage_with_repository_snapshot,
-    add_coverage_item, add_decision, add_finding, add_finding_verification, add_fixed_command,
-    add_git_commit, add_git_file_change, add_implementation_evidence,
-    add_implementation_evidence_with_git, add_kpt_item, add_repository, add_repository_dirty_entry,
-    add_repository_snapshot, add_repository_snapshot_comparison, add_review_plan,
+    NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
+    NewRepositoryStateClassification, NewReviewPlan, NewReviewPolicy, NewReviewRun, NewReviewScope,
+    NewTask, NewTaskDerivation, NewUserCorrection, NewValidationRun, NewWorkFork, NewWorkRecord,
+    NewWorkRecordCommand, NewWorkRecordCommit, NewWorkRecordFile, NewWorkRecordGitCommit,
+    NewWorkRecordGitFile, NextAction, RuleQuery, TaskDerivationListQuery, TaskListQuery,
+    ValidationGateSelection, ValidationGateTemplateListQuery, ValidationRunListQuery,
+    WorkForkSource, accept_design_exception, accept_task_out_of_scope, add_authority_event,
+    add_closure, add_command_deviation, add_command_usage,
+    add_command_usage_with_repository_snapshot, add_coverage_item, add_decision, add_finding,
+    add_finding_verification, add_fixed_command, add_git_commit, add_git_file_change,
+    add_implementation_evidence, add_implementation_evidence_with_git, add_kpt_item,
+    add_repository, add_repository_dirty_entry, add_repository_snapshot,
+    add_repository_snapshot_comparison, add_repository_state_classification, add_review_plan,
     add_review_policy, add_review_run, add_task, add_user_correction, add_validation_run,
     add_work_record_command, add_work_record_commit, add_work_record_file,
     add_work_record_git_commit, add_work_record_git_file, applicable_rules, approve_design_version,
@@ -612,6 +613,10 @@ enum RepositoryCommand {
         #[command(subcommand)]
         command: RepositoryDirtyCommand,
     },
+    Classify {
+        #[command(subcommand)]
+        command: RepositoryClassifyCommand,
+    },
     Commit {
         #[command(subcommand)]
         command: RepositoryCommitCommand,
@@ -682,6 +687,25 @@ struct RepositoryDirtyAddArgs {
     staged: bool,
     #[arg(long)]
     hash: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryClassifyCommand {
+    Add(RepositoryClassifyAddArgs),
+}
+
+#[derive(Debug, Args)]
+struct RepositoryClassifyAddArgs {
+    #[arg(long)]
+    snapshot: i64,
+    #[arg(long)]
+    dirty_entry: Option<i64>,
+    #[arg(long)]
+    classification: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    acceptance: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2106,6 +2130,25 @@ fn main() -> Result<()> {
                     println!(
                         "repository_dirty_entry_id: {}",
                         outcome.repository_dirty_entry_id
+                    );
+                }
+            },
+            RepositoryCommand::Classify { command } => match command {
+                RepositoryClassifyCommand::Add(args) => {
+                    let outcome = add_repository_state_classification(
+                        &root,
+                        NewRepositoryStateClassification {
+                            repository_snapshot_id: args.snapshot,
+                            dirty_entry_id: args.dirty_entry,
+                            classification: &args.classification,
+                            reason: &args.reason,
+                            acceptance_record_id: args.acceptance,
+                        },
+                    )?;
+                    println!("classified repository state");
+                    println!(
+                        "repository_state_classification_id: {}",
+                        outcome.repository_state_classification_id
                     );
                 }
             },

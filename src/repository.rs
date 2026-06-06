@@ -159,6 +159,48 @@ pub fn add_repository_dirty_entry(
     })
 }
 
+pub fn add_repository_state_classification(
+    root: &Path,
+    input: NewRepositoryStateClassification<'_>,
+) -> Result<RepositoryStateClassificationOutcome> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    ensure_snapshot_project(&conn, project_id, input.repository_snapshot_id)?;
+    if let Some(dirty_entry_id) = input.dirty_entry_id {
+        conn.query_row(
+            r#"
+            select 1
+            from repository_dirty_entries
+            where id = ?1 and repository_snapshot_id = ?2
+            "#,
+            params![dirty_entry_id, input.repository_snapshot_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("repository dirty entry not found for snapshot")?;
+    }
+    conn.execute(
+        r#"
+        insert into repository_state_classifications(
+            repository_snapshot_id, dirty_entry_id, classification,
+            reason, acceptance_record_id, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, current_timestamp)
+        "#,
+        params![
+            input.repository_snapshot_id,
+            input.dirty_entry_id,
+            input.classification,
+            input.reason,
+            input.acceptance_record_id,
+        ],
+    )?;
+
+    Ok(RepositoryStateClassificationOutcome {
+        repository_state_classification_id: conn.last_insert_rowid(),
+    })
+}
+
 pub fn add_repository_snapshot_comparison(
     root: &Path,
     input: NewRepositorySnapshotComparison<'_>,
@@ -362,6 +404,14 @@ pub struct NewRepositoryDirtyEntry<'a> {
     pub content_hash: Option<&'a str>,
 }
 
+pub struct NewRepositoryStateClassification<'a> {
+    pub repository_snapshot_id: i64,
+    pub dirty_entry_id: Option<i64>,
+    pub classification: &'a str,
+    pub reason: &'a str,
+    pub acceptance_record_id: Option<i64>,
+}
+
 pub struct NewRepositorySnapshotComparison<'a> {
     pub base_repository_snapshot_id: i64,
     pub current_repository_snapshot_id: i64,
@@ -408,6 +458,11 @@ pub struct RepositorySnapshotOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct RepositoryDirtyEntryOutcome {
     pub repository_dirty_entry_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RepositoryStateClassificationOutcome {
+    pub repository_state_classification_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

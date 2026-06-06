@@ -67,10 +67,11 @@ pub use records::{
 pub use repository::{
     GitCommitOutcome, GitFileChangeOutcome, NewGitCommit, NewGitFileChange, NewRepository,
     NewRepositoryDirtyEntry, NewRepositorySnapshot, NewRepositorySnapshotComparison,
-    RepositoryDirtyEntryOutcome, RepositoryOutcome, RepositoryRecord,
-    RepositorySnapshotComparisonOutcome, RepositorySnapshotOutcome, RepositorySnapshotRecord,
-    add_git_commit, add_git_file_change, add_repository, add_repository_dirty_entry,
-    add_repository_snapshot, add_repository_snapshot_comparison, list_repositories,
+    NewRepositoryStateClassification, RepositoryDirtyEntryOutcome, RepositoryOutcome,
+    RepositoryRecord, RepositorySnapshotComparisonOutcome, RepositorySnapshotOutcome,
+    RepositorySnapshotRecord, RepositoryStateClassificationOutcome, add_git_commit,
+    add_git_file_change, add_repository, add_repository_dirty_entry, add_repository_snapshot,
+    add_repository_snapshot_comparison, add_repository_state_classification, list_repositories,
     list_repository_snapshots,
 };
 pub use review::{
