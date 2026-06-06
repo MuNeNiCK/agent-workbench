@@ -224,9 +224,9 @@ pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
         insert into resume_checks(
             work_unit_id, work_unit_activation_id, suspend_snapshot_id, maturity,
             status, result, authority_event_high_watermark, activation_stack_revision,
-            allowed_next_action, blocking_reason, created_at
+            repository_snapshot_id, allowed_next_action, blocking_reason, created_at
         )
-        values (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, current_timestamp)
+        values (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
         "#,
         params![
             evaluation.work_unit_id,
@@ -236,6 +236,7 @@ pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
             evaluation.resume_result,
             evaluation.authority_high_watermark,
             evaluation.activation_stack_revision,
+            evaluation.repository_snapshot_id,
             if evaluation.resume_result == "allowed" {
                 evaluation.allowed_next_action.as_deref()
             } else {
@@ -960,7 +961,7 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         })
         .collect();
 
-    let trace_maturity = matches!(maturity, "trace" | "trace-aware");
+    let trace_maturity = matches!(maturity, "trace-aware" | "repo-aware");
     let trace_counts = trace_maturity
         .then(|| trace_resume_counts(conn, target.work_unit_id))
         .transpose()?;
@@ -1046,14 +1047,51 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         );
     }
 
+    let repo_maturity = maturity == "repo-aware";
+    let mut repo_allowed = true;
+    let mut repository_snapshot_id = None;
+    if repo_maturity {
+        let repo_state = repository_resume_state(conn, &target)?;
+        repository_snapshot_id = repo_state.latest_current_snapshot_id;
+        let pass = repo_state.repository_count == 0
+            || (repo_state.base_snapshot_count > 0
+                && repo_state.missing_current_snapshot_count == 0
+                && repo_state.missing_comparison_count == 0
+                && repo_state.unclassified_comparison_count == 0
+                && repo_state.unclassified_dirty_state_count == 0);
+        if !pass {
+            repo_allowed = false;
+            blocking_reason.get_or_insert_with(|| "repo-aware resume checks failed".to_string());
+        }
+        items.push(ResumeReadyItem {
+            name: "repository_state_current".to_string(),
+            result: if pass { "pass" } else { "fail" }.to_string(),
+            blocking_action: (!pass).then_some(
+                "record current repository snapshots and classify resume differences".to_string(),
+            ),
+            details: format!(
+                "{} repositories, {} suspend snapshots, {} missing current snapshots, {} missing comparisons, {} unclassified comparisons, {} unclassified dirty states",
+                repo_state.repository_count,
+                repo_state.base_snapshot_count,
+                repo_state.missing_current_snapshot_count,
+                repo_state.missing_comparison_count,
+                repo_state.unclassified_comparison_count,
+                repo_state.unclassified_dirty_state_count
+            ),
+        });
+    } else {
+        items.push(ResumeReadyItem {
+            name: "repository_state_current".to_string(),
+            result: "not_checked".to_string(),
+            blocking_action: None,
+            details: "repo-aware repository state check was not requested".to_string(),
+        });
+    }
+
     let remaining_later_items = [
         (
             "review_plan_current",
             "trace-aware review plan check is not implemented yet",
-        ),
-        (
-            "repository_state_current",
-            "repo-aware repository state check is not implemented yet",
         ),
         (
             "assumptions_current",
@@ -1071,11 +1109,11 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             }),
     );
 
-    let known_maturity = matches!(maturity, "basic" | "trace" | "trace-aware");
+    let known_maturity = matches!(maturity, "basic" | "trace-aware" | "repo-aware");
     if !known_maturity {
         blocking_reason.get_or_insert_with(|| format!("{maturity} checks are not implemented yet"));
     }
-    let allowed = basic_allowed && trace_allowed && known_maturity;
+    let allowed = basic_allowed && trace_allowed && repo_allowed && known_maturity;
     Ok(ResumeGateEvaluation {
         work_unit_id: target.work_unit_id,
         activation_id: target.activation_id,
@@ -1085,8 +1123,137 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         allowed_next_action: Some(snapshot.next_action),
         authority_high_watermark,
         activation_stack_revision: stack_revision,
+        repository_snapshot_id,
         items,
     })
+}
+
+fn repository_resume_state(
+    conn: &Connection,
+    target: &StoredActivation,
+) -> Result<RepositoryResumeState> {
+    let repository_count = conn.query_row(
+        "select count(*) from repositories where project_id = ?1",
+        params![target.project_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let mut base_stmt = conn.prepare(
+        r#"
+        select s.id, s.repository_id
+        from repository_snapshots s
+        join repositories r on r.id = s.repository_id
+        where r.project_id = ?1 and s.work_unit_activation_id = ?2
+        order by s.id
+        "#,
+    )?;
+    let bases = base_stmt.query_map(params![target.project_id, target.activation_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut state = RepositoryResumeState {
+        repository_count,
+        ..RepositoryResumeState::default()
+    };
+
+    for base in bases {
+        let (base_snapshot_id, repository_id) = base?;
+        state.base_snapshot_count += 1;
+        let current = conn
+            .query_row(
+                r#"
+                select id, is_clean
+                from repository_snapshots
+                where repository_id = ?1 and id > ?2
+                order by id desc
+                limit 1
+                "#,
+                params![repository_id, base_snapshot_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((current_snapshot_id, is_clean)) = current else {
+            state.missing_current_snapshot_count += 1;
+            continue;
+        };
+        state.latest_current_snapshot_id = Some(
+            state
+                .latest_current_snapshot_id
+                .map_or(current_snapshot_id, |id| id.max(current_snapshot_id)),
+        );
+        let comparison = conn
+            .query_row(
+                r#"
+                select result
+                from repository_snapshot_comparisons
+                where base_repository_snapshot_id = ?1
+                  and current_repository_snapshot_id = ?2
+                  and comparison_type = 'resume'
+                order by id desc
+                limit 1
+                "#,
+                params![base_snapshot_id, current_snapshot_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match comparison.as_deref() {
+            Some("same" | "changed_classified") => {}
+            Some("changed_unclassified") => state.unclassified_comparison_count += 1,
+            Some(_) => state.unclassified_comparison_count += 1,
+            None => state.missing_comparison_count += 1,
+        }
+        if is_clean == 0 && !repository_snapshot_dirty_state_classified(conn, current_snapshot_id)?
+        {
+            state.unclassified_dirty_state_count += 1;
+        }
+    }
+
+    Ok(state)
+}
+
+fn repository_snapshot_dirty_state_classified(
+    conn: &Connection,
+    repository_snapshot_id: i64,
+) -> Result<bool> {
+    let dirty_entry_count = conn.query_row(
+        "select count(*) from repository_dirty_entries where repository_snapshot_id = ?1",
+        params![repository_snapshot_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if dirty_entry_count == 0 {
+        return conn
+            .query_row(
+                r#"
+                select 1
+                from repository_state_classifications
+                where repository_snapshot_id = ?1
+                  and dirty_entry_id is null
+                  and classification in ('expected', 'unrelated', 'generated', 'accepted_exception')
+                limit 1
+                "#,
+                params![repository_snapshot_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(Into::into);
+    }
+
+    let unclassified_dirty_entries = conn.query_row(
+        r#"
+        select count(*)
+        from repository_dirty_entries d
+        where d.repository_snapshot_id = ?1
+          and not exists (
+              select 1
+              from repository_state_classifications c
+              where c.repository_snapshot_id = d.repository_snapshot_id
+                and c.dirty_entry_id = d.id
+                and c.classification in ('expected', 'unrelated', 'generated', 'accepted_exception')
+          )
+        "#,
+        params![repository_snapshot_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(unclassified_dirty_entries == 0)
 }
 
 fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResumeCounts> {
@@ -1265,6 +1432,7 @@ struct ResumeGateEvaluation {
     allowed_next_action: Option<String>,
     authority_high_watermark: i64,
     activation_stack_revision: i64,
+    repository_snapshot_id: Option<i64>,
     items: Vec<ResumeReadyItem>,
 }
 
@@ -1274,6 +1442,17 @@ struct TraceResumeCounts {
     stale_checklists: i64,
     stale_selected_gates: i64,
     stale_coverage_items: i64,
+}
+
+#[derive(Default)]
+struct RepositoryResumeState {
+    repository_count: i64,
+    base_snapshot_count: i64,
+    missing_current_snapshot_count: i64,
+    missing_comparison_count: i64,
+    unclassified_comparison_count: i64,
+    unclassified_dirty_state_count: i64,
+    latest_current_snapshot_id: Option<i64>,
 }
 
 struct StoredForkSource {

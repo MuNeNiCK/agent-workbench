@@ -298,3 +298,97 @@ This requirement describes changed cleanup behavior that must be implemented.
         .unwrap();
     assert_eq!(design_current_result, "fail");
 }
+
+#[test]
+fn repo_aware_resume_requires_classified_repository_comparison() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repo aware resume", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    suspend_work(
+        temp.path(),
+        "pause with repository state",
+        "resume repo work",
+    )
+    .unwrap();
+    let current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+
+    let blocked = resume_ready(temp.path(), "repo-aware").unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: base.repository_snapshot_id,
+            current_repository_snapshot_id: current.repository_snapshot_id,
+            comparison_type: "resume",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+    let check = resume_check(temp.path(), "repo-aware").unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let stored_snapshot_id: i64 = conn
+        .query_row(
+            "select repository_snapshot_id from resume_checks where id = ?1",
+            params![check.resume_check_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let repository_item: (String, String) = conn
+        .query_row(
+            "select result, details from resume_check_items where resume_check_id = ?1 and check_name = 'repository_state_current'",
+            params![check.resume_check_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert_eq!(
+        blocked.blocking_reason.as_deref(),
+        Some("repo-aware resume checks failed")
+    );
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_current" && item.result == "fail")
+    );
+    assert_eq!(check.result, "allowed");
+    assert_eq!(stored_snapshot_id, current.repository_snapshot_id);
+    assert_eq!(repository_item.0, "pass");
+    assert!(repository_item.1.contains("0 missing comparisons"));
+}

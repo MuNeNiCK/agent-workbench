@@ -1111,6 +1111,117 @@ fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
 }
 
 #[test]
+fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "repo aware resume"]);
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--head",
+            "abc123",
+            "--status",
+            "clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--activation",
+            "1",
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "clean",
+            "--clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "suspend",
+            "--reason",
+            "interrupt",
+            "--next",
+            "resume repo work",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "clean",
+            "--clean",
+        ],
+    );
+
+    let blocked = ok(
+        temp.path(),
+        &[
+            "gate",
+            "resume-ready",
+            "--maturity",
+            "repo-aware",
+            "--dry-run",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "compare",
+            "add",
+            "--base",
+            "1",
+            "--current",
+            "2",
+            "--type",
+            "resume",
+            "--result",
+            "same",
+        ],
+    );
+    let passed = ok(
+        temp.path(),
+        &[
+            "gate",
+            "resume-ready",
+            "--maturity",
+            "repo-aware",
+            "--dry-run",
+        ],
+    );
+
+    assert!(blocked.contains("result: blocked"));
+    assert!(blocked.contains("repository_state_current: fail"));
+    assert!(passed.contains("maturity: repo-aware"));
+    assert!(passed.contains("result: pass"));
+    assert!(passed.contains("repository_state_current: pass"));
+}
+
+#[test]
 fn resume_check_records_requested_maturity() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
