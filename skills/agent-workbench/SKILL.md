@@ -30,12 +30,20 @@ in the repository:
 - `agent-workbench gate record`
 - `agent-workbench gate run list`
 - `agent-workbench repository add`
+- `agent-workbench repository list`
 - `agent-workbench repository snapshot add`
+- `agent-workbench repository snapshot list`
 - `agent-workbench repository dirty add`
 - `agent-workbench repository classify add`
 - `agent-workbench repository compare add`
+- `agent-workbench repository commit add`
+- `agent-workbench repository file add`
 - `agent-workbench resume-check --maturity basic|trace-aware|repo-aware`
 - `agent-workbench record create`
+- `agent-workbench record command add`
+- `agent-workbench record commit add`
+- `agent-workbench record file add`
+- `agent-workbench record export`
 - `agent-workbench kpt start --from corrections`
 
 See `references/cli-workflow.md` for the normal operating flow and
@@ -63,10 +71,16 @@ from structured ledger state.
   with `command usage add` so work records can link to stable evidence.
 - Record selected validation gate results with `gate record`; list prior runs
   with `gate run list`.
-- Record repository snapshots, dirty entries, classifications, and resume
-  comparisons when repository state matters to close or resume decisions.
+- Register every Git boundary that can affect the task. For repo-aware resume,
+  every registered repository needs suspend and current snapshots plus classified
+  comparisons.
+- Record repository snapshots, dirty entries, classifications, resume
+  comparisons, close comparisons, commits, and file changes when repository
+  state matters to close or resume decisions.
 - Create work records with `record create` and link commands, commits, and files
-  when they are available.
+  when they are available. Manual commit/path links can be recorded first; later
+  `repository commit add` and `repository file add` entries backfill structured
+  Git identities when the match is unambiguous.
 - Use `work suspend`, `work interrupt`, `work reopen`, and `work follow-up` to
   preserve the activation stack before switching tasks.
 - Treat accepted design decisions as durable constraints until the user changes them.

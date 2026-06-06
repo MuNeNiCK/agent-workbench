@@ -14,7 +14,9 @@ normal coding-agent work.
    resume decision should be recorded.
 
 Use `--maturity repo-aware` when repository snapshots or dirty state affect the
-resume decision.
+resume decision. Register every relevant repository first; repo-aware resume
+expects every registered repository to have comparable suspend and current
+snapshots.
 
 ## Design To Implementation
 
@@ -30,8 +32,8 @@ resume decision.
 
 ## Close Work
 
-1. Record command usage, validation runs, repository state, and work record
-   evidence.
+1. Record command usage, validation runs, repository state, Git evidence, and
+   work record evidence.
 2. Run `agent-workbench gate close-ready --dry-run`.
 3. If blocked, perform the blocking action printed by the gate before closing.
 4. Close tasks before closing the work unit.
