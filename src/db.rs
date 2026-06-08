@@ -380,6 +380,76 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
     )?;
     reject_invalid_rows(
         conn,
+        "validation_runs",
+        r#"
+        select count(*)
+        from validation_runs vr
+        left join validation_gates vg on vg.id = vr.validation_gate_id
+        left join work_units w on w.id = vr.work_unit_id
+        left join tasks t on t.id = vr.task_id
+        left join command_usages cu on cu.id = vr.command_usage_id
+        left join repository_snapshots s on s.id = vr.repository_snapshot_id
+        left join repositories sr on sr.id = s.repository_id
+        where vr.project_id is null
+           or not exists (select 1 from projects where id = vr.project_id)
+           or vg.id is null
+           or vr.project_id != vg.project_id
+           or (vr.work_unit_id is not null and (w.id is null or vr.project_id != w.project_id))
+           or (
+               vr.task_id is not null
+               and (
+                   t.id is null
+                   or t.work_unit_id is null
+                   or vr.project_id != (
+                       select project_id from work_units where id = t.work_unit_id
+                   )
+               )
+           )
+           or (vr.command_usage_id is not null and (cu.id is null or vr.project_id != cu.project_id))
+           or (
+               vr.repository_snapshot_id is not null
+               and (s.id is null or sr.id is null or vr.project_id != sr.project_id)
+           )
+           or (
+               vr.command_usage_id is not null
+               and vr.repository_snapshot_id is not null
+               and cu.repository_snapshot_id is not null
+               and vr.repository_snapshot_id != cu.repository_snapshot_id
+           )
+        "#,
+        "validation_runs contains invalid project links",
+    )?;
+    reject_invalid_rows(
+        conn,
+        "artifacts",
+        r#"
+        select count(*)
+        from artifacts a
+        left join validation_runs vr on vr.id = a.validation_run_id
+        left join command_usages cu on cu.id = a.command_usage_id
+        left join repository_snapshots s on s.id = a.repository_snapshot_id
+        left join repositories sr on sr.id = s.repository_id
+        where a.project_id is null
+           or not exists (select 1 from projects where id = a.project_id)
+           or (a.validation_run_id is not null and (vr.id is null or a.project_id != vr.project_id))
+           or (a.command_usage_id is not null and (cu.id is null or a.project_id != cu.project_id))
+           or (
+               a.repository_snapshot_id is not null
+               and (s.id is null or sr.id is null or a.project_id != sr.project_id)
+           )
+           or (
+               a.validation_run_id is not null
+               and a.command_usage_id is not vr.command_usage_id
+           )
+           or (
+               a.validation_run_id is not null
+               and a.repository_snapshot_id is not vr.repository_snapshot_id
+           )
+        "#,
+        "artifacts contains invalid validation links",
+    )?;
+    reject_invalid_rows(
+        conn,
         "work_record_commands",
         r#"
         select count(*)
@@ -513,6 +583,9 @@ fn refresh_ledger_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_work_record_fork_repository_git_update;
         drop trigger if exists trg_implementation_evidence_project_insert;
         drop trigger if exists trg_implementation_evidence_project_update;
+        drop trigger if exists trg_artifact_project_insert;
+        drop trigger if exists trg_artifact_project_update;
+        drop trigger if exists trg_repository_snapshot_referenced_delete;
         "#,
     )?;
     Ok(())

@@ -485,3 +485,128 @@ fn init_rejects_legacy_review_rows_missing_required_links() {
 
     assert!(result.is_err());
 }
+
+#[test]
+fn init_refreshes_artifact_and_repository_snapshot_triggers() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_artifact_project_insert;
+        drop trigger trg_artifact_project_update;
+        drop trigger trg_repository_snapshot_referenced_delete;
+
+        create trigger trg_artifact_project_insert
+        before insert on artifacts
+        for each row
+        begin
+            select 1;
+        end;
+
+        create trigger trg_artifact_project_update
+        before update on artifacts
+        for each row
+        begin
+            select 1;
+        end;
+
+        create trigger trg_repository_snapshot_referenced_delete
+        before delete on repository_snapshots
+        for each row
+        begin
+            select 1;
+        end;
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let artifact_insert_sql: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'trigger' and name = 'trg_artifact_project_insert'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let snapshot_delete_sql: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'trigger' and name = 'trg_repository_snapshot_referenced_delete'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(artifact_insert_sql.contains("new.command_usage_id is not"));
+    assert!(artifact_insert_sql.contains("new.repository_snapshot_id is not"));
+    assert!(snapshot_delete_sql.contains("validation_runs where repository_snapshot_id"));
+    assert!(snapshot_delete_sql.contains("artifacts where repository_snapshot_id"));
+}
+
+#[test]
+fn init_rejects_legacy_artifacts_with_invalid_validation_links() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        insert into work_units(project_id, title, status, started_at)
+        values (1, 'legacy validation evidence', 'open', current_timestamp);
+
+        insert into repositories(project_id, name, path, status_summary, last_checked_at)
+        values (1, 'main', '.', 'clean', current_timestamp);
+
+        insert into repository_snapshots(
+            repository_id, head_sha, branch, status_summary, is_clean, created_at
+        )
+        values (1, 'abc123', 'master', 'clean', 1, current_timestamp);
+
+        insert into repository_snapshots(
+            repository_id, head_sha, branch, status_summary, is_clean, created_at
+        )
+        values (1, 'def456', 'master', 'clean', 1, current_timestamp);
+
+        insert into command_usages(
+            project_id, work_unit_id, command, result, repository_snapshot_id, created_at
+        )
+        values (1, 1, 'cargo test', 'pass', 1, current_timestamp);
+
+        insert into command_usages(
+            project_id, work_unit_id, command, result, repository_snapshot_id, created_at
+        )
+        values (1, 1, 'cargo test', 'pass', 2, current_timestamp);
+
+        insert into validation_gates(
+            project_id, gate_key, work_unit_id, expected_result, status, created_at
+        )
+        values (1, 'GATE-001', 1, 'pass', 'active', current_timestamp);
+
+        insert into validation_runs(
+            project_id, validation_gate_id, work_unit_id, command_usage_id,
+            repository_snapshot_id, result, created_at
+        )
+        values (1, 1, 1, 1, 1, 'pass', current_timestamp);
+
+        drop trigger trg_artifact_project_insert;
+        drop trigger trg_artifact_project_update;
+
+        insert into artifacts(
+            project_id, artifact_type, identity_key, artifact_path,
+            validation_run_id, command_usage_id, repository_snapshot_id, created_at
+        )
+        values (
+            1, 'validation_output', 'mismatched-artifact',
+            '.agent-workbench/logs/mismatched.log',
+            1, 2, 1, current_timestamp
+        );
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    let result = init_project(temp.path());
+
+    assert!(result.is_err());
+}
