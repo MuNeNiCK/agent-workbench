@@ -41,6 +41,7 @@ in the repository:
 - `agent-workbench review plan add`
 - `agent-workbench review run add`
 - `agent-workbench finding add`
+- `agent-workbench finding classify`
 - `agent-workbench finding verify`
 - `agent-workbench closure add`
 - `agent-workbench review-context`

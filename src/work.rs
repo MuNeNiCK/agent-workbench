@@ -8,6 +8,7 @@ use crate::db::{
     project_id, suspend_snapshot, suspended_activation,
 };
 use crate::review_context::review_plan_has_clean_context_run;
+use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Result<WorkOutcome> {
     let mut conn = open_existing_project(root)?;
@@ -26,6 +27,27 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
         params![project_id, title, responsibility],
     )?;
     let work_unit_id = tx.last_insert_rowid();
+    let work_scope = work_unit_id.to_string();
+    if responsibility.is_some() {
+        insert_rule_binding(
+            &tx,
+            RuleBindingInput {
+                project_id,
+                rule_source_type: "work_unit",
+                authority_event_id: None,
+                user_correction_id: None,
+                command_profile_id: None,
+                review_policy_id: None,
+                review_plan_id: None,
+                work_unit_id: Some(work_unit_id),
+                validation_gate_id: None,
+                acceptance_record_id: None,
+                scope_type: "work_unit",
+                scope_key: Some(&work_scope),
+                precedence: 60,
+            },
+        )?;
+    }
 
     tx.execute(
         r#"
@@ -1958,6 +1980,14 @@ fn close_process_state(
     project_id: i64,
     work_unit_id: i64,
 ) -> Result<CloseProcessState> {
+    let work_responsibility: Option<String> = conn
+        .query_row(
+            "select responsibility from work_units where id = ?1 and project_id = ?2",
+            params![work_unit_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     let applicable_rule_count = conn.query_row(
         r#"
         select count(*)
@@ -1986,6 +2016,28 @@ fn close_process_state(
                 and higher.status = 'active'
                 and higher.id != lower.id
                 and higher.precedence > lower.precedence
+                and higher.rule_source_type = lower.rule_source_type
+                and coalesce(
+                    higher.authority_event_id,
+                    higher.user_correction_id,
+                    higher.command_profile_id,
+                    higher.review_policy_id,
+                    higher.review_plan_id,
+                    higher.work_unit_id,
+                    higher.validation_gate_id,
+                    higher.acceptance_record_id,
+                    higher.id
+                ) = coalesce(
+                    lower.authority_event_id,
+                    lower.user_correction_id,
+                    lower.command_profile_id,
+                    lower.review_policy_id,
+                    lower.review_plan_id,
+                    lower.work_unit_id,
+                    lower.validation_gate_id,
+                    lower.acceptance_record_id,
+                    lower.id
+                )
                 and (
                     higher.scope_type = lower.scope_type
                     or higher.scope_type = 'work_unit'
@@ -1998,8 +2050,30 @@ fn close_process_state(
         |row| row.get(0),
     )?;
     let fixed_command_count = conn.query_row(
-        "select count(*) from command_profiles where project_id = ?1 and status = 'fixed'",
-        params![project_id],
+        r#"
+        select count(*)
+        from command_profiles cp
+        where cp.project_id = ?1
+          and cp.status = 'fixed'
+          and exists (
+              select 1
+              from rule_bindings rb
+              where rb.command_profile_id = cp.id
+                and rb.status = 'active'
+                and (
+                    rb.scope_type = 'project'
+                    or rb.work_unit_id = ?2
+                    or rb.scope_key in ('project', ?3)
+                    or (?4 is not null and rb.scope_key = ?4)
+                )
+          )
+        "#,
+        params![
+            project_id,
+            work_unit_id,
+            work_unit_id.to_string(),
+            work_responsibility.as_deref()
+        ],
         |row| row.get(0),
     )?;
     let missing_fixed_command_usage_count = conn.query_row(
@@ -2008,6 +2082,18 @@ fn close_process_state(
         from command_profiles cp
         where cp.project_id = ?1
           and cp.status = 'fixed'
+          and exists (
+              select 1
+              from rule_bindings rb
+              where rb.command_profile_id = cp.id
+                and rb.status = 'active'
+                and (
+                    rb.scope_type = 'project'
+                    or rb.work_unit_id = ?2
+                    or rb.scope_key in ('project', ?3)
+                    or (?4 is not null and rb.scope_key = ?4)
+                )
+          )
           and not exists (
               select 1
               from command_usages cu
@@ -2031,7 +2117,12 @@ fn close_process_state(
                 )
           )
         "#,
-        params![project_id, work_unit_id],
+        params![
+            project_id,
+            work_unit_id,
+            work_unit_id.to_string(),
+            work_responsibility.as_deref()
+        ],
         |row| row.get(0),
     )?;
     let repeated_correction_count = conn.query_row(
@@ -2510,7 +2601,7 @@ fn design_versions_for_work(conn: &Connection, work_unit_id: i64) -> Result<Vec<
         join tasks t on t.id = td.task_id
         join design_requirements r on r.id = td.design_requirement_id
         where t.work_unit_id = ?1
-          and td.status = 'active'
+          and td.status in ('active', 'stale')
         order by r.design_version_id
         "#,
     )?;
@@ -2529,7 +2620,7 @@ fn count_design_derived_tasks_for_work(conn: &Connection, work_unit_id: i64) -> 
         from task_derivations td
         join tasks t on t.id = td.task_id
         where t.work_unit_id = ?1
-          and td.status = 'active'
+          and td.status in ('active', 'stale')
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -2630,7 +2721,7 @@ fn count_derived_tasks_missing_selected_gate_for_work(
         from task_derivations td
         join tasks t on t.id = td.task_id
         where t.work_unit_id = ?1
-          and td.status = 'active'
+          and td.status in ('active', 'stale')
           and t.status in ('closed', 'accepted_out_of_scope')
           and not exists (
             select 1
@@ -2657,7 +2748,7 @@ fn count_closed_derived_tasks_missing_evidence_for_work(
         from task_derivations td
         join tasks t on t.id = td.task_id
         where t.work_unit_id = ?1
-          and td.status = 'active'
+          and td.status in ('active', 'stale')
           and t.status = 'closed'
           and not exists (
             select 1
@@ -2796,7 +2887,7 @@ fn count_stale_checklists_for_work(conn: &Connection, work_unit_id: i64) -> Resu
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where c.work_unit_id = ?1
-          and c.status = 'active'
+          and c.status in ('active', 'stale')
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -2833,7 +2924,7 @@ fn count_stale_selected_gates_for_work(conn: &Connection, work_unit_id: i64) -> 
         join design_packages p on p.id = v.design_package_id
         left join tasks t on t.id = vg.task_id
         where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
-          and vg.status = 'active'
+          and vg.status in ('active', 'stale')
           and (p.current_design_version_id != r.design_version_id
                or p.current_design_version_id != gt.design_version_id)
           and (

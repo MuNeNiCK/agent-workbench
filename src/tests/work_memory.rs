@@ -107,6 +107,62 @@ fn fixed_command_creates_command_rule_binding() {
 }
 
 #[test]
+fn close_ready_requires_only_fixed_commands_applicable_to_work_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "storage work", Some("storage")).unwrap();
+    add_fixed_command(
+        temp.path(),
+        NewCommandProfile {
+            name: "docs-tests",
+            command_type: "test",
+            scope: "docs",
+            command: "cargo test -p docs",
+            timeout: Some("120s"),
+            expected_result: Some("pass"),
+        },
+    )
+    .unwrap();
+
+    let ignored = close_ready(temp.path()).unwrap();
+    let ignored_item = ignored
+        .items
+        .iter()
+        .find(|item| item.name == "fixed_commands_used")
+        .unwrap();
+    assert_eq!(ignored_item.result, "pass");
+    assert_eq!(
+        ignored_item.details,
+        "0 fixed command profiles, 0 missing usage or approved deviation"
+    );
+
+    add_fixed_command(
+        temp.path(),
+        NewCommandProfile {
+            name: "storage-tests",
+            command_type: "test",
+            scope: "storage",
+            command: "cargo test -p storage",
+            timeout: Some("120s"),
+            expected_result: Some("pass"),
+        },
+    )
+    .unwrap();
+
+    let required = close_ready(temp.path()).unwrap();
+    let required_item = required
+        .items
+        .iter()
+        .find(|item| item.name == "fixed_commands_used")
+        .unwrap();
+    assert_eq!(required_item.result, "fail");
+    assert_eq!(
+        required_item.details,
+        "1 fixed command profiles, 1 missing usage or approved deviation"
+    );
+}
+
+#[test]
 fn command_usage_and_deviation_attach_to_profile_and_active_work() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

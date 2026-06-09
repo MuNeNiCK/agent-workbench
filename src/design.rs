@@ -372,6 +372,7 @@ pub fn import_design_package(
             }
         }
     }
+    mark_stale_links_for_design_version(&tx, project_id, design_package_id, design_version_id)?;
     tx.execute(
         r#"
         update design_packages
@@ -393,6 +394,146 @@ pub fn import_design_package(
         validation_gate_template_count,
         warning_count,
     })
+}
+
+fn mark_stale_links_for_design_version(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_package_id: i64,
+    current_design_version_id: i64,
+) -> Result<()> {
+    let stale_requirement = r#"
+        select 1
+        from design_requirements old_req
+        join design_versions old_version on old_version.id = old_req.design_version_id
+        where old_req.id = design_requirements.id
+          and old_req.project_id = ?1
+          and old_version.design_package_id = ?2
+          and old_req.design_version_id != ?3
+          and not exists (
+              select 1
+              from design_requirements current_req
+              where current_req.project_id = old_req.project_id
+                and current_req.design_version_id = ?3
+                and current_req.requirement_key = old_req.requirement_key
+                and current_req.requirement_hash = old_req.requirement_hash
+                and current_req.status = 'active'
+          )
+    "#;
+    conn.execute(
+        &format!(
+            r#"
+            update task_derivations
+            set status = 'stale'
+            where project_id = ?1
+              and status = 'active'
+              and exists (
+                  select 1
+                  from design_requirements
+                  where design_requirements.id = task_derivations.design_requirement_id
+                    and exists ({stale_requirement})
+              )
+            "#
+        ),
+        params![project_id, design_package_id, current_design_version_id],
+    )?;
+    conn.execute(
+        &format!(
+            r#"
+            update checklists
+            set status = 'stale'
+            where project_id = ?1
+              and status = 'active'
+              and exists (
+                  select 1
+                  from checklist_items item
+                  join design_requirements on design_requirements.id = item.design_requirement_id
+                  where item.checklist_id = checklists.id
+                    and exists ({stale_requirement})
+              )
+            "#
+        ),
+        params![project_id, design_package_id, current_design_version_id],
+    )?;
+    conn.execute(
+        &format!(
+            r#"
+            update coverage_items
+            set status = 'stale'
+            where project_id = ?1
+              and status != 'stale'
+              and exists (
+                  select 1
+                  from design_requirements
+                  where design_requirements.id = coverage_items.design_requirement_id
+                    and exists ({stale_requirement})
+              )
+            "#
+        ),
+        params![project_id, design_package_id, current_design_version_id],
+    )?;
+    conn.execute(
+        r#"
+        update validation_gates
+        set status = 'stale'
+        where project_id = ?1
+          and status = 'active'
+          and (
+              exists (
+                  select 1
+                  from validation_gate_templates old_gate
+                  join design_versions old_version on old_version.id = old_gate.design_version_id
+                  where old_gate.id = validation_gates.template_id
+                    and old_gate.project_id = ?1
+                    and old_version.design_package_id = ?2
+                    and old_gate.design_version_id != ?3
+                    and not exists (
+                        select 1
+                        from validation_gate_templates current_gate
+                        where current_gate.project_id = old_gate.project_id
+                          and current_gate.design_version_id = ?3
+                          and current_gate.gate_key = old_gate.gate_key
+                          and current_gate.gate_hash = old_gate.gate_hash
+                          and current_gate.status = 'active'
+                    )
+              )
+              or exists (
+                  select 1
+                  from design_requirements old_req
+                  join design_versions old_version on old_version.id = old_req.design_version_id
+                  where old_req.id = validation_gates.design_requirement_id
+                    and old_req.project_id = ?1
+                    and old_version.design_package_id = ?2
+                    and old_req.design_version_id != ?3
+                    and not exists (
+                        select 1
+                        from design_requirements current_req
+                        where current_req.project_id = old_req.project_id
+                          and current_req.design_version_id = ?3
+                          and current_req.requirement_key = old_req.requirement_key
+                          and current_req.requirement_hash = old_req.requirement_hash
+                          and current_req.status = 'active'
+                    )
+              )
+          )
+        "#,
+        params![project_id, design_package_id, current_design_version_id],
+    )?;
+    conn.execute(
+        r#"
+        update review_plans
+        set status = 'blocked'
+        where project_id = ?1
+          and status = 'open'
+          and design_version_id in (
+              select id
+              from design_versions
+              where design_package_id = ?2 and id != ?3
+          )
+        "#,
+        params![project_id, design_package_id, current_design_version_id],
+    )?;
+    Ok(())
 }
 
 pub fn list_design_requirements(
@@ -972,7 +1113,11 @@ pub fn approve_design_version(
             authority_event_id: Some(authority_event_id),
             user_correction_id: None,
             command_profile_id: None,
+            review_policy_id: None,
+            review_plan_id: None,
             work_unit_id: None,
+            validation_gate_id: None,
+            acceptance_record_id: None,
             scope_type: "design_package",
             scope_key: Some(&version.design_key),
             precedence: 90,

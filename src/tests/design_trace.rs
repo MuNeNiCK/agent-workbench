@@ -1731,7 +1731,7 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
         },
     )
     .unwrap();
-    select_validation_gate(
+    let gate = select_validation_gate(
         temp.path(),
         ValidationGateSelection {
             design_version_id: first_import.design_version_id,
@@ -1783,13 +1783,17 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
             .iter()
             .any(|item| { item.name == "validation_gates_current" && item.result == "fail" })
     );
+    let stale = list_stale_records(temp.path()).unwrap();
+    assert!(stale.iter().any(|record| {
+        record.record_type == "validation_gate" && record.id == gate.validation_gate_id
+    }));
 }
 
 #[test]
 fn implementation_ready_blocks_stale_derivations_and_checklists() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
-    start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+    let work = start_work(temp.path(), "implement storage lifecycle", None).unwrap();
     let task = add_task(
         temp.path(),
         NewTask {
@@ -1867,6 +1871,22 @@ fn implementation_ready_blocks_stale_derivations_and_checklists() {
         },
     )
     .unwrap();
+    add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(import_a.design_version_id),
+            review_type: "design_task_decomposition",
+            required: true,
+            stage: "implementation-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
     fs::write(
         init.package_path.join("requirements").join("README.md"),
         r#"## REQ-001: Preserve cleanup behavior
@@ -1927,6 +1947,23 @@ This requirement describes changed cleanup behavior that must be implemented.
             .items
             .iter()
             .any(|item| { item.name == "coverage_items_current" && item.result == "fail" })
+    );
+    let stale = list_stale_records(temp.path()).unwrap();
+    assert!(
+        stale
+            .iter()
+            .any(|record| record.record_type == "task_derivation")
+    );
+    assert!(stale.iter().any(|record| record.record_type == "checklist"));
+    assert!(
+        stale
+            .iter()
+            .any(|record| record.record_type == "coverage_item")
+    );
+    assert!(
+        stale
+            .iter()
+            .any(|record| record.record_type == "review_plan")
     );
 
     add_general_acceptance(

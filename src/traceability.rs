@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
 use crate::review_context::required_plans_missing_context_count;
+use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 pub fn derive_task_from_requirement(
     root: &Path,
@@ -286,6 +287,26 @@ pub fn decompose_design(
                     template.expected_result,
                 ],
             )?;
+            let validation_gate_id = tx.last_insert_rowid();
+            let work_scope = input.work_unit_id.to_string();
+            insert_rule_binding(
+                &tx,
+                RuleBindingInput {
+                    project_id,
+                    rule_source_type: "validation_gate",
+                    authority_event_id: None,
+                    user_correction_id: None,
+                    command_profile_id: None,
+                    review_policy_id: None,
+                    review_plan_id: None,
+                    work_unit_id: Some(input.work_unit_id),
+                    validation_gate_id: Some(validation_gate_id),
+                    acceptance_record_id: None,
+                    scope_type: "work_unit",
+                    scope_key: Some(&work_scope),
+                    precedence: 62,
+                },
+            )?;
             created_validation_gates += 1;
         }
     }
@@ -423,6 +444,22 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         join design_requirements dr on dr.id = c.design_requirement_id
         where c.project_id = ?1 and c.status = 'stale'
         order by c.id
+        "#,
+        &mut records,
+    )?;
+    collect_stale_rows(
+        &conn,
+        project_id,
+        "review_plan",
+        r#"
+        select rp.id, rp.review_type || ':' || rp.stage
+        from review_plans rp
+        join design_versions v on v.id = rp.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where rp.project_id = ?1
+          and rp.status = 'blocked'
+          and p.current_design_version_id != rp.design_version_id
+        order by rp.id
         "#,
         &mut records,
     )?;
@@ -998,6 +1035,27 @@ pub fn select_validation_gate(
         ],
     )?;
     let validation_gate_id = tx.last_insert_rowid();
+    if let Some(work_unit_id) = task_work_unit_id {
+        let work_scope = work_unit_id.to_string();
+        insert_rule_binding(
+            &tx,
+            RuleBindingInput {
+                project_id,
+                rule_source_type: "validation_gate",
+                authority_event_id: None,
+                user_correction_id: None,
+                command_profile_id: None,
+                review_policy_id: None,
+                review_plan_id: None,
+                work_unit_id: Some(work_unit_id),
+                validation_gate_id: Some(validation_gate_id),
+                acceptance_record_id: None,
+                scope_type: "work_unit",
+                scope_key: Some(&work_scope),
+                precedence: 62,
+            },
+        )?;
+    }
     tx.commit()?;
 
     Ok(ValidationGateSelectionOutcome {
@@ -1708,7 +1766,7 @@ fn count_stale_task_derivations(
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
-          and td.status = 'active'
+          and td.status in ('active', 'stale')
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -1744,7 +1802,7 @@ fn count_stale_checklists(conn: &rusqlite::Connection, design_package_id: i64) -
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
-          and c.status = 'active'
+          and c.status in ('active', 'stale')
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -1783,7 +1841,7 @@ fn count_stale_validation_gates(
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
-          and vg.status = 'active'
+          and vg.status in ('active', 'stale')
           and (p.current_design_version_id != r.design_version_id
                or p.current_design_version_id != gt.design_version_id)
           and (

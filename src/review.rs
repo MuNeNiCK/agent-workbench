@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
 use crate::review_context::review_context_ref;
+use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 pub fn start_review_scope(root: &Path, input: NewReviewScope<'_>) -> Result<ReviewScopeOutcome> {
     let conn = open_existing_project(root)?;
@@ -169,6 +170,25 @@ pub fn add_review_plan(root: &Path, input: NewReviewPlan<'_>) -> Result<ReviewPl
         ],
     )?;
     let review_plan_id = tx.last_insert_rowid();
+    let work_scope = input.work_unit_id.to_string();
+    insert_rule_binding(
+        &tx,
+        RuleBindingInput {
+            project_id,
+            rule_source_type: "review_policy",
+            authority_event_id: None,
+            user_correction_id: None,
+            command_profile_id: None,
+            review_policy_id,
+            review_plan_id: Some(review_plan_id),
+            work_unit_id: Some(input.work_unit_id),
+            validation_gate_id: None,
+            acceptance_record_id: None,
+            scope_type: "work_unit",
+            scope_key: Some(&work_scope),
+            precedence: 65,
+        },
+    )?;
     tx.execute(
         r#"
         insert into review_plan_targets(review_plan_id, target_type, work_unit_id)

@@ -40,7 +40,11 @@ pub fn add_user_correction(
             authority_event_id: None,
             user_correction_id: Some(user_correction_id),
             command_profile_id: None,
+            review_policy_id: None,
+            review_plan_id: None,
             work_unit_id: None,
+            validation_gate_id: None,
+            acceptance_record_id: None,
             scope_type: scope_type_for(input.scope),
             scope_key: Some(input.scope),
             precedence: 80,
@@ -113,7 +117,9 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
     let mut stmt = conn.prepare(
         r#"
         select rb.id, rb.rule_source_type, rb.scope_type, rb.scope_key, rb.precedence,
-               rb.authority_event_id, rb.user_correction_id, rb.command_profile_id, rb.work_unit_id
+               rb.authority_event_id, rb.user_correction_id, rb.command_profile_id,
+               rb.review_policy_id, rb.review_plan_id, rb.work_unit_id,
+               rb.validation_gate_id, rb.acceptance_record_id
         from rule_bindings rb
         where rb.project_id = ?1
           and rb.status = 'active'
@@ -135,7 +141,11 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
             authority_event_id: row.get(5)?,
             user_correction_id: row.get(6)?,
             command_profile_id: row.get(7)?,
-            work_unit_id: row.get(8)?,
+            review_policy_id: row.get(8)?,
+            review_plan_id: row.get(9)?,
+            work_unit_id: row.get(10)?,
+            validation_gate_id: row.get(11)?,
+            acceptance_record_id: row.get(12)?,
             shadowed_by_rule_id: None,
         })
     })?;
@@ -169,10 +179,11 @@ pub(crate) fn insert_rule_binding(conn: &Connection, input: RuleBindingInput<'_>
         r#"
         insert into rule_bindings(
             project_id, rule_source_type, authority_event_id, user_correction_id,
-            command_profile_id, work_unit_id, scope_type, scope_key, precedence,
-            status, created_at
+            command_profile_id, review_policy_id, review_plan_id, work_unit_id,
+            validation_gate_id, acceptance_record_id, scope_type, scope_key,
+            precedence, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'active', current_timestamp)
         "#,
         params![
             input.project_id,
@@ -180,7 +191,11 @@ pub(crate) fn insert_rule_binding(conn: &Connection, input: RuleBindingInput<'_>
             input.authority_event_id,
             input.user_correction_id,
             input.command_profile_id,
+            input.review_policy_id,
+            input.review_plan_id,
             input.work_unit_id,
+            input.validation_gate_id,
+            input.acceptance_record_id,
             input.scope_type,
             input.scope_key,
             input.precedence,
@@ -218,7 +233,11 @@ pub(crate) struct RuleBindingInput<'a> {
     pub(crate) authority_event_id: Option<i64>,
     pub(crate) user_correction_id: Option<i64>,
     pub(crate) command_profile_id: Option<i64>,
+    pub(crate) review_policy_id: Option<i64>,
+    pub(crate) review_plan_id: Option<i64>,
     pub(crate) work_unit_id: Option<i64>,
+    pub(crate) validation_gate_id: Option<i64>,
+    pub(crate) acceptance_record_id: Option<i64>,
     pub(crate) scope_type: &'a str,
     pub(crate) scope_key: Option<&'a str>,
     pub(crate) precedence: i64,
@@ -263,6 +282,10 @@ pub struct RuleRecord {
     pub authority_event_id: Option<i64>,
     pub user_correction_id: Option<i64>,
     pub command_profile_id: Option<i64>,
+    pub review_policy_id: Option<i64>,
+    pub review_plan_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub validation_gate_id: Option<i64>,
+    pub acceptance_record_id: Option<i64>,
     pub shadowed_by_rule_id: Option<i64>,
 }

@@ -155,6 +155,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
     ensure_column(conn, "authority_events", "authority_id", "integer")?;
+    ensure_column(conn, "rule_bindings", "review_policy_id", "integer")?;
+    ensure_column(conn, "rule_bindings", "review_plan_id", "integer")?;
+    ensure_column(conn, "rule_bindings", "validation_gate_id", "integer")?;
+    ensure_column(conn, "rule_bindings", "acceptance_record_id", "integer")?;
     backfill_authorities(conn)?;
     let had_work_record_commit_auto_linked =
         table_has_column(conn, "work_record_commits", "auto_linked")?;
@@ -2149,6 +2153,7 @@ create table if not exists rule_bindings (
     user_correction_id integer,
     command_profile_id integer,
     review_policy_id integer,
+    review_plan_id integer references review_plans(id),
     work_unit_id integer references work_units(id),
     validation_gate_id integer,
     acceptance_record_id integer,
@@ -3250,7 +3255,7 @@ create table if not exists coverage_items (
     lifecycle_boundary_evidence text,
     tests_or_gates text,
     missing_or_unverified text,
-    status text not null check (status in ('covered', 'partial', 'missing_required_surface', 'design_conflict', 'accepted_out_of_scope', 'needs_evidence')),
+    status text not null check (status in ('covered', 'partial', 'missing_required_surface', 'design_conflict', 'accepted_out_of_scope', 'needs_evidence', 'stale')),
     created_at text not null
 );
 
