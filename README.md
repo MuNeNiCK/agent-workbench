@@ -15,6 +15,12 @@ skills/agent-workbench/
   agents/openai.yaml
   scripts/
   references/
+    quickstart.md
+    cli-workflow.md
+    review-recipes.md
+    interruption-recovery.md
+    repository-validation.md
+    close-ready-troubleshooting.md
   assets/templates/
 src/
   main.rs

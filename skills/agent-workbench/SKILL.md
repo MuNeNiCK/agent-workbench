@@ -102,9 +102,19 @@ in the repository:
 - `agent-workbench kpt item list`
 - `agent-workbench kpt item convert`
 
-See `references/cli-workflow.md` for the normal operating flow and
-`references/repository-validation.md` for validation and repository evidence
-commands.
+Load only the reference needed for the current operation:
+
+- `references/quickstart.md` for first project setup and the normal
+  design-to-implementation path.
+- `references/cli-workflow.md` for the compact command sequence during normal
+  coding-agent work.
+- `references/review-recipes.md` for review role selection, fresh/resume review
+  rules, finding lifecycle, and completion review prompt requirements.
+- `references/interruption-recovery.md` for suspend, interrupt, resume, reopen,
+  follow-up, and fork flows.
+- `references/repository-validation.md` for validation, repository, Git, and
+  work-record evidence commands.
+- `references/close-ready-troubleshooting.md` when `close-ready` is blocked.
 
 ## References
 
@@ -140,6 +150,14 @@ from structured ledger state.
   on the relevant design version, work unit, or review kind. Copy the printed
   `context_ref` into `review run add --target <context_ref>`; design-derived
   gates require clean fresh runs tied to that context.
+- For final completion checks, use a fresh unbiased review unless the user
+  explicitly asks only for resume verification of known findings. Do not use a
+  resume review as the final completion signal by default.
+- When asking a review agent whether the project is complete, include the skill
+  package itself in the review scope. A project is not complete if the CLI and
+  tests match the design but the installed skill cannot guide a fresh coding
+  agent through setup, reviews, implementation, interruption recovery,
+  close-ready troubleshooting, and evidence recording.
 - Use `resume-check` only when a ledger row should be recorded for an actual
   resume operation.
 - Record reusable validation commands with `command fixed add` and command runs

@@ -1,0 +1,58 @@
+# Close-Ready Troubleshooting
+
+Use this when `agent-workbench gate close-ready --dry-run` reports blocked
+items.
+
+| Blocked item | Typical action |
+| --- | --- |
+| active tasks remain open | `agent-workbench task close <task-id>` or `agent-workbench task accept-out-of-scope <task-id> --reason "<reason>"` |
+| missing implementation evidence | `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <key> --type file --file <path> --note "<evidence>"` |
+| missing coverage | `agent-workbench coverage add --design <design-version-id> --requirement <key> --task <task-id> --status covered --requirement-text "<summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"` |
+| selected gate has no run | `agent-workbench command usage add ...` then `agent-workbench gate record --gate <gate-id> --result pass --usage <usage-id>` |
+| validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |
+| fixed command was not used | run the fixed command and record usage, or add a command deviation and acceptance |
+| repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
+| required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
+| review finding is open | classify, fix, add closure invariant, verify, then record a new clean run |
+| repository state is missing | add repositories and snapshots for every relevant working tree |
+| repository changed during work | add close comparison and classify the changed state |
+| work record evidence is missing | create a work record and link commands, commits, or files |
+| child activation is still active or suspended | close, abandon with reason, or resume and finish the child first |
+
+## Acceptance Pattern
+
+Do not invent exceptions. Record user, policy, or design authority first.
+
+```sh
+agent-workbench authority event add --type user_instruction --summary "<approval>"
+agent-workbench acceptance add --target <kind:id> --type <acceptance-type> --reason "<reason>" --authority <authority-event-id>
+```
+
+For repeated corrections intentionally deferred by the user:
+
+```sh
+agent-workbench acceptance add --target stale:user_correction:<correction-id> --type stale_accepted --reason "<why deferred>" --authority <authority-event-id>
+```
+
+For command deviations:
+
+```sh
+agent-workbench command deviation add --profile <profile-name> --usage <usage-id> --reason "<why command differed>"
+agent-workbench acceptance add --target command-deviation:<deviation-id> --type explicit_exception --reason "<approval reason>" --authority <authority-event-id>
+```
+
+## Work Record Evidence
+
+```sh
+agent-workbench record create --work-unit <work-unit-id> --topic "<topic>" --work-performed "<summary>"
+agent-workbench record command add <record-id> --usage <usage-id>
+agent-workbench record commit add <record-id> --sha <sha> --role created
+agent-workbench record file add <record-id> --path <path> --role changed
+```
+
+Close only after the gate passes:
+
+```sh
+agent-workbench gate close-ready --dry-run
+agent-workbench work close --summary "<summary>"
+```
