@@ -1,6 +1,6 @@
 ---
 name: agent-workbench
-description: Use when managing long-running coding-agent work with structured project memory, task ledgers, design decisions, review loops, work records, and Markdown exports for Codex or Claude Code workflows.
+description: Use when managing long-running coding-agent work with structured project memory, task ledgers, design decisions, review loops, work records, and Markdown exports across Agent Skills-compatible coding-agent workflows.
 license: MIT
 ---
 
@@ -11,10 +11,29 @@ design decisions, review findings, work records, or compatibility notes that
 should survive across sessions without forcing the agent to grep old Markdown
 logs.
 
+## CLI Entry
+
+This skill uses the Agent Workbench CLI through the Linux x86_64 wrapper bundled
+with the installed skill:
+
+```sh
+sh scripts/agent-workbench.sh <agent-workbench-args>
+```
+
+The wrapper downloads the published Linux x86_64 release asset, verifies its
+SHA256 checksum, caches it under the user's cache directory, and then executes
+it.
+
+When references show commands as `agent-workbench ...`, run the same arguments
+through the wrapper. For example, `agent-workbench status` means:
+
+```sh
+sh scripts/agent-workbench.sh status
+```
+
 ## Current Scope
 
-This skill can use a project-local Rust CLI when it is installed or available
-in the repository:
+The wrapped CLI supports:
 
 - `agent-workbench init`
 - `agent-workbench status`
@@ -126,7 +145,7 @@ from structured ledger state.
 
 - Prefer structured project memory over broad Markdown history searches.
 - Use `agent-workbench status` and `agent-workbench next` before long-running
-  work when the CLI is available.
+  work, executed through `sh scripts/agent-workbench.sh`.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.
 - Before planning, editing, or reviewing, run `agent-workbench correction list`

@@ -8,13 +8,13 @@ validation gates, commits, files, or repository state.
 Record reusable commands first when they are stable:
 
 ```sh
-agent-workbench command fixed add --name tests --type test --scope project --command "cargo test" --expected-result pass
+agent-workbench command fixed add --name tests --type test --scope project --command "<project-test-command>" --expected-result pass
 ```
 
 Record observed command runs:
 
 ```sh
-agent-workbench command usage add --command "cargo test" --result pass --work-unit <id> --snapshot <snapshot-id>
+agent-workbench command usage add --command "<project-test-command>" --result pass --work-unit <id> --snapshot <snapshot-id>
 ```
 
 Record selected validation gate outcomes:

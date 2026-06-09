@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package Linux x86_64 asset
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          mkdir -p dist/package
+          cp target/release/agent-workbench dist/package/agent-workbench
+          tar -C dist/package -czf "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" agent-workbench
+          (cd dist && sha256sum "agent-workbench-${tag}-linux-x86_64.tar.gz" > "agent-workbench-${tag}-checksums.txt")
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --generate-notes --target "$GITHUB_SHA"
+          fi

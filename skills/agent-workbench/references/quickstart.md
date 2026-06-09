@@ -2,6 +2,10 @@
 
 Use this when starting a project that has no Agent Workbench ledger yet.
 
+Run these commands through the skill wrapper described in `SKILL.md`. The
+examples use `agent-workbench ...` as the command spelling; in an installed
+skill, execute the same arguments with `sh scripts/agent-workbench.sh ...`.
+
 ## First Run
 
 ```sh
