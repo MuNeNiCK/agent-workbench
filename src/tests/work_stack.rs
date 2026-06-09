@@ -1076,6 +1076,107 @@ fn close_ready_uses_pre_activation_repository_snapshot_as_comparison_base() {
 }
 
 #[test]
+fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let parent = start_work(temp.path(), "parent close baseline", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let baseline = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    let child = interrupt_work(temp.path(), "child work", "check interruption").unwrap();
+    let child_snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(child.child_activation_id),
+            head_sha: Some("child456"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    close_active_work(temp.path(), "child complete", None).unwrap();
+    let check = resume_check(temp.path(), "basic").unwrap();
+    resume_work(temp.path(), check.resume_check_id).unwrap();
+    let parent_current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(parent.activation_id),
+            head_sha: Some("parent789"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: child_snapshot.repository_snapshot_id,
+            current_repository_snapshot_id: parent_current.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: true,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "changed_classified",
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: baseline.repository_snapshot_id,
+            current_repository_snapshot_id: parent_current.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: true,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "changed_classified",
+        },
+    )
+    .unwrap();
+    let allowed = close_ready(temp.path()).unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "fail")
+    );
+    assert_eq!(allowed.result, "pass");
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "repository_state_recorded" && item.result == "pass")
+    );
+}
+
+#[test]
 fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

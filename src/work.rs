@@ -1567,13 +1567,13 @@ fn previous_repository_snapshot(
 ) -> Result<Option<i64>> {
     conn.query_row(
         r#"
-        select max(id)
-        from repository_snapshots
-        where repository_id = ?1
-          and id < ?2
+        select max(s.id)
+        from repository_snapshots s
+        where s.repository_id = ?1
+          and s.id < ?2
           and (
-              work_unit_activation_id is null
-              or work_unit_activation_id != ?3
+              s.work_unit_activation_id is null
+              or s.work_unit_activation_id < ?3
           )
         "#,
         params![repository_id, repository_snapshot_id, active_activation_id],

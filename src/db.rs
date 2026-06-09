@@ -151,6 +151,18 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
+    ensure_column(
+        conn,
+        "work_record_commits",
+        "auto_linked",
+        "integer not null default 0",
+    )?;
+    ensure_column(
+        conn,
+        "work_record_files",
+        "auto_linked",
+        "integer not null default 0",
+    )?;
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
@@ -394,6 +406,8 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
            or not exists (select 1 from projects where id = vr.project_id)
            or vg.id is null
            or vr.project_id != vg.project_id
+           or vr.work_unit_id is not vg.work_unit_id
+           or vr.task_id is not vg.task_id
            or (vr.work_unit_id is not null and (w.id is null or vr.project_id != w.project_id))
            or (
                vr.task_id is not null
@@ -583,6 +597,8 @@ fn refresh_ledger_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_work_record_fork_repository_git_update;
         drop trigger if exists trg_implementation_evidence_project_insert;
         drop trigger if exists trg_implementation_evidence_project_update;
+        drop trigger if exists trg_validation_run_project_insert;
+        drop trigger if exists trg_validation_run_project_update;
         drop trigger if exists trg_artifact_project_insert;
         drop trigger if exists trg_artifact_project_update;
         drop trigger if exists trg_repository_snapshot_referenced_delete;
@@ -1865,7 +1881,8 @@ create table if not exists work_record_commits (
     git_commit_id integer,
     commit_sha text,
     role text not null default 'referenced' check (role in ('created', 'referenced', 'validation_base', 'rollback_point')),
-    note text
+    note text,
+    auto_linked integer not null default 0 check (auto_linked in (0, 1))
 );
 
 create trigger if not exists trg_work_record_commit_required_insert
@@ -1891,7 +1908,8 @@ create table if not exists work_record_files (
     repository_id integer,
     path text not null,
     role text not null default 'changed' check (role in ('changed', 'reviewed', 'generated', 'evidence', 'ignored')),
-    note text
+    note text,
+    auto_linked integer not null default 0 check (auto_linked in (0, 1))
 );
 
 create trigger if not exists trg_work_record_command_project_insert
@@ -2324,6 +2342,8 @@ create trigger if not exists trg_validation_run_project_insert
 before insert on validation_runs
 for each row
 when new.project_id != (select project_id from validation_gates where id = new.validation_gate_id)
+  or new.work_unit_id is not (select work_unit_id from validation_gates where id = new.validation_gate_id)
+  or new.task_id is not (select task_id from validation_gates where id = new.validation_gate_id)
   or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
   or (new.task_id is not null and (
       not exists (select 1 from tasks where id = new.task_id)
@@ -2356,6 +2376,8 @@ create trigger if not exists trg_validation_run_project_update
 before update of project_id, validation_gate_id, work_unit_id, task_id, command_usage_id, repository_snapshot_id on validation_runs
 for each row
 when new.project_id != (select project_id from validation_gates where id = new.validation_gate_id)
+  or new.work_unit_id is not (select work_unit_id from validation_gates where id = new.validation_gate_id)
+  or new.task_id is not (select task_id from validation_gates where id = new.validation_gate_id)
   or (new.work_unit_id is not null and new.project_id != (select project_id from work_units where id = new.work_unit_id))
   or (new.task_id is not null and (
       not exists (select 1 from tasks where id = new.task_id)

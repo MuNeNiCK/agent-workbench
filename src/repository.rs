@@ -337,21 +337,43 @@ fn backfill_work_record_commits(
     git_commit_id: i64,
     commit_sha: &str,
 ) -> Result<()> {
+    let matching_commit_count = conn.query_row(
+        r#"
+        select count(*)
+        from git_commits c
+        join repositories r on r.id = c.repository_id
+        where r.project_id = ?1 and c.commit_sha = ?2
+        "#,
+        params![project_id, commit_sha],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if matching_commit_count != 1 {
+        conn.execute(
+            r#"
+            update work_record_commits
+            set git_commit_id = null,
+                auto_linked = 0
+            where auto_linked = 1
+              and commit_sha = ?1
+              and work_record_id in (
+                  select id from work_records where project_id = ?2
+              )
+            "#,
+            params![commit_sha, project_id],
+        )?;
+        return Ok(());
+    }
+
     conn.execute(
         r#"
         update work_record_commits
-        set git_commit_id = ?1
+        set git_commit_id = ?1,
+            auto_linked = 1
         where git_commit_id is null
           and commit_sha = ?2
           and work_record_id in (
               select id from work_records where project_id = ?3
           )
-          and (
-              select count(*)
-              from git_commits c
-              join repositories r on r.id = c.repository_id
-              where r.project_id = ?3 and c.commit_sha = ?2
-          ) = 1
         "#,
         params![git_commit_id, commit_sha, project_id],
     )?;
@@ -365,35 +387,46 @@ fn backfill_work_record_files(
     repository_id: i64,
     path: &str,
 ) -> Result<()> {
+    let matching_path_count = conn.query_row(
+        r#"
+        select count(*)
+        from git_file_changes f
+        join repositories r on r.id = f.repository_id
+        where r.project_id = ?1 and f.path = ?2
+        "#,
+        params![project_id, path],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if matching_path_count != 1 {
+        conn.execute(
+            r#"
+            update work_record_files
+            set git_file_change_id = null,
+                repository_id = null,
+                auto_linked = 0
+            where auto_linked = 1
+              and path = ?1
+              and work_record_id in (
+                  select id from work_records where project_id = ?2
+              )
+            "#,
+            params![path, project_id],
+        )?;
+        return Ok(());
+    }
+
     conn.execute(
         r#"
         update work_record_files
         set git_file_change_id = ?1,
-            repository_id = ?2
+            repository_id = ?2,
+            auto_linked = 1
         where git_file_change_id is null
           and path = ?3
           and work_record_id in (
               select id from work_records where project_id = ?4
           )
-          and (
-              (
-                  repository_id = ?2
-                  and (
-                      select count(*)
-                      from git_file_changes
-                      where repository_id = ?2 and path = ?3
-                  ) = 1
-              )
-              or (
-                  repository_id is null
-                  and (
-                      select count(*)
-                      from git_file_changes f
-                      join repositories r on r.id = f.repository_id
-                      where r.project_id = ?4 and f.path = ?3
-                  ) = 1
-              )
-          )
+          and (repository_id is null or repository_id = ?2)
         "#,
         params![git_file_change_id, repository_id, path, project_id],
     )?;

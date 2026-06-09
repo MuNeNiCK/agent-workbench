@@ -133,6 +133,145 @@ fn repository_records_snapshots_dirty_entries_and_git_evidence() {
 }
 
 #[test]
+fn git_import_keeps_explicit_work_record_links_when_later_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let main_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    let main_file = add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: main_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "explicit evidence remains stable",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_git_commit(
+        temp.path(),
+        NewWorkRecordGitCommit {
+            work_record_id: work_record.work_record_id,
+            git_commit_id: Some(main_commit.git_commit_id),
+            commit_sha: "abc123",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+    add_work_record_git_file(
+        temp.path(),
+        NewWorkRecordGitFile {
+            work_record_id: work_record.work_record_id,
+            git_file_change_id: Some(main_file.git_file_change_id),
+            repository_id: None,
+            path: "src/lib.rs",
+            role: "changed",
+            note: None,
+        },
+    )
+    .unwrap();
+    let nested_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: nested_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked_commit: (i64, i64) = conn
+        .query_row(
+            "select git_commit_id, auto_linked from work_record_commits where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let linked_file: (i64, i64, i64) = conn
+        .query_row(
+            "select git_file_change_id, repository_id, auto_linked from work_record_files where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(linked_commit, (main_commit.git_commit_id, 0));
+    assert_eq!(
+        linked_file,
+        (main_file.git_file_change_id, main_file.repository_id, 0)
+    );
+}
+
+#[test]
 fn git_import_backfills_manual_work_record_links() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -316,6 +455,93 @@ fn git_import_does_not_backfill_ambiguous_manual_commit_links() {
 }
 
 #[test]
+fn git_import_clears_auto_backfilled_commit_links_when_later_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "commit evidence becomes ambiguous",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_commit(
+        temp.path(),
+        NewWorkRecordCommit {
+            work_record_id: work_record.work_record_id,
+            commit_sha: "abc123",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+    add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked: (Option<i64>, i64) = conn
+        .query_row(
+            "select git_commit_id, auto_linked from work_record_commits where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(linked, (None, 0));
+}
+
+#[test]
 fn git_import_does_not_backfill_ambiguous_manual_file_links() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -429,6 +655,121 @@ fn git_import_does_not_backfill_ambiguous_manual_file_links() {
         .unwrap();
 
     assert!(linked_file_id.is_none());
+}
+
+#[test]
+fn git_import_clears_auto_backfilled_file_links_when_later_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "file evidence becomes ambiguous",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_file(
+        temp.path(),
+        NewWorkRecordFile {
+            work_record_id: work_record.work_record_id,
+            path: "src/lib.rs",
+            role: "changed",
+            note: None,
+        },
+    )
+    .unwrap();
+    let main_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: main_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+    let nested_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "def456",
+            short_sha: Some("def456"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: nested_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked: (Option<i64>, Option<i64>, i64) = conn
+        .query_row(
+            "select git_file_change_id, repository_id, auto_linked from work_record_files where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(linked, (None, None, 0));
 }
 
 #[test]
@@ -2338,6 +2679,35 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
         [],
     )
     .unwrap();
+    conn.execute(
+        "insert into work_units(project_id, title, status, started_at) values (1, 'same project other work', 'open', current_timestamp)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into tasks(title, priority, source, work_unit_id, status) values ('other task', 'medium', 'user', (select max(id) from work_units where project_id = 1), 'open')",
+        [],
+    )
+    .unwrap();
+    let same_project_wrong_work_run = conn.execute(
+        r#"
+        insert into validation_runs(
+            project_id, validation_gate_id, work_unit_id, task_id, command_usage_id,
+            repository_snapshot_id, result, created_at
+        )
+        values (
+            1, ?1,
+            (select max(id) from work_units where project_id = 1),
+            (select max(id) from tasks),
+            ?2, ?3, 'pass', current_timestamp
+        )
+        "#,
+        params![
+            gate.validation_gate_id,
+            usage.command_usage_id,
+            snapshot.repository_snapshot_id
+        ],
+    );
     let mismatched_usage_artifact = conn.execute(
         r#"
         insert into artifacts(
@@ -2455,6 +2825,7 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
     );
     assert!(mismatched_usage_artifact.is_err());
     assert!(mismatched_snapshot_artifact.is_err());
+    assert!(same_project_wrong_work_run.is_err());
     assert!(
         conn.execute(
             "delete from repository_snapshots where id = ?1",
