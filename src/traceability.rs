@@ -123,6 +123,271 @@ pub fn derive_task_from_requirement(
     })
 }
 
+pub fn decompose_design(
+    root: &Path,
+    input: DesignDecomposition<'_>,
+) -> Result<DesignDecompositionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    tx.query_row(
+        "select 1 from work_units where id = ?1 and project_id = ?2",
+        params![input.work_unit_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("work unit not found")?;
+    tx.query_row(
+        "select 1 from design_versions where id = ?1 and project_id = ?2",
+        params![input.design_version_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("design version not found")?;
+
+    let mut stmt = tx.prepare(
+        r#"
+        select dr.id, dr.requirement_key, dr.requirement_text, dr.priority
+        from design_requirements dr
+        where dr.project_id = ?1
+          and dr.design_version_id = ?2
+          and dr.status = 'active'
+          and not exists (
+              select 1
+              from task_derivations td
+              where td.design_requirement_id = dr.id
+                and td.status = 'active'
+          )
+        order by dr.requirement_key
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, input.design_version_id], |row| {
+        Ok(RequirementForDecomposition {
+            id: row.get(0)?,
+            key: row.get(1)?,
+            text: row.get(2)?,
+            priority: row.get(3)?,
+        })
+    })?;
+    let mut requirements = Vec::new();
+    for row in rows {
+        requirements.push(row?);
+    }
+    drop(stmt);
+
+    let checklist_title = input
+        .checklist_title
+        .unwrap_or("Design implementation checklist");
+    let checklist_id = get_or_create_checklist(
+        &tx,
+        project_id,
+        input.work_unit_id,
+        input.design_version_id,
+        checklist_title,
+    )?;
+    let mut created_tasks = 0;
+    let mut created_derivations = 0;
+    for requirement in requirements {
+        let task_title = format!(
+            "Implement {}: {}",
+            requirement.key,
+            first_line(&requirement.text)
+        );
+        let completion_condition = format!(
+            "Requirement {} is implemented and validated",
+            requirement.key
+        );
+        tx.execute(
+            r#"
+            insert into tasks(
+                work_unit_id, title, priority, status, source,
+                details, completion_condition
+            )
+            values (?1, ?2, ?3, 'open', 'design', ?4, ?5)
+            "#,
+            params![
+                input.work_unit_id,
+                task_title,
+                requirement.priority,
+                requirement.text,
+                completion_condition,
+            ],
+        )?;
+        let task_id = tx.last_insert_rowid();
+        created_tasks += 1;
+
+        let item_order: i64 = tx.query_row(
+            "select coalesce(max(item_order), 0) + 1 from checklist_items where checklist_id = ?1",
+            params![checklist_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            r#"
+            insert into checklist_items(
+                project_id, checklist_id, design_requirement_id, task_id,
+                item_order, title, completion_condition
+            )
+            values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                project_id,
+                checklist_id,
+                requirement.id,
+                task_id,
+                item_order,
+                task_title,
+                completion_condition,
+            ],
+        )?;
+        let checklist_item_id = tx.last_insert_rowid();
+        tx.execute(
+            r#"
+            insert into task_derivations(
+                project_id, design_requirement_id, task_id, checklist_item_id,
+                derivation_reason, status, created_at
+            )
+            values (?1, ?2, ?3, ?4, ?5, 'active', current_timestamp)
+            "#,
+            params![
+                project_id,
+                requirement.id,
+                task_id,
+                checklist_item_id,
+                input.reason,
+            ],
+        )?;
+        created_derivations += 1;
+    }
+    tx.commit()?;
+
+    Ok(DesignDecompositionOutcome {
+        design_version_id: input.design_version_id,
+        work_unit_id: input.work_unit_id,
+        checklist_id,
+        created_tasks,
+        created_derivations,
+    })
+}
+
+pub fn list_checklists(root: &Path, status: Option<&str>) -> Result<Vec<ChecklistRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select c.id, c.work_unit_id, c.design_version_id, c.title, c.status,
+               count(ci.id) as item_count,
+               sum(case when ci.status = 'closed' then 1 else 0 end) as closed_count
+        from checklists c
+        left join checklist_items ci on ci.checklist_id = c.id
+        where c.project_id = ?1
+          and (?2 is null or c.status = ?2)
+        group by c.id, c.work_unit_id, c.design_version_id, c.title, c.status
+        order by c.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, status], |row| {
+        Ok(ChecklistRecord {
+            id: row.get(0)?,
+            work_unit_id: row.get(1)?,
+            design_version_id: row.get(2)?,
+            title: row.get(3)?,
+            status: row.get(4)?,
+            item_count: row.get(5)?,
+            closed_count: row.get(6)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut records = Vec::new();
+    collect_stale_rows(
+        &conn,
+        project_id,
+        "task_derivation",
+        r#"
+        select td.id, dr.requirement_key
+        from task_derivations td
+        join design_requirements dr on dr.id = td.design_requirement_id
+        where td.project_id = ?1 and td.status = 'stale'
+        order by td.id
+        "#,
+        &mut records,
+    )?;
+    collect_stale_rows(
+        &conn,
+        project_id,
+        "checklist",
+        r#"
+        select c.id, c.title
+        from checklists c
+        where c.project_id = ?1 and c.status = 'stale'
+        order by c.id
+        "#,
+        &mut records,
+    )?;
+    collect_stale_rows(
+        &conn,
+        project_id,
+        "validation_gate",
+        r#"
+        select vg.id, vg.gate_key
+        from validation_gates vg
+        where vg.project_id = ?1 and vg.status = 'stale'
+        order by vg.id
+        "#,
+        &mut records,
+    )?;
+    collect_stale_rows(
+        &conn,
+        project_id,
+        "coverage_item",
+        r#"
+        select c.id, dr.requirement_key
+        from coverage_items c
+        join design_requirements dr on dr.id = c.design_requirement_id
+        where c.project_id = ?1 and c.status = 'stale'
+        order by c.id
+        "#,
+        &mut records,
+    )?;
+    Ok(records)
+}
+
+fn collect_stale_rows(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    record_type: &str,
+    sql: &str,
+    records: &mut Vec<StaleRecord>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![project_id], |row| {
+        Ok(StaleRecord {
+            record_type: record_type.to_string(),
+            id: row.get(0)?,
+            label: row.get(1)?,
+        })
+    })?;
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(())
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("design requirement")
+}
+
 pub fn list_task_derivations(
     root: &Path,
     input: TaskDerivationListQuery,
@@ -901,6 +1166,44 @@ pub fn implementation_ready(
         ));
     }
 
+    let review_state =
+        implementation_review_gate_state(&conn, project_id, version.design_version_id)?;
+    let decomposition_review_plan_count = required_review_plan_count(
+        &conn,
+        project_id,
+        version.design_version_id,
+        "implementation-ready",
+        "design_task_decomposition",
+    )?;
+    if decomposition_review_plan_count == 0 {
+        items.push(ImplementationReadyItem::fail(
+            "pre_implementation_reviews_clean",
+            Some(
+                "add a required implementation-ready design_task_decomposition review plan for this design version",
+            ),
+        ));
+    } else if review_state.incomplete_required_plan_count == 0
+        && review_state.unresolved_finding_count == 0
+    {
+        items.push(ImplementationReadyItem::pass(
+            "pre_implementation_reviews_clean",
+            Some(format!(
+                "{} required plans, {} unresolved findings",
+                review_state.required_plan_count, review_state.unresolved_finding_count
+            )),
+        ));
+    } else {
+        items.push(ImplementationReadyItem::fail(
+            "pre_implementation_reviews_clean",
+            Some(format!(
+                "{} required plans, {} incomplete, {} unresolved findings",
+                review_state.required_plan_count,
+                review_state.incomplete_required_plan_count,
+                review_state.unresolved_finding_count
+            )),
+        ));
+    }
+
     let result = if items.iter().all(|item| item.result == "pass") {
         "pass"
     } else {
@@ -919,6 +1222,89 @@ pub fn implementation_ready(
         design_version_id: Some(version.design_version_id),
         items,
     })
+}
+
+fn required_review_plan_count(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    stage: &str,
+    review_type: &str,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from review_plans
+        where project_id = ?1
+          and design_version_id = ?2
+          and stage = ?3
+          and review_type = ?4
+          and required = 1
+        "#,
+        params![project_id, design_version_id, stage, review_type],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn implementation_review_gate_state(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+) -> Result<ReviewGateState> {
+    let required_plan_count = conn.query_row(
+        r#"
+        select count(*)
+        from review_plans
+        where project_id = ?1
+          and design_version_id = ?2
+          and stage = 'implementation-ready'
+          and required = 1
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let incomplete_required_plan_count = conn.query_row(
+        r#"
+        select count(*)
+        from review_plans
+        where project_id = ?1
+          and design_version_id = ?2
+          and stage = 'implementation-ready'
+          and required = 1
+          and status not in ('clean', 'accepted_exception', 'not_required')
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let unresolved_finding_count = conn.query_row(
+        r#"
+        select count(*)
+        from findings f
+        join review_runs rr on rr.id = f.review_run_id
+        join review_plans rp on rp.id = rr.review_plan_id
+        where rp.project_id = ?1
+          and rp.design_version_id = ?2
+          and rp.stage in ('design-ready', 'implementation-ready')
+          and f.finding_type in ('design_finding', 'design_task_gap')
+          and f.status not in ('closed', 'accepted_out_of_scope')
+          and f.classification not in ('invalid')
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(ReviewGateState {
+        required_plan_count,
+        incomplete_required_plan_count,
+        unresolved_finding_count,
+    })
+}
+
+#[derive(Default)]
+struct ReviewGateState {
+    required_plan_count: i64,
+    incomplete_required_plan_count: i64,
+    unresolved_finding_count: i64,
 }
 
 fn require_task_derivation(
@@ -1347,6 +1733,13 @@ struct ResolvedRequirement {
     key: String,
 }
 
+struct RequirementForDecomposition {
+    id: i64,
+    key: String,
+    text: String,
+    priority: String,
+}
+
 struct ResolvedTask {
     id: i64,
     work_unit_id: Option<i64>,
@@ -1382,6 +1775,13 @@ pub struct NewTaskDerivation<'a> {
     pub checklist_title: Option<&'a str>,
     pub item_title: Option<&'a str>,
     pub completion_condition: Option<&'a str>,
+}
+
+pub struct DesignDecomposition<'a> {
+    pub design_version_id: i64,
+    pub work_unit_id: i64,
+    pub checklist_title: Option<&'a str>,
+    pub reason: Option<&'a str>,
 }
 
 pub struct TaskDerivationListQuery {
@@ -1505,6 +1905,33 @@ pub struct TaskDerivationRecord {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct DesignDecompositionOutcome {
+    pub design_version_id: i64,
+    pub work_unit_id: i64,
+    pub checklist_id: i64,
+    pub created_tasks: i64,
+    pub created_derivations: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChecklistRecord {
+    pub id: i64,
+    pub work_unit_id: i64,
+    pub design_version_id: i64,
+    pub title: String,
+    pub status: String,
+    pub item_count: i64,
+    pub closed_count: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StaleRecord {
+    pub record_type: String,
+    pub id: i64,
+    pub label: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct ImplementationEvidenceOutcome {
     pub implementation_evidence_id: i64,
     pub task_id: Option<i64>,
@@ -1599,11 +2026,11 @@ impl ImplementationReadyItem {
         }
     }
 
-    fn fail(name: &str, detail: Option<String>) -> Self {
+    fn fail<S: Into<String>>(name: &str, detail: Option<S>) -> Self {
         Self {
             name: name.to_string(),
             result: "fail".to_string(),
-            detail,
+            detail: detail.map(Into::into),
         }
     }
 }

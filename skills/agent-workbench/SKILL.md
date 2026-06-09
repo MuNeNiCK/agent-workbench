@@ -22,13 +22,32 @@ in the repository:
 - `agent-workbench rules applicable --scope current`
 - `agent-workbench design init`
 - `agent-workbench design import`
+- `agent-workbench design refresh`
+- `agent-workbench design approve`
+- `agent-workbench authority event add`
+- `agent-workbench decompose design`
 - `agent-workbench trace derive-task`
+- `agent-workbench checklist list`
+- `agent-workbench stale list`
 - `agent-workbench gate design-ready --dry-run`
 - `agent-workbench gate implementation-ready --dry-run`
 - `agent-workbench gate close-ready --dry-run`
 - `agent-workbench gate resume-ready --maturity basic|trace-aware|repo-aware --dry-run`
+- `agent-workbench gate select`
 - `agent-workbench gate record`
 - `agent-workbench gate run list`
+- `agent-workbench review scope start`
+- `agent-workbench review policy add`
+- `agent-workbench review plan add`
+- `agent-workbench review run add`
+- `agent-workbench finding add`
+- `agent-workbench finding verify`
+- `agent-workbench closure add`
+- `agent-workbench review-context`
+- `agent-workbench evidence add`
+- `agent-workbench coverage add`
+- `agent-workbench export design`
+- `agent-workbench export plan`
 - `agent-workbench repository add`
 - `agent-workbench repository list`
 - `agent-workbench repository snapshot add`
@@ -65,6 +84,16 @@ from structured ledger state.
   resumed or interrupted work unit.
 - Use read-only gates before state-changing steps: `design-ready`,
   `implementation-ready`, `close-ready`, and `resume-ready`.
+- For design-derived implementation work, create the required review plans and
+  clean runs before relying on gates: `design_review` for `design-ready`,
+  `design_task_decomposition` for `implementation-ready`, and both
+  `design_implementation_diff` plus `implementation_review` for `close-ready`.
+- Use `decompose design` for normal design-to-plan conversion. Use
+  `trace derive-task` for explicit manual links or corrections.
+- Record implementation evidence and coverage items for design-derived tasks
+  before closing the work unit.
+- Use `review-context` when launching a review agent so the prompt is focused
+  on the relevant design version, work unit, or review kind.
 - Use `resume-check` only when a ledger row should be recorded for an actual
   resume operation.
 - Record reusable validation commands with `command fixed add` and command runs

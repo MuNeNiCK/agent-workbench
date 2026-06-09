@@ -366,7 +366,7 @@ fn design_import_extracts_decisions_and_validation_gate_templates() {
 fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
-    start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+    let work = start_work(temp.path(), "implement storage lifecycle", None).unwrap();
     let task = add_task(
         temp.path(),
         NewTask {
@@ -452,6 +452,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
+    add_clean_implementation_ready_review(temp.path(), work.work_unit_id, import.design_version_id);
     let passed = implementation_ready(
         temp.path(),
         ImplementationReadyCheck {
@@ -518,6 +519,22 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
+    let close_blocked_without_reviews = close_ready(temp.path()).unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("design gate passed"),
+        },
+    )
+    .unwrap();
+    add_clean_close_ready_reviews(temp.path(), work.work_unit_id);
+    let close_passed = close_ready(temp.path()).unwrap();
     let records = list_task_derivations(
         temp.path(),
         TaskDerivationListQuery {
@@ -554,6 +571,14 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     );
     assert_eq!(evidence_records[0].commit_sha.as_deref(), Some("abc123"));
     assert_eq!(passed_after_close.result, "pass");
+    assert_eq!(close_blocked_without_reviews.result, "blocked");
+    assert!(close_blocked_without_reviews.items.iter().any(|item| {
+        item.name == "review_plans_clean"
+            && item.result == "fail"
+            && item.details.contains("design_implementation_diff")
+            && item.details.contains("implementation_review")
+    }));
+    assert_eq!(close_passed.result, "pass");
     assert_eq!(coverage.task_id, Some(task.task_id));
     assert_eq!(coverage_records.len(), 1);
     assert_eq!(coverage_records[0].requirement_key, "REQ-001");
@@ -716,7 +741,7 @@ fn trace_links_reject_mismatched_requirement_task_pairs() {
 fn approved_coverage_acceptance_can_satisfy_trace_closure() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
-    start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+    let work = start_work(temp.path(), "implement storage lifecycle", None).unwrap();
     let task = add_task(
         temp.path(),
         NewTask {
@@ -834,6 +859,7 @@ fn approved_coverage_acceptance_can_satisfy_trace_closure() {
     )
     .unwrap();
     close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
+    add_clean_implementation_ready_review(temp.path(), work.work_unit_id, import.design_version_id);
     let ready = implementation_ready(
         temp.path(),
         ImplementationReadyCheck {
@@ -2465,6 +2491,42 @@ fn design_ready_blocks_until_current_version_is_approved() {
         },
     )
     .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: start_work(temp.path(), "design-ready review", None)
+                .unwrap()
+                .work_unit_id,
+            design_version_id: Some(import.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("clean design review"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
     let passed = design_ready(
         temp.path(),
         DesignReadyCheck {
@@ -2482,4 +2544,84 @@ fn design_ready_blocks_until_current_version_is_approved() {
     );
     assert_eq!(passed.result, "pass");
     assert!(passed.items.iter().all(|item| item.result == "pass"));
+}
+
+fn add_clean_implementation_ready_review(
+    root: &std::path::Path,
+    work_unit_id: i64,
+    design_version_id: i64,
+) {
+    let plan = add_review_plan(
+        root,
+        NewReviewPlan {
+            work_unit_id,
+            design_version_id: Some(design_version_id),
+            review_type: "design_task_decomposition",
+            required: true,
+            stage: "implementation-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        root,
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("clean decomposition review"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+}
+
+fn add_clean_close_ready_reviews(root: &std::path::Path, work_unit_id: i64) {
+    for review_type in ["design_implementation_diff", "implementation_review"] {
+        let plan = add_review_plan(
+            root,
+            NewReviewPlan {
+                work_unit_id,
+                design_version_id: None,
+                review_type,
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_review_run(
+            root,
+            NewReviewRun {
+                review_plan_id: plan.review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: None,
+                prompt_deviations: None,
+                result_summary: Some("clean close review"),
+                new_findings_count: 0,
+                carried_findings_checked: 0,
+                clean_run: true,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+            },
+        )
+        .unwrap();
+    }
 }

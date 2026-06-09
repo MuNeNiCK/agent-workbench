@@ -809,6 +809,34 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
         ));
     }
 
+    let review_state = design_review_gate_state(&conn, project_id, version.design_version_id)?;
+    if review_state.required_plan_count == 0 {
+        items.push(DesignReadyItem::fail(
+            "design_review_clean",
+            Some("add a required design-ready design_review plan for this design version"),
+        ));
+    } else if review_state.incomplete_required_plan_count == 0
+        && review_state.unresolved_finding_count == 0
+    {
+        items.push(DesignReadyItem::pass(
+            "design_review_clean",
+            Some(format!(
+                "{} required plans, {} unresolved findings",
+                review_state.required_plan_count, review_state.unresolved_finding_count
+            )),
+        ));
+    } else {
+        items.push(DesignReadyItem::fail(
+            "design_review_clean",
+            Some(format!(
+                "{} required plans, {} incomplete, {} unresolved findings",
+                review_state.required_plan_count,
+                review_state.incomplete_required_plan_count,
+                review_state.unresolved_finding_count
+            )),
+        ));
+    }
+
     let result = if items.iter().all(|item| item.result == "pass") {
         "pass"
     } else {
@@ -826,6 +854,68 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
         design_version_id: Some(version.design_version_id),
         items,
     })
+}
+
+fn design_review_gate_state(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+) -> Result<ReviewGateState> {
+    let required_plan_count = conn.query_row(
+        r#"
+        select count(*)
+        from review_plans
+        where project_id = ?1
+          and design_version_id = ?2
+          and stage = 'design-ready'
+          and review_type = 'design_review'
+          and required = 1
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let incomplete_required_plan_count = conn.query_row(
+        r#"
+        select count(*)
+        from review_plans
+        where project_id = ?1
+          and design_version_id = ?2
+          and stage = 'design-ready'
+          and review_type = 'design_review'
+          and required = 1
+          and status not in ('clean', 'accepted_exception', 'not_required')
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let unresolved_finding_count = conn.query_row(
+        r#"
+        select count(*)
+        from findings f
+        join review_runs rr on rr.id = f.review_run_id
+        join review_plans rp on rp.id = rr.review_plan_id
+        where rp.project_id = ?1
+          and rp.design_version_id = ?2
+          and rp.stage = 'design-ready'
+          and rp.review_type = 'design_review'
+          and f.status not in ('closed', 'accepted_out_of_scope')
+          and f.classification not in ('invalid')
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(ReviewGateState {
+        required_plan_count,
+        incomplete_required_plan_count,
+        unresolved_finding_count,
+    })
+}
+
+#[derive(Default)]
+struct ReviewGateState {
+    required_plan_count: i64,
+    incomplete_required_plan_count: i64,
+    unresolved_finding_count: i64,
 }
 
 fn validate_design_id(design_id: &str) -> Result<()> {
@@ -2326,11 +2416,11 @@ impl DesignReadyItem {
         }
     }
 
-    fn fail(name: &str, detail: Option<&str>) -> Self {
+    fn fail<S: Into<String>>(name: &str, detail: Option<S>) -> Self {
         Self {
             name: name.to_string(),
             result: "fail".to_string(),
-            detail: detail.map(str::to_string),
+            detail: detail.map(Into::into),
         }
     }
 }

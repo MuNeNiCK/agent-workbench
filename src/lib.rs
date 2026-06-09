@@ -89,15 +89,17 @@ pub use rules::{
     add_user_correction, applicable_rules, list_user_corrections,
 };
 pub use traceability::{
+    ChecklistRecord, DesignDecomposition, DesignDecompositionOutcome,
     ImplementationEvidenceListQuery, ImplementationEvidenceOutcome, ImplementationEvidenceRecord,
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
     NewImplementationEvidence, NewImplementationEvidenceWithGit, NewTaskDerivation,
-    NewValidationRun, TaskDerivationListQuery, TaskDerivationOutcome, TaskDerivationRecord,
-    ValidationGateSelection, ValidationGateSelectionOutcome, ValidationRunListQuery,
-    ValidationRunOutcome, ValidationRunRecord, add_implementation_evidence,
-    add_implementation_evidence_with_git, add_validation_run, derive_task_from_requirement,
-    implementation_ready, list_implementation_evidence, list_task_derivations,
-    list_validation_runs, select_validation_gate,
+    NewValidationRun, StaleRecord, TaskDerivationListQuery, TaskDerivationOutcome,
+    TaskDerivationRecord, ValidationGateSelection, ValidationGateSelectionOutcome,
+    ValidationRunListQuery, ValidationRunOutcome, ValidationRunRecord, add_implementation_evidence,
+    add_implementation_evidence_with_git, add_validation_run, decompose_design,
+    derive_task_from_requirement, implementation_ready, list_checklists,
+    list_implementation_evidence, list_stale_records, list_task_derivations, list_validation_runs,
+    select_validation_gate,
 };
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,

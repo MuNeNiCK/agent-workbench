@@ -151,6 +151,15 @@ pub fn interrupt_work(root: &Path, title: &str, reason: &str) -> Result<Interrup
 }
 
 pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Result<CloseOutcome> {
+    let readiness = close_ready(root)?;
+    if readiness.result != "pass" {
+        let reason = readiness
+            .blocking_reason
+            .as_deref()
+            .unwrap_or("close-ready checks failed");
+        bail!("cannot close work unit; {reason}");
+    }
+
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let active = active_activation(&tx)?.context("no active activation to close")?;
@@ -234,6 +243,9 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     let validation = validation_close_state(&conn, active.work_unit_id)?;
     let repository = repository_close_state(&conn, &active)?;
     let review = review_plan_stage_state(&conn, active.work_unit_id, "close-ready")?;
+    let trace = close_trace_state(&conn, active.work_unit_id)?;
+    let missing_close_review_types =
+        missing_required_close_review_types(&conn, active.work_unit_id)?;
     let mut items = Vec::new();
     items.push(if open_tasks == 0 {
         CloseReadyItem::pass(
@@ -307,9 +319,43 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         },
     );
     items.push(
-        if review.required_plan_count == 0
-            || (review.incomplete_required_plan_count == 0 && review.stale_target_count == 0)
-        {
+        if trace.missing_evidence_count == 0 && trace.missing_coverage_count == 0 {
+            CloseReadyItem::pass(
+                "design_trace_closed",
+                format!(
+                    "{} design-derived tasks, {} missing evidence, {} missing coverage",
+                    trace.derived_task_count,
+                    trace.missing_evidence_count,
+                    trace.missing_coverage_count
+                ),
+            )
+        } else {
+            CloseReadyItem::fail(
+                "design_trace_closed",
+                "record implementation evidence and coverage for closed design-derived tasks",
+                format!(
+                    "{} design-derived tasks, {} missing evidence, {} missing coverage",
+                    trace.derived_task_count,
+                    trace.missing_evidence_count,
+                    trace.missing_coverage_count
+                ),
+            )
+        },
+    );
+    items.push(
+        if trace.derived_task_count > 0 && !missing_close_review_types.is_empty() {
+            CloseReadyItem::fail(
+                "review_plans_clean",
+                "add required close-ready review plans for design-derived work",
+                format!(
+                    "{} required close-ready plans, {} incomplete, {} stale targets, missing types: {}",
+                    review.required_plan_count,
+                    review.incomplete_required_plan_count,
+                    review.stale_target_count,
+                    missing_close_review_types.join(", ")
+                ),
+            )
+        } else if review.incomplete_required_plan_count == 0 && review.stale_target_count == 0 {
             CloseReadyItem::pass(
                 "review_plans_clean",
                 format!(
@@ -469,7 +515,8 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
         .query_row(
             r#"
             select id, work_unit_id, work_unit_activation_id, result, status,
-                   authority_event_high_watermark, activation_stack_revision
+                   authority_event_high_watermark, activation_stack_revision,
+                   maturity, repository_snapshot_id
             from resume_checks
             where id = ?1
             "#,
@@ -483,6 +530,8 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
                     status: row.get(4)?,
                     authority_event_high_watermark: row.get(5)?,
                     activation_stack_revision: row.get(6)?,
+                    maturity: row.get(7)?,
+                    repository_snapshot_id: row.get(8)?,
                 })
             },
         )
@@ -495,8 +544,16 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
     if active_activation(&tx)?.is_some() {
         bail!("cannot resume while another activation is active");
     }
+    let repository_snapshot_changed = match (check.maturity.as_str(), check.repository_snapshot_id)
+    {
+        ("repo-aware", Some(repository_snapshot_id)) => {
+            max_id(&tx, "repository_snapshots")? != repository_snapshot_id
+        }
+        _ => false,
+    };
     if max_id(&tx, "authority_events")? != check.authority_event_high_watermark.unwrap_or(0)
         || max_id(&tx, "work_unit_events")? != check.activation_stack_revision.unwrap_or(0)
+        || repository_snapshot_changed
     {
         tx.execute(
             "update resume_checks set status = 'stale' where id = ?1",
@@ -1791,6 +1848,136 @@ fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResu
     })
 }
 
+fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceState> {
+    Ok(CloseTraceState {
+        derived_task_count: count_design_derived_tasks_for_work(conn, work_unit_id)?,
+        missing_evidence_count: count_closed_derived_tasks_missing_evidence_for_work(
+            conn,
+            work_unit_id,
+        )?,
+        missing_coverage_count: count_closed_derived_tasks_missing_coverage_for_work(
+            conn,
+            work_unit_id,
+        )?,
+    })
+}
+
+fn missing_required_close_review_types(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<Vec<&'static str>> {
+    let mut missing = Vec::new();
+    for review_type in ["design_implementation_diff", "implementation_review"] {
+        let count: i64 = conn.query_row(
+            r#"
+            select count(*)
+            from review_plans
+            where work_unit_id = ?1
+              and stage = 'close-ready'
+              and review_type = ?2
+              and required = 1
+            "#,
+            params![work_unit_id, review_type],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            missing.push(review_type);
+        }
+    }
+    Ok(missing)
+}
+
+fn count_design_derived_tasks_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(distinct td.task_id)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_closed_derived_tasks_missing_evidence_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+          and t.status = 'closed'
+          and not exists (
+            select 1
+            from implementation_evidence e
+            where e.task_id = td.task_id
+              and (
+                e.design_requirement_id = td.design_requirement_id
+                or (
+                  e.design_requirement_id is null
+                  and not exists (
+                    select 1
+                    from task_derivations sibling
+                    where sibling.task_id = td.task_id
+                      and sibling.status = 'active'
+                      and sibling.design_requirement_id != td.design_requirement_id
+                  )
+                )
+              )
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_closed_derived_tasks_missing_coverage_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+          and t.status = 'closed'
+          and not exists (
+            select 1
+            from coverage_items c
+            where c.design_requirement_id = td.design_requirement_id
+              and (c.task_id = td.task_id or c.task_id is null)
+              and (
+                c.status = 'covered'
+                or (
+                  c.status = 'accepted_out_of_scope'
+                  and exists (
+                    select 1
+                    from acceptance_records ar
+                    where ar.target_type = 'coverage_item'
+                      and ar.coverage_item_id = c.id
+                      and ar.acceptance_type = 'accepted_out_of_scope'
+                      and ar.status = 'approved'
+                  )
+                )
+              )
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 fn count_stale_design_records_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
     conn.query_row(
         r#"
@@ -1946,6 +2133,8 @@ struct StoredResumeCheck {
     status: String,
     authority_event_high_watermark: Option<i64>,
     activation_stack_revision: Option<i64>,
+    maturity: String,
+    repository_snapshot_id: Option<i64>,
 }
 
 struct ResumeGateEvaluation {
@@ -1967,6 +2156,12 @@ struct TraceResumeCounts {
     stale_checklists: i64,
     stale_selected_gates: i64,
     stale_coverage_items: i64,
+}
+
+struct CloseTraceState {
+    derived_task_count: i64,
+    missing_evidence_count: i64,
+    missing_coverage_count: i64,
 }
 
 struct ValidationCloseState {

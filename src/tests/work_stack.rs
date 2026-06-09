@@ -1115,6 +1115,19 @@ fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
         },
     )
     .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: baseline.repository_snapshot_id,
+            current_repository_snapshot_id: child_snapshot.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: true,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "changed_classified",
+        },
+    )
+    .unwrap();
     close_active_work(temp.path(), "child complete", None).unwrap();
     let check = resume_check(temp.path(), "basic").unwrap();
     resume_work(temp.path(), check.resume_check_id).unwrap();

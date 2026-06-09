@@ -669,6 +669,40 @@ fn design_approve_allows_design_ready_gate_to_pass() {
     assert!(approved.contains("approved design version"));
     assert!(approved.contains("authority_event_id: 1"));
 
+    ok(temp.path(), &["work", "start", "design document review"]);
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_review",
+            "--stage",
+            "design-ready",
+            "--design-version",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--clean",
+            "--summary",
+            "clean design review",
+        ],
+    );
     let passed = ok(
         temp.path(),
         &["gate", "design-ready", "--design-version", "1", "--dry-run"],
@@ -795,6 +829,39 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "1",
         ],
     );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_task_decomposition",
+            "--stage",
+            "implementation-ready",
+            "--design-version",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--clean",
+            "--summary",
+            "clean decomposition review",
+        ],
+    );
     let passed = ok(
         temp.path(),
         &[
@@ -846,6 +913,17 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     let coverage_list = ok(
         temp.path(),
         &["coverage", "list", "--design", "1", "--status", "covered"],
+    );
+    let review_context = ok(
+        temp.path(),
+        &[
+            "review-context",
+            "design-implementation-diff",
+            "--design-version",
+            "1",
+            "--work-unit",
+            "1",
+        ],
     );
     let raw_out_of_scope_coverage = err(
         temp.path(),
@@ -926,6 +1004,11 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(coverage.contains("added coverage item"));
     assert!(coverage.contains("coverage_item_id: 1"));
     assert!(coverage_list.contains("1 [covered] requirement=REQ-001"));
+    assert!(review_context.contains("requirements:"));
+    assert!(review_context.contains("task_derivations:"));
+    assert!(review_context.contains("coverage_items:"));
+    assert!(review_context.contains("known_gaps:"));
+    assert!(review_context.contains("stale_records:"));
     assert!(raw_out_of_scope_coverage.contains("requires an approved acceptance record"));
     assert!(passed_after_close.contains("result: pass"));
     assert!(passed_after_close.contains("implementation_evidence_present: pass"));
