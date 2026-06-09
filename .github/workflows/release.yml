@@ -44,7 +44,7 @@ jobs:
           set -eu
           tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* --clobber
+            gh release upload "$tag" "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" "dist/agent-workbench-${tag}-checksums.txt" --clobber
           else
-            gh release create "$tag" dist/* --generate-notes --target "$GITHUB_SHA"
+            gh release create "$tag" "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" "dist/agent-workbench-${tag}-checksums.txt" --generate-notes --target "$GITHUB_SHA"
           fi
