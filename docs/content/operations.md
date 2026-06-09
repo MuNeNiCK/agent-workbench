@@ -45,6 +45,15 @@ The wrapper verifies the archive before executing the cached CLI.
 Publishing a new version means creating a release that includes both the
 archive and checksum file.
 
+## Public documentation
+
+The public documentation is built from `docs/mkdocs.yml` and deployed to GitHub
+Pages by `.github/workflows/docs.yml`.
+
+The docs workflow runs when public docs or the docs workflow change on `main`.
+It builds with MkDocs strict mode, uploads the generated `site/` artifact, and
+deploys it through GitHub Pages.
+
 ## Cache
 
 The wrapper caches the CLI under the user's cache directory, using

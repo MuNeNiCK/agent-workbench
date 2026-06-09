@@ -5,6 +5,9 @@
 - Linux x86_64.
 - GitHub CLI with `gh skill`.
 - A coding agent that supports Agent Skills.
+- Network access to GitHub Releases and the GitHub API on first use.
+- `curl`, `sed`, `tar`, and `sha256sum` available on the host.
+- A writable user cache directory.
 
 Agent Workbench is distributed through the Agent Skill. The installed skill
 fetches the released Linux x86_64 CLI when an agent first uses it.
