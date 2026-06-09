@@ -94,34 +94,85 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
         },
         WorkRecordCommand::File { command } => match command {
             WorkRecordFileCommand::Add(args) => {
-                let outcome = if args.git_file_change.is_some() || args.repository_id.is_some() {
-                    add_work_record_git_file(
+                link_work_record_file(root, args)?;
+            }
+        },
+        WorkRecordCommand::Link { command } => match command {
+            WorkRecordLinkCommand::Command(args) => {
+                let outcome = add_work_record_command(
+                    root,
+                    NewWorkRecordCommand {
+                        work_record_id: args.work_record_id,
+                        command_usage_id: args.usage,
+                        command_profile_id: args.profile,
+                        command: args.command.as_deref(),
+                        result: args.result.as_deref(),
+                        log_path: args.log_path.as_deref(),
+                        note: args.note.as_deref(),
+                    },
+                )?;
+                println!("linked work record command");
+                println!("work_record_command_id: {}", outcome.link_id);
+            }
+            WorkRecordLinkCommand::Commit(args) => {
+                let outcome = match args.git_commit {
+                    Some(git_commit_id) => add_work_record_git_commit(
                         root,
-                        NewWorkRecordGitFile {
+                        NewWorkRecordGitCommit {
                             work_record_id: args.work_record_id,
-                            git_file_change_id: args.git_file_change,
-                            repository_id: args.repository_id,
-                            path: &args.path,
+                            git_commit_id: Some(git_commit_id),
+                            commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
                         },
-                    )?
-                } else {
-                    add_work_record_file(
+                    )?,
+                    None => add_work_record_commit(
                         root,
-                        NewWorkRecordFile {
+                        NewWorkRecordCommit {
                             work_record_id: args.work_record_id,
-                            path: &args.path,
+                            commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
                         },
-                    )?
+                    )?,
                 };
-                println!("linked work record file");
-                println!("work_record_file_id: {}", outcome.link_id);
+                println!("linked work record commit");
+                println!("work_record_commit_id: {}", outcome.link_id);
+            }
+            WorkRecordLinkCommand::File(args) => {
+                link_work_record_file(root, args)?;
             }
         },
     }
+    Ok(())
+}
+
+fn link_work_record_file(root: &Path, args: WorkRecordFileAddArgs) -> Result<()> {
+    let outcome = if args.git_file_change.is_some() || args.repository_id.is_some() {
+        add_work_record_git_file(
+            root,
+            NewWorkRecordGitFile {
+                work_record_id: args.work_record_id,
+                git_file_change_id: args.git_file_change,
+                repository_id: args.repository_id,
+                path: &args.path,
+                role: &args.role,
+                note: args.note.as_deref(),
+            },
+        )?
+    } else {
+        add_work_record_file(
+            root,
+            NewWorkRecordFile {
+                work_record_id: args.work_record_id,
+                path: &args.path,
+                role: &args.role,
+                note: args.note.as_deref(),
+            },
+        )?
+    };
+    println!("linked work record file");
+    println!("work_record_file_id: {}", outcome.link_id);
     Ok(())
 }
 
@@ -285,6 +336,52 @@ pub(crate) fn handle_repository(root: &Path, command: RepositoryCommand) -> Resu
                     "repository_snapshot_comparison_id: {}",
                     outcome.repository_snapshot_comparison_id
                 );
+            }
+        },
+    }
+    Ok(())
+}
+
+pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
+    match command {
+        GitCommand::Commit { command } => match command {
+            RepositoryCommitCommand::Add(args) => {
+                let outcome = add_git_commit(
+                    root,
+                    NewGitCommit {
+                        repository: &args.repository,
+                        commit_sha: &args.sha,
+                        short_sha: args.short.as_deref(),
+                        subject: args.subject.as_deref(),
+                        author_name: args.author_name.as_deref(),
+                        author_email: args.author_email.as_deref(),
+                        committed_at: args.committed_at.as_deref(),
+                        parent_shas: args.parents.as_deref(),
+                    },
+                )?;
+                println!("added git commit");
+                println!("git_commit_id: {}", outcome.git_commit_id);
+                println!("repository_id: {}", outcome.repository_id);
+            }
+        },
+        GitCommand::Files { command } => match command {
+            RepositoryFileCommand::Add(args) => {
+                let outcome = add_git_file_change(
+                    root,
+                    NewGitFileChange {
+                        git_commit_id: args.commit,
+                        repository: args.repository.as_deref(),
+                        path: &args.path,
+                        old_path: args.old_path.as_deref(),
+                        change_type: &args.change_type,
+                        additions: args.additions,
+                        deletions: args.deletions,
+                        content_hash: args.hash.as_deref(),
+                    },
+                )?;
+                println!("added git file change");
+                println!("git_file_change_id: {}", outcome.git_file_change_id);
+                println!("repository_id: {}", outcome.repository_id);
             }
         },
     }

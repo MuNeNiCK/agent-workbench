@@ -521,6 +521,65 @@ fn gate_result_for(evaluation: &ResumeGateEvaluation) -> String {
     }
 }
 
+fn ensure_resume_check_items_pass(
+    conn: &Connection,
+    resume_check_id: i64,
+    maturity: &str,
+) -> Result<()> {
+    for item_name in required_resume_check_items(maturity)? {
+        let result = conn
+            .query_row(
+                r#"
+                select result
+                from resume_check_items
+                where resume_check_id = ?1 and check_name = ?2
+                order by id desc
+                limit 1
+                "#,
+                params![resume_check_id, item_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .with_context(|| format!("resume check is missing required item {item_name}"))?;
+        if result != "pass" {
+            bail!("resume check item {item_name} is not pass");
+        }
+    }
+    Ok(())
+}
+
+fn required_resume_check_items(maturity: &str) -> Result<Vec<&'static str>> {
+    let mut items = vec![
+        "resume_target_suspended",
+        "snapshot_exists",
+        "suspend_reason_exists",
+        "next_action_exists",
+        "deeper_frames_closed",
+        "blocking_dependencies_clear",
+    ];
+    match maturity {
+        "basic" => {}
+        "trace-aware" => items.extend([
+            "design_version_current",
+            "task_derivation_current",
+            "checklist_current",
+            "selected_gate_current",
+            "review_plan_current",
+        ]),
+        "repo-aware" => items.extend([
+            "design_version_current",
+            "task_derivation_current",
+            "checklist_current",
+            "selected_gate_current",
+            "review_plan_current",
+            "repository_state_current",
+            "assumptions_current",
+        ]),
+        _ => bail!("unsupported maturity; use basic, trace-aware, or repo-aware"),
+    }
+    Ok(items)
+}
+
 fn is_no_resume_target_error(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -561,6 +620,7 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
     if check.status != "pending" || check.result != "allowed" {
         bail!("resume check must be pending and allowed");
     }
+    ensure_resume_check_items_pass(&tx, check.id, &check.maturity)?;
     if active_activation(&tx)?.is_some() {
         bail!("cannot resume while another activation is active");
     }
@@ -692,10 +752,22 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
             work_unit_id, depends_on_work_unit_id, dependency_type, reason,
             status, created_at
         )
-        values (?1, ?1, 'invalidates_closure', ?2, 'resolved', current_timestamp)
+        values (?1, ?1, 'invalidates_closure', ?2, 'open', current_timestamp)
         "#,
         params![work_unit_id, reason],
     )?;
+    if let Some(parent) = &parent {
+        tx.execute(
+            r#"
+            insert into work_unit_dependencies(
+                work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+                status, created_at
+            )
+            values (?1, ?2, 'blocks', ?3, 'open', current_timestamp)
+            "#,
+            params![parent.work_unit_id, work_unit_id, reason],
+        )?;
+    }
     tx.commit()?;
 
     Ok(WorkOutcome {
@@ -804,6 +876,18 @@ pub fn create_follow_up_work(
         "#,
         params![follow_up_work_unit_id, source_work_unit_id, reason],
     )?;
+    if let Some(parent) = &parent {
+        tx.execute(
+            r#"
+            insert into work_unit_dependencies(
+                work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+                status, created_at
+            )
+            values (?1, ?2, 'blocks', ?3, 'open', current_timestamp)
+            "#,
+            params![parent.work_unit_id, follow_up_work_unit_id, reason],
+        )?;
+    }
     tx.commit()?;
 
     Ok(FollowUpOutcome {
@@ -894,6 +978,23 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
         ],
     )?;
     let fork_id = tx.last_insert_rowid();
+    if let Some(source_work_unit_id) = source.source_work_unit_id {
+        tx.execute(
+            r#"
+            insert into work_unit_dependencies(
+                work_unit_id, depends_on_work_unit_id, dependency_type, reason,
+                status, created_at
+            )
+            values (?1, ?2, ?3, ?4, 'open', current_timestamp)
+            "#,
+            params![
+                forked_work_unit_id,
+                source_work_unit_id,
+                dependency_type_for_fork_reason(fork_reason),
+                input.reason,
+            ],
+        )?;
+    }
     tx.commit()?;
 
     Ok(WorkForkOutcome {
@@ -1098,6 +1199,16 @@ fn fork_reason_code(reason: &str) -> &str {
         | "user_requested_redo"
         | "other" => reason,
         _ => "other",
+    }
+}
+
+fn dependency_type_for_fork_reason(reason: &str) -> &'static str {
+    match reason {
+        "design_changed" | "agent_drift" | "failed_validation" | "user_requested_redo" => {
+            "supersedes"
+        }
+        "invalid_assumption" => "invalidates_assumption",
+        _ => "discovered_by",
     }
 }
 
@@ -1531,11 +1642,25 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
                 ) as latest_result,
                 exists (
                     select 1
-                    from acceptance_records ar
-                    where ar.target_type = 'validation_gate_template'
-                      and ar.validation_gate_template_id = vg.template_id
-                      and ar.acceptance_type = 'explicit_exception'
-                      and ar.status = 'approved'
+                    from validation_runs vr
+                    left join acceptance_records run_ar on run_ar.id = vr.acceptance_record_id
+                    where vr.validation_gate_id = vg.id
+                      and (
+                        (
+                          run_ar.status = 'approved'
+                          and run_ar.acceptance_type in ('classified_failure', 'evidence_gap', 'explicit_exception')
+                        )
+                        or exists (
+                          select 1
+                          from acceptance_records ar
+                          where ar.target_type = 'validation_gate_template'
+                            and ar.validation_gate_template_id = vg.template_id
+                            and ar.acceptance_type in ('explicit_exception', 'classified_failure', 'evidence_gap')
+                            and ar.status = 'approved'
+                        )
+                      )
+                    order by vr.id desc
+                    limit 1
                 ) as accepted_failure
             from validation_gates vg
             left join tasks t on t.id = vg.task_id

@@ -969,15 +969,25 @@ pub fn add_validation_run(
         .optional()?
         .context("repository snapshot not found")?;
     }
+    if let Some(acceptance_record_id) = input.acceptance_record_id {
+        conn.query_row(
+            "select 1 from acceptance_records where id = ?1 and project_id = ?2 and status = 'approved'",
+            params![acceptance_record_id, project_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("approved acceptance record not found")?;
+    }
 
     conn.execute(
         r#"
         insert into validation_runs(
             project_id, validation_gate_id, work_unit_id, task_id,
             command_usage_id, repository_snapshot_id, result,
+            command, classification, acceptance_record_id,
             artifact_path, artifact_hash, notes, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, current_timestamp)
         "#,
         params![
             project_id,
@@ -987,6 +997,9 @@ pub fn add_validation_run(
             input.command_usage_id,
             input.repository_snapshot_id,
             input.result,
+            input.command,
+            input.classification,
+            input.acceptance_record_id,
             input.artifact_path,
             input.artifact_hash,
             input.notes,
@@ -1038,7 +1051,8 @@ pub fn list_validation_runs(
         select
             vr.id, vr.validation_gate_id, vg.gate_key, vr.work_unit_id,
             vr.task_id, vr.command_usage_id, vr.repository_snapshot_id,
-            vr.result, vr.artifact_path, vr.artifact_hash, vr.notes, vr.created_at
+            vr.result, vr.command, vr.classification, vr.acceptance_record_id,
+            vr.artifact_path, vr.artifact_hash, vr.notes, vr.created_at
         from validation_runs vr
         join validation_gates vg on vg.id = vr.validation_gate_id
         where vr.project_id = ?1
@@ -1056,10 +1070,13 @@ pub fn list_validation_runs(
             command_usage_id: row.get(5)?,
             repository_snapshot_id: row.get(6)?,
             result: row.get(7)?,
-            artifact_path: row.get(8)?,
-            artifact_hash: row.get(9)?,
-            notes: row.get(10)?,
-            created_at: row.get(11)?,
+            command: row.get(8)?,
+            classification: row.get(9)?,
+            acceptance_record_id: row.get(10)?,
+            artifact_path: row.get(11)?,
+            artifact_hash: row.get(12)?,
+            notes: row.get(13)?,
+            created_at: row.get(14)?,
         })
     })?;
     let mut records = Vec::new();
@@ -1937,6 +1954,9 @@ pub struct NewValidationRun<'a> {
     pub command_usage_id: Option<i64>,
     pub repository_snapshot_id: Option<i64>,
     pub result: &'a str,
+    pub command: Option<&'a str>,
+    pub classification: Option<&'a str>,
+    pub acceptance_record_id: Option<i64>,
     pub artifact_path: Option<&'a str>,
     pub artifact_hash: Option<&'a str>,
     pub notes: Option<&'a str>,
@@ -2132,6 +2152,9 @@ pub struct ValidationRunRecord {
     pub command_usage_id: Option<i64>,
     pub repository_snapshot_id: Option<i64>,
     pub result: String,
+    pub command: Option<String>,
+    pub classification: Option<String>,
+    pub acceptance_record_id: Option<i64>,
     pub artifact_path: Option<String>,
     pub artifact_hash: Option<String>,
     pub notes: Option<String>,

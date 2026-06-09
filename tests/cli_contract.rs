@@ -2005,3 +2005,182 @@ fn cli_git_import_backfills_manual_work_record_links() {
     assert_eq!(linked_commit_id, 1);
     assert_eq!(linked_file, (1, 1));
 }
+
+#[test]
+fn design_cli_aliases_record_commands_authority_git_and_links() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    let preferred = ok(
+        temp.path(),
+        &[
+            "command",
+            "prefer",
+            "--name",
+            "workspace-tests",
+            "--type",
+            "test",
+            "--scope",
+            "project",
+            "--command",
+            "cargo test --workspace",
+        ],
+    );
+    let deprecated = ok(
+        temp.path(),
+        &[
+            "command",
+            "deprecate",
+            "--name",
+            "workspace-tests",
+            "--reason",
+            "too broad for this work",
+        ],
+    );
+    let authority = ok(
+        temp.path(),
+        &[
+            "authority",
+            "add",
+            "--path",
+            ".agent-workbench/designs/storage-lifecycle/design.yaml",
+            "--type",
+            "design",
+            "--scope",
+            "project",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "correction",
+            "add",
+            "--scope",
+            "project",
+            "--type",
+            "process",
+            "--pattern",
+            "old instruction",
+            "--correction",
+            "follow the authority event",
+        ],
+    );
+    let rules = ok(temp.path(), &["rules", "applicable", "--scope", "project"]);
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "add",
+            "main",
+            "--path",
+            ".",
+            "--status",
+            "clean",
+        ],
+    );
+    ok(
+        temp.path(),
+        &["record", "create", "--topic", "linked aliases"],
+    );
+    let git_commit = ok(
+        temp.path(),
+        &[
+            "git",
+            "commit",
+            "add",
+            "--repository",
+            "main",
+            "--sha",
+            "abc123",
+            "--subject",
+            "alias import",
+        ],
+    );
+    let git_file = ok(
+        temp.path(),
+        &[
+            "git",
+            "files",
+            "add",
+            "--commit",
+            "1",
+            "--path",
+            "src/lib.rs",
+            "--type",
+            "modified",
+        ],
+    );
+    let linked_commit = ok(
+        temp.path(),
+        &[
+            "record",
+            "link",
+            "commit",
+            "1",
+            "--git-commit",
+            "1",
+            "--sha",
+            "abc123",
+        ],
+    );
+    let linked_file = ok(
+        temp.path(),
+        &[
+            "record",
+            "link",
+            "file",
+            "1",
+            "--git-file-change",
+            "1",
+            "--repository-id",
+            "1",
+            "--path",
+            "src/lib.rs",
+        ],
+    );
+
+    assert!(preferred.contains("command_profile_id: 1"));
+    assert!(deprecated.contains("command_profile_id: 1"));
+    assert!(authority.contains("authority_event_id: 1"));
+    assert!(rules.contains("shadowed_by="));
+    assert!(git_commit.contains("git_commit_id: 1"));
+    assert!(git_file.contains("git_file_change_id: 1"));
+    assert!(linked_commit.contains("work_record_commit_id: 1"));
+    assert!(linked_file.contains("work_record_file_id: 1"));
+}
+
+#[test]
+fn work_resume_rejects_allowed_check_without_required_items() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "parent"]);
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "suspend",
+            "--reason",
+            "interrupt",
+            "--next",
+            "resume parent",
+        ],
+    );
+    let conn = conn(temp.path());
+    conn.execute(
+        r#"
+        insert into resume_checks(
+            work_unit_id, work_unit_activation_id, suspend_snapshot_id, maturity,
+            status, result, authority_event_high_watermark, activation_stack_revision,
+            allowed_next_action, created_at
+        )
+        values (1, 1, 1, 'basic', 'pending', 'allowed', 0, 2,
+                'resume parent', current_timestamp)
+        "#,
+        [],
+    )
+    .unwrap();
+
+    let stderr = err(temp.path(), &["work", "resume", "--check", "1"]);
+
+    assert!(stderr.contains("missing required item resume_target_suspended"));
+}

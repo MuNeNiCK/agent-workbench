@@ -61,6 +61,26 @@ pub(crate) fn handle_command(root: &Path, command: MemoryCommand) -> Result<()> 
                 println!("command_profile_id: {}", outcome.command_profile_id);
             }
         },
+        MemoryCommand::Prefer(args) => {
+            let outcome = add_preferred_command(
+                root,
+                NewCommandProfile {
+                    name: &args.name,
+                    command_type: &args.command_type,
+                    scope: &args.scope,
+                    command: &args.command,
+                    timeout: args.timeout.as_deref(),
+                    expected_result: args.expected_result.as_deref(),
+                },
+            )?;
+            println!("added preferred command");
+            println!("command_profile_id: {}", outcome.command_profile_id);
+        }
+        MemoryCommand::Deprecate(args) => {
+            let outcome = deprecate_command_profile(root, &args.name, &args.reason)?;
+            println!("deprecated command");
+            println!("command_profile_id: {}", outcome.command_profile_id);
+        }
         MemoryCommand::Usage { command } => match command {
             CommandUsageCommand::Add(args) => {
                 let outcome = match args.snapshot {
@@ -170,9 +190,17 @@ pub(crate) fn handle_rules(root: &Path, command: RulesCommand) -> Result<()> {
                 println!("no applicable rules");
             }
             for record in records {
+                let shadowed = record
+                    .shadowed_by_rule_id
+                    .map(|id| format!(" shadowed_by={id}"))
+                    .unwrap_or_default();
                 println!(
-                    "{} [{}:{} precedence={}]",
-                    record.id, record.rule_source_type, record.scope_type, record.precedence
+                    "{} [{}:{} precedence={}]{}",
+                    record.id,
+                    record.rule_source_type,
+                    record.scope_type,
+                    record.precedence,
+                    shadowed
                 );
             }
         }

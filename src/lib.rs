@@ -22,7 +22,7 @@ pub use commands::{
     CommandUsageOutcome, CommandUsageRecord, NewCommandDeviation, NewCommandProfile,
     NewCommandUsage, NewCommandUsageWithRepositorySnapshot, add_command_deviation,
     add_command_usage, add_command_usage_with_repository_snapshot, add_fixed_command,
-    list_command_profiles, list_command_usages,
+    add_preferred_command, deprecate_command_profile, list_command_profiles, list_command_usages,
 };
 pub use coverage::{
     CoverageItemListQuery, CoverageItemOutcome, CoverageItemRecord, NewCoverageItem,
@@ -34,13 +34,15 @@ pub use db::{
     project_status,
 };
 pub use design::{
-    DesignDecisionListQuery, DesignDecisionRecord, DesignPackageImport, DesignPackageImportOutcome,
-    DesignPackageInitOutcome, DesignReadyCheck, DesignReadyItem, DesignReadyOutcome,
-    DesignRequirementListQuery, DesignRequirementRecord, DesignVersionApproval,
-    DesignVersionApprovalOutcome, NewDesignExceptionAcceptance, NewDesignPackage,
+    DesignDecisionListQuery, DesignDecisionRecord, DesignExceptionAcceptanceOutcome,
+    DesignPackageImport, DesignPackageImportOutcome, DesignPackageInitOutcome, DesignReadyCheck,
+    DesignReadyItem, DesignReadyOutcome, DesignRequirementListQuery, DesignRequirementRecord,
+    DesignVersionApproval, DesignVersionApprovalOutcome, GeneralAcceptanceOutcome,
+    NewDesignExceptionAcceptance, NewDesignPackage, NewGeneralAcceptance,
     ValidationGateTemplateListQuery, ValidationGateTemplateRecord, accept_design_exception,
-    approve_design_version, design_ready, import_design_package, init_design_package,
-    list_design_decisions, list_design_requirements, list_validation_gate_templates,
+    add_general_acceptance, approve_design_version, design_ready, import_design_package,
+    init_design_package, list_design_decisions, list_design_requirements,
+    list_validation_gate_templates,
 };
 pub use kpt::{
     KptItemCommandProfileConversion, KptItemCommandProfileConversionOutcome,

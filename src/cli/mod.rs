@@ -66,6 +66,7 @@ pub(crate) fn run() -> Result<()> {
         Command::Gate { command } => gate::handle(&root, command)?,
         Command::Correction { command } => memory::handle_correction(&root, command)?,
         Command::Command { command } => memory::handle_command(&root, command)?,
+        Command::Git { command } => records::handle_git(&root, command)?,
         Command::Rules { command } => memory::handle_rules(&root, command)?,
         Command::WorkRecord { command } => records::handle_work_record(&root, command)?,
         Command::Repository { command } => records::handle_repository(&root, command)?,

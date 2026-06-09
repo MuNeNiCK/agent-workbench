@@ -637,6 +637,201 @@ pub fn accept_design_exception(
     })
 }
 
+pub fn add_general_acceptance(
+    root: &Path,
+    input: NewGeneralAcceptance<'_>,
+) -> Result<GeneralAcceptanceOutcome> {
+    validate_acceptance_type(input.acceptance_type)?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let target = resolve_general_acceptance_target(&tx, project_id, input.target)?;
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id, event_type, source, text_or_summary, scope, precedence,
+            status, created_at
+        )
+        values (?1, 'user_instruction', 'acceptance', ?2, ?3, 100, 'active', current_timestamp)
+        "#,
+        params![
+            project_id,
+            format!(
+                "accepted {} for {}: {}",
+                input.acceptance_type, input.target, input.reason
+            ),
+            input.target,
+        ],
+    )?;
+    let authority_event_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, task_id, finding_id, validation_gate_id,
+            validation_run_id, repository_state_classification_id,
+            repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
+            command_profile_id, command_usage_id, command_deviation_id,
+            stale_record_type, stale_record_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        )
+        values (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18, 'user', 'approved', ?19, current_timestamp,
+            current_timestamp, 'general acceptance recorded for current workflow'
+        )
+        "#,
+        params![
+            project_id,
+            target.target_type,
+            target.task_id,
+            target.finding_id,
+            target.validation_gate_id,
+            target.validation_run_id,
+            target.repository_state_classification_id,
+            target.repository_snapshot_comparison_id,
+            target.review_plan_id,
+            target.checklist_item_id,
+            target.command_profile_id,
+            target.command_usage_id,
+            target.command_deviation_id,
+            target.stale_record_type,
+            target.stale_record_id,
+            input.acceptance_type,
+            input.reason,
+            input.target,
+            authority_event_id,
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(GeneralAcceptanceOutcome {
+        acceptance_record_id,
+        authority_event_id,
+        target_type: target.target_type.to_string(),
+    })
+}
+
+fn resolve_general_acceptance_target(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    target: &str,
+) -> Result<ResolvedGeneralAcceptanceTarget> {
+    let Some((kind, raw_id)) = target.split_once(':') else {
+        bail!("general acceptance target must be kind:<id>");
+    };
+    if kind == "stale" {
+        let Some((stale_type, stale_id)) = raw_id.split_once(':') else {
+            bail!("stale acceptance target must be stale:<record-type>:<id>");
+        };
+        return Ok(ResolvedGeneralAcceptanceTarget {
+            target_type: "stale_record",
+            stale_record_type: Some(stale_type.to_string()),
+            stale_record_id: Some(parse_positive_i64(stale_id, "stale record id")?),
+            ..ResolvedGeneralAcceptanceTarget::new("stale_record")
+        });
+    }
+    let id = parse_positive_i64(raw_id, "acceptance target id")?;
+    match kind {
+        "task" => {
+            ensure_project_row(conn, "tasks", "work_units", "work_unit_id", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                task_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("task")
+            })
+        }
+        "finding" => {
+            ensure_direct_project_row(conn, "findings", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                finding_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("finding")
+            })
+        }
+        "validation-gate" => {
+            ensure_direct_project_row(conn, "validation_gates", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                validation_gate_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("validation_gate")
+            })
+        }
+        "validation-run" => {
+            ensure_direct_project_row(conn, "validation_runs", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                validation_run_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("validation_run")
+            })
+        }
+        "repository-state" => Ok(ResolvedGeneralAcceptanceTarget {
+            repository_state_classification_id: Some(id),
+            ..ResolvedGeneralAcceptanceTarget::new("repository_state_classification")
+        }),
+        "repository-comparison" => Ok(ResolvedGeneralAcceptanceTarget {
+            repository_snapshot_comparison_id: Some(id),
+            ..ResolvedGeneralAcceptanceTarget::new("repository_snapshot_comparison")
+        }),
+        "review-plan" => {
+            ensure_direct_project_row(conn, "review_plans", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                review_plan_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("review_plan")
+            })
+        }
+        "checklist-item" => Ok(ResolvedGeneralAcceptanceTarget {
+            checklist_item_id: Some(id),
+            ..ResolvedGeneralAcceptanceTarget::new("checklist_item")
+        }),
+        "command-profile" => {
+            ensure_direct_project_row(conn, "command_profiles", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                command_profile_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("command_profile")
+            })
+        }
+        "command-usage" => {
+            ensure_direct_project_row(conn, "command_usages", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                command_usage_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("command_usage")
+            })
+        }
+        "command-deviation" => Ok(ResolvedGeneralAcceptanceTarget {
+            command_deviation_id: Some(id),
+            ..ResolvedGeneralAcceptanceTarget::new("command_deviation")
+        }),
+        _ => bail!("unsupported general acceptance target kind: {kind}"),
+    }
+}
+
+fn ensure_direct_project_row(
+    conn: &rusqlite::Connection,
+    table: &str,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    let sql = format!("select 1 from {table} where id = ?1 and project_id = ?2");
+    conn.query_row(&sql, params![id, project_id], |_| Ok(()))
+        .optional()?
+        .with_context(|| format!("{table} row not found for project"))?;
+    Ok(())
+}
+
+fn ensure_project_row(
+    conn: &rusqlite::Connection,
+    table: &str,
+    project_table: &str,
+    project_fk: &str,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    let sql = format!(
+        "select 1 from {table} child join {project_table} owner on owner.id = child.{project_fk} where child.id = ?1 and owner.project_id = ?2"
+    );
+    conn.query_row(&sql, params![id, project_id], |_| Ok(()))
+        .optional()?
+        .with_context(|| format!("{table} row not found for project"))?;
+    Ok(())
+}
+
 pub fn approve_design_version(
     root: &Path,
     input: DesignVersionApproval<'_>,
@@ -1196,9 +1391,19 @@ fn validate_design_acceptance_type_target(target: &str) -> Result<()> {
 }
 
 fn validate_design_acceptance_type(acceptance_type: &str) -> Result<()> {
+    validate_acceptance_type(acceptance_type)
+}
+
+fn validate_acceptance_type(acceptance_type: &str) -> Result<()> {
     match acceptance_type {
-        "accepted_out_of_scope" | "explicit_exception" => Ok(()),
-        _ => bail!("acceptance type must be accepted_out_of_scope or explicit_exception"),
+        "accepted_out_of_scope"
+        | "explicit_exception"
+        | "evidence_gap"
+        | "classified_failure"
+        | "stale_accepted" => Ok(()),
+        _ => bail!(
+            "acceptance type must be accepted_out_of_scope, explicit_exception, evidence_gap, classified_failure, or stale_accepted"
+        ),
     }
 }
 
@@ -2266,6 +2471,44 @@ struct ResolvedDesignAcceptanceTarget {
     design_requirement_key: Option<String>,
 }
 
+struct ResolvedGeneralAcceptanceTarget {
+    target_type: &'static str,
+    task_id: Option<i64>,
+    finding_id: Option<i64>,
+    validation_gate_id: Option<i64>,
+    validation_run_id: Option<i64>,
+    repository_state_classification_id: Option<i64>,
+    repository_snapshot_comparison_id: Option<i64>,
+    review_plan_id: Option<i64>,
+    checklist_item_id: Option<i64>,
+    command_profile_id: Option<i64>,
+    command_usage_id: Option<i64>,
+    command_deviation_id: Option<i64>,
+    stale_record_type: Option<String>,
+    stale_record_id: Option<i64>,
+}
+
+impl ResolvedGeneralAcceptanceTarget {
+    fn new(target_type: &'static str) -> Self {
+        Self {
+            target_type,
+            task_id: None,
+            finding_id: None,
+            validation_gate_id: None,
+            validation_run_id: None,
+            repository_state_classification_id: None,
+            repository_snapshot_comparison_id: None,
+            review_plan_id: None,
+            checklist_item_id: None,
+            command_profile_id: None,
+            command_usage_id: None,
+            command_deviation_id: None,
+            stale_record_type: None,
+            stale_record_id: None,
+        }
+    }
+}
+
 pub struct NewDesignPackage<'a> {
     pub design_id: &'a str,
     pub title: &'a str,
@@ -2300,6 +2543,12 @@ pub struct ValidationGateTemplateListQuery {
 pub struct NewDesignExceptionAcceptance<'a> {
     pub design_version_id: Option<i64>,
     pub design_package: Option<&'a str>,
+    pub target: &'a str,
+    pub acceptance_type: &'a str,
+    pub reason: &'a str,
+}
+
+pub struct NewGeneralAcceptance<'a> {
     pub target: &'a str,
     pub acceptance_type: &'a str,
     pub reason: &'a str,
@@ -2421,6 +2670,13 @@ pub struct DesignExceptionAcceptanceOutcome {
     pub design_package_key: Option<String>,
     pub design_file_path: Option<String>,
     pub design_requirement_key: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct GeneralAcceptanceOutcome {
+    pub acceptance_record_id: i64,
+    pub authority_event_id: i64,
+    pub target_type: String,
 }
 
 impl DesignReadyItem {

@@ -44,6 +44,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
+    /// Record Git evidence using the design-level CLI spelling.
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
+    },
     /// Query applicable rules.
     Rules {
         #[command(subcommand)]
@@ -331,6 +336,10 @@ pub(crate) struct GateRecordArgs {
     #[arg(long)]
     pub(crate) snapshot: Option<i64>,
     #[arg(long)]
+    pub(crate) command: Option<String>,
+    #[arg(long)]
+    pub(crate) acceptance: Option<i64>,
+    #[arg(long)]
     pub(crate) artifact: Option<String>,
     #[arg(long)]
     pub(crate) artifact_hash: Option<String>,
@@ -383,6 +392,8 @@ pub(crate) enum MemoryCommand {
         #[command(subcommand)]
         command: FixedCommand,
     },
+    Prefer(CommandPreferArgs),
+    Deprecate(CommandDeprecateArgs),
     Usage {
         #[command(subcommand)]
         command: CommandUsageCommand,
@@ -413,6 +424,30 @@ pub(crate) struct CommandFixedAddArgs {
     pub(crate) timeout: Option<String>,
     #[arg(long)]
     pub(crate) expected_result: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CommandPreferArgs {
+    #[arg(long)]
+    pub(crate) name: String,
+    #[arg(long = "type", default_value = "validation")]
+    pub(crate) command_type: String,
+    #[arg(long, default_value = "project")]
+    pub(crate) scope: String,
+    #[arg(long)]
+    pub(crate) command: String,
+    #[arg(long)]
+    pub(crate) timeout: Option<String>,
+    #[arg(long)]
+    pub(crate) expected_result: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CommandDeprecateArgs {
+    #[arg(long)]
+    pub(crate) name: String,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]
@@ -496,6 +531,10 @@ pub(crate) enum WorkRecordCommand {
         #[command(subcommand)]
         command: WorkRecordFileCommand,
     },
+    Link {
+        #[command(subcommand)]
+        command: WorkRecordLinkCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -570,6 +609,13 @@ pub(crate) struct WorkRecordCommitAddArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum WorkRecordFileCommand {
     Add(WorkRecordFileAddArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorkRecordLinkCommand {
+    Command(WorkRecordCommandAddArgs),
+    Commit(WorkRecordCommitAddArgs),
+    File(WorkRecordFileAddArgs),
 }
 
 #[derive(Debug, Args)]
@@ -747,6 +793,18 @@ pub(crate) struct RepositoryFileAddArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum RepositoryCompareCommand {
     Add(RepositoryCompareAddArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitCommand {
+    Commit {
+        #[command(subcommand)]
+        command: RepositoryCommitCommand,
+    },
+    Files {
+        #[command(subcommand)]
+        command: RepositoryFileCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1272,11 +1330,26 @@ pub(crate) struct AcceptanceAddArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AuthorityCommand {
+    Add(AuthorityAddArgs),
     Event {
         #[command(subcommand)]
         command: AuthorityEventCommand,
     },
     List(AuthorityListArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AuthorityAddArgs {
+    #[arg(long)]
+    pub(crate) path: String,
+    #[arg(long = "type")]
+    pub(crate) authority_type: String,
+    #[arg(long)]
+    pub(crate) scope: Option<String>,
+    #[arg(long)]
+    pub(crate) summary: Option<String>,
+    #[arg(long, default_value_t = 90)]
+    pub(crate) precedence: i64,
 }
 
 #[derive(Debug, Subcommand)]

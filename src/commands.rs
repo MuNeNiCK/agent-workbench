@@ -4,9 +4,49 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{active_activation, open_existing_project, project_id};
-use crate::rules::{RuleBindingInput, insert_rule_binding};
+use crate::rules::{RuleBindingInput, insert_rule_binding, scope_type_for};
 
 pub fn add_fixed_command(root: &Path, input: NewCommandProfile<'_>) -> Result<CommandOutcome> {
+    add_command_profile_with_status(root, input, "fixed", "stable", "user")
+}
+
+pub fn add_preferred_command(root: &Path, input: NewCommandProfile<'_>) -> Result<CommandOutcome> {
+    add_command_profile_with_status(root, input, "preferred", "stable", "user")
+}
+
+pub fn deprecate_command_profile(root: &Path, name: &str, reason: &str) -> Result<CommandOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    let changed = tx.execute(
+        r#"
+        update command_profiles
+        set status = 'deprecated', expected_result = ?1, updated_at = current_timestamp
+        where project_id = ?2 and name = ?3
+        "#,
+        params![reason, project_id, name],
+    )?;
+    if changed == 0 {
+        bail!("command profile not found");
+    }
+    let command_profile_id = resolve_command_profile(&tx, project_id, name)?;
+    tx.execute(
+        "update rule_bindings set status = 'inactive' where command_profile_id = ?1",
+        params![command_profile_id],
+    )?;
+    tx.commit()?;
+
+    Ok(CommandOutcome { command_profile_id })
+}
+
+fn add_command_profile_with_status(
+    root: &Path,
+    input: NewCommandProfile<'_>,
+    status: &str,
+    stability: &str,
+    source: &str,
+) -> Result<CommandOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
@@ -17,7 +57,7 @@ pub fn add_fixed_command(root: &Path, input: NewCommandProfile<'_>) -> Result<Co
             project_id, name, command, command_type, scope, status, stability,
             timeout, expected_result, source, created_at, updated_at
         )
-        values (?1, ?2, ?3, ?4, ?5, 'fixed', 'stable', ?6, ?7, 'user',
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 current_timestamp, current_timestamp)
         "#,
         params![
@@ -26,8 +66,11 @@ pub fn add_fixed_command(root: &Path, input: NewCommandProfile<'_>) -> Result<Co
             input.command,
             input.command_type,
             input.scope,
+            status,
+            stability,
             input.timeout,
             input.expected_result,
+            source,
         ],
     )?;
     let command_profile_id = tx.last_insert_rowid();
@@ -40,9 +83,9 @@ pub fn add_fixed_command(root: &Path, input: NewCommandProfile<'_>) -> Result<Co
             user_correction_id: None,
             command_profile_id: Some(command_profile_id),
             work_unit_id: None,
-            scope_type: "command",
+            scope_type: scope_type_for(input.scope),
             scope_key: Some(input.scope),
-            precedence: 70,
+            precedence: if status == "fixed" { 70 } else { 55 },
         },
     )?;
     tx.commit()?;

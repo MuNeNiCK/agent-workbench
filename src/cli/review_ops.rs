@@ -9,15 +9,16 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
     match command {
         ReviewCommand::Scope { command } => match command {
             ReviewScopeCommand::Start(args) => {
+                let defaults = review_role_defaults(&args.review_type);
                 let outcome = start_review_scope(
                     root,
                     NewReviewScope {
                         name: &args.name,
                         review_type: &args.review_type,
                         scope: &args.scope,
-                        allowed_inputs: None,
-                        forbidden_judgments: None,
-                        expected_output_type: None,
+                        allowed_inputs: Some(defaults.allowed_inputs),
+                        forbidden_judgments: Some(defaults.forbidden_judgments),
+                        expected_output_type: Some(defaults.expected_output_type),
                         exclusions: None,
                         prompt_template_ref: None,
                     },
@@ -200,6 +201,42 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
     Ok(())
 }
 
+fn review_role_defaults(review_type: &str) -> ReviewRoleDefaults {
+    match review_type {
+        "design_review" => ReviewRoleDefaults {
+            allowed_inputs: "design documents, requirements, accepted decisions, explicit non-goals, user-declared scope",
+            forbidden_judgments: "do not implement fixes; do not rely on implementation behavior as proof; do not narrow user-declared scope",
+            expected_output_type: "design_finding",
+        },
+        "design_task_decomposition" => ReviewRoleDefaults {
+            allowed_inputs: "reviewed design documents, design review results, accepted decisions, existing task and checklist state",
+            forbidden_judgments: "do not change the design; do not skip required design surfaces; do not mark tasks complete because they exist",
+            expected_output_type: "design_task_decomposition",
+        },
+        "design_implementation_diff" => ReviewRoleDefaults {
+            allowed_inputs: "design documents, implementation, tests, generated artifacts, public CLI/API/runtime/lifecycle surfaces, accepted decisions",
+            forbidden_judgments: "do not redesign except for design_conflict; do not report language-style concerns unrelated to the design contract",
+            expected_output_type: "design_implementation_drift",
+        },
+        "implementation_review" => ReviewRoleDefaults {
+            allowed_inputs: "implementation code, tests, package conventions, language norms, security and error-handling paths",
+            forbidden_judgments: "do not require behavior only because a design document says so; keep design coverage findings separate",
+            expected_output_type: "implementation_finding",
+        },
+        _ => ReviewRoleDefaults {
+            allowed_inputs: "project ledger, active work unit, applicable rules, implementation context",
+            forbidden_judgments: "do not bypass active work-unit rules or review-specific gates",
+            expected_output_type: "general",
+        },
+    }
+}
+
+struct ReviewRoleDefaults {
+    allowed_inputs: &'static str,
+    forbidden_judgments: &'static str,
+    expected_output_type: &'static str,
+}
+
 pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()> {
     match command {
         FindingCommand::Add(args) => {
@@ -289,37 +326,52 @@ pub(crate) fn handle_closure(root: &Path, command: ClosureCommand) -> Result<()>
 pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Result<()> {
     match command {
         AcceptanceCommand::Add(args) => {
-            let outcome = accept_design_exception(
-                root,
-                NewDesignExceptionAcceptance {
-                    design_version_id: args.design,
-                    design_package: args.package.as_deref(),
-                    target: &args.target,
-                    acceptance_type: &args.acceptance_type,
-                    reason: &args.reason,
-                },
-            )?;
-            println!("accepted design exception");
-            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
-            println!("target_type: {}", outcome.target_type);
-            if let Some(design_requirement_id) = outcome.design_requirement_id {
-                println!("design_requirement_id: {design_requirement_id}");
-            }
-            if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
-                println!("validation_gate_template_id: {validation_gate_template_id}");
-            }
-            if let Some(coverage_item_id) = outcome.coverage_item_id {
-                println!("coverage_item_id: {coverage_item_id}");
-            }
-            if let Some(design_package_key) = outcome.design_package_key {
-                println!("design_package_key: {design_package_key}");
-            }
-            if let Some(design_file_path) = outcome.design_file_path {
-                println!("design_file_path: {design_file_path}");
-            }
-            if let Some(design_requirement_key) = outcome.design_requirement_key {
-                println!("design_requirement_key: {design_requirement_key}");
+            if args.design.is_some() || args.package.is_some() {
+                let outcome = accept_design_exception(
+                    root,
+                    NewDesignExceptionAcceptance {
+                        design_version_id: args.design,
+                        design_package: args.package.as_deref(),
+                        target: &args.target,
+                        acceptance_type: &args.acceptance_type,
+                        reason: &args.reason,
+                    },
+                )?;
+                println!("accepted design exception");
+                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+                println!("authority_event_id: {}", outcome.authority_event_id);
+                println!("target_type: {}", outcome.target_type);
+                if let Some(design_requirement_id) = outcome.design_requirement_id {
+                    println!("design_requirement_id: {design_requirement_id}");
+                }
+                if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
+                    println!("validation_gate_template_id: {validation_gate_template_id}");
+                }
+                if let Some(coverage_item_id) = outcome.coverage_item_id {
+                    println!("coverage_item_id: {coverage_item_id}");
+                }
+                if let Some(design_package_key) = outcome.design_package_key {
+                    println!("design_package_key: {design_package_key}");
+                }
+                if let Some(design_file_path) = outcome.design_file_path {
+                    println!("design_file_path: {design_file_path}");
+                }
+                if let Some(design_requirement_key) = outcome.design_requirement_key {
+                    println!("design_requirement_key: {design_requirement_key}");
+                }
+            } else {
+                let outcome = add_general_acceptance(
+                    root,
+                    NewGeneralAcceptance {
+                        target: &args.target,
+                        acceptance_type: &args.acceptance_type,
+                        reason: &args.reason,
+                    },
+                )?;
+                println!("accepted workflow exception");
+                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+                println!("authority_event_id: {}", outcome.authority_event_id);
+                println!("target_type: {}", outcome.target_type);
             }
         }
     }
@@ -328,6 +380,30 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
 
 pub(crate) fn handle_authority(root: &Path, command: AuthorityCommand) -> Result<()> {
     match command {
+        AuthorityCommand::Add(args) => {
+            let event_type = match args.authority_type.as_str() {
+                "design" => "design_doc",
+                other => other,
+            };
+            let summary = args.summary.unwrap_or_else(|| {
+                format!(
+                    "registered {} authority at {}",
+                    args.authority_type, args.path
+                )
+            });
+            let outcome = add_authority_event(
+                root,
+                NewAuthorityEvent {
+                    event_type,
+                    source: Some(&args.path),
+                    summary: &summary,
+                    scope: args.scope.as_deref(),
+                    precedence: args.precedence,
+                },
+            )?;
+            println!("added authority");
+            println!("authority_event_id: {}", outcome.authority_event_id);
+        }
         AuthorityCommand::Event { command } => match command {
             AuthorityEventCommand::Add(args) => {
                 let outcome = add_authority_event(

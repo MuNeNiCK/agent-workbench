@@ -185,6 +185,63 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
     ensure_column(conn, "acceptance_records", "coverage_item_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "finding_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_gate_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_run_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_state_classification_id",
+        "integer",
+    )?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_snapshot_comparison_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "review_plan_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "checklist_item_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_profile_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_usage_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "command_deviation_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
+    ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
+    ensure_column(conn, "validation_runs", "command", "text")?;
+    ensure_column(conn, "validation_runs", "classification", "text")?;
+    ensure_column(conn, "validation_runs", "acceptance_record_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "finding_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_gate_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_run_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_state_classification_id",
+        "integer",
+    )?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_snapshot_comparison_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "review_plan_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "checklist_item_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_profile_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_usage_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "command_deviation_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
+    ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
 
     let current_version = conn
         .query_row(
@@ -283,6 +340,33 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
     ensure_column(conn, "acceptance_records", "design_requirement_key", "text")?;
     ensure_column(conn, "acceptance_records", "coverage_item_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "finding_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_gate_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "validation_run_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_state_classification_id",
+        "integer",
+    )?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "repository_snapshot_comparison_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "review_plan_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "checklist_item_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_profile_id", "integer")?;
+    ensure_column(conn, "acceptance_records", "command_usage_id", "integer")?;
+    ensure_column(
+        conn,
+        "acceptance_records",
+        "command_deviation_id",
+        "integer",
+    )?;
+    ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
+    ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
     Ok(())
 }
 
@@ -685,10 +769,13 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
     if table_sql.contains("'design_file'")
         && table_sql.contains("'coverage_item'")
         && table_sql.contains("'design_requirement_key'")
+        && table_sql.contains("'validation_run'")
+        && table_sql.contains("'evidence_gap'")
         && table_has_column(conn, "acceptance_records", "design_package_key")?
         && table_has_column(conn, "acceptance_records", "design_file_path")?
         && table_has_column(conn, "acceptance_records", "design_requirement_key")?
         && table_has_column(conn, "acceptance_records", "coverage_item_id")?
+        && table_has_column(conn, "acceptance_records", "validation_run_id")?
     {
         return Ok(());
     }
@@ -706,15 +793,36 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         create table acceptance_records (
             id integer primary key,
             project_id integer not null references projects(id) on delete cascade,
-            target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key', 'coverage_item')),
+            target_type text not null check (target_type in (
+                'task', 'design_requirement', 'validation_gate_template', 'design_file',
+                'design_requirement_key', 'coverage_item', 'finding', 'validation_gate',
+                'validation_run', 'repository_state_classification',
+                'repository_snapshot_comparison', 'review_plan', 'checklist_item',
+                'command_profile', 'command_usage', 'command_deviation', 'stale_record'
+            )),
             task_id integer references tasks(id),
             design_requirement_id integer references design_requirements(id),
             validation_gate_template_id integer references validation_gate_templates(id),
             coverage_item_id integer references coverage_items(id),
+            finding_id integer references findings(id),
+            validation_gate_id integer references validation_gates(id),
+            validation_run_id integer references validation_runs(id),
+            repository_state_classification_id integer references repository_state_classifications(id),
+            repository_snapshot_comparison_id integer references repository_snapshot_comparisons(id),
+            review_plan_id integer references review_plans(id),
+            checklist_item_id integer references checklist_items(id),
+            command_profile_id integer references command_profiles(id),
+            command_usage_id integer references command_usages(id),
+            command_deviation_id integer references command_deviations(id),
+            stale_record_type text,
+            stale_record_id integer,
             design_package_key text,
             design_file_path text,
             design_requirement_key text,
-            acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
+            acceptance_type text not null check (acceptance_type in (
+                'accepted_out_of_scope', 'explicit_exception', 'evidence_gap',
+                'classified_failure', 'stale_accepted'
+            )),
             reason text not null,
             scope text,
             created_by text not null check (created_by in ('user', 'agent', 'system')),
@@ -724,24 +832,65 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             created_at text not null,
             review_impact text,
             check (
-                (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'coverage_item' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-                or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
-                or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
+                (
+                    (case when task_id is not null then 1 else 0 end) +
+                    (case when design_requirement_id is not null then 1 else 0 end) +
+                    (case when validation_gate_template_id is not null then 1 else 0 end) +
+                    (case when coverage_item_id is not null then 1 else 0 end) +
+                    (case when finding_id is not null then 1 else 0 end) +
+                    (case when validation_gate_id is not null then 1 else 0 end) +
+                    (case when validation_run_id is not null then 1 else 0 end) +
+                    (case when repository_state_classification_id is not null then 1 else 0 end) +
+                    (case when repository_snapshot_comparison_id is not null then 1 else 0 end) +
+                    (case when review_plan_id is not null then 1 else 0 end) +
+                    (case when checklist_item_id is not null then 1 else 0 end) +
+                    (case when command_profile_id is not null then 1 else 0 end) +
+                    (case when command_usage_id is not null then 1 else 0 end) +
+                    (case when command_deviation_id is not null then 1 else 0 end) +
+                    (case when design_package_key is not null and design_file_path is not null and design_requirement_key is null then 1 else 0 end) +
+                    (case when design_package_key is not null and design_requirement_key is not null and design_file_path is null then 1 else 0 end) +
+                    (case when stale_record_type is not null and stale_record_id is not null then 1 else 0 end)
+                ) = 1
+                and (
+                    (target_type = 'task' and task_id is not null)
+                    or (target_type = 'design_requirement' and design_requirement_id is not null)
+                    or (target_type = 'validation_gate_template' and validation_gate_template_id is not null)
+                    or (target_type = 'coverage_item' and coverage_item_id is not null)
+                    or (target_type = 'finding' and finding_id is not null)
+                    or (target_type = 'validation_gate' and validation_gate_id is not null)
+                    or (target_type = 'validation_run' and validation_run_id is not null)
+                    or (target_type = 'repository_state_classification' and repository_state_classification_id is not null)
+                    or (target_type = 'repository_snapshot_comparison' and repository_snapshot_comparison_id is not null)
+                    or (target_type = 'review_plan' and review_plan_id is not null)
+                    or (target_type = 'checklist_item' and checklist_item_id is not null)
+                    or (target_type = 'command_profile' and command_profile_id is not null)
+                    or (target_type = 'command_usage' and command_usage_id is not null)
+                    or (target_type = 'command_deviation' and command_deviation_id is not null)
+                    or (target_type = 'design_file' and design_package_key is not null and design_file_path is not null)
+                    or (target_type = 'design_requirement_key' and design_package_key is not null and design_requirement_key is not null)
+                    or (target_type = 'stale_record' and stale_record_type is not null and stale_record_id is not null)
+                )
             )
         );
 
         insert into acceptance_records(
             id, project_id, target_type, task_id, design_requirement_id,
-            validation_gate_template_id, coverage_item_id, acceptance_type, reason, scope,
-            created_by, status, approved_by_authority_event_id, approved_at,
-            created_at, review_impact
+            validation_gate_template_id, coverage_item_id, finding_id, validation_gate_id,
+            validation_run_id, repository_state_classification_id,
+            repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
+            command_profile_id, command_usage_id, command_deviation_id, stale_record_type,
+            stale_record_id, design_package_key, design_file_path, design_requirement_key,
+            acceptance_type, reason, scope, created_by, status,
+            approved_by_authority_event_id, approved_at, created_at, review_impact
         )
         select
             id, project_id, target_type, task_id, design_requirement_id,
-            validation_gate_template_id, coverage_item_id, acceptance_type, reason, scope,
+            validation_gate_template_id, coverage_item_id, finding_id, validation_gate_id,
+            validation_run_id, repository_state_classification_id,
+            repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
+            command_profile_id, command_usage_id, command_deviation_id, stale_record_type,
+            stale_record_id, design_package_key, design_file_path, design_requirement_key,
+            acceptance_type, reason, scope,
             case
                 when created_by in ('user', 'agent', 'system') then created_by
                 else 'system'
@@ -1513,15 +1662,36 @@ create table if not exists decisions (
 create table if not exists acceptance_records (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
-    target_type text not null check (target_type in ('task', 'design_requirement', 'validation_gate_template', 'design_file', 'design_requirement_key', 'coverage_item')),
+    target_type text not null check (target_type in (
+        'task', 'design_requirement', 'validation_gate_template', 'design_file',
+        'design_requirement_key', 'coverage_item', 'finding', 'validation_gate',
+        'validation_run', 'repository_state_classification',
+        'repository_snapshot_comparison', 'review_plan', 'checklist_item',
+        'command_profile', 'command_usage', 'command_deviation', 'stale_record'
+    )),
     task_id integer references tasks(id),
     design_requirement_id integer references design_requirements(id),
     validation_gate_template_id integer references validation_gate_templates(id),
     coverage_item_id integer references coverage_items(id),
+    finding_id integer references findings(id),
+    validation_gate_id integer references validation_gates(id),
+    validation_run_id integer references validation_runs(id),
+    repository_state_classification_id integer references repository_state_classifications(id),
+    repository_snapshot_comparison_id integer references repository_snapshot_comparisons(id),
+    review_plan_id integer references review_plans(id),
+    checklist_item_id integer references checklist_items(id),
+    command_profile_id integer references command_profiles(id),
+    command_usage_id integer references command_usages(id),
+    command_deviation_id integer references command_deviations(id),
+    stale_record_type text,
+    stale_record_id integer,
     design_package_key text,
     design_file_path text,
     design_requirement_key text,
-    acceptance_type text not null check (acceptance_type in ('accepted_out_of_scope', 'explicit_exception')),
+    acceptance_type text not null check (acceptance_type in (
+        'accepted_out_of_scope', 'explicit_exception', 'evidence_gap',
+        'classified_failure', 'stale_accepted'
+    )),
     reason text not null,
     scope text,
     created_by text not null check (created_by in ('user', 'agent', 'system')),
@@ -1531,12 +1701,44 @@ create table if not exists acceptance_records (
     created_at text not null,
     review_impact text,
     check (
-        (target_type = 'task' and task_id is not null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'design_requirement' and task_id is null and design_requirement_id is not null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'validation_gate_template' and task_id is null and design_requirement_id is null and validation_gate_template_id is not null and coverage_item_id is null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'coverage_item' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is not null and design_package_key is null and design_file_path is null and design_requirement_key is null)
-        or (target_type = 'design_file' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is not null and design_requirement_key is null)
-        or (target_type = 'design_requirement_key' and task_id is null and design_requirement_id is null and validation_gate_template_id is null and coverage_item_id is null and design_package_key is not null and design_file_path is null and design_requirement_key is not null)
+        (
+            (case when task_id is not null then 1 else 0 end) +
+            (case when design_requirement_id is not null then 1 else 0 end) +
+            (case when validation_gate_template_id is not null then 1 else 0 end) +
+            (case when coverage_item_id is not null then 1 else 0 end) +
+            (case when finding_id is not null then 1 else 0 end) +
+            (case when validation_gate_id is not null then 1 else 0 end) +
+            (case when validation_run_id is not null then 1 else 0 end) +
+            (case when repository_state_classification_id is not null then 1 else 0 end) +
+            (case when repository_snapshot_comparison_id is not null then 1 else 0 end) +
+            (case when review_plan_id is not null then 1 else 0 end) +
+            (case when checklist_item_id is not null then 1 else 0 end) +
+            (case when command_profile_id is not null then 1 else 0 end) +
+            (case when command_usage_id is not null then 1 else 0 end) +
+            (case when command_deviation_id is not null then 1 else 0 end) +
+            (case when design_package_key is not null and design_file_path is not null and design_requirement_key is null then 1 else 0 end) +
+            (case when design_package_key is not null and design_requirement_key is not null and design_file_path is null then 1 else 0 end) +
+            (case when stale_record_type is not null and stale_record_id is not null then 1 else 0 end)
+        ) = 1
+        and (
+            (target_type = 'task' and task_id is not null)
+            or (target_type = 'design_requirement' and design_requirement_id is not null)
+            or (target_type = 'validation_gate_template' and validation_gate_template_id is not null)
+            or (target_type = 'coverage_item' and coverage_item_id is not null)
+            or (target_type = 'finding' and finding_id is not null)
+            or (target_type = 'validation_gate' and validation_gate_id is not null)
+            or (target_type = 'validation_run' and validation_run_id is not null)
+            or (target_type = 'repository_state_classification' and repository_state_classification_id is not null)
+            or (target_type = 'repository_snapshot_comparison' and repository_snapshot_comparison_id is not null)
+            or (target_type = 'review_plan' and review_plan_id is not null)
+            or (target_type = 'checklist_item' and checklist_item_id is not null)
+            or (target_type = 'command_profile' and command_profile_id is not null)
+            or (target_type = 'command_usage' and command_usage_id is not null)
+            or (target_type = 'command_deviation' and command_deviation_id is not null)
+            or (target_type = 'design_file' and design_package_key is not null and design_file_path is not null)
+            or (target_type = 'design_requirement_key' and design_package_key is not null and design_requirement_key is not null)
+            or (target_type = 'stale_record' and stale_record_type is not null and stale_record_id is not null)
+        )
     )
 );
 
@@ -2382,7 +2584,15 @@ create table if not exists validation_runs (
     task_id integer references tasks(id) on delete cascade,
     command_usage_id integer references command_usages(id),
     repository_snapshot_id integer,
-    result text not null check (result in ('pass', 'fail', 'timeout', 'cancelled', 'unknown')),
+    result text not null check (result in (
+        'pass', 'fail', 'timeout', 'cancelled', 'unknown',
+        'expected_red', 'oom', 'non_strict_observation', 'evidence_gap'
+    )),
+    command text,
+    classification text check (classification in (
+        'none', 'classified_failure', 'evidence_gap', 'accepted_exception'
+    )),
+    acceptance_record_id integer references acceptance_records(id),
     artifact_path text,
     artifact_hash text,
     notes text,

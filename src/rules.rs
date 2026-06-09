@@ -136,13 +136,32 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
             user_correction_id: row.get(6)?,
             command_profile_id: row.get(7)?,
             work_unit_id: row.get(8)?,
+            shadowed_by_rule_id: None,
         })
     })?;
     for row in rows {
         records.push(row?);
     }
+    annotate_shadowed_rules(&mut records);
 
     Ok(records)
+}
+
+fn annotate_shadowed_rules(records: &mut [RuleRecord]) {
+    for index in 0..records.len() {
+        let winner_id = records
+            .iter()
+            .find(|candidate| {
+                candidate.id != records[index].id
+                    && candidate.scope_type == records[index].scope_type
+                    && candidate.scope_key == records[index].scope_key
+                    && candidate.precedence > records[index].precedence
+            })
+            .map(|winner| winner.id);
+        if let Some(winner_id) = winner_id {
+            records[index].shadowed_by_rule_id = Some(winner_id);
+        }
+    }
 }
 
 pub(crate) fn insert_rule_binding(conn: &Connection, input: RuleBindingInput<'_>) -> Result<i64> {
@@ -245,4 +264,5 @@ pub struct RuleRecord {
     pub user_correction_id: Option<i64>,
     pub command_profile_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub shadowed_by_rule_id: Option<i64>,
 }
