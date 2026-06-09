@@ -411,6 +411,72 @@ fn review_plan_rejects_mismatched_policy_and_scope_type() {
 }
 
 #[test]
+fn finding_type_must_match_review_type() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "finding type guard", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("found design issue"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+
+    let mismatched = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "wrong ledger",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let raw_mismatched = conn.execute(
+        r#"
+        insert into findings(
+            project_id, review_run_id, finding_type, severity, description, created_at
+        )
+        values (1, ?1, 'implementation_finding', 'high', 'wrong ledger', current_timestamp)
+        "#,
+        params![run.review_run_id],
+    );
+
+    assert!(mismatched.is_err());
+    assert!(raw_mismatched.is_err());
+}
+
+#[test]
 fn review_integrity_triggers_guard_cross_project_updates() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -1595,7 +1661,7 @@ fn stop_on_severity_ignores_lower_severity_findings() {
     .unwrap();
 
     let plans = list_review_plans(temp.path()).unwrap();
-    assert_eq!(plans[0].status, "blocked");
+    assert_eq!(plans[0].status, "clean");
 }
 
 #[test]

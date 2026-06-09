@@ -877,6 +877,7 @@ fn kpt_item_can_convert_to_fixed_command_profile() {
         },
     )
     .unwrap();
+    let authority_event_id = approval_authority_event(temp.path());
 
     let conversion = convert_kpt_item_to_command_profile(
         temp.path(),
@@ -890,6 +891,7 @@ fn kpt_item_can_convert_to_fixed_command_profile() {
             stability: "stable",
             timeout: Some("120s"),
             expected_result: Some("pass"),
+            authority_event_id: Some(authority_event_id),
         },
     )
     .unwrap();

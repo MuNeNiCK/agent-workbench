@@ -1611,6 +1611,8 @@ pub(crate) struct KptItemConvertArgs {
     pub(crate) timeout: Option<String>,
     #[arg(long)]
     pub(crate) expected_result: Option<String>,
+    #[arg(long)]
+    pub(crate) authority: Option<i64>,
     #[arg(long = "review-type")]
     pub(crate) review_type: Option<String>,
     #[arg(long, default_value_t = 1)]

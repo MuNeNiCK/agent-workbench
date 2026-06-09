@@ -414,6 +414,12 @@ pub fn convert_kpt_item_to_command_profile(
         .or(item.proposed_action.as_deref())
         .or(item.details.as_deref())
         .context("command profile conversion requires --command or item action/details")?;
+    if input.status == "fixed" {
+        let Some(authority_event_id) = input.authority_event_id else {
+            bail!("fixed command conversion requires --authority");
+        };
+        ensure_fixed_command_authority(&tx, project_id, authority_event_id)?;
+    }
     tx.execute(
         r#"
         insert into command_profiles(
@@ -494,6 +500,31 @@ fn convertible_kpt_item(conn: &rusqlite::Connection, kpt_item_id: i64) -> Result
     )
     .optional()?
     .context("kpt item not found or not convertible")
+}
+
+fn ensure_fixed_command_authority(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    authority_event_id: i64,
+) -> Result<()> {
+    let allowed: bool = conn.query_row(
+        r#"
+        select exists (
+            select 1
+            from authority_events
+            where id = ?1
+              and project_id = ?2
+              and status = 'active'
+              and event_type in ('user_instruction', 'policy')
+        )
+        "#,
+        params![authority_event_id, project_id],
+        |row| row.get(0),
+    )?;
+    if !allowed {
+        bail!("fixed command conversion requires active user or policy authority");
+    }
+    Ok(())
 }
 
 fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
@@ -1180,6 +1211,7 @@ pub struct KptItemCommandProfileConversion<'a> {
     pub stability: &'a str,
     pub timeout: Option<&'a str>,
     pub expected_result: Option<&'a str>,
+    pub authority_event_id: Option<i64>,
 }
 
 pub struct KptItemDecisionConversion<'a> {

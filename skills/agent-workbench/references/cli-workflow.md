@@ -76,5 +76,8 @@ snapshots.
    `agent-workbench acceptance add --target <kind:id> --type <acceptance-type> --reason "<reason>" --authority <authority-event-id>`.
    For design-package exceptions, include either `--design <design-version-id>`
    or `--package <design-id>` in that `acceptance add` command.
+   When converting KPT items into fixed command profiles, use the same authority
+   pattern and pass `--authority <authority-event-id>` with
+   `agent-workbench kpt item convert --to command-profile --command-status fixed`.
 10. Create or export work records when the user expects human-readable output.
 11. Close the work unit only after `close-ready` passes.

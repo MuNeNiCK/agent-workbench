@@ -2139,6 +2139,7 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
             "cargo test --workspace",
         ],
     );
+    let authority = cli_approval_authority_event(temp.path());
 
     let converted = ok(
         temp.path(),
@@ -2162,6 +2163,8 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
             "stable",
             "--expected-result",
             "pass",
+            "--authority",
+            &authority,
         ],
     );
     let commands = ok(temp.path(), &["command", "list", "--type", "test"]);

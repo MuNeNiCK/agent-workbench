@@ -594,6 +594,7 @@ pub(crate) fn handle_kpt(root: &Path, command: KptCommand) -> Result<()> {
                             stability: &args.stability,
                             timeout: args.timeout.as_deref(),
                             expected_result: args.expected_result.as_deref(),
+                            authority_event_id: args.authority,
                         },
                     )?;
                     println!("converted kpt item");

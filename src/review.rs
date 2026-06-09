@@ -447,7 +447,7 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
     let run = tx
         .query_row(
             r#"
-            select r.run_type, p.review_policy_id, r.clean_run
+            select r.run_type, p.review_policy_id, p.review_type, r.clean_run
             from review_runs r
             join review_plans p on p.id = r.review_plan_id
             where r.id = ?1 and r.project_id = ?2
@@ -457,12 +457,14 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
                 Ok(StoredReviewRunPolicy {
                     run_type: row.get(0)?,
                     review_policy_id: row.get(1)?,
-                    clean_run: row.get::<_, i64>(2)? == 1,
+                    review_type: row.get(2)?,
+                    clean_run: row.get::<_, i64>(3)? == 1,
                 })
             },
         )
         .optional()?
         .context("review run not found")?;
+    ensure_finding_type_matches_review_type(input.finding_type, &run.review_type)?;
     if run.clean_run {
         bail!("cannot add finding to a clean review run");
     }
@@ -726,6 +728,7 @@ fn evaluate_plan_status(
     review_plan_id: i64,
     policy: &StoredReviewPolicy,
 ) -> Result<String> {
+    let severity_filter = severity_block_filter(&policy.stop_on_severity)?;
     let open_blocking_findings: i64 = conn.query_row(
         r#"
         select count(*)
@@ -735,6 +738,15 @@ fn evaluate_plan_status(
           and f.project_id = ?2
           and f.status = 'open'
           and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+          and (
+              ?3 = 0
+              or case f.severity
+                    when 'critical' then 4
+                    when 'high' then 3
+                    when 'medium' then 2
+                    when 'low' then 1
+                 end >= ?3
+          )
           and not exists (
             select 1
             from acceptance_records ar
@@ -746,7 +758,7 @@ fn evaluate_plan_status(
               )
           )
         "#,
-        params![review_plan_id, project_id],
+        params![review_plan_id, project_id, severity_filter],
         |row| row.get(0),
     )?;
     let clean_fresh = consecutive_clean_runs(conn, review_plan_id, "fresh")?;
@@ -1076,8 +1088,8 @@ fn load_review_policy(
         select
             id, max_fresh_agents, max_resume_agents, max_parallel_agents,
             required_consecutive_clean_fresh_runs,
-            required_consecutive_clean_resume_runs, allow_resume_review,
-            allow_fresh_review, allow_new_findings_in_resume,
+            required_consecutive_clean_resume_runs, stop_on_severity,
+            allow_resume_review, allow_fresh_review, allow_new_findings_in_resume,
             on_max_agents_exceeded, run_count_scope
         from review_policies
         where id = ?1 and project_id = ?2
@@ -1090,11 +1102,12 @@ fn load_review_policy(
                 max_parallel_agents: row.get(3)?,
                 required_consecutive_clean_fresh_runs: row.get(4)?,
                 required_consecutive_clean_resume_runs: row.get(5)?,
-                allow_resume_review: row.get::<_, i64>(6)? == 1,
-                allow_fresh_review: row.get::<_, i64>(7)? == 1,
-                allow_new_findings_in_resume: row.get::<_, i64>(8)? == 1,
-                on_max_agents_exceeded: row.get(9)?,
-                run_count_scope: row.get(10)?,
+                stop_on_severity: row.get(6)?,
+                allow_resume_review: row.get::<_, i64>(7)? == 1,
+                allow_fresh_review: row.get::<_, i64>(8)? == 1,
+                allow_new_findings_in_resume: row.get::<_, i64>(9)? == 1,
+                on_max_agents_exceeded: row.get(10)?,
+                run_count_scope: row.get(11)?,
             })
         },
     )
@@ -1256,6 +1269,41 @@ fn agent_role_for_review_type(review_type: &str) -> Result<&'static str> {
     }
 }
 
+fn ensure_finding_type_matches_review_type(finding_type: &str, review_type: &str) -> Result<()> {
+    let allowed = match review_type {
+        "design_review" => matches!(finding_type, "design_finding"),
+        "design_implementation_diff" => matches!(finding_type, "design_implementation_drift"),
+        "design_task_decomposition" => matches!(finding_type, "design_task_gap"),
+        "implementation_review" => {
+            matches!(finding_type, "implementation_finding" | "coverage_finding")
+        }
+        "general" => matches!(
+            finding_type,
+            "design_finding"
+                | "design_implementation_drift"
+                | "design_task_gap"
+                | "implementation_finding"
+                | "coverage_finding"
+        ),
+        _ => false,
+    };
+    if !allowed {
+        bail!("finding type does not match review type");
+    }
+    Ok(())
+}
+
+fn severity_block_filter(stop_on_severity: &str) -> Result<i64> {
+    match stop_on_severity {
+        "none" => Ok(0),
+        "critical" => Ok(4),
+        "high" => Ok(3),
+        "medium" => Ok(2),
+        "low" => Ok(1),
+        _ => bail!("invalid stop_on_severity"),
+    }
+}
+
 fn validate_run_type_purpose(run_type: &str, run_purpose: &str) -> Result<()> {
     match (run_type, run_purpose) {
         ("fresh", "new_unbiased_review")
@@ -1315,6 +1363,7 @@ struct StoredReviewPolicy {
     max_parallel_agents: i64,
     required_consecutive_clean_fresh_runs: i64,
     required_consecutive_clean_resume_runs: i64,
+    stop_on_severity: String,
     allow_resume_review: bool,
     allow_fresh_review: bool,
     allow_new_findings_in_resume: bool,
@@ -1331,6 +1380,7 @@ struct StoredFinding {
 struct StoredReviewRunPolicy {
     run_type: String,
     review_policy_id: i64,
+    review_type: String,
     clean_run: bool,
 }
 

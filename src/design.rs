@@ -967,6 +967,7 @@ fn ensure_active_authority_event(
                 where id = ?1
                   and project_id = ?2
                   and status = 'active'
+                  and event_type in ('user_instruction', 'policy', 'design_doc')
             )
             "#,
             params![authority_event_id, project_id],
@@ -974,7 +975,9 @@ fn ensure_active_authority_event(
         )
         .context("failed to validate acceptance authority event")?;
     if !exists {
-        bail!("acceptance approval requires an active authority event from this project");
+        bail!(
+            "acceptance approval requires an active user, policy, or design authority event from this project"
+        );
     }
     Ok(())
 }

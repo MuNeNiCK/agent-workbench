@@ -2150,6 +2150,58 @@ fn design_exception_acceptance_targets_requirements_and_gate_templates() {
 }
 
 #[test]
+fn design_exception_acceptance_rejects_review_result_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let review_event = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "review_result",
+            source: Some("review-agent"),
+            summary: "review suggests accepting this exception",
+            scope: Some("storage-lifecycle"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+
+    let acceptance = accept_design_exception(
+        temp.path(),
+        NewDesignExceptionAcceptance {
+            design_version_id: Some(import.design_version_id),
+            design_package: None,
+            target: "requirement:REQ-001",
+            acceptance_type: "accepted_out_of_scope",
+            reason: "review-only approval must not be enough",
+            approval_authority_event_id: review_event.authority_event_id,
+        },
+    );
+
+    assert!(acceptance.is_err());
+}
+
+#[test]
 fn design_import_requires_revision_for_changed_requirement_identity() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

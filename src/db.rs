@@ -348,6 +348,8 @@ fn refresh_review_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_finding_clean_run_update;
         drop trigger if exists trg_finding_resume_policy_insert;
         drop trigger if exists trg_finding_resume_policy_update;
+        drop trigger if exists trg_finding_review_type_insert;
+        drop trigger if exists trg_finding_review_type_update;
         drop trigger if exists trg_closure_project_insert;
         drop trigger if exists trg_closure_project_update;
         drop trigger if exists trg_finding_verification_project_insert;
@@ -3722,6 +3724,46 @@ create table if not exists findings (
     task_id integer references tasks(id),
     created_at text not null
 );
+
+create trigger if not exists trg_finding_review_type_insert
+before insert on findings
+for each row
+when not exists (
+    select 1
+    from review_runs r
+    join review_plans p on p.id = r.review_plan_id
+    where r.id = new.review_run_id
+      and (
+          (p.review_type = 'design_review' and new.finding_type = 'design_finding')
+          or (p.review_type = 'design_implementation_diff' and new.finding_type = 'design_implementation_drift')
+          or (p.review_type = 'design_task_decomposition' and new.finding_type = 'design_task_gap')
+          or (p.review_type = 'implementation_review' and new.finding_type in ('implementation_finding', 'coverage_finding'))
+          or p.review_type = 'general'
+      )
+)
+begin
+    select raise(abort, 'finding type must match review type');
+end;
+
+create trigger if not exists trg_finding_review_type_update
+before update of review_run_id, finding_type on findings
+for each row
+when not exists (
+    select 1
+    from review_runs r
+    join review_plans p on p.id = r.review_plan_id
+    where r.id = new.review_run_id
+      and (
+          (p.review_type = 'design_review' and new.finding_type = 'design_finding')
+          or (p.review_type = 'design_implementation_diff' and new.finding_type = 'design_implementation_drift')
+          or (p.review_type = 'design_task_decomposition' and new.finding_type = 'design_task_gap')
+          or (p.review_type = 'implementation_review' and new.finding_type in ('implementation_finding', 'coverage_finding'))
+          or p.review_type = 'general'
+      )
+)
+begin
+    select raise(abort, 'finding type must match review type');
+end;
 
 create table if not exists closures (
     id integer primary key,
