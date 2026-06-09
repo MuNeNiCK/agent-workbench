@@ -508,6 +508,86 @@ fn repo_aware_resume_requires_classified_repository_comparison() {
 }
 
 #[test]
+fn repo_aware_resume_check_is_stale_after_repository_evidence_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repo stale resume", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let base = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    suspend_work(temp.path(), "pause with repo", "resume repo").unwrap();
+    let current = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: None,
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: base.repository_snapshot_id,
+            current_repository_snapshot_id: current.repository_snapshot_id,
+            comparison_type: "resume",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
+    let check = resume_check(temp.path(), "repo-aware").unwrap();
+
+    add_repository_dirty_entry(
+        temp.path(),
+        NewRepositoryDirtyEntry {
+            repository_snapshot_id: current.repository_snapshot_id,
+            path: "generated.log",
+            change_type: "modified",
+            staged: false,
+            content_hash: Some("hash"),
+        },
+    )
+    .unwrap();
+    let resume = resume_work(temp.path(), check.resume_check_id);
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let status: String = conn
+        .query_row(
+            "select status from resume_checks where id = ?1",
+            params![check.resume_check_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(resume.is_err());
+    assert_eq!(status, "stale");
+}
+
+#[test]
 fn repo_aware_resume_requires_snapshots_for_all_repositories() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

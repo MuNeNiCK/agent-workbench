@@ -35,7 +35,10 @@ in the repository:
 - `agent-workbench command prefer`
 - `agent-workbench command list`
 - `agent-workbench command usage add`
+- `agent-workbench command usage list`
+- `agent-workbench command usage promote`
 - `agent-workbench command deviation add`
+- `agent-workbench command deprecate`
 - `agent-workbench task add`
 - `agent-workbench task list`
 - `agent-workbench task close`
@@ -84,13 +87,20 @@ in the repository:
 - `agent-workbench work block`
 - `agent-workbench work unblock`
 - `agent-workbench work abandon`
+- `agent-workbench work fork`
 - `agent-workbench resume-check --maturity basic|trace-aware|repo-aware`
 - `agent-workbench record create`
 - `agent-workbench record command add`
 - `agent-workbench record commit add`
 - `agent-workbench record file add`
+- `agent-workbench record link command`
+- `agent-workbench record link commit`
+- `agent-workbench record link file`
 - `agent-workbench record export`
 - `agent-workbench kpt start --from corrections`
+- `agent-workbench kpt item add`
+- `agent-workbench kpt item list`
+- `agent-workbench kpt item convert`
 
 See `references/cli-workflow.md` for the normal operating flow and
 `references/repository-validation.md` for validation and repository evidence

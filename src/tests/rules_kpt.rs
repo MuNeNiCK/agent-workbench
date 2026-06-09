@@ -217,6 +217,62 @@ fn work_unit_rule_shadows_project_rule_of_same_kind() {
 }
 
 #[test]
+fn current_scope_rules_include_approved_design_package_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "design governed work", None).unwrap();
+    let design = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        design.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve storage behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        design.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let imported = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &design.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: imported.design_version_id,
+            summary: Some("standing design constraint"),
+        },
+    )
+    .unwrap();
+
+    let rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("current"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+
+    assert!(rules.iter().any(|rule| {
+        rule.rule_source_type == "authority_event"
+            && rule.scope_type == "design_package"
+            && rule.scope_key.as_deref() == Some("storage-lifecycle")
+    }));
+}
+
+#[test]
 fn current_scope_rules_include_review_policy_and_validation_gate_rules() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

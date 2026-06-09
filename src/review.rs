@@ -339,11 +339,11 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
         insert into review_runs(
             project_id, review_scope_id, review_plan_id, run_type, run_purpose,
             target_type, design_version_id, design_requirement_id, task_id,
-            work_unit_id, repository_snapshot_id, target_ref,
+            work_unit_id, repository_snapshot_id, file_path, symbol, target_ref,
             prompt_deviations, result_summary, new_findings_count,
             carried_findings_checked, clean_run, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, current_timestamp)
         "#,
         params![
             project_id,
@@ -357,6 +357,8 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             target.task_id,
             target.work_unit_id,
             target.repository_snapshot_id,
+            target.file_path,
+            target.symbol,
             target.target_ref,
             input.prompt_deviations,
             input.result_summary,
@@ -1121,6 +1123,8 @@ fn resolve_run_target(
             task_id: None,
             work_unit_id: None,
             repository_snapshot_id: None,
+            file_path: None,
+            symbol: None,
             target_ref: explicit_target_ref
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("design_version:{design_version_id}")),
@@ -1134,6 +1138,8 @@ fn resolve_run_target(
             task_id: None,
             work_unit_id: Some(plan.work_unit_id),
             repository_snapshot_id: None,
+            file_path: None,
+            symbol: None,
             target_ref: explicit_target_ref
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("work_unit:{}", plan.work_unit_id)),
@@ -1170,6 +1176,8 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
             task_id: None,
             work_unit_id: None,
             repository_snapshot_id: None,
+            file_path: Some(value.to_string()),
+            symbol: None,
             target_ref: value.to_string(),
         })),
         "symbol" => Ok(Some(ResolvedRunTarget {
@@ -1179,6 +1187,8 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
             task_id: None,
             work_unit_id: None,
             repository_snapshot_id: None,
+            file_path: None,
+            symbol: Some(value.to_string()),
             target_ref: value.to_string(),
         })),
         _ => Ok(None),
@@ -1212,16 +1222,8 @@ fn ensure_plan_has_target(
             target.task_id,
             target.work_unit_id,
             target.repository_snapshot_id,
-            if target.target_type == "file" {
-                Some(target.target_ref.as_str())
-            } else {
-                None
-            },
-            if target.target_type == "symbol" {
-                Some(target.target_ref.as_str())
-            } else {
-                None
-            },
+            target.file_path.as_deref(),
+            target.symbol.as_deref(),
         ],
         |_| Ok(()),
     )
@@ -1344,6 +1346,8 @@ struct ResolvedRunTarget {
     task_id: Option<i64>,
     work_unit_id: Option<i64>,
     repository_snapshot_id: Option<i64>,
+    file_path: Option<String>,
+    symbol: Option<String>,
     target_ref: String,
 }
 
@@ -1356,6 +1360,8 @@ impl ResolvedRunTarget {
             task_id: (target_type == "task").then_some(id),
             work_unit_id: (target_type == "work_unit").then_some(id),
             repository_snapshot_id: (target_type == "repository_snapshot").then_some(id),
+            file_path: None,
+            symbol: None,
             target_ref: format!("{target_type}:{id}"),
         }
     }

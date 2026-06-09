@@ -136,6 +136,7 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
           and rb.status = 'active'
           and (
             rb.scope_type = 'project'
+            or rb.scope_type = 'design_package'
             or rb.scope_key = ?2
             or (?3 is not null and rb.work_unit_id = ?3)
             or (?4 is not null and rb.scope_key = ?4)

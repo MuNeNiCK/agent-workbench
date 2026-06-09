@@ -1841,3 +1841,71 @@ fn review_plan_targets_can_drive_typed_review_run_targets() {
     assert_eq!(target_type, "task");
     assert_eq!(task_id, task.task_id);
 }
+
+#[test]
+fn file_review_run_targets_are_stored_in_typed_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "file target", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_plan_target(
+        temp.path(),
+        NewReviewPlanTarget {
+            review_plan_id: plan.review_plan_id,
+            target_type: "file",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            repository_snapshot_id: None,
+            file_path: Some("src/lib.rs"),
+            symbol: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("file:src/lib.rs"),
+            prompt_deviations: None,
+            result_summary: Some("file clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let (target_type, file_path, target_ref): (String, String, String) = conn
+        .query_row(
+            "select target_type, file_path, target_ref from review_runs where id = ?1",
+            params![run.review_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(target_type, "file");
+    assert_eq!(file_path, "src/lib.rs");
+    assert_eq!(target_ref, "file:src/lib.rs");
+}

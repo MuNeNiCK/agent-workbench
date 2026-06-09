@@ -616,9 +616,10 @@ pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
         insert into resume_checks(
             work_unit_id, work_unit_activation_id, suspend_snapshot_id, maturity,
             status, result, authority_event_high_watermark, activation_stack_revision,
-            repository_snapshot_id, allowed_next_action, blocking_reason, created_at
+            repository_snapshot_id, repository_state_revision, allowed_next_action,
+            blocking_reason, created_at
         )
-        values (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, current_timestamp)
+        values (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11, current_timestamp)
         "#,
         params![
             evaluation.work_unit_id,
@@ -629,6 +630,7 @@ pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
             evaluation.authority_high_watermark,
             evaluation.activation_stack_revision,
             evaluation.repository_snapshot_id,
+            evaluation.repository_state_revision,
             if evaluation.resume_result == "allowed" {
                 evaluation.allowed_next_action.as_deref()
             } else {
@@ -780,7 +782,7 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
             r#"
             select id, work_unit_id, work_unit_activation_id, result, status,
                    authority_event_high_watermark, activation_stack_revision,
-                   maturity, repository_snapshot_id
+                   maturity, repository_snapshot_id, repository_state_revision
             from resume_checks
             where id = ?1
             "#,
@@ -796,6 +798,7 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
                     activation_stack_revision: row.get(6)?,
                     maturity: row.get(7)?,
                     repository_snapshot_id: row.get(8)?,
+                    repository_state_revision: row.get(9)?,
                 })
             },
         )
@@ -816,9 +819,17 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
         }
         _ => false,
     };
+    let repository_state_changed = match (check.maturity.as_str(), check.repository_state_revision)
+    {
+        ("repo-aware", Some(repository_state_revision)) => {
+            repository_state_revision_for_resume(&tx)? != repository_state_revision
+        }
+        _ => false,
+    };
     if max_id(&tx, "authority_events")? != check.authority_event_high_watermark.unwrap_or(0)
         || max_id(&tx, "work_unit_events")? != check.activation_stack_revision.unwrap_or(0)
         || repository_snapshot_changed
+        || repository_state_changed
     {
         tx.execute(
             "update resume_checks set status = 'stale' where id = ?1",
@@ -1698,9 +1709,11 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
     let repo_maturity = maturity == "repo-aware";
     let mut repo_allowed = true;
     let mut repository_snapshot_id = None;
+    let mut repository_state_revision = None;
     if repo_maturity {
         let repo_state = repository_resume_state(conn, &target)?;
         repository_snapshot_id = repo_state.latest_current_snapshot_id;
+        repository_state_revision = Some(repository_state_revision_for_resume(conn)?);
         let pass = repo_state.repository_count == 0
             || (repo_state.missing_base_snapshot_count == 0
                 && repo_state.missing_current_snapshot_count == 0
@@ -1771,8 +1784,20 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         authority_high_watermark,
         activation_stack_revision: stack_revision,
         repository_snapshot_id,
+        repository_state_revision,
         items,
     })
+}
+
+fn repository_state_revision_for_resume(conn: &Connection) -> Result<i64> {
+    Ok([
+        max_id(conn, "repository_snapshots")?,
+        max_id(conn, "repository_dirty_entries")?,
+        max_id(conn, "repository_state_classifications")?,
+        max_id(conn, "repository_snapshot_comparisons")?,
+    ]
+    .into_iter()
+    .sum())
 }
 
 fn repository_resume_state(
@@ -1996,6 +2021,7 @@ fn close_process_state(
           and status = 'active'
           and (
               scope_type = 'project'
+              or scope_type = 'design_package'
               or work_unit_id = ?2
               or scope_key in ('project', ?3)
           )
@@ -3010,6 +3036,7 @@ struct StoredResumeCheck {
     activation_stack_revision: Option<i64>,
     maturity: String,
     repository_snapshot_id: Option<i64>,
+    repository_state_revision: Option<i64>,
 }
 
 struct ResumeGateEvaluation {
@@ -3022,6 +3049,7 @@ struct ResumeGateEvaluation {
     authority_high_watermark: i64,
     activation_stack_revision: i64,
     repository_snapshot_id: Option<i64>,
+    repository_state_revision: Option<i64>,
     items: Vec<ResumeReadyItem>,
 }
 

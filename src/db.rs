@@ -159,6 +159,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "rule_bindings", "review_plan_id", "integer")?;
     ensure_column(conn, "rule_bindings", "validation_gate_id", "integer")?;
     ensure_column(conn, "rule_bindings", "acceptance_record_id", "integer")?;
+    ensure_column(
+        conn,
+        "resume_checks",
+        "repository_state_revision",
+        "integer",
+    )?;
+    ensure_column(conn, "review_runs", "file_path", "text")?;
+    ensure_column(conn, "review_runs", "symbol", "text")?;
     backfill_authorities(conn)?;
     let had_work_record_commit_auto_linked =
         table_has_column(conn, "work_record_commits", "auto_linked")?;
@@ -1937,6 +1945,7 @@ create table if not exists resume_checks (
     authority_event_high_watermark integer,
     activation_stack_revision integer,
     repository_snapshot_id integer,
+    repository_state_revision integer,
     allowed_next_action text,
     blocking_reason text,
     consumed_at text,
@@ -3649,6 +3658,8 @@ create table if not exists review_runs (
     task_id integer references tasks(id),
     work_unit_id integer references work_units(id),
     repository_snapshot_id integer,
+    file_path text,
+    symbol text,
     target_ref text,
     prompt_deviations text,
     result_summary text,
@@ -3879,7 +3890,10 @@ when (new.target_type = 'design_version' and not (
         and new.task_id is null
         and new.work_unit_id is null
         and new.repository_snapshot_id is null
-        and new.target_ref is not null
+        and (
+            (new.target_type = 'file' and new.file_path is not null and new.symbol is null)
+            or (new.target_type = 'symbol' and new.file_path is null and new.symbol is not null)
+        )
     ))
 begin
     select raise(abort, 'review run target must match target_type and project_id');
@@ -3895,7 +3909,7 @@ begin
 end;
 
 create trigger if not exists trg_review_run_target_update
-before update of project_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, target_ref on review_runs
+before update of project_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
 for each row
 when (new.target_type = 'design_version' and not (
         new.design_version_id is not null
@@ -3952,7 +3966,10 @@ when (new.target_type = 'design_version' and not (
         and new.task_id is null
         and new.work_unit_id is null
         and new.repository_snapshot_id is null
-        and new.target_ref is not null
+        and (
+            (new.target_type = 'file' and new.file_path is not null and new.symbol is null)
+            or (new.target_type = 'symbol' and new.file_path is null and new.symbol is not null)
+        )
     ))
 begin
     select raise(abort, 'review run target must match target_type and project_id');
@@ -3972,8 +3989,8 @@ when new.review_plan_id is not null
             or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
             or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
             or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
-            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.target_ref)
-            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.target_ref)
+            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
+            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
         )
   )
 begin
@@ -3981,7 +3998,7 @@ begin
 end;
 
 create trigger if not exists trg_review_run_plan_target_update
-before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, target_ref on review_runs
+before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
 for each row
 when new.review_plan_id is not null
   and not exists (
@@ -3994,8 +4011,8 @@ when new.review_plan_id is not null
             or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
             or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
             or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
-            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.target_ref)
-            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.target_ref)
+            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
+            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
         )
   )
 begin
