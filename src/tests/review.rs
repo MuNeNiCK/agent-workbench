@@ -1143,12 +1143,11 @@ fn finding_verification_rejects_different_plan_finding() {
         },
     )
     .unwrap();
-    close_active_work(temp.path(), "switch plans", None).unwrap();
-    let second_work = start_work(temp.path(), "second plan", None).unwrap();
+    let second_work = interrupt_work(temp.path(), "second plan", "verify different plan").unwrap();
     let second_plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
-            work_unit_id: second_work.work_unit_id,
+            work_unit_id: second_work.child_work_unit_id,
             design_version_id: None,
             review_type: "implementation_review",
             required: true,
@@ -1596,7 +1595,7 @@ fn stop_on_severity_ignores_lower_severity_findings() {
     .unwrap();
 
     let plans = list_review_plans(temp.path()).unwrap();
-    assert_eq!(plans[0].status, "clean");
+    assert_eq!(plans[0].status, "blocked");
 }
 
 #[test]
@@ -1672,7 +1671,7 @@ fn stop_on_severity_none_does_not_block_findings() {
     .unwrap();
 
     let plans = list_review_plans(temp.path()).unwrap();
-    assert_eq!(plans[0].status, "clean");
+    assert_eq!(plans[0].status, "blocked");
 }
 
 #[test]

@@ -762,11 +762,17 @@ fn resolve_general_acceptance_target(
             })
         }
         "repository-state" => Ok(ResolvedGeneralAcceptanceTarget {
-            repository_state_classification_id: Some(id),
+            repository_state_classification_id: {
+                ensure_repository_state_classification_project(conn, id, project_id)?;
+                Some(id)
+            },
             ..ResolvedGeneralAcceptanceTarget::new("repository_state_classification")
         }),
         "repository-comparison" => Ok(ResolvedGeneralAcceptanceTarget {
-            repository_snapshot_comparison_id: Some(id),
+            repository_snapshot_comparison_id: {
+                ensure_repository_snapshot_comparison_project(conn, id, project_id)?;
+                Some(id)
+            },
             ..ResolvedGeneralAcceptanceTarget::new("repository_snapshot_comparison")
         }),
         "review-plan" => {
@@ -776,10 +782,13 @@ fn resolve_general_acceptance_target(
                 ..ResolvedGeneralAcceptanceTarget::new("review_plan")
             })
         }
-        "checklist-item" => Ok(ResolvedGeneralAcceptanceTarget {
-            checklist_item_id: Some(id),
-            ..ResolvedGeneralAcceptanceTarget::new("checklist_item")
-        }),
+        "checklist-item" => {
+            ensure_checklist_item_project(conn, id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                checklist_item_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("checklist_item")
+            })
+        }
         "command-profile" => {
             ensure_direct_project_row(conn, "command_profiles", id, project_id)?;
             Ok(ResolvedGeneralAcceptanceTarget {
@@ -794,10 +803,13 @@ fn resolve_general_acceptance_target(
                 ..ResolvedGeneralAcceptanceTarget::new("command_usage")
             })
         }
-        "command-deviation" => Ok(ResolvedGeneralAcceptanceTarget {
-            command_deviation_id: Some(id),
-            ..ResolvedGeneralAcceptanceTarget::new("command_deviation")
-        }),
+        "command-deviation" => {
+            ensure_command_deviation_project(conn, id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                command_deviation_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("command_deviation")
+            })
+        }
         _ => bail!("unsupported general acceptance target kind: {kind}"),
     }
 }
@@ -829,6 +841,92 @@ fn ensure_project_row(
     conn.query_row(&sql, params![id, project_id], |_| Ok(()))
         .optional()?
         .with_context(|| format!("{table} row not found for project"))?;
+    Ok(())
+}
+
+fn ensure_repository_state_classification_project(
+    conn: &rusqlite::Connection,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from repository_state_classifications c
+        join repository_snapshots s on s.id = c.repository_snapshot_id
+        join repositories r on r.id = s.repository_id
+        where c.id = ?1 and r.project_id = ?2
+        "#,
+        params![id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("repository state classification not found for project")?;
+    Ok(())
+}
+
+fn ensure_repository_snapshot_comparison_project(
+    conn: &rusqlite::Connection,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from repository_snapshot_comparisons c
+        join repository_snapshots base on base.id = c.base_repository_snapshot_id
+        join repositories base_repo on base_repo.id = base.repository_id
+        join repository_snapshots current on current.id = c.current_repository_snapshot_id
+        join repositories current_repo on current_repo.id = current.repository_id
+        where c.id = ?1
+          and base_repo.project_id = ?2
+          and current_repo.project_id = ?2
+        "#,
+        params![id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("repository snapshot comparison not found for project")?;
+    Ok(())
+}
+
+fn ensure_checklist_item_project(
+    conn: &rusqlite::Connection,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from checklist_items item
+        join checklists c on c.id = item.checklist_id
+        where item.id = ?1 and c.project_id = ?2
+        "#,
+        params![id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("checklist item not found for project")?;
+    Ok(())
+}
+
+fn ensure_command_deviation_project(
+    conn: &rusqlite::Connection,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from command_deviations d
+        join command_profiles p on p.id = d.command_profile_id
+        where d.id = ?1 and p.project_id = ?2
+        "#,
+        params![id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("command deviation not found for project")?;
     Ok(())
 }
 

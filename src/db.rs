@@ -3924,6 +3924,92 @@ begin
     select raise(abort, 'finding verification project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_acceptance_general_project_insert
+before insert on acceptance_records
+for each row
+when (new.target_type = 'finding' and new.project_id != (select project_id from findings where id = new.finding_id))
+  or (new.target_type = 'validation_gate' and new.project_id != (select project_id from validation_gates where id = new.validation_gate_id))
+  or (new.target_type = 'validation_run' and new.project_id != (select project_id from validation_runs where id = new.validation_run_id))
+  or (new.target_type = 'repository_state_classification' and new.project_id != (
+      select r.project_id
+      from repository_state_classifications c
+      join repository_snapshots s on s.id = c.repository_snapshot_id
+      join repositories r on r.id = s.repository_id
+      where c.id = new.repository_state_classification_id
+  ))
+  or (new.target_type = 'repository_snapshot_comparison' and (
+      new.project_id != (
+          select base_repo.project_id
+          from repository_snapshot_comparisons c
+          join repository_snapshots base on base.id = c.base_repository_snapshot_id
+          join repositories base_repo on base_repo.id = base.repository_id
+          where c.id = new.repository_snapshot_comparison_id
+      )
+      or new.project_id != (
+          select current_repo.project_id
+          from repository_snapshot_comparisons c
+          join repository_snapshots current on current.id = c.current_repository_snapshot_id
+          join repositories current_repo on current_repo.id = current.repository_id
+          where c.id = new.repository_snapshot_comparison_id
+      )
+  ))
+  or (new.target_type = 'review_plan' and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
+  or (new.target_type = 'checklist_item' and new.project_id != (select project_id from checklist_items where id = new.checklist_item_id))
+  or (new.target_type = 'command_profile' and new.project_id != (select project_id from command_profiles where id = new.command_profile_id))
+  or (new.target_type = 'command_usage' and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.target_type = 'command_deviation' and new.project_id != (
+      select p.project_id
+      from command_deviations d
+      join command_profiles p on p.id = d.command_profile_id
+      where d.id = new.command_deviation_id
+  ))
+begin
+    select raise(abort, 'acceptance project_id must match general target project_id');
+end;
+
+create trigger if not exists trg_acceptance_general_project_update
+before update of project_id, target_type, finding_id, validation_gate_id, validation_run_id, repository_state_classification_id, repository_snapshot_comparison_id, review_plan_id, checklist_item_id, command_profile_id, command_usage_id, command_deviation_id on acceptance_records
+for each row
+when (new.target_type = 'finding' and new.project_id != (select project_id from findings where id = new.finding_id))
+  or (new.target_type = 'validation_gate' and new.project_id != (select project_id from validation_gates where id = new.validation_gate_id))
+  or (new.target_type = 'validation_run' and new.project_id != (select project_id from validation_runs where id = new.validation_run_id))
+  or (new.target_type = 'repository_state_classification' and new.project_id != (
+      select r.project_id
+      from repository_state_classifications c
+      join repository_snapshots s on s.id = c.repository_snapshot_id
+      join repositories r on r.id = s.repository_id
+      where c.id = new.repository_state_classification_id
+  ))
+  or (new.target_type = 'repository_snapshot_comparison' and (
+      new.project_id != (
+          select base_repo.project_id
+          from repository_snapshot_comparisons c
+          join repository_snapshots base on base.id = c.base_repository_snapshot_id
+          join repositories base_repo on base_repo.id = base.repository_id
+          where c.id = new.repository_snapshot_comparison_id
+      )
+      or new.project_id != (
+          select current_repo.project_id
+          from repository_snapshot_comparisons c
+          join repository_snapshots current on current.id = c.current_repository_snapshot_id
+          join repositories current_repo on current_repo.id = current.repository_id
+          where c.id = new.repository_snapshot_comparison_id
+      )
+  ))
+  or (new.target_type = 'review_plan' and new.project_id != (select project_id from review_plans where id = new.review_plan_id))
+  or (new.target_type = 'checklist_item' and new.project_id != (select project_id from checklist_items where id = new.checklist_item_id))
+  or (new.target_type = 'command_profile' and new.project_id != (select project_id from command_profiles where id = new.command_profile_id))
+  or (new.target_type = 'command_usage' and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.target_type = 'command_deviation' and new.project_id != (
+      select p.project_id
+      from command_deviations d
+      join command_profiles p on p.id = d.command_profile_id
+      where d.id = new.command_deviation_id
+  ))
+begin
+    select raise(abort, 'acceptance project_id must match general target project_id');
+end;
+
 create table if not exists kpt_reviews (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,

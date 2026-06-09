@@ -8,6 +8,11 @@ fn interrupt_blocks_parent_until_child_is_closed() {
 
     let interrupt = interrupt_work(temp.path(), "child", "blocks parent").unwrap();
     let blocked = resume_check_basic(temp.path()).unwrap();
+    record_close_evidence(
+        temp.path(),
+        interrupt.child_work_unit_id,
+        interrupt.child_activation_id,
+    );
     close_active_work(temp.path(), "child done", None).unwrap();
     let allowed = resume_check_basic(temp.path()).unwrap();
     let resumed = resume_work(temp.path(), allowed.resume_check_id).unwrap();
@@ -317,6 +322,7 @@ fn fork_work_from_record_creates_new_active_work_unit() {
         },
     )
     .unwrap();
+    record_close_evidence(temp.path(), started.work_unit_id, started.activation_id);
     close_active_work(temp.path(), "abandon active line before fork", None).unwrap();
 
     let fork = fork_work(
@@ -455,7 +461,7 @@ fn close_work_refuses_open_tasks() {
 fn accepted_out_of_scope_task_does_not_block_close() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
-    start_work(temp.path(), "work with exception", None).unwrap();
+    let work = start_work(temp.path(), "work with exception", None).unwrap();
     let task = add_task(
         temp.path(),
         NewTask {
@@ -471,6 +477,7 @@ fn accepted_out_of_scope_task_does_not_block_close() {
 
     let acceptance =
         accept_task_out_of_scope(temp.path(), task.task_id, "scoped exception").unwrap();
+    record_close_evidence(temp.path(), work.work_unit_id, work.activation_id);
     let closed = close_active_work(temp.path(), "done with exception", None).unwrap();
 
     assert_eq!(closed.work_unit_id, task.work_unit_id.unwrap());
@@ -530,6 +537,8 @@ fn reopen_and_follow_up_create_active_work() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let original = start_work(temp.path(), "closed work", None).unwrap();
+    let original_snapshot =
+        record_close_evidence(temp.path(), original.work_unit_id, original.activation_id);
     close_active_work(temp.path(), "closed", None).unwrap();
 
     let reopened = reopen_work(temp.path(), original.work_unit_id, "closure invalid").unwrap();
@@ -543,6 +552,21 @@ fn reopen_and_follow_up_create_active_work() {
         )
         .unwrap();
     assert_eq!(invalidation_count, 1);
+    let reopened_snapshot =
+        record_close_evidence(temp.path(), reopened.work_unit_id, reopened.activation_id);
+    add_repository_snapshot_comparison(
+        temp.path(),
+        NewRepositorySnapshotComparison {
+            base_repository_snapshot_id: original_snapshot.repository_snapshot_id,
+            current_repository_snapshot_id: reopened_snapshot.repository_snapshot_id,
+            comparison_type: "close",
+            head_changed: false,
+            dirty_state_changed: false,
+            nested_repository_changed: false,
+            result: "same",
+        },
+    )
+    .unwrap();
     close_active_work(temp.path(), "closed again", None).unwrap();
 
     let follow_up = create_follow_up_work(
@@ -571,6 +595,7 @@ fn follow_up_suspends_active_work_and_records_source_event() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let source = start_work(temp.path(), "source", None).unwrap();
+    record_close_evidence(temp.path(), source.work_unit_id, source.activation_id);
     close_active_work(temp.path(), "source done", None).unwrap();
     let parent = start_work(temp.path(), "mainline", None).unwrap();
 

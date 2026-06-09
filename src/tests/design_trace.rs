@@ -608,6 +608,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         &close_review_plans,
         true,
     );
+    record_close_evidence(temp.path(), work.work_unit_id, work.activation_id);
     let close_passed = close_ready(temp.path()).unwrap();
     let records = list_task_derivations(
         temp.path(),

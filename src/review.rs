@@ -662,10 +662,9 @@ fn evaluate_plan_status(
     review_plan_id: i64,
     policy: &StoredReviewPolicy,
 ) -> Result<String> {
-    let mut open_blocking_findings = 0;
-    let mut stmt = conn.prepare(
+    let open_blocking_findings: i64 = conn.query_row(
         r#"
-        select f.severity
+        select count(*)
         from findings f
         join review_runs r on r.id = f.review_run_id
         where r.review_plan_id = ?1
@@ -673,15 +672,9 @@ fn evaluate_plan_status(
           and f.status = 'open'
           and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
         "#,
+        params![review_plan_id, project_id],
+        |row| row.get(0),
     )?;
-    let rows = stmt.query_map(params![review_plan_id, project_id], |row| {
-        row.get::<_, String>(0)
-    })?;
-    for row in rows {
-        if severity_blocks(&policy.stop_on_severity, &row?) {
-            open_blocking_findings += 1;
-        }
-    }
     let clean_fresh = consecutive_clean_runs(conn, review_plan_id, "fresh")?;
     let clean_resume = consecutive_clean_runs(conn, review_plan_id, "resume")?;
     let status = if open_blocking_findings > 0 {
@@ -976,7 +969,7 @@ fn load_review_policy(
             id, max_fresh_agents, max_resume_agents, max_parallel_agents,
             required_consecutive_clean_fresh_runs,
             required_consecutive_clean_resume_runs, allow_resume_review,
-            allow_fresh_review, allow_new_findings_in_resume, stop_on_severity,
+            allow_fresh_review, allow_new_findings_in_resume,
             on_max_agents_exceeded, run_count_scope
         from review_policies
         where id = ?1 and project_id = ?2
@@ -992,9 +985,8 @@ fn load_review_policy(
                 allow_resume_review: row.get::<_, i64>(6)? == 1,
                 allow_fresh_review: row.get::<_, i64>(7)? == 1,
                 allow_new_findings_in_resume: row.get::<_, i64>(8)? == 1,
-                stop_on_severity: row.get(9)?,
-                on_max_agents_exceeded: row.get(10)?,
-                run_count_scope: row.get(11)?,
+                on_max_agents_exceeded: row.get(9)?,
+                run_count_scope: row.get(10)?,
             })
         },
     )
@@ -1044,24 +1036,6 @@ fn validate_run_type_purpose(run_type: &str, run_purpose: &str) -> Result<()> {
         | ("resume", "finding_fix_verification")
         | ("coverage", "coverage_audit") => Ok(()),
         _ => bail!("invalid review run type and purpose combination"),
-    }
-}
-
-fn severity_blocks(threshold: &str, severity: &str) -> bool {
-    let Some(threshold_rank) = severity_rank(threshold) else {
-        return false;
-    };
-    severity_rank(severity).is_some_and(|rank| rank <= threshold_rank)
-}
-
-fn severity_rank(severity: &str) -> Option<i64> {
-    match severity {
-        "critical" => Some(1),
-        "high" => Some(2),
-        "medium" => Some(3),
-        "low" => Some(4),
-        "none" => None,
-        _ => None,
     }
 }
 
@@ -1118,7 +1092,6 @@ struct StoredReviewPolicy {
     allow_resume_review: bool,
     allow_fresh_review: bool,
     allow_new_findings_in_resume: bool,
-    stop_on_severity: String,
     on_max_agents_exceeded: String,
     run_count_scope: String,
 }

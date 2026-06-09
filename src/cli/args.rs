@@ -573,7 +573,9 @@ pub(crate) enum WorkRecordCommandLinkCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct WorkRecordCommandAddArgs {
-    pub(crate) work_record_id: i64,
+    pub(crate) work_record_id: Option<i64>,
+    #[arg(long = "record")]
+    pub(crate) record_id: Option<i64>,
     #[arg(long)]
     pub(crate) usage: Option<i64>,
     #[arg(long)]
@@ -595,7 +597,9 @@ pub(crate) enum WorkRecordCommitCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct WorkRecordCommitAddArgs {
-    pub(crate) work_record_id: i64,
+    pub(crate) work_record_id: Option<i64>,
+    #[arg(long = "record")]
+    pub(crate) record_id: Option<i64>,
     #[arg(long)]
     pub(crate) git_commit: Option<i64>,
     #[arg(long, alias = "commit")]
@@ -620,7 +624,9 @@ pub(crate) enum WorkRecordLinkCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct WorkRecordFileAddArgs {
-    pub(crate) work_record_id: i64,
+    pub(crate) work_record_id: Option<i64>,
+    #[arg(long = "record")]
+    pub(crate) record_id: Option<i64>,
     #[arg(long)]
     pub(crate) git_file_change: Option<i64>,
     #[arg(long)]
@@ -799,12 +805,63 @@ pub(crate) enum RepositoryCompareCommand {
 pub(crate) enum GitCommand {
     Commit {
         #[command(subcommand)]
-        command: RepositoryCommitCommand,
+        command: GitCommitCommand,
     },
     Files {
         #[command(subcommand)]
-        command: RepositoryFileCommand,
+        command: GitFileCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitCommitCommand {
+    Add(GitCommitAddArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GitCommitAddArgs {
+    pub(crate) sha_arg: Option<String>,
+    #[arg(long, alias = "repo")]
+    pub(crate) repository: String,
+    #[arg(long, alias = "commit")]
+    pub(crate) sha: Option<String>,
+    #[arg(long)]
+    pub(crate) short: Option<String>,
+    #[arg(long)]
+    pub(crate) subject: Option<String>,
+    #[arg(long)]
+    pub(crate) author_name: Option<String>,
+    #[arg(long)]
+    pub(crate) author_email: Option<String>,
+    #[arg(long)]
+    pub(crate) committed_at: Option<String>,
+    #[arg(long)]
+    pub(crate) parents: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitFileCommand {
+    Add(GitFileAddArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GitFileAddArgs {
+    #[arg(long)]
+    pub(crate) commit: String,
+    #[arg(long)]
+    pub(crate) repository: Option<String>,
+    #[arg(long)]
+    pub(crate) path: String,
+    #[arg(long)]
+    pub(crate) old_path: Option<String>,
+    #[arg(long = "type")]
+    pub(crate) change_type: String,
+    #[arg(long)]
+    pub(crate) additions: Option<i64>,
+    #[arg(long)]
+    pub(crate) deletions: Option<i64>,
+    #[arg(long)]
+    pub(crate) hash: Option<String>,
 }
 
 #[derive(Debug, Args)]

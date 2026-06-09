@@ -30,6 +30,10 @@ pub(crate) fn handle_decompose(root: &Path, command: DecomposeCommand) -> Result
             println!("checklist_id: {}", outcome.checklist_id);
             println!("created_tasks: {}", outcome.created_tasks);
             println!("created_derivations: {}", outcome.created_derivations);
+            println!(
+                "created_validation_gates: {}",
+                outcome.created_validation_gates
+            );
         }
     }
     Ok(())

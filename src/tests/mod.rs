@@ -58,3 +58,50 @@ Run the project test suite before implementation handoff.
 "#
     )
 }
+
+fn record_close_evidence(
+    root: &std::path::Path,
+    work_unit_id: i64,
+    activation_id: i64,
+) -> RepositorySnapshotOutcome {
+    create_work_record(
+        root,
+        NewWorkRecord {
+            work_unit_id: Some(work_unit_id),
+            topic: "close evidence",
+            work_performed: Some("recorded close readiness evidence"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    if list_repositories(root)
+        .unwrap()
+        .iter()
+        .all(|repo| repo.name != "main")
+    {
+        add_repository(
+            root,
+            NewRepository {
+                name: "main",
+                path: ".",
+                current_head: Some("abc123"),
+                status_summary: Some("clean"),
+            },
+        )
+        .unwrap();
+    }
+    add_repository_snapshot(
+        root,
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap()
+}

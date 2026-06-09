@@ -188,6 +188,7 @@ pub fn decompose_design(
     )?;
     let mut created_tasks = 0;
     let mut created_derivations = 0;
+    let mut created_validation_gates = 0;
     for requirement in requirements {
         let task_title = format!(
             "Implement {}: {}",
@@ -258,6 +259,35 @@ pub fn decompose_design(
             ],
         )?;
         created_derivations += 1;
+        let gate_templates = validation_gate_templates_for_requirement(
+            &tx,
+            project_id,
+            input.design_version_id,
+            requirement.id,
+        )?;
+        for template in gate_templates {
+            tx.execute(
+                r#"
+                insert into validation_gates(
+                    project_id, gate_key, template_id, work_unit_id, task_id,
+                    design_requirement_id, command, expected_result,
+                    selected_before_edit, status, created_at
+                )
+                values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'active', current_timestamp)
+                "#,
+                params![
+                    project_id,
+                    template.gate_key,
+                    template.id,
+                    input.work_unit_id,
+                    task_id,
+                    requirement.id,
+                    template.command,
+                    template.expected_result,
+                ],
+            )?;
+            created_validation_gates += 1;
+        }
     }
     tx.commit()?;
 
@@ -267,7 +297,45 @@ pub fn decompose_design(
         checklist_id,
         created_tasks,
         created_derivations,
+        created_validation_gates,
     })
+}
+
+fn validation_gate_templates_for_requirement(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    design_requirement_id: i64,
+) -> Result<Vec<ResolvedGateTemplate>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select g.id, g.gate_key, g.command, g.expected_result
+        from validation_gate_templates g
+        join validation_gate_template_requirements gr
+          on gr.validation_gate_template_id = g.id
+        where g.project_id = ?1
+          and g.design_version_id = ?2
+          and gr.design_requirement_id = ?3
+          and g.status = 'active'
+        order by g.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, design_version_id, design_requirement_id],
+        |row| {
+            Ok(ResolvedGateTemplate {
+                id: row.get(0)?,
+                gate_key: row.get(1)?,
+                command: row.get(2)?,
+                expected_result: row.get(3)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
 }
 
 pub fn list_checklists(root: &Path, status: Option<&str>) -> Result<Vec<ChecklistRecord>> {
@@ -2064,6 +2132,7 @@ pub struct DesignDecompositionOutcome {
     pub checklist_id: i64,
     pub created_tasks: i64,
     pub created_derivations: i64,
+    pub created_validation_gates: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

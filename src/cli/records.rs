@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use rusqlite::{Connection, params};
 
 use super::args::*;
 use agent_workbench::*;
@@ -52,7 +53,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                 let outcome = add_work_record_command(
                     root,
                     NewWorkRecordCommand {
-                        work_record_id: args.work_record_id,
+                        work_record_id: resolve_work_record_arg(
+                            args.work_record_id,
+                            args.record_id,
+                        )?,
                         command_usage_id: args.usage,
                         command_profile_id: args.profile,
                         command: args.command.as_deref(),
@@ -71,7 +75,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                     Some(git_commit_id) => add_work_record_git_commit(
                         root,
                         NewWorkRecordGitCommit {
-                            work_record_id: args.work_record_id,
+                            work_record_id: resolve_work_record_arg(
+                                args.work_record_id,
+                                args.record_id,
+                            )?,
                             git_commit_id: Some(git_commit_id),
                             commit_sha: &args.sha,
                             role: &args.role,
@@ -81,7 +88,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                     None => add_work_record_commit(
                         root,
                         NewWorkRecordCommit {
-                            work_record_id: args.work_record_id,
+                            work_record_id: resolve_work_record_arg(
+                                args.work_record_id,
+                                args.record_id,
+                            )?,
                             commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
@@ -102,7 +112,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                 let outcome = add_work_record_command(
                     root,
                     NewWorkRecordCommand {
-                        work_record_id: args.work_record_id,
+                        work_record_id: resolve_work_record_arg(
+                            args.work_record_id,
+                            args.record_id,
+                        )?,
                         command_usage_id: args.usage,
                         command_profile_id: args.profile,
                         command: args.command.as_deref(),
@@ -119,7 +132,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                     Some(git_commit_id) => add_work_record_git_commit(
                         root,
                         NewWorkRecordGitCommit {
-                            work_record_id: args.work_record_id,
+                            work_record_id: resolve_work_record_arg(
+                                args.work_record_id,
+                                args.record_id,
+                            )?,
                             git_commit_id: Some(git_commit_id),
                             commit_sha: &args.sha,
                             role: &args.role,
@@ -129,7 +145,10 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
                     None => add_work_record_commit(
                         root,
                         NewWorkRecordCommit {
-                            work_record_id: args.work_record_id,
+                            work_record_id: resolve_work_record_arg(
+                                args.work_record_id,
+                                args.record_id,
+                            )?,
                             commit_sha: &args.sha,
                             role: &args.role,
                             note: args.note.as_deref(),
@@ -148,11 +167,12 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
 }
 
 fn link_work_record_file(root: &Path, args: WorkRecordFileAddArgs) -> Result<()> {
+    let work_record_id = resolve_work_record_arg(args.work_record_id, args.record_id)?;
     let outcome = if args.git_file_change.is_some() || args.repository_id.is_some() {
         add_work_record_git_file(
             root,
             NewWorkRecordGitFile {
-                work_record_id: args.work_record_id,
+                work_record_id,
                 git_file_change_id: args.git_file_change,
                 repository_id: args.repository_id,
                 path: &args.path,
@@ -164,7 +184,7 @@ fn link_work_record_file(root: &Path, args: WorkRecordFileAddArgs) -> Result<()>
         add_work_record_file(
             root,
             NewWorkRecordFile {
-                work_record_id: args.work_record_id,
+                work_record_id,
                 path: &args.path,
                 role: &args.role,
                 note: args.note.as_deref(),
@@ -174,6 +194,16 @@ fn link_work_record_file(root: &Path, args: WorkRecordFileAddArgs) -> Result<()>
     println!("linked work record file");
     println!("work_record_file_id: {}", outcome.link_id);
     Ok(())
+}
+
+fn resolve_work_record_arg(positional: Option<i64>, flagged: Option<i64>) -> Result<i64> {
+    match (positional, flagged) {
+        (Some(id), None) | (None, Some(id)) => Ok(id),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("provide work record id either positionally or with --record, not both")
+        }
+        (None, None) => anyhow::bail!("work record id is required"),
+    }
 }
 
 pub(crate) fn handle_repository(root: &Path, command: RepositoryCommand) -> Result<()> {
@@ -345,12 +375,14 @@ pub(crate) fn handle_repository(root: &Path, command: RepositoryCommand) -> Resu
 pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
     match command {
         GitCommand::Commit { command } => match command {
-            RepositoryCommitCommand::Add(args) => {
+            GitCommitCommand::Add(args) => {
+                let commit_sha =
+                    resolve_git_commit_sha(args.sha_arg.as_deref(), args.sha.as_deref())?;
                 let outcome = add_git_commit(
                     root,
                     NewGitCommit {
                         repository: &args.repository,
-                        commit_sha: &args.sha,
+                        commit_sha: &commit_sha,
                         short_sha: args.short.as_deref(),
                         subject: args.subject.as_deref(),
                         author_name: args.author_name.as_deref(),
@@ -365,11 +397,12 @@ pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
             }
         },
         GitCommand::Files { command } => match command {
-            RepositoryFileCommand::Add(args) => {
+            GitFileCommand::Add(args) => {
+                let git_commit_id = resolve_git_commit_id(root, &args.commit)?;
                 let outcome = add_git_file_change(
                     root,
                     NewGitFileChange {
-                        git_commit_id: args.commit,
+                        git_commit_id,
                         repository: args.repository.as_deref(),
                         path: &args.path,
                         old_path: args.old_path.as_deref(),
@@ -386,4 +419,38 @@ pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
         },
     }
     Ok(())
+}
+
+fn resolve_git_commit_sha(positional: Option<&str>, flagged: Option<&str>) -> Result<String> {
+    match (positional, flagged) {
+        (Some(value), None) | (None, Some(value)) => Ok(value.to_string()),
+        (Some(_), Some(_)) => {
+            bail!("provide commit sha either positionally or with --sha, not both")
+        }
+        (None, None) => bail!("commit sha is required"),
+    }
+}
+
+fn resolve_git_commit_id(root: &Path, commit: &str) -> Result<i64> {
+    if let Ok(id) = commit.parse::<i64>() {
+        return Ok(id);
+    }
+    let conn = Connection::open(agent_workbench::default_ledger_path(root))?;
+    let mut stmt = conn.prepare(
+        r#"
+        select c.id
+        from git_commits c
+        join repositories r on r.id = c.repository_id
+        join projects p on p.id = r.project_id
+        where c.commit_sha = ?1 or c.short_sha = ?1
+        order by c.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![commit], |row| row.get::<_, i64>(0))?;
+    let ids = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    match ids.as_slice() {
+        [id] => Ok(*id),
+        [] => bail!("git commit not found for {commit}"),
+        _ => bail!("git commit is ambiguous for {commit}"),
+    }
 }

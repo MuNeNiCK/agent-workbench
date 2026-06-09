@@ -41,6 +41,71 @@ fn conn(root: &Path) -> Connection {
         .expect("failed to open ledger")
 }
 
+fn cli_record_close_evidence(root: &Path, work_unit_id: i64, activation_id: i64) -> i64 {
+    ok(
+        root,
+        &[
+            "record",
+            "create",
+            "--work-unit",
+            &work_unit_id.to_string(),
+            "--topic",
+            "close evidence",
+            "--work-performed",
+            "recorded close readiness evidence",
+        ],
+    );
+    let repository_count: i64 = conn(root)
+        .query_row(
+            "select count(*) from repositories where name = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    if repository_count == 0 {
+        ok(
+            root,
+            &[
+                "repository",
+                "add",
+                "main",
+                "--path",
+                ".",
+                "--head",
+                "abc123",
+                "--status",
+                "clean",
+            ],
+        );
+    }
+    ok(
+        root,
+        &[
+            "repository",
+            "snapshot",
+            "add",
+            "--repository",
+            "main",
+            "--activation",
+            &activation_id.to_string(),
+            "--head",
+            "abc123",
+            "--branch",
+            "master",
+            "--status",
+            "clean",
+            "--clean",
+        ],
+    );
+    conn(root)
+        .query_row(
+            "select max(id) from repository_snapshots where work_unit_activation_id = ?1",
+            [activation_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 fn write_requirement(root: &Path) {
     std::fs::write(
         root.join(".agent-workbench")
@@ -1296,39 +1361,7 @@ fn gate_close_ready_reports_active_work_readiness() {
     assert!(error.contains("pass --dry-run"));
 
     ok(temp.path(), &["work", "start", "close ready"]);
-    ok(
-        temp.path(),
-        &[
-            "repository",
-            "add",
-            "main",
-            "--path",
-            ".",
-            "--head",
-            "abc123",
-            "--status",
-            "clean",
-        ],
-    );
-    ok(
-        temp.path(),
-        &[
-            "repository",
-            "snapshot",
-            "add",
-            "--repository",
-            "main",
-            "--activation",
-            "1",
-            "--head",
-            "abc123",
-            "--branch",
-            "master",
-            "--status",
-            "clean",
-            "--clean",
-        ],
-    );
+    cli_record_close_evidence(temp.path(), 1, 1);
 
     let output = ok(temp.path(), &["gate", "close-ready", "--dry-run"]);
 
@@ -1529,11 +1562,36 @@ fn reopen_and_follow_up_preserve_stack_and_dependencies() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
     ok(temp.path(), &["work", "start", "source"]);
+    let source_snapshot = cli_record_close_evidence(temp.path(), 1, 1);
     ok(temp.path(), &["work", "close", "--summary", "source done"]);
 
     ok(
         temp.path(),
         &["work", "reopen", "1", "--reason", "closure invalid"],
+    );
+    let reopened_activation_id: i64 = conn(temp.path())
+        .query_row(
+            "select id from work_unit_activations where status = 'active'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let reopened_snapshot = cli_record_close_evidence(temp.path(), 1, reopened_activation_id);
+    ok(
+        temp.path(),
+        &[
+            "repository",
+            "compare",
+            "add",
+            "--base",
+            &source_snapshot.to_string(),
+            "--current",
+            &reopened_snapshot.to_string(),
+            "--type",
+            "close",
+            "--result",
+            "same",
+        ],
     );
     ok(
         temp.path(),
@@ -2088,10 +2146,9 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
             "git",
             "commit",
             "add",
-            "--repository",
-            "main",
-            "--sha",
             "abc123",
+            "--repo",
+            "main",
             "--subject",
             "alias import",
         ],
@@ -2103,7 +2160,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
             "files",
             "add",
             "--commit",
-            "1",
+            "abc123",
             "--path",
             "src/lib.rs",
             "--type",
@@ -2116,6 +2173,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
             "record",
             "link",
             "commit",
+            "--record",
             "1",
             "--git-commit",
             "1",
@@ -2129,6 +2187,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
             "record",
             "link",
             "file",
+            "--record",
             "1",
             "--git-file-change",
             "1",

@@ -1,5 +1,45 @@
 use super::*;
 
+fn record_close_prerequisites(root: &std::path::Path, work: &WorkOutcome) {
+    create_work_record(
+        root,
+        NewWorkRecord {
+            work_unit_id: Some(work.work_unit_id),
+            topic: "close evidence",
+            work_performed: Some("recorded close prerequisites"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+}
+
+fn record_clean_repository_snapshot(root: &std::path::Path, work: &WorkOutcome) {
+    add_repository(
+        root,
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository_snapshot(
+        root,
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("master"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn status_reports_uninitialized_project() {
     let temp = tempfile::tempdir().unwrap();
@@ -858,6 +898,8 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "close plan work", None).unwrap();
+    record_close_prerequisites(temp.path(), &work);
+    record_clean_repository_snapshot(temp.path(), &work);
     let plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
@@ -917,6 +959,7 @@ fn close_ready_requires_close_repository_comparisons_for_changed_snapshots() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "close comparison work", None).unwrap();
+    record_close_prerequisites(temp.path(), &work);
     add_repository(
         temp.path(),
         NewRepository {
@@ -989,6 +1032,7 @@ fn close_ready_uses_pre_activation_repository_snapshot_as_comparison_base() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "close comparison baseline", None).unwrap();
+    record_close_prerequisites(temp.path(), &work);
     add_repository(
         temp.path(),
         NewRepository {
@@ -1086,6 +1130,7 @@ fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let parent = start_work(temp.path(), "parent close baseline", None).unwrap();
+    record_close_prerequisites(temp.path(), &parent);
     add_repository(
         temp.path(),
         NewRepository {
@@ -1131,6 +1176,18 @@ fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
             dirty_state_changed: false,
             nested_repository_changed: false,
             result: "changed_classified",
+        },
+    )
+    .unwrap();
+    create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: Some(child.child_work_unit_id),
+            topic: "child close evidence",
+            work_performed: Some("recorded child close prerequisites"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
         },
     )
     .unwrap();

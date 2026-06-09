@@ -245,6 +245,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     let repository = repository_close_state(&conn, &active)?;
     let review = review_plan_stage_state(&conn, active.work_unit_id, "close-ready")?;
     let trace = close_trace_state(&conn, active.work_unit_id)?;
+    let phase2 = close_phase2_state(&conn, active.project_id, active.work_unit_id)?;
     let missing_close_review_types =
         missing_required_close_review_types(&conn, active.work_unit_id)?;
     let mut items = Vec::new();
@@ -258,6 +259,77 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             "open_tasks_closed",
             "close or accept all open tasks before closing work",
             format!("{open_tasks} open or blocked tasks"),
+        )
+    });
+    items.push(if phase2.rule_conflict_count == 0 {
+        CloseReadyItem::pass(
+            "rules_checked",
+            format!(
+                "{} applicable rules, {} shadowed conflicts",
+                phase2.applicable_rule_count, phase2.rule_conflict_count
+            ),
+        )
+    } else {
+        CloseReadyItem::fail(
+            "rules_checked",
+            "resolve or accept shadowed rule conflicts before closing work",
+            format!(
+                "{} applicable rules, {} shadowed conflicts",
+                phase2.applicable_rule_count, phase2.rule_conflict_count
+            ),
+        )
+    });
+    items.push(if phase2.missing_fixed_command_usage_count == 0 {
+        CloseReadyItem::pass(
+            "fixed_commands_used",
+            format!(
+                "{} fixed command profiles, {} missing usage or approved deviation",
+                phase2.fixed_command_count, phase2.missing_fixed_command_usage_count
+            ),
+        )
+    } else {
+        CloseReadyItem::fail(
+            "fixed_commands_used",
+            "record fixed command usage or approve a command deviation before closing work",
+            format!(
+                "{} fixed command profiles, {} missing usage or approved deviation",
+                phase2.fixed_command_count, phase2.missing_fixed_command_usage_count
+            ),
+        )
+    });
+    items.push(
+        if phase2.repeated_correction_count < 2 || phase2.open_kpt_review_count > 0 {
+            CloseReadyItem::pass(
+                "corrections_kpt_checked",
+                format!(
+                    "{} active corrections, {} open KPT reviews",
+                    phase2.repeated_correction_count, phase2.open_kpt_review_count
+                ),
+            )
+        } else {
+            CloseReadyItem::fail(
+                "corrections_kpt_checked",
+                "open or record a KPT review for repeated active corrections",
+                format!(
+                    "{} active corrections, {} open KPT reviews",
+                    phase2.repeated_correction_count, phase2.open_kpt_review_count
+                ),
+            )
+        },
+    );
+    items.push(if phase2.work_record_count > 0 {
+        CloseReadyItem::pass(
+            "work_record_recorded",
+            format!(
+                "{} work records, {} linked evidence rows",
+                phase2.work_record_count, phase2.work_record_evidence_link_count
+            ),
+        )
+    } else {
+        CloseReadyItem::fail(
+            "work_record_recorded",
+            "create a work record before closing work",
+            "no work record exists for the active work unit",
         )
     });
     items.push(
@@ -293,11 +365,11 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         },
     );
     items.push(
-        if repository.repository_count == 0
-            || (repository.missing_snapshot_count == 0
+        if repository.repository_count > 0
+            && repository.missing_snapshot_count == 0
                 && repository.unclassified_dirty_state_count == 0
                 && repository.missing_comparison_count == 0
-                && repository.unclassified_comparison_count == 0)
+                && repository.unclassified_comparison_count == 0
         {
             CloseReadyItem::pass(
                 "repository_state_recorded",
@@ -1681,6 +1753,124 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
     .map_err(Into::into)
 }
 
+fn close_phase2_state(
+    conn: &Connection,
+    project_id: i64,
+    work_unit_id: i64,
+) -> Result<ClosePhase2State> {
+    let applicable_rule_count = conn.query_row(
+        r#"
+        select count(*)
+        from rule_bindings
+        where project_id = ?1
+          and status = 'active'
+          and (
+              scope_type = 'project'
+              or work_unit_id = ?2
+              or scope_key in ('project', ?3)
+          )
+        "#,
+        params![project_id, work_unit_id, work_unit_id.to_string()],
+        |row| row.get(0),
+    )?;
+    let rule_conflict_count = conn.query_row(
+        r#"
+        select count(*)
+        from rule_bindings lower
+        where lower.project_id = ?1
+          and lower.status = 'active'
+          and exists (
+              select 1
+              from rule_bindings higher
+              where higher.project_id = lower.project_id
+                and higher.status = 'active'
+                and higher.id != lower.id
+                and higher.precedence > lower.precedence
+                and (
+                    higher.scope_type = lower.scope_type
+                    or higher.scope_type = 'work_unit'
+                    or lower.scope_type = 'work_unit'
+                )
+                and coalesce(higher.scope_key, 'project') = coalesce(lower.scope_key, 'project')
+          )
+        "#,
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let fixed_command_count = conn.query_row(
+        "select count(*) from command_profiles where project_id = ?1 and status = 'fixed'",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let missing_fixed_command_usage_count = conn.query_row(
+        r#"
+        select count(*)
+        from command_profiles cp
+        where cp.project_id = ?1
+          and cp.status = 'fixed'
+          and not exists (
+              select 1
+              from command_usages cu
+              where cu.command_profile_id = cp.id
+                and cu.work_unit_id = ?2
+          )
+          and not exists (
+              select 1
+              from command_deviations d
+              where d.command_profile_id = cp.id
+                and d.work_unit_id = ?2
+                and (
+                    d.status = 'approved'
+                    or exists (
+                        select 1
+                        from acceptance_records ar
+                        where ar.target_type = 'command_deviation'
+                          and ar.command_deviation_id = d.id
+                          and ar.status = 'approved'
+                    )
+                )
+          )
+        "#,
+        params![project_id, work_unit_id],
+        |row| row.get(0),
+    )?;
+    let repeated_correction_count = conn.query_row(
+        "select count(*) from user_corrections where project_id = ?1 and status = 'active'",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let open_kpt_review_count = conn.query_row(
+        "select count(*) from kpt_reviews where project_id = ?1 and status = 'open'",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let work_record_count = conn.query_row(
+        "select count(*) from work_records where project_id = ?1 and work_unit_id = ?2",
+        params![project_id, work_unit_id],
+        |row| row.get(0),
+    )?;
+    let work_record_evidence_link_count = conn.query_row(
+        r#"
+        select
+            (select count(*) from work_record_commands c join work_records r on r.id = c.work_record_id where r.project_id = ?1 and r.work_unit_id = ?2)
+          + (select count(*) from work_record_commits c join work_records r on r.id = c.work_record_id where r.project_id = ?1 and r.work_unit_id = ?2)
+          + (select count(*) from work_record_files f join work_records r on r.id = f.work_record_id where r.project_id = ?1 and r.work_unit_id = ?2)
+        "#,
+        params![project_id, work_unit_id],
+        |row| row.get(0),
+    )?;
+    Ok(ClosePhase2State {
+        applicable_rule_count,
+        rule_conflict_count,
+        fixed_command_count,
+        missing_fixed_command_usage_count,
+        repeated_correction_count,
+        open_kpt_review_count,
+        work_record_count,
+        work_record_evidence_link_count,
+    })
+}
+
 fn repository_close_state(
     conn: &Connection,
     active: &StoredActivation,
@@ -2473,6 +2663,17 @@ struct ValidationCloseState {
     missing_run_count: i64,
     accepted_failure_count: i64,
     unaccepted_failure_count: i64,
+}
+
+struct ClosePhase2State {
+    applicable_rule_count: i64,
+    rule_conflict_count: i64,
+    fixed_command_count: i64,
+    missing_fixed_command_usage_count: i64,
+    repeated_correction_count: i64,
+    open_kpt_review_count: i64,
+    work_record_count: i64,
+    work_record_evidence_link_count: i64,
 }
 
 struct RepositoryCloseState {
