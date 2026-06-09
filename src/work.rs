@@ -2009,41 +2009,28 @@ fn close_process_state(
         from rule_bindings lower
         where lower.project_id = ?1
           and lower.status = 'active'
+          and lower.rule_source_type in ('authority_event', 'user_correction', 'acceptance_record', 'skill_default')
           and exists (
               select 1
               from rule_bindings higher
               where higher.project_id = lower.project_id
                 and higher.status = 'active'
+                and higher.rule_source_type in ('authority_event', 'user_correction', 'acceptance_record', 'skill_default')
                 and higher.id != lower.id
-                and higher.precedence > lower.precedence
                 and higher.rule_source_type = lower.rule_source_type
-                and coalesce(
-                    higher.authority_event_id,
-                    higher.user_correction_id,
-                    higher.command_profile_id,
-                    higher.review_policy_id,
-                    higher.review_plan_id,
-                    higher.work_unit_id,
-                    higher.validation_gate_id,
-                    higher.acceptance_record_id,
-                    higher.id
-                ) = coalesce(
-                    lower.authority_event_id,
-                    lower.user_correction_id,
-                    lower.command_profile_id,
-                    lower.review_policy_id,
-                    lower.review_plan_id,
-                    lower.work_unit_id,
-                    lower.validation_gate_id,
-                    lower.acceptance_record_id,
-                    lower.id
-                )
-                and (
-                    higher.scope_type = lower.scope_type
-                    or higher.scope_type = 'work_unit'
-                    or lower.scope_type = 'work_unit'
-                )
+                and higher.precedence = lower.precedence
+                and higher.scope_type = lower.scope_type
                 and coalesce(higher.scope_key, 'project') = coalesce(lower.scope_key, 'project')
+                and (
+                    coalesce(higher.authority_event_id, -1) != coalesce(lower.authority_event_id, -1)
+                    or coalesce(higher.user_correction_id, -1) != coalesce(lower.user_correction_id, -1)
+                    or coalesce(higher.command_profile_id, -1) != coalesce(lower.command_profile_id, -1)
+                    or coalesce(higher.review_policy_id, -1) != coalesce(lower.review_policy_id, -1)
+                    or coalesce(higher.review_plan_id, -1) != coalesce(lower.review_plan_id, -1)
+                    or coalesce(higher.work_unit_id, -1) != coalesce(lower.work_unit_id, -1)
+                    or coalesce(higher.validation_gate_id, -1) != coalesce(lower.validation_gate_id, -1)
+                    or coalesce(higher.acceptance_record_id, -1) != coalesce(lower.acceptance_record_id, -1)
+                )
           )
         "#,
         params![project_id],

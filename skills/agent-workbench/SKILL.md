@@ -32,7 +32,7 @@ in the repository:
 - `agent-workbench decision add`
 - `agent-workbench decision search`
 - `agent-workbench command fixed add`
-- `agent-workbench command preferred add`
+- `agent-workbench command prefer`
 - `agent-workbench command list`
 - `agent-workbench command usage add`
 - `agent-workbench command deviation add`

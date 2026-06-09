@@ -184,10 +184,10 @@ fn annotate_shadowed_rules(records: &mut [RuleRecord]) {
             .find(|candidate| {
                 candidate.id != records[index].id
                     && candidate.rule_source_type == records[index].rule_source_type
-                    && rule_identity(candidate) == rule_identity(&records[index])
-                    && candidate.scope_type == records[index].scope_type
-                    && candidate.scope_key == records[index].scope_key
-                    && candidate.precedence > records[index].precedence
+                    && same_rule_context(candidate, &records[index])
+                    && (candidate.precedence > records[index].precedence
+                        || (candidate.precedence == records[index].precedence
+                            && scope_specificity(candidate) > scope_specificity(&records[index])))
             })
             .map(|winner| winner.id);
         if let Some(winner_id) = winner_id {
@@ -196,16 +196,22 @@ fn annotate_shadowed_rules(records: &mut [RuleRecord]) {
     }
 }
 
-fn rule_identity(record: &RuleRecord) -> Option<i64> {
-    record
-        .authority_event_id
-        .or(record.user_correction_id)
-        .or(record.command_profile_id)
-        .or(record.review_policy_id)
-        .or(record.review_plan_id)
-        .or(record.work_unit_id)
-        .or(record.validation_gate_id)
-        .or(record.acceptance_record_id)
+fn same_rule_context(candidate: &RuleRecord, record: &RuleRecord) -> bool {
+    candidate.scope_key == record.scope_key
+        || candidate.scope_key.as_deref() == Some("project")
+        || record.scope_key.as_deref() == Some("project")
+        || candidate.work_unit_id == record.work_unit_id
+        || candidate.scope_type == "work_unit"
+        || record.scope_type == "work_unit"
+}
+
+fn scope_specificity(record: &RuleRecord) -> i64 {
+    match record.scope_type.as_str() {
+        "work_unit" => 4,
+        "repository" | "design_package" | "agent_role" | "command" | "review" => 3,
+        "project" => 1,
+        _ => 2,
+    }
 }
 
 pub(crate) fn insert_rule_binding(conn: &Connection, input: RuleBindingInput<'_>) -> Result<i64> {

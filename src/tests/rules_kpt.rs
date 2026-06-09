@@ -166,6 +166,57 @@ fn unrelated_project_rules_are_not_shadowed() {
 }
 
 #[test]
+fn work_unit_rule_shadows_project_rule_of_same_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "scoped correction", Some("cleanup")).unwrap();
+    let project_rule = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "generic validation",
+            correction: "use project default",
+            applies_to: "project",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+    let work_rule = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: &work.work_unit_id.to_string(),
+            correction_type: "process",
+            mistake_pattern: "generic validation",
+            correction: "use work-specific validation",
+            applies_to: "current_work_unit",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+
+    let rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("current"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+    let winner = rules
+        .iter()
+        .find(|rule| rule.user_correction_id == Some(work_rule.user_correction_id))
+        .unwrap();
+    let shadowed = rules
+        .iter()
+        .find(|rule| rule.user_correction_id == Some(project_rule.user_correction_id))
+        .unwrap();
+
+    assert!(winner.shadowed_by_rule_id.is_none());
+    assert_eq!(shadowed.shadowed_by_rule_id, Some(winner.id));
+}
+
+#[test]
 fn current_scope_rules_include_review_policy_and_validation_gate_rules() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
