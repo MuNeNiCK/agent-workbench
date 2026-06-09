@@ -55,7 +55,7 @@ authority.
     then record a clean decomposition review run with
     `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
 11. Check implementation readiness with
-   `agent-workbench gate implementation-ready --dry-run`.
+   `agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run`.
 12. Start implementation work with
    `agent-workbench work start "<title>" --design-version <design-version-id>`
    so the implementation-ready gate is enforced before work begins.

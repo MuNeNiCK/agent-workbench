@@ -54,10 +54,10 @@ agent-workbench review run add --plan <review-plan-id> --type fresh --purpose ne
 When a review finds a problem:
 
 ```sh
-agent-workbench finding add --run <review-run-id> --type <finding-type> --severity <severity> --summary "<summary>"
+agent-workbench finding add --run <review-run-id> --type <finding-type> --severity <severity> --description "<description>"
 agent-workbench finding classify <finding-id> --classification valid
 agent-workbench closure add --finding <finding-id> --invariant "<what must now hold>"
-agent-workbench finding verify --run <review-run-id> --finding <finding-id> --closure <closure-id> --result fixed
+agent-workbench finding verify --run <review-run-id> --finding <finding-id> --closure <closure-id> --result verified
 ```
 
 Record a new clean run only after valid findings have closures and verification.

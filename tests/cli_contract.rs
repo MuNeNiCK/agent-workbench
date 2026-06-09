@@ -2233,6 +2233,30 @@ fn review_flow_records_policy_runs_findings_and_verification() {
 }
 
 #[test]
+fn skill_references_use_executable_review_and_fork_examples() {
+    let review_recipes =
+        std::fs::read_to_string("skills/agent-workbench/references/review-recipes.md").unwrap();
+    let interruption_recovery =
+        std::fs::read_to_string("skills/agent-workbench/references/interruption-recovery.md")
+            .unwrap();
+    let cli_workflow =
+        std::fs::read_to_string("skills/agent-workbench/references/cli-workflow.md").unwrap();
+
+    assert!(review_recipes.contains("finding add --run <review-run-id>"));
+    assert!(review_recipes.contains("--description \"<description>\""));
+    assert!(review_recipes.contains("--result verified"));
+    assert!(!review_recipes.contains("--summary \"<summary>\""));
+    assert!(!review_recipes.contains("--result fixed"));
+    assert!(interruption_recovery.contains("--reason design_changed"));
+    assert!(interruption_recovery.contains("Known fork reasons are `design_changed`"));
+    assert!(!interruption_recovery.contains("--reason design_change\n"));
+    assert!(
+        cli_workflow
+            .contains("gate implementation-ready --design-version <design-version-id> --dry-run")
+    );
+}
+
+#[test]
 fn kpt_item_convert_can_create_fixed_command_profile() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

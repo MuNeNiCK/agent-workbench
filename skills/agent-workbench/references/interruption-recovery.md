@@ -65,10 +65,13 @@ start from a known record, activation, repository snapshot, or commit.
 
 ```sh
 agent-workbench work fork "<redo title>" --from-record <work-record-id> --reason agent_drift
-agent-workbench work fork "<redo title>" --from-activation <activation-id> --reason design_change
+agent-workbench work fork "<redo title>" --from-activation <activation-id> --reason design_changed
 agent-workbench work fork "<redo title>" --from-snapshot <repository-snapshot-id> --reason invalid_assumption
 agent-workbench work fork "<redo title>" --from-commit <sha> --reason failed_validation
 ```
+
+Known fork reasons are `design_changed`, `agent_drift`, `invalid_assumption`,
+`failed_validation`, `user_requested_redo`, and `other`.
 
 After returning to parent work, run resume readiness again. A child task can
 invalidate parent assumptions, design reviews, selected validation gates,
