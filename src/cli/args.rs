@@ -323,6 +323,10 @@ pub(crate) struct GateSelectArgs {
     pub(crate) task: i64,
     #[arg(long)]
     pub(crate) command: Option<String>,
+    #[arg(long)]
+    pub(crate) command_profile: Option<String>,
+    #[arg(long)]
+    pub(crate) timeout: Option<String>,
 }
 
 #[derive(Debug, Args)]

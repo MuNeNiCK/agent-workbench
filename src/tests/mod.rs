@@ -28,6 +28,22 @@ This requirement describes one verifiable behavior that must be implemented.
     )
 }
 
+fn requirement_doc_without_validation(key: &str, title: &str, priority: &str) -> String {
+    format!(
+        r#"## {key}: {title}
+```yaml agent-workbench
+type: requirement
+key: {key}
+priority: {priority}
+surfaces: [cli, database]
+status: active
+```
+
+This requirement describes behavior whose validation is intentionally unresolved.
+"#
+    )
+}
+
 fn decision_doc() -> String {
     r#"## DEC-001: Keep project-local ledger
 ```yaml agent-workbench

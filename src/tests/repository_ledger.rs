@@ -2919,6 +2919,8 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();

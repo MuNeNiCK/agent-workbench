@@ -1074,10 +1074,29 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
     let missing_validation_count: i64 = conn.query_row(
         r#"
         select count(*)
-        from design_requirements
-        where design_version_id = ?1
-          and status = 'active'
-          and (validation_expectation is null or validation_expectation = '')
+        from design_requirements r
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where r.design_version_id = ?1
+          and r.status = 'active'
+          and (r.validation_expectation is null or r.validation_expectation = '')
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'design_requirement'
+              and ar.design_requirement_id = r.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'evidence_gap')
+          )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'design_requirement_key'
+              and ar.design_package_key = p.design_key
+              and ar.design_requirement_key = r.requirement_key
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'evidence_gap')
+          )
         "#,
         params![version.design_version_id],
         |row| row.get(0),
@@ -1091,15 +1110,6 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
         items.push(DesignReadyItem::fail(
             "requirement_validation_defined",
             Some("every active requirement needs validation metadata"),
-        ));
-    }
-
-    if version.status == "approved" && version.approved_by_authority_event_id.is_some() {
-        items.push(DesignReadyItem::pass("design_version_approved", None));
-    } else {
-        items.push(DesignReadyItem::fail(
-            "design_version_approved",
-            Some("approve the design version before implementation planning"),
         ));
     }
 
@@ -1318,8 +1328,7 @@ fn stored_design_version(
     conn.query_row(
         r#"
         select
-            v.id, v.design_package_id, v.status, v.approved_by_authority_event_id,
-            p.design_key, p.current_design_version_id
+            v.id, v.design_package_id, v.status, p.design_key, p.current_design_version_id
         from design_versions v
         join design_packages p on p.id = v.design_package_id
         where v.project_id = ?1 and v.id = ?2
@@ -1350,8 +1359,7 @@ fn resolve_design_version_for_gate(
             conn.query_row(
                 r#"
                 select
-                    v.id, v.design_package_id, v.status, v.approved_by_authority_event_id,
-                    p.design_key, p.current_design_version_id
+                    v.id, v.design_package_id, v.status, p.design_key, p.current_design_version_id
                 from design_packages p
                 join design_versions v on v.id = p.current_design_version_id
                 where p.project_id = ?1
@@ -1754,9 +1762,8 @@ fn stored_design_version_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
         design_version_id: row.get(0)?,
         design_package_id: row.get(1)?,
         status: row.get(2)?,
-        approved_by_authority_event_id: row.get(3)?,
-        design_key: row.get(4)?,
-        current_design_version_id: row.get(5)?,
+        design_key: row.get(3)?,
+        current_design_version_id: row.get(4)?,
     })
 }
 
@@ -1893,9 +1900,6 @@ fn validate_requirement_metadata(
     match metadata.status.as_str() {
         "active" | "superseded" | "accepted_out_of_scope" => {}
         _ => bail!("invalid requirement status: {}", metadata.status),
-    }
-    if metadata.validation.is_empty() && metadata.status == "active" {
-        bail!("active requirement must declare validation metadata");
     }
     for validation_key in &metadata.validation {
         if !valid_design_key(validation_key, "GATE") {
@@ -2571,7 +2575,6 @@ struct StoredDesignVersion {
     design_version_id: i64,
     design_package_id: i64,
     status: String,
-    approved_by_authority_event_id: Option<i64>,
     design_key: String,
     current_design_version_id: Option<i64>,
 }

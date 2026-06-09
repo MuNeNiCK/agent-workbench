@@ -57,11 +57,12 @@ fn correction_creates_applicable_rule_binding() {
 
     assert_eq!(corrections.len(), 1);
     assert_eq!(corrections[0].id, correction.user_correction_id);
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].rule_source_type, "user_correction");
     assert_eq!(
-        rules[0].user_correction_id,
-        Some(correction.user_correction_id)
+        rules
+            .iter()
+            .find(|rule| rule.user_correction_id == Some(correction.user_correction_id))
+            .map(|rule| rule.rule_source_type.as_str()),
+        Some("user_correction")
     );
 }
 
@@ -96,11 +97,12 @@ fn fixed_command_creates_command_rule_binding() {
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].id, command.command_profile_id);
     assert_eq!(commands[0].status, "fixed");
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].rule_source_type, "command_profile");
     assert_eq!(
-        rules[0].command_profile_id,
-        Some(command.command_profile_id)
+        rules
+            .iter()
+            .find(|rule| rule.command_profile_id == Some(command.command_profile_id))
+            .map(|rule| rule.rule_source_type.as_str()),
+        Some("command_profile")
     );
 }
 

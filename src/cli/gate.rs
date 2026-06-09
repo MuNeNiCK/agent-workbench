@@ -45,6 +45,8 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
                     requirement_key: &args.requirement,
                     task_id: args.task,
                     command: args.command.as_deref(),
+                    command_profile: args.command_profile.as_deref(),
+                    timeout: args.timeout.as_deref(),
                 },
             )?;
             println!("selected validation gate");

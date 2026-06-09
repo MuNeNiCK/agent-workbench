@@ -297,6 +297,24 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             ),
         )
     });
+    items.push(if phase2.invalid_commit_message_count == 0 {
+        CloseReadyItem::pass(
+            "commit_messages_checked",
+            format!(
+                "{} invalid linked commit messages",
+                phase2.invalid_commit_message_count
+            ),
+        )
+    } else {
+        CloseReadyItem::fail(
+            "commit_messages_checked",
+            "link only commits with prefix messages and without forbidden internal terms",
+            format!(
+                "{} invalid linked commit messages",
+                phase2.invalid_commit_message_count
+            ),
+        )
+    });
     items.push(
         if phase2.repeated_correction_count < 2 || phase2.open_kpt_review_count > 0 {
             CloseReadyItem::pass(
@@ -1859,11 +1877,30 @@ fn close_phase2_state(
         params![project_id, work_unit_id],
         |row| row.get(0),
     )?;
+    let invalid_commit_message_count = conn.query_row(
+        r#"
+        select count(*)
+        from work_record_commits wrc
+        join work_records wr on wr.id = wrc.work_record_id
+        join git_commits gc on gc.id = wrc.git_commit_id
+        where wr.project_id = ?1
+          and wr.work_unit_id = ?2
+          and (
+              instr(gc.subject, ': ') = 0
+              or lower(gc.subject) like '%review%'
+              or lower(gc.subject) glob '*phase[0-9]*'
+              or lower(gc.subject) glob '*phase [0-9]*'
+          )
+        "#,
+        params![project_id, work_unit_id],
+        |row| row.get(0),
+    )?;
     Ok(ClosePhase2State {
         applicable_rule_count,
         rule_conflict_count,
         fixed_command_count,
         missing_fixed_command_usage_count,
+        invalid_commit_message_count,
         repeated_correction_count,
         open_kpt_review_count,
         work_record_count,
@@ -2753,6 +2790,7 @@ struct ClosePhase2State {
     rule_conflict_count: i64,
     fixed_command_count: i64,
     missing_fixed_command_usage_count: i64,
+    invalid_commit_message_count: i64,
     repeated_correction_count: i64,
     open_kpt_review_count: i64,
     work_record_count: i64,

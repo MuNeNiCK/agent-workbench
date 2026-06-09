@@ -46,6 +46,7 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
     migrate(&conn)?;
     ensure_project(&conn, root)?;
     sync_agents_md_authority(&conn, root)?;
+    sync_commit_message_policy(&conn)?;
 
     Ok(InitOutcome { ledger_path })
 }
@@ -1231,6 +1232,68 @@ fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
             precedence, status, created_at
         )
         select ?1, 'authority_event', ?2, 'project', 'project', 70, 'active', current_timestamp
+        where not exists (
+            select 1
+            from rule_bindings
+            where project_id = ?1
+              and authority_event_id = ?2
+              and status = 'active'
+        )
+        "#,
+        params![project_id, authority_event_id],
+    )?;
+    Ok(())
+}
+
+fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
+    let project_id = project_id(conn)?;
+    let source = "agent-workbench:commit-message";
+    let summary = "Commit messages must use `prefix: message` and must not contain internal phase names or the word review.";
+    let authority_event_id = conn
+        .query_row(
+            r#"
+            select id
+            from authority_events
+            where project_id = ?1
+              and event_type = 'policy'
+              and source = ?2
+              and status = 'active'
+            order by id desc
+            limit 1
+            "#,
+            params![project_id, source],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let authority_event_id = match authority_event_id {
+        Some(id) => {
+            conn.execute(
+                "update authority_events set text_or_summary = ?1 where id = ?2",
+                params![summary, id],
+            )?;
+            id
+        }
+        None => {
+            conn.execute(
+                r#"
+                insert into authority_events(
+                    project_id, event_type, source, text_or_summary, scope,
+                    precedence, status, created_at
+                )
+                values (?1, 'policy', ?2, ?3, 'project', 75, 'active', current_timestamp)
+                "#,
+                params![project_id, source, summary],
+            )?;
+            conn.last_insert_rowid()
+        }
+    };
+    conn.execute(
+        r#"
+        insert into rule_bindings(
+            project_id, rule_source_type, authority_event_id, scope_type, scope_key,
+            precedence, status, created_at
+        )
+        select ?1, 'authority_event', ?2, 'project', 'project', 75, 'active', current_timestamp
         where not exists (
             select 1
             from rule_bindings

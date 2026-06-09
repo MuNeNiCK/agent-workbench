@@ -26,12 +26,15 @@ fn authority_events_create_applicable_rule_bindings() {
     )
     .unwrap();
 
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].id, authority.authority_event_id);
-    assert_eq!(rules.len(), 1);
-    assert_eq!(
-        rules[0].authority_event_id,
-        Some(authority.authority_event_id)
+    assert!(
+        events
+            .iter()
+            .any(|event| event.id == authority.authority_event_id)
+    );
+    assert!(
+        rules
+            .iter()
+            .any(|rule| rule.authority_event_id == Some(authority.authority_event_id))
     );
 }
 

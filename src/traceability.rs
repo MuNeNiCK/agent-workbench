@@ -950,15 +950,39 @@ pub fn select_validation_gate(
         .optional()?
         .context("task not found")?;
     require_task_derivation(&tx, requirement_id, input.task_id)?;
-    let command = input.command.or(template.command.as_deref());
+    let (command_profile_id, profile_command) = match input.command_profile {
+        Some(profile) => {
+            let (id, command): (i64, String) = tx
+                .query_row(
+                    r#"
+                    select id, command
+                    from command_profiles
+                    where project_id = ?1
+                      and (name = ?2 or cast(id as text) = ?2)
+                      and status in ('candidate', 'preferred', 'fixed')
+                    "#,
+                    params![project_id, profile],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .context("command profile not found")?;
+            (Some(id), Some(command))
+        }
+        None => (None, None),
+    };
+    let command = input
+        .command
+        .map(str::to_string)
+        .or(profile_command)
+        .or_else(|| template.command.clone());
     tx.execute(
         r#"
         insert into validation_gates(
             project_id, gate_key, template_id, work_unit_id, task_id,
-            design_requirement_id, command, expected_result,
+            design_requirement_id, command_profile_id, command, expected_result, timeout,
             selected_before_edit, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'active', current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, 'active', current_timestamp)
         "#,
         params![
             project_id,
@@ -967,8 +991,10 @@ pub fn select_validation_gate(
             task_work_unit_id,
             input.task_id,
             requirement_id,
+            command_profile_id,
             command,
             template.expected_result,
+            input.timeout,
         ],
     )?;
     let validation_gate_id = tx.last_insert_rowid();
@@ -2085,6 +2111,8 @@ pub struct ValidationGateSelection<'a> {
     pub requirement_key: &'a str,
     pub task_id: i64,
     pub command: Option<&'a str>,
+    pub command_profile: Option<&'a str>,
+    pub timeout: Option<&'a str>,
 }
 
 pub struct NewValidationRun<'a> {

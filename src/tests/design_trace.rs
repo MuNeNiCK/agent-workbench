@@ -449,6 +449,8 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: None,
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -942,6 +944,8 @@ fn review_context_includes_selected_validation_run_evidence() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1057,6 +1061,8 @@ fn implementation_ready_rejects_requirement_coverage_from_another_work_unit() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1190,6 +1196,8 @@ fn task_close_rejects_requirement_coverage_from_another_work_unit() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1380,6 +1388,8 @@ fn trace_links_reject_mismatched_requirement_task_pairs() {
             requirement_key: "REQ-001",
             task_id: task_two.task_id,
             command: None,
+            command_profile: None,
+            timeout: None,
         },
     );
     let mismatched_coverage = add_coverage_item(
@@ -1495,6 +1505,8 @@ fn approved_coverage_acceptance_can_satisfy_trace_closure() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: None,
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1632,6 +1644,8 @@ fn implementation_ready_requires_completion_conditions() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: None,
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1725,6 +1739,8 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: None,
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -3191,7 +3207,7 @@ fn design_approval_marks_current_version_and_creates_authority() {
 }
 
 #[test]
-fn design_ready_blocks_until_current_version_is_approved() {
+fn design_ready_passes_after_clean_design_document_review_without_approval() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let init = init_design_package(
@@ -3220,14 +3236,6 @@ fn design_ready_blocks_until_current_version_is_approved() {
         temp.path(),
         DesignReadyCheck {
             design_version_id: Some(import.design_version_id),
-        },
-    )
-    .unwrap();
-    approve_design_version(
-        temp.path(),
-        DesignVersionApproval {
-            design_version_id: import.design_version_id,
-            summary: None,
         },
     )
     .unwrap();
@@ -3284,8 +3292,99 @@ fn design_ready_blocks_until_current_version_is_approved() {
         blocked
             .items
             .iter()
-            .any(|item| item.name == "design_version_approved" && item.result == "fail")
+            .any(|item| item.name == "design_review_clean" && item.result == "fail")
     );
+    assert_eq!(passed.result, "pass");
+    assert!(passed.items.iter().all(|item| item.result == "pass"));
+}
+
+#[test]
+fn design_ready_allows_missing_validation_when_requirement_exception_is_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc_without_validation("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let review_work_unit_id = start_work(temp.path(), "design-ready review", None)
+        .unwrap()
+        .work_unit_id;
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: review_work_unit_id,
+            design_version_id: Some(import.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_clean_review_run(
+        temp.path(),
+        plan.review_plan_id,
+        Some(&format!(
+            "review-context:design-review:design={}:work={}",
+            import.design_version_id, review_work_unit_id
+        )),
+        "clean design review",
+    );
+
+    let blocked = design_ready(
+        temp.path(),
+        DesignReadyCheck {
+            design_version_id: Some(import.design_version_id),
+        },
+    )
+    .unwrap();
+    let acceptance = accept_design_exception(
+        temp.path(),
+        NewDesignExceptionAcceptance {
+            design_version_id: Some(import.design_version_id),
+            design_package: None,
+            target: "requirement:REQ-001",
+            acceptance_type: "evidence_gap",
+            reason: "validation will be selected after implementation planning",
+        },
+    )
+    .unwrap();
+    let passed = design_ready(
+        temp.path(),
+        DesignReadyCheck {
+            design_version_id: Some(import.design_version_id),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "requirement_validation_defined" && item.result == "fail")
+    );
+    assert_eq!(acceptance.target_type, "design_requirement");
     assert_eq!(passed.result, "pass");
     assert!(passed.items.iter().all(|item| item.result == "pass"));
 }

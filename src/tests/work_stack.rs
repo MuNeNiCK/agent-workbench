@@ -722,6 +722,8 @@ fn close_ready_requires_validation_runs_for_selected_gates() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -845,6 +847,8 @@ fn close_ready_allows_explicitly_accepted_validation_failures() {
             requirement_key: "REQ-001",
             task_id: task.task_id,
             command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
         },
     )
     .unwrap();
@@ -1249,6 +1253,102 @@ fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
             .items
             .iter()
             .any(|item| item.name == "repository_state_recorded" && item.result == "pass")
+    );
+}
+
+#[test]
+fn close_ready_blocks_invalid_linked_commit_messages() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "commit policy work", None).unwrap();
+    let record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: Some(work.work_unit_id),
+            topic: "commit evidence",
+            work_performed: Some("recorded commit evidence"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    let valid = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("fix: valid message"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_work_record_git_commit(
+        temp.path(),
+        NewWorkRecordGitCommit {
+            work_record_id: record.work_record_id,
+            git_commit_id: Some(valid.git_commit_id),
+            commit_sha: "abc123",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let allowed = close_ready(temp.path()).unwrap();
+
+    let invalid = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "def456",
+            short_sha: Some("def456"),
+            subject: Some("fix: review feedback"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_work_record_git_commit(
+        temp.path(),
+        NewWorkRecordGitCommit {
+            work_record_id: record.work_record_id,
+            git_commit_id: Some(invalid.git_commit_id),
+            commit_sha: "def456",
+            role: "created",
+            note: None,
+        },
+    )
+    .unwrap();
+    let blocked = close_ready(temp.path()).unwrap();
+
+    assert!(
+        allowed
+            .items
+            .iter()
+            .any(|item| item.name == "commit_messages_checked" && item.result == "pass")
+    );
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| item.name == "commit_messages_checked" && item.result == "fail")
     );
 }
 

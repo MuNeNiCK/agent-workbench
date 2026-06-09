@@ -731,7 +731,7 @@ fn requirement_list_prints_imported_requirements() {
 }
 
 #[test]
-fn design_approve_allows_design_ready_gate_to_pass() {
+fn clean_design_document_review_allows_design_ready_gate_to_pass() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
     ok(
@@ -762,20 +762,7 @@ fn design_approve_allows_design_ready_gate_to_pass() {
     );
     assert!(blocked.contains("gate: design-ready"));
     assert!(blocked.contains("result: blocked"));
-    assert!(blocked.contains("design_version_approved: fail"));
-
-    let approved = ok(
-        temp.path(),
-        &[
-            "design",
-            "approve",
-            "1",
-            "--summary",
-            "design passed document checks",
-        ],
-    );
-    assert!(approved.contains("approved design version"));
-    assert!(approved.contains("authority_event_id: 1"));
+    assert!(blocked.contains("design_review_clean: fail"));
 
     ok(temp.path(), &["work", "start", "design document review"]);
     ok(
@@ -836,17 +823,7 @@ fn design_approve_allows_design_ready_gate_to_pass() {
     );
     assert!(missing_review_context_target.contains("must use review-context target"));
     assert!(passed.contains("result: pass"));
-    assert!(passed.contains("design_version_approved: pass"));
-
-    let conn = conn(temp.path());
-    let approved_by: i64 = conn
-        .query_row(
-            "select approved_by_authority_event_id from design_versions where id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(approved_by, 1);
+    assert!(passed.contains("design_review_clean: pass"));
 }
 
 #[test]
@@ -1381,6 +1358,114 @@ fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
 }
 
 #[test]
+fn gate_select_can_record_command_profile_and_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(
+        temp.path(),
+        &[
+            "task",
+            "add",
+            "implement cleanup",
+            "--priority",
+            "high",
+            "--source",
+            "design",
+            "--completion-condition",
+            "cleanup behavior is covered",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "trace",
+            "derive-task",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "command",
+            "prefer",
+            "--name",
+            "cleanup-test",
+            "--type",
+            "validation",
+            "--command",
+            "cargo test cleanup",
+            "--timeout",
+            "120s",
+        ],
+    );
+
+    let selected = ok(
+        temp.path(),
+        &[
+            "gate",
+            "select",
+            "--design",
+            "1",
+            "--template",
+            "GATE-001",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--command-profile",
+            "cleanup-test",
+            "--timeout",
+            "180s",
+        ],
+    );
+    let row: (Option<i64>, Option<String>, Option<String>) = conn(temp.path())
+        .query_row(
+            "select command_profile_id, command, timeout from validation_gates where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert!(selected.contains("selected validation gate"));
+    assert_eq!(
+        row,
+        (
+            Some(1),
+            Some("cargo test cleanup".to_string()),
+            Some("180s".to_string())
+        )
+    );
+}
+
+#[test]
 fn gate_resume_ready_defaults_to_read_only_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -1745,7 +1830,7 @@ fn task_accept_out_of_scope_creates_acceptance_record() {
     );
     assert!(output.contains("accepted task out of scope"));
     assert!(output.contains("acceptance_record_id: 1"));
-    assert!(output.contains("authority_event_id: 1"));
+    assert!(output.contains("authority_event_id: "));
 
     let status: String = conn(temp.path())
         .query_row(
@@ -2038,6 +2123,14 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
             "fix the validation command",
         ],
     );
+    let authority_id: i64 = conn(temp.path())
+        .query_row(
+            "select id from authority_events where event_type = 'user_instruction' order by id desc limit 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let authority_id = authority_id.to_string();
     let promoted_fixed = ok(
         temp.path(),
         &[
@@ -2054,7 +2147,7 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
             "--status",
             "fixed",
             "--authority",
-            "1",
+            &authority_id,
         ],
     );
 
@@ -2064,7 +2157,7 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
     assert!(usage.contains("command_usage_id: 1"));
     assert!(promoted_preferred.contains("command_profile_id: 2"));
     assert!(promoted_preferred.contains("status: preferred"));
-    assert!(user_authority.contains("authority_event_id: 1"));
+    assert!(user_authority.contains("authority_event_id: "));
     assert!(promoted_fixed.contains("command_profile_id: 3"));
     assert!(promoted_fixed.contains("status: fixed"));
 }
@@ -2303,7 +2396,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
 
     assert!(preferred.contains("command_profile_id: 1"));
     assert!(deprecated.contains("command_profile_id: 1"));
-    assert!(authority.contains("authority_event_id: 1"));
+    assert!(authority.contains("authority_event_id: "));
     assert!(rules.contains("shadowed_by="));
     assert!(git_commit.contains("git_commit_id: 1"));
     assert!(git_file.contains("git_file_change_id: 1"));
