@@ -1672,12 +1672,14 @@ fn stop_on_severity_none_does_not_block_findings() {
 
     let plans = list_review_plans(temp.path()).unwrap();
     assert_eq!(plans[0].status, "blocked");
+    let approval_authority_event_id = approval_authority_event(temp.path());
     add_general_acceptance(
         temp.path(),
         NewGeneralAcceptance {
             target: &format!("finding:{}", finding.finding_id),
             acceptance_type: "explicit_exception",
             reason: "user accepted this finding as an explicit exception",
+            approval_authority_event_id,
         },
     )
     .unwrap();

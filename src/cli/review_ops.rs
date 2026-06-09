@@ -355,6 +355,7 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
                         target: &args.target,
                         acceptance_type: &args.acceptance_type,
                         reason: &args.reason,
+                        approval_authority_event_id: args.authority,
                     },
                 )?;
                 println!("accepted design exception");
@@ -386,6 +387,7 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
                         target: &args.target,
                         acceptance_type: &args.acceptance_type,
                         reason: &args.reason,
+                        approval_authority_event_id: args.authority,
                     },
                 )?;
                 println!("accepted workflow exception");

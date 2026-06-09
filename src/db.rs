@@ -159,6 +159,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "rule_bindings", "review_plan_id", "integer")?;
     ensure_column(conn, "rule_bindings", "validation_gate_id", "integer")?;
     ensure_column(conn, "rule_bindings", "acceptance_record_id", "integer")?;
+    ensure_column(conn, "design_packages", "package_id", "text")?;
+    ensure_column(conn, "design_packages", "root_path", "text")?;
+    ensure_column(conn, "design_packages", "format", "text")?;
+    ensure_column(conn, "design_packages", "version", "integer")?;
+    ensure_column(conn, "design_packages", "package_hash", "text")?;
+    ensure_column(conn, "design_versions", "source_ref", "text")?;
+    ensure_column(conn, "design_versions", "package_hash", "text")?;
+    ensure_column(conn, "design_versions", "approved_at", "text")?;
     ensure_column(
         conn,
         "resume_checks",
@@ -2798,12 +2806,18 @@ create table if not exists design_packages (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
     design_key text not null,
+    package_id text not null,
     title text not null,
-    status text not null default 'draft' check (status in ('draft', 'imported', 'approved', 'superseded', 'archived')),
+    root_path text not null,
+    format text not null,
+    version integer not null,
+    package_hash text,
+    status text not null default 'draft' check (status in ('draft', 'reviewed', 'approved', 'superseded')),
     current_design_version_id integer,
     created_at text not null,
     updated_at text not null,
-    unique(project_id, design_key)
+    unique(project_id, design_key),
+    unique(project_id, package_id)
 );
 
 create table if not exists design_versions (
@@ -2811,14 +2825,17 @@ create table if not exists design_versions (
     project_id integer not null references projects(id) on delete cascade,
     design_package_id integer not null references design_packages(id) on delete cascade,
     version_number integer not null,
+    source_ref text not null,
+    package_hash text not null,
     content_hash text not null,
     package_path text not null,
     manifest_path text not null,
     format text not null,
     manifest_version integer not null,
-    status text not null default 'draft' check (status in ('draft', 'imported', 'approved', 'superseded', 'rejected')),
+    status text not null default 'draft' check (status in ('draft', 'reviewed', 'approved', 'superseded')),
     imported_at text not null,
     approved_by_authority_event_id integer references authority_events(id),
+    approved_at text,
     unique(design_package_id, version_number),
     unique(design_package_id, content_hash)
 );

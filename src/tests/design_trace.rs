@@ -108,14 +108,48 @@ fn design_import_records_package_version_and_files() {
     assert_eq!(import.content_hash.len(), 64);
 
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let package: (String, String, String, i64) = conn
+    let package: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        i64,
+    ) = conn
         .query_row(
             r#"
-            select design_key, title, status, current_design_version_id
+            select design_key, package_id, title, root_path, format, version,
+                   package_hash, status, current_design_version_id
             from design_packages
             where id = ?1
             "#,
             params![import.design_package_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    let version: (String, String, String, Option<String>) = conn
+        .query_row(
+            r#"
+            select source_ref, package_hash, status, approved_at
+            from design_versions
+            where id = ?1
+            "#,
+            params![import.design_version_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
@@ -135,9 +169,26 @@ fn design_import_records_package_version_and_files() {
         .unwrap();
 
     assert_eq!(package.0, "storage-lifecycle");
-    assert_eq!(package.1, "Storage Lifecycle");
-    assert_eq!(package.2, "draft");
-    assert_eq!(package.3, import.design_version_id);
+    assert_eq!(package.1, "storage-lifecycle");
+    assert_eq!(package.2, "Storage Lifecycle");
+    assert!(
+        package
+            .3
+            .ends_with(".agent-workbench/designs/storage-lifecycle")
+    );
+    assert_eq!(package.4, "arc42-agent-workbench");
+    assert_eq!(package.5, 1);
+    assert_eq!(package.6, import.content_hash);
+    assert_eq!(package.7, "draft");
+    assert_eq!(package.8, import.design_version_id);
+    assert!(
+        version
+            .0
+            .ends_with(".agent-workbench/designs/storage-lifecycle")
+    );
+    assert_eq!(version.1, import.content_hash);
+    assert_eq!(version.2, "draft");
+    assert!(version.3.is_none());
     assert_eq!(file_count, 14);
     assert_eq!(short_file_hashes, 0);
 }
@@ -1545,6 +1596,7 @@ fn approved_coverage_acceptance_can_satisfy_trace_closure() {
     )
     .unwrap();
     let close_without_acceptance = close_task(temp.path(), task.task_id, Some("abc123"));
+    let approval_authority_event_id = approval_authority_event(temp.path());
     let acceptance = accept_design_exception(
         temp.path(),
         NewDesignExceptionAcceptance {
@@ -1553,6 +1605,7 @@ fn approved_coverage_acceptance_can_satisfy_trace_closure() {
             target: &format!("coverage:{}", coverage.coverage_item_id),
             acceptance_type: "accepted_out_of_scope",
             reason: "coverage is explicitly out of scope for this work",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -1966,12 +2019,14 @@ This requirement describes changed cleanup behavior that must be implemented.
             .any(|record| record.record_type == "review_plan")
     );
 
+    let approval_authority_event_id = approval_authority_event(temp.path());
     add_general_acceptance(
         temp.path(),
         NewGeneralAcceptance {
             target: "stale:task_derivation:1",
             acceptance_type: "stale_accepted",
             reason: "user accepted stale derivation while preserving scope",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -1981,6 +2036,7 @@ This requirement describes changed cleanup behavior that must be implemented.
             target: "stale:checklist:1",
             acceptance_type: "stale_accepted",
             reason: "user accepted stale checklist while preserving scope",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -1990,6 +2046,7 @@ This requirement describes changed cleanup behavior that must be implemented.
             target: "stale:coverage_item:1",
             acceptance_type: "stale_accepted",
             reason: "user accepted stale coverage while preserving scope",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -2052,6 +2109,7 @@ fn design_exception_acceptance_targets_requirements_and_gate_templates() {
     )
     .unwrap();
 
+    let approval_authority_event_id = approval_authority_event(temp.path());
     let requirement_acceptance = accept_design_exception(
         temp.path(),
         NewDesignExceptionAcceptance {
@@ -2060,6 +2118,7 @@ fn design_exception_acceptance_targets_requirements_and_gate_templates() {
             target: "requirement:REQ-001",
             acceptance_type: "accepted_out_of_scope",
             reason: "not needed for current scope",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -2071,6 +2130,7 @@ fn design_exception_acceptance_targets_requirements_and_gate_templates() {
             target: "gate:GATE-001",
             acceptance_type: "explicit_exception",
             reason: "manual validation for this draft",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -2267,6 +2327,7 @@ fn design_exception_acceptance_allows_pre_import_size_exceptions() {
             .join("\n"),
     )
     .unwrap();
+    let approval_authority_event_id = approval_authority_event(temp.path());
     let file_acceptance = accept_design_exception(
         temp.path(),
         NewDesignExceptionAcceptance {
@@ -2275,6 +2336,7 @@ fn design_exception_acceptance_allows_pre_import_size_exceptions() {
             target: "file:01-introduction-goals.md",
             acceptance_type: "explicit_exception",
             reason: "temporary source document is larger than the import guardrail",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -2327,6 +2389,7 @@ status: active
             target: "requirement:REQ-001",
             acceptance_type: "explicit_exception",
             reason: "temporary requirement source is larger than the import guardrail",
+            approval_authority_event_id,
         },
     )
     .unwrap();
@@ -3212,11 +3275,11 @@ fn design_approval_marks_current_version_and_creates_authority() {
     assert_eq!(approval.design_version_id, import.design_version_id);
     assert_eq!(approval.design_package_id, import.design_package_id);
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let approved: (String, i64) = conn
+    let approved: (String, i64, Option<String>) = conn
         .query_row(
-            "select status, approved_by_authority_event_id from design_versions where id = ?1",
+            "select status, approved_by_authority_event_id, approved_at from design_versions where id = ?1",
             params![import.design_version_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
     let package_status: String = conn
@@ -3234,10 +3297,9 @@ fn design_approval_marks_current_version_and_creates_authority() {
         )
         .unwrap();
 
-    assert_eq!(
-        approved,
-        ("approved".to_string(), approval.authority_event_id)
-    );
+    assert_eq!(approved.0, "approved");
+    assert_eq!(approved.1, approval.authority_event_id);
+    assert!(approved.2.is_some());
     assert_eq!(package_status, "approved");
     assert_eq!(authority.0, "design_doc");
     assert_eq!(authority.1, "design passed document checks");
@@ -3396,6 +3458,7 @@ fn design_ready_allows_missing_validation_when_requirement_exception_is_accepted
         },
     )
     .unwrap();
+    let approval_authority_event_id = approval_authority_event(temp.path());
     let acceptance = accept_design_exception(
         temp.path(),
         NewDesignExceptionAcceptance {
@@ -3404,6 +3467,7 @@ fn design_ready_allows_missing_validation_when_requirement_exception_is_accepted
             target: "requirement:REQ-001",
             acceptance_type: "evidence_gap",
             reason: "validation will be selected after implementation planning",
+            approval_authority_event_id,
         },
     )
     .unwrap();

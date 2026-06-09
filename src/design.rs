@@ -134,7 +134,7 @@ pub fn import_design_package(
         bail!("unsupported design manifest version: {}", manifest.version);
     }
     match manifest.status.as_str() {
-        "draft" | "imported" | "approved" | "superseded" | "archived" => {}
+        "draft" | "reviewed" | "approved" | "superseded" => {}
         _ => bail!("invalid design manifest status: {}", manifest.status),
     }
     for dependency in &manifest.depends_on {
@@ -195,15 +195,31 @@ pub fn import_design_package(
     tx.execute(
         r#"
         insert into design_packages(
-            project_id, design_key, title, status, created_at, updated_at
+            project_id, design_key, package_id, title, root_path, format, version,
+            package_hash, status, created_at, updated_at
         )
-        values (?1, ?2, ?3, ?4, current_timestamp, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, current_timestamp, current_timestamp)
         on conflict(project_id, design_key) do update set
             title = excluded.title,
+            package_id = excluded.package_id,
+            root_path = excluded.root_path,
+            format = excluded.format,
+            version = excluded.version,
+            package_hash = excluded.package_hash,
             status = excluded.status,
             updated_at = current_timestamp
         "#,
-        params![project_id, manifest.id, manifest.title, input.status],
+        params![
+            project_id,
+            manifest.id,
+            manifest.id,
+            manifest.title,
+            display_path(&package_path),
+            manifest.format,
+            manifest.version,
+            content_hash,
+            input.status,
+        ],
     )?;
     let design_package_id: i64 = tx.query_row(
         "select id from design_packages where project_id = ?1 and design_key = ?2",
@@ -228,15 +244,18 @@ pub fn import_design_package(
     tx.execute(
         r#"
         insert into design_versions(
-            project_id, design_package_id, version_number, content_hash,
-            package_path, manifest_path, format, manifest_version, status, imported_at
+            project_id, design_package_id, version_number, source_ref, package_hash,
+            content_hash, package_path, manifest_path, format, manifest_version,
+            status, imported_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, current_timestamp)
         "#,
         params![
             project_id,
             design_package_id,
             version_number,
+            display_path(&package_path),
+            content_hash,
             content_hash,
             display_path(&package_path),
             display_path(&manifest_path),
@@ -674,6 +693,7 @@ pub fn accept_design_exception(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_active_authority_event(&tx, project_id, input.approval_authority_event_id)?;
     let target = match (input.design_version_id, input.design_package) {
         (Some(design_version_id), None) => {
             resolve_design_acceptance_target(&tx, project_id, design_version_id, input.target)?
@@ -689,24 +709,6 @@ pub fn accept_design_exception(
         _ => unreachable!("validated above"),
     };
 
-    tx.execute(
-        r#"
-        insert into authority_events(
-            project_id, event_type, source, text_or_summary, scope, precedence,
-            status, created_at
-        )
-        values (?1, 'user_instruction', 'design acceptance', ?2, ?3, 100, 'active', current_timestamp)
-        "#,
-        params![
-            project_id,
-            format!(
-                "accepted design exception for {} on {}: {}",
-                input.target, scope, input.reason
-            ),
-            scope,
-        ],
-    )?;
-    let authority_event_id = tx.last_insert_rowid();
     tx.execute(
         r#"
         insert into acceptance_records(
@@ -735,7 +737,7 @@ pub fn accept_design_exception(
             input.acceptance_type,
             input.reason,
             scope,
-            authority_event_id,
+            input.approval_authority_event_id,
         ],
     )?;
     let acceptance_record_id = tx.last_insert_rowid();
@@ -767,7 +769,7 @@ pub fn accept_design_exception(
 
     Ok(DesignExceptionAcceptanceOutcome {
         acceptance_record_id,
-        authority_event_id,
+        authority_event_id: input.approval_authority_event_id,
         target_type: target.target_type.to_string(),
         design_requirement_id: target.design_requirement_id,
         validation_gate_template_id: target.validation_gate_template_id,
@@ -786,25 +788,8 @@ pub fn add_general_acceptance(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_active_authority_event(&tx, project_id, input.approval_authority_event_id)?;
     let target = resolve_general_acceptance_target(&tx, project_id, input.target)?;
-    tx.execute(
-        r#"
-        insert into authority_events(
-            project_id, event_type, source, text_or_summary, scope, precedence,
-            status, created_at
-        )
-        values (?1, 'user_instruction', 'acceptance', ?2, ?3, 100, 'active', current_timestamp)
-        "#,
-        params![
-            project_id,
-            format!(
-                "accepted {} for {}: {}",
-                input.acceptance_type, input.target, input.reason
-            ),
-            input.target,
-        ],
-    )?;
-    let authority_event_id = tx.last_insert_rowid();
     tx.execute(
         r#"
         insert into acceptance_records(
@@ -841,14 +826,14 @@ pub fn add_general_acceptance(
             input.acceptance_type,
             input.reason,
             input.target,
-            authority_event_id,
+            input.approval_authority_event_id,
         ],
     )?;
     let acceptance_record_id = tx.last_insert_rowid();
     tx.commit()?;
     Ok(GeneralAcceptanceOutcome {
         acceptance_record_id,
-        authority_event_id,
+        authority_event_id: input.approval_authority_event_id,
         target_type: target.target_type.to_string(),
     })
 }
@@ -965,6 +950,32 @@ fn ensure_direct_project_row(
     conn.query_row(&sql, params![id, project_id], |_| Ok(()))
         .optional()?
         .with_context(|| format!("{table} row not found for project"))?;
+    Ok(())
+}
+
+fn ensure_active_authority_event(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    authority_event_id: i64,
+) -> Result<()> {
+    let exists: bool = conn
+        .query_row(
+            r#"
+            select exists(
+                select 1
+                from authority_events
+                where id = ?1
+                  and project_id = ?2
+                  and status = 'active'
+            )
+            "#,
+            params![authority_event_id, project_id],
+            |row| row.get(0),
+        )
+        .context("failed to validate acceptance authority event")?;
+    if !exists {
+        bail!("acceptance approval requires an active authority event from this project");
+    }
     Ok(())
 }
 
@@ -1126,7 +1137,9 @@ pub fn approve_design_version(
     tx.execute(
         r#"
         update design_versions
-        set status = 'approved', approved_by_authority_event_id = ?1
+        set status = 'approved',
+            approved_by_authority_event_id = ?1,
+            approved_at = current_timestamp
         where id = ?2
         "#,
         params![authority_event_id, version.design_version_id],
@@ -1415,8 +1428,8 @@ fn validate_design_id(design_id: &str) -> Result<()> {
 
 fn validate_import_status(status: &str) -> Result<()> {
     match status {
-        "draft" | "imported" => Ok(()),
-        _ => bail!("design import status must be draft or imported"),
+        "draft" | "reviewed" => Ok(()),
+        _ => bail!("design import status must be draft or reviewed"),
     }
 }
 
@@ -2810,12 +2823,14 @@ pub struct NewDesignExceptionAcceptance<'a> {
     pub target: &'a str,
     pub acceptance_type: &'a str,
     pub reason: &'a str,
+    pub approval_authority_event_id: i64,
 }
 
 pub struct NewGeneralAcceptance<'a> {
     pub target: &'a str,
     pub acceptance_type: &'a str,
     pub reason: &'a str,
+    pub approval_authority_event_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

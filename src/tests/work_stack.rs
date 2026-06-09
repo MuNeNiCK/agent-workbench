@@ -1024,6 +1024,7 @@ fn close_ready_allows_explicitly_accepted_validation_failures() {
     .unwrap();
 
     let blocked = close_ready(temp.path()).unwrap();
+    let approval_authority_event_id = approval_authority_event(temp.path());
     accept_design_exception(
         temp.path(),
         NewDesignExceptionAcceptance {
@@ -1032,6 +1033,7 @@ fn close_ready_allows_explicitly_accepted_validation_failures() {
             target: "gate:GATE-001",
             acceptance_type: "explicit_exception",
             reason: "known external failure accepted by user",
+            approval_authority_event_id,
         },
     )
     .unwrap();

@@ -41,6 +41,31 @@ fn conn(root: &Path) -> Connection {
         .expect("failed to open ledger")
 }
 
+fn cli_approval_authority_event(root: &Path) -> String {
+    ok(
+        root,
+        &[
+            "authority",
+            "event",
+            "add",
+            "--type",
+            "user_instruction",
+            "--summary",
+            "approve exception for test",
+            "--source",
+            "test-user",
+        ],
+    );
+    conn(root)
+        .query_row(
+            "select id from authority_events order by id desc limit 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        .to_string()
+}
+
 fn cli_record_close_evidence(root: &Path, work_unit_id: i64, activation_id: i64) -> i64 {
     ok(
         root,
@@ -628,6 +653,7 @@ fn acceptance_add_records_design_exception() {
         ],
     );
 
+    let authority = cli_approval_authority_event(temp.path());
     let output = ok(
         temp.path(),
         &[
@@ -641,6 +667,8 @@ fn acceptance_add_records_design_exception() {
             "accepted_out_of_scope",
             "--reason",
             "not needed for current scope",
+            "--authority",
+            &authority,
         ],
     );
 
@@ -675,6 +703,7 @@ fn acceptance_add_records_package_scoped_design_exception() {
     )
     .unwrap();
 
+    let authority = cli_approval_authority_event(temp.path());
     let output = ok(
         temp.path(),
         &[
@@ -688,6 +717,8 @@ fn acceptance_add_records_package_scoped_design_exception() {
             "explicit_exception",
             "--reason",
             "temporary source document is larger than the import guardrail",
+            "--authority",
+            &authority,
         ],
     );
     let imported = ok(
@@ -1142,6 +1173,7 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "not applicable",
         ],
     );
+    let authority = cli_approval_authority_event(temp.path());
     let coverage_acceptance = ok(
         temp.path(),
         &[
@@ -1155,6 +1187,8 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "accepted_out_of_scope",
             "--reason",
             "coverage is explicitly out of scope",
+            "--authority",
+            &authority,
         ],
     );
 

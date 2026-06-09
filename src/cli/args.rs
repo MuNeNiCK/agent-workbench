@@ -1465,6 +1465,8 @@ pub(crate) struct AcceptanceAddArgs {
     pub(crate) acceptance_type: String,
     #[arg(long)]
     pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
 }
 
 #[derive(Debug, Subcommand)]

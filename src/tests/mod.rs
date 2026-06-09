@@ -75,6 +75,21 @@ Run the project test suite before implementation handoff.
     )
 }
 
+fn approval_authority_event(root: &std::path::Path) -> i64 {
+    add_authority_event(
+        root,
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "approve exception for test",
+            scope: Some("test"),
+            precedence: 100,
+        },
+    )
+    .unwrap()
+    .authority_event_id
+}
+
 fn record_close_evidence(
     root: &std::path::Path,
     work_unit_id: i64,
