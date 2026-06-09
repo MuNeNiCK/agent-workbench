@@ -1,0 +1,54 @@
+site_name: Agent Workbench
+site_description: Durable project memory for coding-agent work.
+site_url: https://munenick.github.io/agent-workbench/
+repo_url: https://github.com/MuNeNiCK/agent-workbench
+repo_name: MuNeNiCK/agent-workbench
+docs_dir: content
+site_dir: ../site
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Overview: index.md
+  - Quick Start: quick-start.md
+  - Concepts: concepts.md
+  - Workflows: workflows.md
+  - Design Packages: design-packages.md
+  - Operations: operations.md
+  - Agent Skills: agent-skills.md
+  - Reference: reference.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
