@@ -8,6 +8,7 @@ mod planning;
 mod records;
 mod repository;
 mod review;
+mod review_context;
 mod rules;
 mod traceability;
 mod work;
@@ -84,6 +85,9 @@ pub use review::{
     list_findings, list_review_plan_targets, list_review_plans, list_review_policies,
     list_review_runs, list_review_scopes, start_review_scope,
 };
+pub use review_context::{
+    ReviewContextDocument, ReviewContextQuery, render_review_context, review_context_ref,
+};
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
     add_user_correction, applicable_rules, list_user_corrections,
@@ -94,12 +98,13 @@ pub use traceability::{
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
     NewImplementationEvidence, NewImplementationEvidenceWithGit, NewTaskDerivation,
     NewValidationRun, StaleRecord, TaskDerivationListQuery, TaskDerivationOutcome,
-    TaskDerivationRecord, ValidationGateSelection, ValidationGateSelectionOutcome,
-    ValidationRunListQuery, ValidationRunOutcome, ValidationRunRecord, add_implementation_evidence,
+    TaskDerivationRecord, ValidationGateContextQuery, ValidationGateContextRecord,
+    ValidationGateSelection, ValidationGateSelectionOutcome, ValidationRunListQuery,
+    ValidationRunOutcome, ValidationRunRecord, add_implementation_evidence,
     add_implementation_evidence_with_git, add_validation_run, decompose_design,
     derive_task_from_requirement, implementation_ready, list_checklists,
-    list_implementation_evidence, list_stale_records, list_task_derivations, list_validation_runs,
-    select_validation_gate,
+    list_implementation_evidence, list_stale_records, list_task_derivations,
+    list_validation_gate_context, list_validation_runs, select_validation_gate,
 };
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,

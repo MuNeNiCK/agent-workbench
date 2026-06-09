@@ -204,19 +204,7 @@ fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -
             select 1
             from implementation_evidence e
             where e.task_id = td.task_id
-              and (
-                e.design_requirement_id = td.design_requirement_id
-                or (
-                  e.design_requirement_id is null
-                  and not exists (
-                    select 1
-                    from task_derivations sibling
-                    where sibling.task_id = td.task_id
-                      and sibling.status = 'active'
-                      and sibling.design_requirement_id != td.design_requirement_id
-                  )
-                )
-              )
+              and e.design_requirement_id = td.design_requirement_id
           )
         "#,
         params![task_id],
@@ -232,13 +220,17 @@ fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -
         r#"
         select count(*)
         from task_derivations td
+        join tasks t on t.id = td.task_id
         where td.task_id = ?1
           and td.status = 'active'
           and not exists (
             select 1
             from coverage_items c
             where c.design_requirement_id = td.design_requirement_id
-              and (c.task_id = td.task_id or c.task_id is null)
+              and (
+                c.task_id = td.task_id
+                or (c.task_id is null and c.work_unit_id = t.work_unit_id)
+              )
               and (
                 c.status = 'covered'
                 or (

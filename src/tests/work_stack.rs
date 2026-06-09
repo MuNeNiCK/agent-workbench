@@ -237,7 +237,7 @@ fn trace_aware_resume_blocks_stale_coverage_items() {
             work_unit_id: None,
             task_id: Some(task.task_id),
             requirement: "cleanup behavior is connected",
-            runtime_boundary_evidence: None,
+            runtime_boundary_evidence: Some("cleanup path is exercised"),
             ux_boundary_evidence: None,
             lifecycle_boundary_evidence: None,
             tests_or_gates: Some("GATE-001"),

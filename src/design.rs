@@ -8,6 +8,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::db::{default_design_root, open_existing_project, project_id};
+use crate::review_context::required_plans_missing_context_count;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 const ARC42_FILES: &[(&str, &str)] = &[
@@ -816,22 +817,26 @@ pub fn design_ready(root: &Path, input: DesignReadyCheck) -> Result<DesignReadyO
             Some("add a required design-ready design_review plan for this design version"),
         ));
     } else if review_state.incomplete_required_plan_count == 0
+        && review_state.missing_context_run_count == 0
         && review_state.unresolved_finding_count == 0
     {
         items.push(DesignReadyItem::pass(
             "design_review_clean",
             Some(format!(
-                "{} required plans, {} unresolved findings",
-                review_state.required_plan_count, review_state.unresolved_finding_count
+                "{} required plans, {} missing review-context runs, {} unresolved findings",
+                review_state.required_plan_count,
+                review_state.missing_context_run_count,
+                review_state.unresolved_finding_count
             )),
         ));
     } else {
         items.push(DesignReadyItem::fail(
             "design_review_clean",
             Some(format!(
-                "{} required plans, {} incomplete, {} unresolved findings",
+                "{} required plans, {} incomplete, {} missing review-context runs, {} unresolved findings",
                 review_state.required_plan_count,
                 review_state.incomplete_required_plan_count,
+                review_state.missing_context_run_count,
                 review_state.unresolved_finding_count
             )),
         ));
@@ -883,7 +888,7 @@ fn design_review_gate_state(
           and stage = 'design-ready'
           and review_type = 'design_review'
           and required = 1
-          and status not in ('clean', 'accepted_exception', 'not_required')
+          and status != 'clean'
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
@@ -904,9 +909,19 @@ fn design_review_gate_state(
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
     )?;
+    let missing_context_run_count = required_plans_missing_context_count(
+        conn,
+        project_id,
+        "design-ready",
+        "design_review",
+        Some(design_version_id),
+        None,
+        "design-review",
+    )?;
     Ok(ReviewGateState {
         required_plan_count,
         incomplete_required_plan_count,
+        missing_context_run_count,
         unresolved_finding_count,
     })
 }
@@ -915,6 +930,7 @@ fn design_review_gate_state(
 struct ReviewGateState {
     required_plan_count: i64,
     incomplete_required_plan_count: i64,
+    missing_context_run_count: i64,
     unresolved_finding_count: i64,
 }
 

@@ -452,7 +452,34 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
-    add_clean_implementation_ready_review(temp.path(), work.work_unit_id, import.design_version_id);
+    let implementation_review_plan_id = add_implementation_ready_review_plan(
+        temp.path(),
+        work.work_unit_id,
+        import.design_version_id,
+    );
+    let missing_context_run = add_clean_review_run_result(
+        temp.path(),
+        implementation_review_plan_id,
+        None,
+        "clean decomposition review without context",
+    );
+    assert!(missing_context_run.is_err());
+    let blocked_without_review_context = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(import.design_version_id),
+        },
+    )
+    .unwrap();
+    add_clean_review_run(
+        temp.path(),
+        implementation_review_plan_id,
+        Some(&format!(
+            "review-context:design-task-decomposition:design={}:work={}",
+            import.design_version_id, work.work_unit_id
+        )),
+        "clean decomposition review",
+    );
     let passed = implementation_ready(
         temp.path(),
         ImplementationReadyCheck {
@@ -461,27 +488,27 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     )
     .unwrap();
     let close_without_trace = close_task(temp.path(), task.task_id, Some("abc123"));
-    let evidence = add_implementation_evidence(
+    let task_only_evidence = add_implementation_evidence(
         temp.path(),
         NewImplementationEvidence {
             task_id: Some(task.task_id),
-            design_version_id: Some(import.design_version_id),
-            requirement_key: Some("REQ-001"),
+            design_version_id: None,
+            requirement_key: None,
             evidence_type: "commit",
-            commit_sha: Some("abc123"),
+            commit_sha: Some("task-only"),
             file_path: None,
             line_ref: None,
             symbol: None,
             artifact_path: None,
             note: None,
         },
-    )
-    .unwrap();
-    let evidence_records = list_implementation_evidence(
+    );
+    let design_evidence_before_requirement_link = list_implementation_evidence(
         temp.path(),
         ImplementationEvidenceListQuery {
-            task_id: Some(task.task_id),
-            design_version_id: None,
+            task_id: None,
+            design_version_id: Some(import.design_version_id),
+            work_unit_id: None,
         },
     )
     .unwrap();
@@ -503,11 +530,38 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
+    let close_without_requirement_evidence = close_task(temp.path(), task.task_id, Some("abc123"));
+    let evidence = add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(task.task_id),
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "commit",
+            commit_sha: Some("abc123"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    let evidence_records = list_implementation_evidence(
+        temp.path(),
+        ImplementationEvidenceListQuery {
+            task_id: None,
+            design_version_id: Some(import.design_version_id),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
     let coverage_records = list_coverage_items(
         temp.path(),
         CoverageItemListQuery {
             design_version_id: import.design_version_id,
             status: Some("covered"),
+            work_unit_id: None,
         },
     )
     .unwrap();
@@ -533,12 +587,30 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
-    add_clean_close_ready_reviews(temp.path(), work.work_unit_id);
+    let close_review_plans =
+        add_close_ready_review_plans(temp.path(), work.work_unit_id, import.design_version_id);
+    let missing_close_context_runs = add_clean_close_ready_review_runs(
+        temp.path(),
+        work.work_unit_id,
+        import.design_version_id,
+        &close_review_plans,
+        false,
+    );
+    assert!(missing_close_context_runs.iter().all(Result::is_err));
+    let close_blocked_without_context = close_ready(temp.path()).unwrap();
+    add_clean_close_ready_review_runs(
+        temp.path(),
+        work.work_unit_id,
+        import.design_version_id,
+        &close_review_plans,
+        true,
+    );
     let close_passed = close_ready(temp.path()).unwrap();
     let records = list_task_derivations(
         temp.path(),
         TaskDerivationListQuery {
             design_version_id: import.design_version_id,
+            work_unit_id: None,
         },
     )
     .unwrap();
@@ -559,10 +631,21 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             .iter()
             .any(|item| { item.name == "validation_gates_selected" && item.result == "fail" })
     );
+    assert!(blocked_without_review_context.items.iter().any(|item| {
+        item.name == "pre_implementation_reviews_clean"
+            && item.result == "fail"
+            && item
+                .detail
+                .as_deref()
+                .is_some_and(|details| details.contains("missing review-context runs"))
+    }));
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].requirement_key, "REQ-001");
     assert_eq!(passed.result, "pass");
     assert!(close_without_trace.is_err());
+    assert!(task_only_evidence.is_err());
+    assert!(design_evidence_before_requirement_link.is_empty());
+    assert!(close_without_requirement_evidence.is_err());
     assert_eq!(evidence.task_id, Some(task.task_id));
     assert_eq!(evidence_records.len(), 1);
     assert_eq!(
@@ -578,11 +661,607 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             && item.details.contains("design_implementation_diff")
             && item.details.contains("implementation_review")
     }));
+    assert!(close_blocked_without_context.items.iter().any(|item| {
+        item.name == "review_plans_clean"
+            && item.result == "fail"
+            && item.details.contains("missing review-context runs")
+    }));
     assert_eq!(close_passed.result, "pass");
     assert_eq!(coverage.task_id, Some(task.task_id));
     assert_eq!(coverage_records.len(), 1);
     assert_eq!(coverage_records[0].requirement_key, "REQ-001");
     assert_eq!(coverage_records[0].status, "covered");
+}
+
+#[test]
+fn review_context_filters_design_trace_by_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work_one = start_work(temp.path(), "implement cleanup", None).unwrap();
+    let task_one = add_task(
+        temp.path(),
+        NewTask {
+            title: "cleanup task",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("cleanup covered"),
+        },
+    )
+    .unwrap();
+    let work_two =
+        interrupt_work(temp.path(), "implement archival", "parallel design work").unwrap();
+    let task_two = add_task(
+        temp.path(),
+        NewTask {
+            title: "archival task",
+            priority: "medium",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("archival covered"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        format!(
+            "{}\n{}",
+            requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+            requirement_doc("REQ-002", "Preserve archival behavior", "medium")
+        ),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task_one.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-002",
+            task_id: task_two.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(task_one.task_id),
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "commit",
+            commit_sha: Some("cleanup123"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: None,
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "artifact",
+            commit_sha: None,
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: Some("artifacts/cleanup-review.txt"),
+            note: None,
+        },
+    )
+    .unwrap();
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(task_two.task_id),
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-002"),
+            evidence_type: "commit",
+            commit_sha: Some("archival456"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: None,
+            task_id: Some(task_one.task_id),
+            requirement: "cleanup behavior is covered",
+            runtime_boundary_evidence: Some("cleanup runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("cleanup gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-002",
+            review_scope_id: None,
+            work_unit_id: None,
+            task_id: Some(task_two.task_id),
+            requirement: "archival behavior is covered",
+            runtime_boundary_evidence: Some("archival runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("archival gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+
+    let document = render_review_context(
+        temp.path(),
+        ReviewContextQuery {
+            kind: "design-implementation-diff",
+            design_version_id: Some(import.design_version_id),
+            work_unit_id: Some(work_one.work_unit_id),
+        },
+    )
+    .unwrap();
+
+    assert!(document.text.contains("cleanup task"));
+    assert!(document.text.contains("REQ-001"));
+    assert!(document.text.contains("cleanup123"));
+    assert!(document.text.contains("artifacts/cleanup-review.txt"));
+    assert!(document.text.contains("cleanup behavior is covered"));
+    assert!(!document.text.contains("archival task"));
+    assert!(!document.text.contains("REQ-002"));
+    assert!(!document.text.contains("archival456"));
+    assert!(!document.text.contains("archival behavior is covered"));
+    assert_eq!(work_two.child_work_unit_id, task_two.work_unit_id.unwrap());
+
+    let decomposition_document = render_review_context(
+        temp.path(),
+        ReviewContextQuery {
+            kind: "design-task-decomposition",
+            design_version_id: Some(import.design_version_id),
+            work_unit_id: Some(work_one.work_unit_id),
+        },
+    )
+    .unwrap();
+    assert!(decomposition_document.text.contains("REQ-001"));
+    assert!(decomposition_document.text.contains("REQ-002"));
+}
+
+#[test]
+fn review_context_includes_selected_validation_run_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "implement cleanup", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "cleanup task",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("cleanup covered"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    let run = add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            artifact_path: Some("artifacts/gate.log"),
+            artifact_hash: Some("hash123"),
+            notes: Some("cleanup gate passed"),
+        },
+    )
+    .unwrap();
+
+    let document = render_review_context(
+        temp.path(),
+        ReviewContextQuery {
+            kind: "design-implementation-diff",
+            design_version_id: Some(import.design_version_id),
+            work_unit_id: Some(work.work_unit_id),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        document
+            .text
+            .contains(&format!("latest_run={}", run.validation_run_id))
+    );
+    assert!(document.text.contains("latest_result=pass"));
+    assert!(document.text.contains("artifact=artifacts/gate.log"));
+    assert!(document.text.contains("notes=cleanup gate passed"));
+}
+
+#[test]
+fn implementation_ready_rejects_requirement_coverage_from_another_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work_one = start_work(temp.path(), "implement cleanup", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "cleanup task",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("cleanup covered"),
+        },
+    )
+    .unwrap();
+    let work_two = interrupt_work(temp.path(), "unrelated implementation", "parallel work")
+        .unwrap()
+        .child_work_unit_id;
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: import.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    add_clean_implementation_ready_review(
+        temp.path(),
+        work_one.work_unit_id,
+        import.design_version_id,
+    );
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(task.task_id),
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "commit",
+            commit_sha: Some("abc123"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work_two),
+            task_id: None,
+            requirement: "cleanup behavior is covered elsewhere",
+            runtime_boundary_evidence: Some("other work runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("other gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    close_task(temp.path(), task.task_id, Some("abc123")).unwrap_err();
+    crate::db::open_existing_project(temp.path())
+        .unwrap()
+        .execute(
+            "update tasks set status = 'closed' where id = ?1",
+            rusqlite::params![task.task_id],
+        )
+        .unwrap();
+
+    let blocked = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(import.design_version_id),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        blocked
+            .items
+            .iter()
+            .any(|item| { item.name == "coverage_items_present" && item.result == "fail" })
+    );
+}
+
+#[test]
+fn task_close_rejects_requirement_coverage_from_another_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work_one = start_work(temp.path(), "implement cleanup", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "cleanup task",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("cleanup covered"),
+        },
+    )
+    .unwrap();
+    let work_two =
+        interrupt_work(temp.path(), "unrelated implementation", "parallel work").unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+        },
+    )
+    .unwrap();
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(task.task_id),
+            design_version_id: Some(import.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "commit",
+            commit_sha: Some("abc123"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work_two.child_work_unit_id),
+            task_id: None,
+            requirement: "cleanup behavior is covered elsewhere",
+            runtime_boundary_evidence: Some("other work runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("other gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    let mismatched_task_work_coverage = add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work_two.child_work_unit_id),
+            task_id: Some(task.task_id),
+            requirement: "cleanup behavior is incorrectly attributed",
+            runtime_boundary_evidence: Some("wrong work runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("wrong gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    );
+
+    let wrong_work_coverage = close_task(temp.path(), task.task_id, Some("abc123"));
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work_one.work_unit_id),
+            task_id: None,
+            requirement: "cleanup behavior is covered in this work",
+            runtime_boundary_evidence: Some("cleanup runtime path"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("cleanup gate"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    let same_work_coverage = close_task(temp.path(), task.task_id, Some("abc123"));
+
+    assert!(mismatched_task_work_coverage.is_err());
+    assert!(wrong_work_coverage.is_err());
+    assert!(same_work_coverage.is_ok());
 }
 
 #[test]
@@ -1156,7 +1835,7 @@ fn implementation_ready_blocks_stale_derivations_and_checklists() {
             work_unit_id: None,
             task_id: Some(task.task_id),
             requirement: "cleanup behavior is connected",
-            runtime_boundary_evidence: None,
+            runtime_boundary_evidence: Some("cleanup path is exercised"),
             ux_boundary_evidence: None,
             lifecycle_boundary_evidence: None,
             tests_or_gates: Some("GATE-001"),
@@ -2491,12 +3170,13 @@ fn design_ready_blocks_until_current_version_is_approved() {
         },
     )
     .unwrap();
+    let review_work_unit_id = start_work(temp.path(), "design-ready review", None)
+        .unwrap()
+        .work_unit_id;
     let plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
-            work_unit_id: start_work(temp.path(), "design-ready review", None)
-                .unwrap()
-                .work_unit_id,
+            work_unit_id: review_work_unit_id,
             design_version_id: Some(import.design_version_id),
             review_type: "design_review",
             required: true,
@@ -2515,7 +3195,10 @@ fn design_ready_blocks_until_current_version_is_approved() {
             review_plan_id: plan.review_plan_id,
             run_type: "fresh",
             run_purpose: "new_unbiased_review",
-            target_ref: None,
+            target_ref: Some(&format!(
+                "review-context:design-review:design={}:work={}",
+                import.design_version_id, review_work_unit_id
+            )),
             prompt_deviations: None,
             result_summary: Some("clean design review"),
             new_findings_count: 0,
@@ -2551,6 +3234,22 @@ fn add_clean_implementation_ready_review(
     work_unit_id: i64,
     design_version_id: i64,
 ) {
+    let plan_id = add_implementation_ready_review_plan(root, work_unit_id, design_version_id);
+    add_clean_review_run(
+        root,
+        plan_id,
+        Some(&format!(
+            "review-context:design-task-decomposition:design={design_version_id}:work={work_unit_id}"
+        )),
+        "clean decomposition review",
+    );
+}
+
+fn add_implementation_ready_review_plan(
+    root: &std::path::Path,
+    work_unit_id: i64,
+    design_version_id: i64,
+) -> i64 {
     let plan = add_review_plan(
         root,
         NewReviewPlan {
@@ -2567,33 +3266,21 @@ fn add_clean_implementation_ready_review(
         },
     )
     .unwrap();
-    add_review_run(
-        root,
-        NewReviewRun {
-            review_plan_id: plan.review_plan_id,
-            run_type: "fresh",
-            run_purpose: "new_unbiased_review",
-            target_ref: None,
-            prompt_deviations: None,
-            result_summary: Some("clean decomposition review"),
-            new_findings_count: 0,
-            carried_findings_checked: 0,
-            clean_run: true,
-            status: "completed",
-            agent_label: None,
-            external_agent_id: None,
-        },
-    )
-    .unwrap();
+    plan.review_plan_id
 }
 
-fn add_clean_close_ready_reviews(root: &std::path::Path, work_unit_id: i64) {
+fn add_close_ready_review_plans(
+    root: &std::path::Path,
+    work_unit_id: i64,
+    design_version_id: i64,
+) -> Vec<(i64, &'static str)> {
+    let mut plans = Vec::new();
     for review_type in ["design_implementation_diff", "implementation_review"] {
         let plan = add_review_plan(
             root,
             NewReviewPlan {
                 work_unit_id,
-                design_version_id: None,
+                design_version_id: Some(design_version_id),
                 review_type,
                 required: true,
                 stage: "close-ready",
@@ -2605,23 +3292,71 @@ fn add_clean_close_ready_reviews(root: &std::path::Path, work_unit_id: i64) {
             },
         )
         .unwrap();
-        add_review_run(
-            root,
-            NewReviewRun {
-                review_plan_id: plan.review_plan_id,
-                run_type: "fresh",
-                run_purpose: "new_unbiased_review",
-                target_ref: None,
-                prompt_deviations: None,
-                result_summary: Some("clean close review"),
-                new_findings_count: 0,
-                carried_findings_checked: 0,
-                clean_run: true,
-                status: "completed",
-                agent_label: None,
-                external_agent_id: None,
-            },
-        )
-        .unwrap();
+        plans.push((plan.review_plan_id, review_type));
     }
+    plans
+}
+
+fn add_clean_close_ready_review_runs(
+    root: &std::path::Path,
+    work_unit_id: i64,
+    design_version_id: i64,
+    plans: &[(i64, &'static str)],
+    use_context: bool,
+) -> Vec<anyhow::Result<ReviewRunOutcome>> {
+    let mut results = Vec::new();
+    for (review_plan_id, review_type) in plans {
+        let context_kind = match *review_type {
+            "design_implementation_diff" => "design-implementation-diff",
+            "implementation_review" => "implementation-review",
+            _ => unreachable!(),
+        };
+        let target_ref = use_context.then(|| {
+            format!("review-context:{context_kind}:design={design_version_id}:work={work_unit_id}")
+        });
+        let result = add_clean_review_run_result(
+            root,
+            *review_plan_id,
+            target_ref.as_deref(),
+            "clean close review",
+        );
+        results.push(result);
+    }
+    results
+}
+
+fn add_clean_review_run(
+    root: &std::path::Path,
+    review_plan_id: i64,
+    target_ref: Option<&str>,
+    summary: &str,
+) -> i64 {
+    add_clean_review_run_result(root, review_plan_id, target_ref, summary)
+        .unwrap()
+        .review_run_id
+}
+
+fn add_clean_review_run_result(
+    root: &std::path::Path,
+    review_plan_id: i64,
+    target_ref: Option<&str>,
+    summary: &str,
+) -> anyhow::Result<ReviewRunOutcome> {
+    add_review_run(
+        root,
+        NewReviewRun {
+            review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref,
+            prompt_deviations: None,
+            result_summary: Some(summary),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
 }

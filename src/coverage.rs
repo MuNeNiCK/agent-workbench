@@ -12,6 +12,22 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
     if input.status == "accepted_out_of_scope" {
         bail!("coverage accepted_out_of_scope requires an approved acceptance record");
     }
+    if input.status == "covered" {
+        let has_boundary_evidence = [
+            input.runtime_boundary_evidence,
+            input.ux_boundary_evidence,
+            input.lifecycle_boundary_evidence,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty());
+        let has_tests_or_gates = input
+            .tests_or_gates
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_boundary_evidence || !has_tests_or_gates {
+            bail!("covered coverage requires boundary evidence and tests_or_gates");
+        }
+    }
     let design_requirement_id = tx
         .query_row(
             r#"
@@ -27,9 +43,8 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
         )
         .optional()?
         .context("active design requirement not found")?;
-    let work_unit_id = match (input.work_unit_id, input.task_id) {
-        (Some(work_unit_id), _) => Some(work_unit_id),
-        (None, Some(task_id)) => tx
+    let task_work_unit_id = match input.task_id {
+        Some(task_id) => tx
             .query_row(
                 "select work_unit_id from tasks where id = ?1",
                 params![task_id],
@@ -37,8 +52,15 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
             )
             .optional()?
             .context("task not found")?,
-        (None, None) => None,
+        None => None,
     };
+    if let (Some(input_work_unit_id), Some(task_work_unit_id)) =
+        (input.work_unit_id, task_work_unit_id)
+        && input_work_unit_id != task_work_unit_id
+    {
+        bail!("coverage work unit must match task work unit");
+    };
+    let work_unit_id = input.work_unit_id.or(task_work_unit_id);
     if let Some(task_id) = input.task_id {
         let derived = tx
             .query_row(
@@ -108,14 +130,21 @@ pub fn list_coverage_items(
             c.status, c.tests_or_gates, c.missing_or_unverified
         from coverage_items c
         join design_requirements r on r.id = c.design_requirement_id
+        left join tasks t on t.id = c.task_id
         where c.project_id = ?1
           and r.design_version_id = ?2
           and (?3 is null or c.status = ?3)
+          and (?4 is null or coalesce(c.work_unit_id, t.work_unit_id) = ?4)
         order by r.requirement_key, c.id
         "#,
     )?;
     let rows = stmt.query_map(
-        params![project_id, input.design_version_id, input.status],
+        params![
+            project_id,
+            input.design_version_id,
+            input.status,
+            input.work_unit_id
+        ],
         |row| {
             Ok(CoverageItemRecord {
                 id: row.get(0)?,
@@ -154,6 +183,7 @@ pub struct NewCoverageItem<'a> {
 pub struct CoverageItemListQuery<'a> {
     pub design_version_id: i64,
     pub status: Option<&'a str>,
+    pub work_unit_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

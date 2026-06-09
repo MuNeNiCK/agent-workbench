@@ -686,7 +686,7 @@ fn design_approve_allows_design_ready_gate_to_pass() {
             "1",
         ],
     );
-    ok(
+    let missing_review_context_target = err(
         temp.path(),
         &[
             "review",
@@ -700,6 +700,25 @@ fn design_approve_allows_design_ready_gate_to_pass() {
             "new_unbiased_review",
             "--clean",
             "--summary",
+            "clean decomposition review without context",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-review:design=1:work=1",
+            "--clean",
+            "--summary",
             "clean design review",
         ],
     );
@@ -707,6 +726,7 @@ fn design_approve_allows_design_ready_gate_to_pass() {
         temp.path(),
         &["gate", "design-ready", "--design-version", "1", "--dry-run"],
     );
+    assert!(missing_review_context_target.contains("must use review-context target"));
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("design_version_approved: pass"));
 
@@ -845,6 +865,23 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "1",
         ],
     );
+    let missing_review_context_target = err(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--clean",
+            "--summary",
+            "clean decomposition review without context",
+        ],
+    );
     ok(
         temp.path(),
         &[
@@ -857,6 +894,8 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "fresh",
             "--purpose",
             "new_unbiased_review",
+            "--target",
+            "review-context:design-task-decomposition:design=1:work=1",
             "--clean",
             "--summary",
             "clean decomposition review",
@@ -873,6 +912,21 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         ],
     );
     let close_without_trace = err(temp.path(), &["task", "close", "1", "--commit", "abc123"]);
+    let empty_evidence = err(
+        temp.path(),
+        &[
+            "evidence",
+            "add",
+            "--task",
+            "1",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--type",
+            "commit",
+        ],
+    );
     let evidence = ok(
         temp.path(),
         &[
@@ -906,6 +960,27 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "covered",
             "--requirement-text",
             "cleanup behavior is connected",
+            "--runtime",
+            "cleanup path is exercised",
+            "--tests-or-gates",
+            "GATE-001",
+        ],
+    );
+    let incomplete_covered_coverage = err(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--status",
+            "covered",
+            "--requirement-text",
+            "cleanup behavior is asserted without boundary evidence",
             "--tests-or-gates",
             "GATE-001",
         ],
@@ -994,18 +1069,26 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(without_gate.contains("validation_gates_selected: fail"));
     assert!(selected.contains("selected validation gate"));
     assert!(selected.contains("validation_gate_id: 1"));
+    assert!(missing_review_context_target.contains("must use review-context target"));
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("task_derivations_exist: pass"));
     assert!(passed.contains("validation_gates_selected: pass"));
     assert!(close_without_trace.contains("cannot close design-derived task"));
+    assert!(empty_evidence.contains("requires commit, file, symbol, or artifact reference"));
     assert!(evidence.contains("added implementation evidence"));
     assert!(evidence.contains("implementation_evidence_id: 1"));
     assert!(evidence_list.contains("1 [commit] task=1 requirement=REQ-001 commit=abc123"));
     assert!(coverage.contains("added coverage item"));
     assert!(coverage.contains("coverage_item_id: 1"));
     assert!(coverage_list.contains("1 [covered] requirement=REQ-001"));
+    assert!(incomplete_covered_coverage.contains("requires boundary evidence"));
     assert!(review_context.contains("requirements:"));
     assert!(review_context.contains("task_derivations:"));
+    assert!(review_context.contains("selected_validation_gates:"));
+    assert!(review_context.contains("latest_run="));
+    assert!(review_context.contains("command_usage="));
+    assert!(review_context.contains("snapshot="));
+    assert!(review_context.contains("implementation_evidence:"));
     assert!(review_context.contains("coverage_items:"));
     assert!(review_context.contains("known_gaps:"));
     assert!(review_context.contains("stale_records:"));
@@ -1251,10 +1334,10 @@ fn gate_close_ready_reports_active_work_readiness() {
 
     assert!(output.contains("gate: close-ready"));
     assert!(output.contains("result: pass"));
-    assert!(output.contains("open_tasks_closed: pass"));
-    assert!(output.contains("validation_runs_recorded: pass"));
-    assert!(output.contains("repository_state_recorded: pass"));
-    assert!(output.contains("review_plans_clean: pass"));
+    assert!(output.contains("open_tasks_closed: pass ["));
+    assert!(output.contains("validation_runs_recorded: pass ["));
+    assert!(output.contains("repository_state_recorded: pass ["));
+    assert!(output.contains("review_plans_clean: pass ["));
 }
 
 #[test]

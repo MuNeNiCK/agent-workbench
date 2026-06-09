@@ -278,6 +278,7 @@ pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
                     root,
                     TaskDerivationListQuery {
                         design_version_id: args.design,
+                        work_unit_id: None,
                     },
                 )?;
                 if records.is_empty() {
@@ -364,6 +365,7 @@ pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<(
                 ImplementationEvidenceListQuery {
                     task_id: args.task,
                     design_version_id: args.design,
+                    work_unit_id: None,
                 },
             )?;
             if records.is_empty() {
@@ -422,6 +424,7 @@ pub(crate) fn handle_coverage(root: &Path, command: CoverageCommand) -> Result<(
                 CoverageItemListQuery {
                     design_version_id: args.design,
                     status: args.status.as_deref(),
+                    work_unit_id: None,
                 },
             )?;
             if records.is_empty() {

@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
+use crate::review_context::review_context_ref;
 
 pub fn start_review_scope(root: &Path, input: NewReviewScope<'_>) -> Result<ReviewScopeOutcome> {
     let conn = open_existing_project(root)?;
@@ -264,6 +265,7 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
     validate_run_type_purpose(input.run_type, input.run_purpose)?;
     validate_review_run_result(&input)?;
+    validate_gate_context_target(&plan, &input)?;
     enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
@@ -869,6 +871,39 @@ fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()> {
     Ok(())
 }
 
+fn validate_gate_context_target(plan: &StoredReviewPlan, input: &NewReviewRun<'_>) -> Result<()> {
+    if !input.clean_run
+        || input.status != "completed"
+        || input.run_type != "fresh"
+        || input.run_purpose != "new_unbiased_review"
+    {
+        return Ok(());
+    }
+    let Some(kind) = review_context_kind_for_plan(&plan.stage, &plan.review_type) else {
+        return Ok(());
+    };
+    let Some(design_version_id) = plan.design_version_id else {
+        return Ok(());
+    };
+    let expected = review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id));
+    if input.target_ref != Some(expected.as_str()) {
+        bail!(
+            "clean gate review run must use review-context target {expected}; run review-context first and pass context_ref with --target"
+        );
+    }
+    Ok(())
+}
+
+fn review_context_kind_for_plan(stage: &str, review_type: &str) -> Option<&'static str> {
+    match (stage, review_type) {
+        ("design-ready", "design_review") => Some("design-review"),
+        ("implementation-ready", "design_task_decomposition") => Some("design-task-decomposition"),
+        ("close-ready", "design_implementation_diff") => Some("design-implementation-diff"),
+        ("close-ready", "implementation_review") => Some("implementation-review"),
+        _ => None,
+    }
+}
+
 fn get_or_create_default_policy(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -908,7 +943,8 @@ fn load_review_plan(
 ) -> Result<StoredReviewPlan> {
     conn.query_row(
         r#"
-        select id, review_policy_id, review_scope_id, design_version_id, work_unit_id
+        select id, review_policy_id, review_scope_id, design_version_id, work_unit_id,
+               review_type, stage
         from review_plans
         where id = ?1 and project_id = ?2
         "#,
@@ -920,6 +956,8 @@ fn load_review_plan(
                 review_scope_id: row.get(2)?,
                 design_version_id: row.get(3)?,
                 work_unit_id: row.get(4)?,
+                review_type: row.get(5)?,
+                stage: row.get(6)?,
             })
         },
     )
@@ -1067,6 +1105,8 @@ struct StoredReviewPlan {
     review_scope_id: Option<i64>,
     design_version_id: Option<i64>,
     work_unit_id: i64,
+    review_type: String,
+    stage: String,
 }
 
 struct StoredReviewPolicy {

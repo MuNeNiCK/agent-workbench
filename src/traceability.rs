@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
+use crate::review_context::required_plans_missing_context_count;
 
 pub fn derive_task_from_requirement(
     root: &Path,
@@ -360,6 +361,59 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
     Ok(records)
 }
 
+pub fn list_validation_gate_context(
+    root: &Path,
+    input: ValidationGateContextQuery,
+) -> Result<Vec<ValidationGateContextRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            vg.id, vg.gate_key, r.requirement_key, vg.task_id, vg.status,
+            latest.id, latest.command_usage_id, latest.repository_snapshot_id,
+            latest.result, latest.artifact_path, latest.notes
+        from validation_gates vg
+        join design_requirements r on r.id = vg.design_requirement_id
+        left join tasks t on t.id = vg.task_id
+        left join validation_runs latest on latest.id = (
+            select vr.id
+            from validation_runs vr
+            where vr.validation_gate_id = vg.id
+            order by vr.id desc
+            limit 1
+        )
+        where vg.project_id = ?1
+          and r.design_version_id = ?2
+          and (?3 is null or coalesce(vg.work_unit_id, t.work_unit_id) = ?3)
+        order by r.requirement_key, vg.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, input.design_version_id, input.work_unit_id],
+        |row| {
+            Ok(ValidationGateContextRecord {
+                id: row.get(0)?,
+                gate_key: row.get(1)?,
+                requirement_key: row.get(2)?,
+                task_id: row.get(3)?,
+                status: row.get(4)?,
+                latest_run_id: row.get(5)?,
+                latest_command_usage_id: row.get(6)?,
+                latest_repository_snapshot_id: row.get(7)?,
+                latest_result: row.get(8)?,
+                latest_artifact_path: row.get(9)?,
+                latest_notes: row.get(10)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 fn collect_stale_rows(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -403,21 +457,26 @@ pub fn list_task_derivations(
         join design_requirements r on r.id = td.design_requirement_id
         join tasks t on t.id = td.task_id
         left join checklist_items ci on ci.id = td.checklist_item_id
-        where td.project_id = ?1 and r.design_version_id = ?2
+        where td.project_id = ?1
+          and r.design_version_id = ?2
+          and (?3 is null or t.work_unit_id = ?3)
         order by r.requirement_key, td.id
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, input.design_version_id], |row| {
-        Ok(TaskDerivationRecord {
-            id: row.get(0)?,
-            requirement_key: row.get(1)?,
-            task_id: row.get(2)?,
-            task_title: row.get(3)?,
-            checklist_item_id: row.get(4)?,
-            checklist_item_title: row.get(5)?,
-            status: row.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![project_id, input.design_version_id, input.work_unit_id],
+        |row| {
+            Ok(TaskDerivationRecord {
+                id: row.get(0)?,
+                requirement_key: row.get(1)?,
+                task_id: row.get(2)?,
+                task_title: row.get(3)?,
+                checklist_item_id: row.get(4)?,
+                checklist_item_title: row.get(5)?,
+                status: row.get(6)?,
+            })
+        },
+    )?;
     let mut records = Vec::new();
     for row in rows {
         records.push(row?);
@@ -521,6 +580,12 @@ fn insert_implementation_evidence(
     if task_id.is_none() && design_requirement_id.is_none() {
         bail!("implementation evidence requires --task or --design with --requirement");
     }
+    if let Some(task_id) = task_id
+        && design_requirement_id.is_none()
+        && task_has_active_design_derivation(&tx, task_id)?
+    {
+        bail!("design-derived implementation evidence requires --design and --requirement");
+    }
     if let (Some(task_id), Some(design_requirement_id)) = (task_id, design_requirement_id) {
         require_task_derivation(&tx, design_requirement_id, task_id)?;
     }
@@ -533,6 +598,17 @@ fn insert_implementation_evidence(
         input.commit_sha,
         input.file_path,
     )?;
+    let has_evidence_reference = git.git_commit_id.is_some()
+        || git.git_file_change_id.is_some()
+        || git.commit_sha.is_some()
+        || git.file_path.is_some()
+        || input.symbol.is_some_and(|value| !value.trim().is_empty())
+        || input
+            .artifact_path
+            .is_some_and(|value| !value.trim().is_empty());
+    if !has_evidence_reference {
+        bail!("implementation evidence requires commit, file, symbol, or artifact reference");
+    }
 
     tx.execute(
         r#"
@@ -582,14 +658,35 @@ pub fn list_implementation_evidence(
             e.commit_sha, e.file_path, e.line_ref, e.symbol, e.artifact_path, e.note
         from implementation_evidence e
         left join design_requirements r on r.id = e.design_requirement_id
+        left join tasks t on t.id = e.task_id
         where e.project_id = ?1
           and (?2 is null or e.task_id = ?2)
           and (?3 is null or r.design_version_id = ?3)
+          and (
+            ?4 is null
+            or t.work_unit_id = ?4
+            or (
+              e.task_id is null
+              and exists (
+                select 1
+                from task_derivations td
+                join tasks dt on dt.id = td.task_id
+                where td.design_requirement_id = e.design_requirement_id
+                  and td.status = 'active'
+                  and dt.work_unit_id = ?4
+              )
+            )
+          )
         order by e.id
         "#,
     )?;
     let rows = stmt.query_map(
-        params![project_id, input.task_id, input.design_version_id],
+        params![
+            project_id,
+            input.task_id,
+            input.design_version_id,
+            input.work_unit_id
+        ],
         |row| {
             Ok(ImplementationEvidenceRecord {
                 id: row.get(0)?,
@@ -1183,22 +1280,26 @@ pub fn implementation_ready(
             ),
         ));
     } else if review_state.incomplete_required_plan_count == 0
+        && review_state.missing_context_run_count == 0
         && review_state.unresolved_finding_count == 0
     {
         items.push(ImplementationReadyItem::pass(
             "pre_implementation_reviews_clean",
             Some(format!(
-                "{} required plans, {} unresolved findings",
-                review_state.required_plan_count, review_state.unresolved_finding_count
+                "{} required plans, {} missing review-context runs, {} unresolved findings",
+                review_state.required_plan_count,
+                review_state.missing_context_run_count,
+                review_state.unresolved_finding_count
             )),
         ));
     } else {
         items.push(ImplementationReadyItem::fail(
             "pre_implementation_reviews_clean",
             Some(format!(
-                "{} required plans, {} incomplete, {} unresolved findings",
+                "{} required plans, {} incomplete, {} missing review-context runs, {} unresolved findings",
                 review_state.required_plan_count,
                 review_state.incomplete_required_plan_count,
+                review_state.missing_context_run_count,
                 review_state.unresolved_finding_count
             )),
         ));
@@ -1272,7 +1373,7 @@ fn implementation_review_gate_state(
           and design_version_id = ?2
           and stage = 'implementation-ready'
           and required = 1
-          and status not in ('clean', 'accepted_exception', 'not_required')
+          and status != 'clean'
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
@@ -1293,9 +1394,19 @@ fn implementation_review_gate_state(
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
     )?;
+    let missing_context_run_count = required_plans_missing_context_count(
+        conn,
+        project_id,
+        "implementation-ready",
+        "design_task_decomposition",
+        Some(design_version_id),
+        None,
+        "design-task-decomposition",
+    )?;
     Ok(ReviewGateState {
         required_plan_count,
         incomplete_required_plan_count,
+        missing_context_run_count,
         unresolved_finding_count,
     })
 }
@@ -1304,6 +1415,7 @@ fn implementation_review_gate_state(
 struct ReviewGateState {
     required_plan_count: i64,
     incomplete_required_plan_count: i64,
+    missing_context_run_count: i64,
     unresolved_finding_count: i64,
 }
 
@@ -1330,6 +1442,22 @@ fn require_task_derivation(
         bail!("task is not actively derived from the design requirement");
     }
     Ok(())
+}
+
+fn task_has_active_design_derivation(conn: &rusqlite::Connection, task_id: i64) -> Result<bool> {
+    conn.query_row(
+        r#"
+        select exists (
+            select 1
+            from task_derivations
+            where task_id = ?1
+              and status = 'active'
+        )
+        "#,
+        params![task_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 fn get_or_create_checklist(
@@ -1695,7 +1823,10 @@ fn count_closed_derived_tasks_missing_coverage(
             select 1
             from coverage_items c
             where c.design_requirement_id = r.id
-              and (c.task_id = td.task_id or c.task_id is null)
+              and (
+                c.task_id = td.task_id
+                or (c.task_id is null and c.work_unit_id = t.work_unit_id)
+              )
               and (
                 c.status = 'covered'
                 or (
@@ -1786,6 +1917,7 @@ pub struct DesignDecomposition<'a> {
 
 pub struct TaskDerivationListQuery {
     pub design_version_id: i64,
+    pub work_unit_id: Option<i64>,
 }
 
 pub struct ImplementationReadyCheck {
@@ -1882,6 +2014,7 @@ struct ResolvedFileChange {
 pub struct ImplementationEvidenceListQuery {
     pub task_id: Option<i64>,
     pub design_version_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1929,6 +2062,27 @@ pub struct StaleRecord {
     pub record_type: String,
     pub id: i64,
     pub label: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationGateContextQuery {
+    pub design_version_id: i64,
+    pub work_unit_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ValidationGateContextRecord {
+    pub id: i64,
+    pub gate_key: String,
+    pub requirement_key: String,
+    pub task_id: Option<i64>,
+    pub status: String,
+    pub latest_run_id: Option<i64>,
+    pub latest_command_usage_id: Option<i64>,
+    pub latest_repository_snapshot_id: Option<i64>,
+    pub latest_result: Option<String>,
+    pub latest_artifact_path: Option<String>,
+    pub latest_notes: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

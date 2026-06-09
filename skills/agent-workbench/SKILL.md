@@ -93,7 +93,9 @@ from structured ledger state.
 - Record implementation evidence and coverage items for design-derived tasks
   before closing the work unit.
 - Use `review-context` when launching a review agent so the prompt is focused
-  on the relevant design version, work unit, or review kind.
+  on the relevant design version, work unit, or review kind. Copy the printed
+  `context_ref` into `review run add --target <context_ref>`; design-derived
+  gates require clean fresh runs tied to that context.
 - Use `resume-check` only when a ledger row should be recorded for an actual
   resume operation.
 - Record reusable validation commands with `command fixed add` and command runs

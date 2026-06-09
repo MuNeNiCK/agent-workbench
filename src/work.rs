@@ -7,6 +7,7 @@ use crate::db::{
     NewEvent, StoredActivation, active_activation, insert_event, max_id, open_existing_project,
     project_id, suspend_snapshot, suspended_activation,
 };
+use crate::review_context::review_plan_has_clean_context_run;
 
 pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Result<WorkOutcome> {
     let mut conn = open_existing_project(root)?;
@@ -260,12 +261,17 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         )
     });
     items.push(
-        if validation.missing_run_count == 0 && validation.unaccepted_failure_count == 0 {
+        if trace.missing_validation_gate_count == 0
+            && validation.missing_run_count == 0
+            && validation.unaccepted_failure_count == 0
+            && (trace.derived_task_count == 0 || validation.selected_gate_count > 0)
+        {
             CloseReadyItem::pass(
                 "validation_runs_recorded",
                 format!(
-                    "{} selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
+                    "{} selected gates, {} missing selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
                     validation.selected_gate_count,
+                    trace.missing_validation_gate_count,
                     validation.missing_run_count,
                     validation.accepted_failure_count,
                     validation.unaccepted_failure_count
@@ -276,8 +282,9 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "validation_runs_recorded",
                 "record passing validation runs or classify the remaining failures",
                 format!(
-                    "{} selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
+                    "{} selected gates, {} missing selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
                     validation.selected_gate_count,
+                    trace.missing_validation_gate_count,
                     validation.missing_run_count,
                     validation.accepted_failure_count,
                     validation.unaccepted_failure_count
@@ -319,14 +326,19 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         },
     );
     items.push(
-        if trace.missing_evidence_count == 0 && trace.missing_coverage_count == 0 {
+        if trace.missing_evidence_count == 0
+            && trace.missing_coverage_count == 0
+            && trace.missing_requirement_coverage_count == 0
+        {
             CloseReadyItem::pass(
                 "design_trace_closed",
                 format!(
-                    "{} design-derived tasks, {} missing evidence, {} missing coverage",
+                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage",
+                    trace.active_requirement_count,
                     trace.derived_task_count,
                     trace.missing_evidence_count,
-                    trace.missing_coverage_count
+                    trace.missing_coverage_count,
+                    trace.missing_requirement_coverage_count
                 ),
             )
         } else {
@@ -334,10 +346,12 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "design_trace_closed",
                 "record implementation evidence and coverage for closed design-derived tasks",
                 format!(
-                    "{} design-derived tasks, {} missing evidence, {} missing coverage",
+                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage",
+                    trace.active_requirement_count,
                     trace.derived_task_count,
                     trace.missing_evidence_count,
-                    trace.missing_coverage_count
+                    trace.missing_coverage_count,
+                    trace.missing_requirement_coverage_count
                 ),
             )
         },
@@ -348,21 +362,26 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "review_plans_clean",
                 "add required close-ready review plans for design-derived work",
                 format!(
-                    "{} required close-ready plans, {} incomplete, {} stale targets, missing types: {}",
+                    "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs, missing types: {}",
                     review.required_plan_count,
                     review.incomplete_required_plan_count,
                     review.stale_target_count,
+                    review.missing_context_run_count,
                     missing_close_review_types.join(", ")
                 ),
             )
-        } else if review.incomplete_required_plan_count == 0 && review.stale_target_count == 0 {
+        } else if review.incomplete_required_plan_count == 0
+            && review.stale_target_count == 0
+            && review.missing_context_run_count == 0
+        {
             CloseReadyItem::pass(
                 "review_plans_clean",
                 format!(
-                    "{} required close-ready plans, {} incomplete, {} stale targets",
+                    "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs",
                     review.required_plan_count,
                     review.incomplete_required_plan_count,
-                    review.stale_target_count
+                    review.stale_target_count,
+                    review.missing_context_run_count
                 ),
             )
         } else {
@@ -370,10 +389,11 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "review_plans_clean",
                 "complete required close-ready plans or refresh stale targets",
                 format!(
-                    "{} required close-ready plans, {} incomplete, {} stale targets",
+                    "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs",
                     review.required_plan_count,
                     review.incomplete_required_plan_count,
-                    review.stale_target_count
+                    review.stale_target_count,
+                    review.missing_context_run_count
                 ),
             )
         },
@@ -1668,7 +1688,7 @@ fn review_plan_stage_state(
 ) -> Result<ReviewPlanStageState> {
     let mut stmt = conn.prepare(
         r#"
-        select id, status
+        select id, status, review_type, design_version_id, work_unit_id
         from review_plans
         where work_unit_id = ?1
           and stage = ?2
@@ -1677,21 +1697,44 @@ fn review_plan_stage_state(
         "#,
     )?;
     let rows = stmt.query_map(params![work_unit_id, stage], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
     })?;
     let mut state = ReviewPlanStageState::default();
     for row in rows {
-        let (review_plan_id, status) = row?;
+        let (review_plan_id, status, review_type, design_version_id, plan_work_unit_id) = row?;
         state.required_plan_count += 1;
-        if !matches!(
-            status.as_str(),
-            "clean" | "accepted_exception" | "not_required"
-        ) {
+        if status != "clean" {
             state.incomplete_required_plan_count += 1;
+        }
+        if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
+            && design_version_id.is_some()
+            && !review_plan_has_clean_context_run(
+                conn,
+                review_plan_id,
+                kind,
+                design_version_id,
+                plan_work_unit_id,
+            )?
+        {
+            state.missing_context_run_count += 1;
         }
         state.stale_target_count += stale_review_plan_target_count(conn, review_plan_id)?;
     }
     Ok(state)
+}
+
+fn review_context_kind_for_plan(stage: &str, review_type: &str) -> Option<&'static str> {
+    match (stage, review_type) {
+        ("close-ready", "design_implementation_diff") => Some("design-implementation-diff"),
+        ("close-ready", "implementation_review") => Some("implementation-review"),
+        _ => None,
+    }
 }
 
 fn stale_review_plan_target_count(conn: &Connection, review_plan_id: i64) -> Result<i64> {
@@ -1850,6 +1893,7 @@ fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResu
 
 fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceState> {
     Ok(CloseTraceState {
+        active_requirement_count: count_active_requirements_for_work(conn, work_unit_id)?,
         derived_task_count: count_design_derived_tasks_for_work(conn, work_unit_id)?,
         missing_evidence_count: count_closed_derived_tasks_missing_evidence_for_work(
             conn,
@@ -1859,32 +1903,63 @@ fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceS
             conn,
             work_unit_id,
         )?,
+        missing_requirement_coverage_count: count_active_requirements_missing_coverage_for_work(
+            conn,
+            work_unit_id,
+        )?,
+        missing_validation_gate_count: count_derived_tasks_missing_selected_gate_for_work(
+            conn,
+            work_unit_id,
+        )?,
     })
 }
 
 fn missing_required_close_review_types(
     conn: &Connection,
     work_unit_id: i64,
-) -> Result<Vec<&'static str>> {
+) -> Result<Vec<String>> {
     let mut missing = Vec::new();
-    for review_type in ["design_implementation_diff", "implementation_review"] {
-        let count: i64 = conn.query_row(
-            r#"
-            select count(*)
-            from review_plans
-            where work_unit_id = ?1
-              and stage = 'close-ready'
-              and review_type = ?2
-              and required = 1
-            "#,
-            params![work_unit_id, review_type],
-            |row| row.get(0),
-        )?;
-        if count == 0 {
-            missing.push(review_type);
+    for design_version_id in design_versions_for_work(conn, work_unit_id)? {
+        for review_type in ["design_implementation_diff", "implementation_review"] {
+            let count: i64 = conn.query_row(
+                r#"
+                select count(*)
+                from review_plans
+                where work_unit_id = ?1
+                  and design_version_id = ?2
+                  and stage = 'close-ready'
+                  and review_type = ?3
+                  and required = 1
+                "#,
+                params![work_unit_id, design_version_id, review_type],
+                |row| row.get(0),
+            )?;
+            if count == 0 {
+                missing.push(format!("{review_type}@design:{design_version_id}"));
+            }
         }
     }
     Ok(missing)
+}
+
+fn design_versions_for_work(conn: &Connection, work_unit_id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select distinct r.design_version_id
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+        order by r.design_version_id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id], |row| row.get(0))?;
+    let mut design_version_ids = Vec::new();
+    for row in rows {
+        design_version_ids.push(row?);
+    }
+    Ok(design_version_ids)
 }
 
 fn count_design_derived_tasks_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
@@ -1895,6 +1970,116 @@ fn count_design_derived_tasks_for_work(conn: &Connection, work_unit_id: i64) -> 
         join tasks t on t.id = td.task_id
         where t.work_unit_id = ?1
           and td.status = 'active'
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_active_requirements_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        with relevant_requirements as (
+            select distinct r.id
+            from task_derivations td
+            join tasks t on t.id = td.task_id
+            join design_requirements r on r.id = td.design_requirement_id
+            where t.work_unit_id = ?1 and td.status = 'active'
+            union
+            select distinct r.id
+            from validation_gates vg
+            join design_requirements r on r.id = vg.design_requirement_id
+            left join tasks t on t.id = vg.task_id
+            where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+              and vg.status = 'active'
+        )
+        select count(*)
+        from design_requirements r
+        join relevant_requirements rr on rr.id = r.id
+        where r.status = 'active'
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_active_requirements_missing_coverage_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        with relevant_requirements as (
+            select distinct r.id
+            from task_derivations td
+            join tasks t on t.id = td.task_id
+            join design_requirements r on r.id = td.design_requirement_id
+            where t.work_unit_id = ?1 and td.status = 'active'
+            union
+            select distinct r.id
+            from validation_gates vg
+            join design_requirements r on r.id = vg.design_requirement_id
+            left join tasks t on t.id = vg.task_id
+            where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+              and vg.status = 'active'
+        )
+        select count(*)
+        from design_requirements r
+        join relevant_requirements rr on rr.id = r.id
+        where r.status = 'active'
+          and not exists (
+            select 1
+            from coverage_items c
+            left join tasks ct on ct.id = c.task_id
+            where c.design_requirement_id = r.id
+              and (
+                ct.work_unit_id = ?1
+                or (c.task_id is null and c.work_unit_id = ?1)
+              )
+              and (
+                c.status = 'covered'
+                or (
+                  c.status = 'accepted_out_of_scope'
+                  and exists (
+                    select 1
+                    from acceptance_records ar
+                    where ar.target_type = 'coverage_item'
+                      and ar.coverage_item_id = c.id
+                      and ar.acceptance_type = 'accepted_out_of_scope'
+                      and ar.status = 'approved'
+                  )
+                )
+              )
+          )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_derived_tasks_missing_selected_gate_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        where t.work_unit_id = ?1
+          and td.status = 'active'
+          and t.status in ('closed', 'accepted_out_of_scope')
+          and not exists (
+            select 1
+            from validation_gates vg
+            where vg.design_requirement_id = td.design_requirement_id
+              and vg.task_id = td.task_id
+              and vg.selected_before_edit = 1
+              and vg.status = 'active'
+          )
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -1918,19 +2103,7 @@ fn count_closed_derived_tasks_missing_evidence_for_work(
             select 1
             from implementation_evidence e
             where e.task_id = td.task_id
-              and (
-                e.design_requirement_id = td.design_requirement_id
-                or (
-                  e.design_requirement_id is null
-                  and not exists (
-                    select 1
-                    from task_derivations sibling
-                    where sibling.task_id = td.task_id
-                      and sibling.status = 'active'
-                      and sibling.design_requirement_id != td.design_requirement_id
-                  )
-                )
-              )
+              and e.design_requirement_id = td.design_requirement_id
           )
         "#,
         params![work_unit_id],
@@ -1955,7 +2128,10 @@ fn count_closed_derived_tasks_missing_coverage_for_work(
             select 1
             from coverage_items c
             where c.design_requirement_id = td.design_requirement_id
-              and (c.task_id = td.task_id or c.task_id is null)
+              and (
+                c.task_id = td.task_id
+                or (c.task_id is null and c.work_unit_id = t.work_unit_id)
+              )
               and (
                 c.status = 'covered'
                 or (
@@ -2159,9 +2335,12 @@ struct TraceResumeCounts {
 }
 
 struct CloseTraceState {
+    active_requirement_count: i64,
     derived_task_count: i64,
     missing_evidence_count: i64,
     missing_coverage_count: i64,
+    missing_requirement_coverage_count: i64,
+    missing_validation_gate_count: i64,
 }
 
 struct ValidationCloseState {
@@ -2183,6 +2362,7 @@ struct RepositoryCloseState {
 struct ReviewPlanStageState {
     required_plan_count: i64,
     incomplete_required_plan_count: i64,
+    missing_context_run_count: i64,
     stale_target_count: i64,
 }
 

@@ -30,8 +30,11 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
             for item in outcome.items {
                 match item.blocking_action {
-                    Some(action) => println!("{}: {} ({})", item.name, item.result, action),
-                    None => println!("{}: {}", item.name, item.result),
+                    Some(action) => println!(
+                        "{}: {} ({}) [{}]",
+                        item.name, item.result, action, item.details
+                    ),
+                    None => println!("{}: {} [{}]", item.name, item.result, item.details),
                 }
             }
         }

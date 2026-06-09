@@ -52,10 +52,12 @@ snapshots.
    work record evidence.
 5. Add required close review plans:
    `design_implementation_diff` and `implementation_review`, both at
-   `--stage close-ready`, with `--work-unit <work-unit-id>`.
+   `--stage close-ready`, with `--work-unit <work-unit-id>` and
+   `--design-version <design-version-id>`.
 6. Use `agent-workbench review-context design-implementation-diff` or
    `agent-workbench review-context implementation-review` to launch focused
-   review agents.
+   review agents. Include the relevant `--design-version` and `--work-unit`
+   flags, then pass the printed `context_ref` to `review run add --target`.
 7. Record clean close review runs or record findings, closures, and
    verifications until the configured review policy is satisfied. Every
    `review run add` command must include `--plan <review-plan-id>`.
