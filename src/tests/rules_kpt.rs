@@ -17,6 +17,7 @@ fn authority_events_create_applicable_rule_bindings() {
     )
     .unwrap();
     let events = list_authority_events(temp.path(), Some("project")).unwrap();
+    let authorities = list_authorities(temp.path(), Some("project")).unwrap();
     let rules = applicable_rules(
         temp.path(),
         RuleQuery {
@@ -30,6 +31,13 @@ fn authority_events_create_applicable_rule_bindings() {
         events
             .iter()
             .any(|event| event.id == authority.authority_event_id)
+    );
+    assert!(
+        authorities
+            .iter()
+            .any(|record| record.id == authority.authority_id
+                && record.authority_type == "user"
+                && record.path_or_label == "chat")
     );
     assert!(
         rules

@@ -93,6 +93,80 @@ fn work_start_refuses_second_active_activation() {
 }
 
 #[test]
+fn work_block_unblock_and_abandon_record_lifecycle_events() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let started = start_work(temp.path(), "lifecycle work", None).unwrap();
+
+    let blocked = block_work(temp.path(), None, "waiting for user decision").unwrap();
+    let unblocked =
+        unblock_work(temp.path(), Some(started.work_unit_id), "decision recorded").unwrap();
+    let abandoned =
+        abandon_work(temp.path(), Some(started.work_unit_id), "redo from fork").unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let work_status: String = conn
+        .query_row(
+            "select status from work_units where id = ?1",
+            params![started.work_unit_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let activation_status: String = conn
+        .query_row(
+            "select status from work_unit_activations where id = ?1",
+            params![started.activation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let events: Vec<String> = {
+        let mut stmt = conn
+            .prepare("select event_type from work_unit_events where work_unit_id = ?1 order by id")
+            .unwrap();
+        stmt.query_map(params![started.work_unit_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+
+    assert_eq!(blocked.previous_status, "open");
+    assert_eq!(blocked.status, "blocked");
+    assert_eq!(unblocked.previous_status, "blocked");
+    assert_eq!(unblocked.status, "open");
+    assert_eq!(abandoned.previous_status, "open");
+    assert_eq!(abandoned.status, "abandoned");
+    assert_eq!(work_status, "abandoned");
+    assert_eq!(activation_status, "abandoned");
+    assert_eq!(
+        events,
+        vec![
+            "opened".to_string(),
+            "blocked".to_string(),
+            "unblocked".to_string(),
+            "abandoned".to_string()
+        ]
+    );
+}
+
+#[test]
+fn abandoning_interrupted_child_allows_parent_resume_check() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let parent = start_work(temp.path(), "parent", None).unwrap();
+    let interrupt = interrupt_work(temp.path(), "child", "blocks parent").unwrap();
+
+    let blocked = resume_check_basic(temp.path()).unwrap();
+    let abandoned = abandon_work(temp.path(), None, "child no longer needed").unwrap();
+    let allowed = resume_check_basic(temp.path()).unwrap();
+    let resumed = resume_work(temp.path(), allowed.resume_check_id).unwrap();
+
+    assert_eq!(blocked.result, "blocked");
+    assert_eq!(abandoned.work_unit_id, interrupt.child_work_unit_id);
+    assert_eq!(abandoned.activation_id, Some(interrupt.child_activation_id));
+    assert_eq!(allowed.result, "allowed");
+    assert_eq!(resumed.activation_id, parent.activation_id);
+}
+
+#[test]
 fn suspend_and_resume_round_trip() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

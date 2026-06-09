@@ -202,11 +202,21 @@ fn init_imports_agents_md_as_project_rule() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
+    let authority: (String, String, String) = conn
+        .query_row(
+            "select path_or_label, authority_type, summary from authorities where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
 
     assert!(rules.contains("authority_event_id=1"));
     assert_eq!(event.0, "agents");
     assert_eq!(event.1, "AGENTS.md");
     assert!(event.2.contains("Use focused validation commands."));
+    assert_eq!(authority.0, "AGENTS.md");
+    assert_eq!(authority.1, "policy");
+    assert!(authority.2.contains("Use focused validation commands."));
 }
 
 #[test]
@@ -1496,6 +1506,46 @@ fn gate_close_ready_reports_active_work_readiness() {
 }
 
 #[test]
+fn work_lifecycle_commands_block_unblock_and_abandon() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "lifecycle"]);
+
+    let blocked = ok(
+        temp.path(),
+        &["work", "block", "--reason", "waiting for decision"],
+    );
+    let unblocked = ok(
+        temp.path(),
+        &["work", "unblock", "1", "--reason", "decision recorded"],
+    );
+    let abandoned = ok(
+        temp.path(),
+        &["work", "abandon", "1", "--reason", "restart from fork"],
+    );
+    let status: (String, String) = conn(temp.path())
+        .query_row(
+            r#"
+            select w.status, a.status
+            from work_units w
+            join work_unit_activations a on a.work_unit_id = w.id
+            where w.id = 1
+            "#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert!(blocked.contains("blocked work unit"));
+    assert!(blocked.contains("status: blocked"));
+    assert!(unblocked.contains("unblocked work unit"));
+    assert!(unblocked.contains("previous_status: blocked"));
+    assert!(abandoned.contains("abandoned work unit"));
+    assert!(abandoned.contains("status: abandoned"));
+    assert_eq!(status, ("abandoned".to_string(), "abandoned".to_string()));
+}
+
+#[test]
 fn gate_resume_ready_repo_aware_uses_repository_comparisons() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -2396,6 +2446,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
 
     assert!(preferred.contains("command_profile_id: 1"));
     assert!(deprecated.contains("command_profile_id: 1"));
+    assert!(authority.contains("authority_id: "));
     assert!(authority.contains("authority_event_id: "));
     assert!(rules.contains("shadowed_by="));
     assert!(git_commit.contains("git_commit_id: 1"));

@@ -168,6 +168,10 @@ pub(crate) enum Command {
 pub(crate) enum WorkCommand {
     /// Start a new active work unit.
     Start(WorkStartArgs),
+    /// Mark an open work unit as blocked.
+    Block(WorkBlockArgs),
+    /// Mark a blocked work unit as open.
+    Unblock(WorkUnblockArgs),
     /// Suspend the active work unit.
     Suspend(WorkSuspendArgs),
     /// Interrupt active work with a child work unit.
@@ -176,6 +180,8 @@ pub(crate) enum WorkCommand {
     Resume(WorkResumeArgs),
     /// Close the active work unit.
     Close(WorkCloseArgs),
+    /// Abandon an open, blocked, or closed work unit.
+    Abandon(WorkAbandonArgs),
     /// Fork work from a prior record, activation, or commit.
     Fork(WorkForkArgs),
     /// Reopen a closed or abandoned work unit.
@@ -189,6 +195,20 @@ pub(crate) struct WorkStartArgs {
     pub(crate) title: String,
     #[arg(long)]
     pub(crate) responsibility: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct WorkBlockArgs {
+    pub(crate) work_unit_id: Option<i64>,
+    #[arg(long)]
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct WorkUnblockArgs {
+    pub(crate) work_unit_id: Option<i64>,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]
@@ -218,6 +238,13 @@ pub(crate) struct WorkCloseArgs {
     pub(crate) summary: String,
     #[arg(long)]
     pub(crate) commit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct WorkAbandonArgs {
+    pub(crate) work_unit_id: Option<i64>,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]

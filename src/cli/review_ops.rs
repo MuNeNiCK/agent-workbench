@@ -402,6 +402,7 @@ pub(crate) fn handle_authority(root: &Path, command: AuthorityCommand) -> Result
                 },
             )?;
             println!("added authority");
+            println!("authority_id: {}", outcome.authority_id);
             println!("authority_event_id: {}", outcome.authority_event_id);
         }
         AuthorityCommand::Event { command } => match command {
@@ -417,19 +418,24 @@ pub(crate) fn handle_authority(root: &Path, command: AuthorityCommand) -> Result
                     },
                 )?;
                 println!("added authority event");
+                println!("authority_id: {}", outcome.authority_id);
                 println!("authority_event_id: {}", outcome.authority_event_id);
             }
         },
         AuthorityCommand::List(args) => {
-            let records = list_authority_events(root, args.scope.as_deref())?;
+            let records = list_authorities(root, args.scope.as_deref())?;
             if records.is_empty() {
-                println!("no authority events");
+                println!("no authorities");
             }
             for record in records {
                 let scope = record.scope.as_deref().unwrap_or("-");
                 println!(
                     "{} [{} scope={} precedence={}] {}",
-                    record.id, record.event_type, scope, record.precedence, record.summary
+                    record.id,
+                    record.authority_type,
+                    scope,
+                    record.precedence,
+                    record.path_or_label
                 );
             }
         }

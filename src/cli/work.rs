@@ -4,8 +4,9 @@ use anyhow::Result;
 
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
-    NewWorkFork, WorkForkSource, close_active_work, create_follow_up_work, fork_work,
-    interrupt_work, reopen_work, resume_check, resume_work, start_work, suspend_work,
+    NewWorkFork, WorkForkSource, abandon_work, block_work, close_active_work,
+    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check, resume_work,
+    start_work, suspend_work, unblock_work,
 };
 
 pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
@@ -15,6 +16,26 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
             println!("started work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);
+        }
+        WorkCommand::Block(args) => {
+            let outcome = block_work(root, args.work_unit_id, &args.reason)?;
+            println!("blocked work unit");
+            println!("work_unit_id: {}", outcome.work_unit_id);
+            if let Some(activation_id) = outcome.activation_id {
+                println!("activation_id: {activation_id}");
+            }
+            println!("previous_status: {}", outcome.previous_status);
+            println!("status: {}", outcome.status);
+        }
+        WorkCommand::Unblock(args) => {
+            let outcome = unblock_work(root, args.work_unit_id, &args.reason)?;
+            println!("unblocked work unit");
+            println!("work_unit_id: {}", outcome.work_unit_id);
+            if let Some(activation_id) = outcome.activation_id {
+                println!("activation_id: {activation_id}");
+            }
+            println!("previous_status: {}", outcome.previous_status);
+            println!("status: {}", outcome.status);
         }
         WorkCommand::Suspend(args) => {
             let outcome = suspend_work(root, &args.reason, &args.next)?;
@@ -46,6 +67,16 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
             println!("closed work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);
+        }
+        WorkCommand::Abandon(args) => {
+            let outcome = abandon_work(root, args.work_unit_id, &args.reason)?;
+            println!("abandoned work unit");
+            println!("work_unit_id: {}", outcome.work_unit_id);
+            if let Some(activation_id) = outcome.activation_id {
+                println!("activation_id: {activation_id}");
+            }
+            println!("previous_status: {}", outcome.previous_status);
+            println!("status: {}", outcome.status);
         }
         WorkCommand::Fork(args) => {
             let source_count = [

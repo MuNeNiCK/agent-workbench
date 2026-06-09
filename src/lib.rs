@@ -14,8 +14,8 @@ mod traceability;
 mod work;
 
 pub use authority::{
-    AuthorityEventOutcome, AuthorityEventRecord, NewAuthorityEvent, add_authority_event,
-    list_authority_events,
+    AuthorityEventOutcome, AuthorityEventRecord, AuthorityRecord, NewAuthorityEvent,
+    add_authority_event, list_authorities, list_authority_events,
 };
 pub use commands::{
     CommandDeviationOutcome, CommandOutcome, CommandProfileRecord, CommandUsageListQuery,
@@ -112,9 +112,10 @@ pub use traceability::{
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,
     NewWorkFork, ResumeCheckOutcome, ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome,
-    SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, close_active_work, close_ready,
-    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
-    resume_check_basic, resume_ready, resume_ready_basic, resume_work, start_work, suspend_work,
+    SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, WorkStatusOutcome, abandon_work,
+    block_work, close_active_work, close_ready, create_follow_up_work, fork_work, interrupt_work,
+    reopen_work, resume_check, resume_check_basic, resume_ready, resume_ready_basic, resume_work,
+    start_work, suspend_work, unblock_work,
 };
 
 #[cfg(test)]

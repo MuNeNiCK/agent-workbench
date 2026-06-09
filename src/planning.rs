@@ -303,7 +303,7 @@ pub fn accept_task_out_of_scope(
         values (
             ?1, 'task', ?2, 'accepted_out_of_scope', ?3, ?4,
             'user', 'approved', ?5, current_timestamp, current_timestamp,
-            'task accepted out of scope for phase scope'
+            'task accepted out of scope for current work scope'
         )
         "#,
         params![

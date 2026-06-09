@@ -60,6 +60,79 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
     })
 }
 
+pub fn block_work(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    reason: &str,
+) -> Result<WorkStatusOutcome> {
+    update_work_unit_lifecycle(root, work_unit_id, "open", "blocked", "blocked", reason)
+}
+
+pub fn unblock_work(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    reason: &str,
+) -> Result<WorkStatusOutcome> {
+    update_work_unit_lifecycle(root, work_unit_id, "blocked", "open", "unblocked", reason)
+}
+
+pub fn abandon_work(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    reason: &str,
+) -> Result<WorkStatusOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let target = resolve_lifecycle_work_unit(&tx, project_id, work_unit_id)?;
+    let previous_status = target.status;
+    if !matches!(previous_status.as_str(), "open" | "blocked" | "closed") {
+        bail!("only open, blocked, or closed work units can be abandoned");
+    }
+
+    tx.execute(
+        "update work_units set status = 'abandoned', closed_at = current_timestamp, close_summary = ?1 where id = ?2",
+        params![reason, target.work_unit_id],
+    )?;
+    tx.execute(
+        r#"
+        update work_unit_activations
+        set status = 'abandoned', completed_at = current_timestamp
+        where work_unit_id = ?1 and status in ('active', 'suspended')
+        "#,
+        params![target.work_unit_id],
+    )?;
+    let event_id = insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: target.work_unit_id,
+            activation_id: target.activation_id,
+            related_activation_id: None,
+            event_type: "abandoned",
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: Some(&previous_status),
+            next_status: Some("abandoned"),
+        },
+    )?;
+    tx.execute(
+        r#"
+        update work_unit_dependencies
+        set status = 'resolved', resolved_at = current_timestamp, resolved_by_work_unit_event_id = ?1
+        where depends_on_work_unit_id = ?2 and status = 'open'
+        "#,
+        params![event_id, target.work_unit_id],
+    )?;
+    tx.commit()?;
+
+    Ok(WorkStatusOutcome {
+        work_unit_id: target.work_unit_id,
+        activation_id: target.activation_id,
+        previous_status,
+        status: "abandoned".to_string(),
+    })
+}
+
 pub fn suspend_work(root: &Path, reason: &str, next_action: &str) -> Result<SuspendOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
@@ -1147,6 +1220,115 @@ fn suspend_active_activation(
     Ok(snapshot_id)
 }
 
+fn update_work_unit_lifecycle(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    required_status: &str,
+    next_status: &str,
+    event_type: &'static str,
+    reason: &str,
+) -> Result<WorkStatusOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let target = resolve_lifecycle_work_unit(&tx, project_id, work_unit_id)?;
+    let previous_status = target.status;
+    if previous_status != required_status {
+        bail!("work unit must be {required_status} before {event_type}");
+    }
+    tx.execute(
+        "update work_units set status = ?1 where id = ?2",
+        params![next_status, target.work_unit_id],
+    )?;
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: target.work_unit_id,
+            activation_id: target.activation_id,
+            related_activation_id: None,
+            event_type,
+            reason: Some(reason),
+            status_domain: "work_unit",
+            previous_status: Some(&previous_status),
+            next_status: Some(next_status),
+        },
+    )?;
+    tx.commit()?;
+
+    Ok(WorkStatusOutcome {
+        work_unit_id: target.work_unit_id,
+        activation_id: target.activation_id,
+        previous_status,
+        status: next_status.to_string(),
+    })
+}
+
+fn resolve_lifecycle_work_unit(
+    conn: &Connection,
+    project_id: i64,
+    work_unit_id: Option<i64>,
+) -> Result<LifecycleWorkUnit> {
+    match work_unit_id {
+        Some(id) => {
+            let status = conn
+                .query_row(
+                    "select status from work_units where id = ?1 and project_id = ?2",
+                    params![id, project_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .context("work unit not found")?;
+            Ok(LifecycleWorkUnit {
+                work_unit_id: id,
+                activation_id: lifecycle_activation_for_work(conn, id)?,
+                status,
+            })
+        }
+        None => {
+            if let Some(active) = active_activation(conn)? {
+                let status = conn.query_row(
+                    "select status from work_units where id = ?1",
+                    params![active.work_unit_id],
+                    |row| row.get::<_, String>(0),
+                )?;
+                return Ok(LifecycleWorkUnit {
+                    work_unit_id: active.work_unit_id,
+                    activation_id: Some(active.activation_id),
+                    status,
+                });
+            }
+            let suspended =
+                suspended_activation(conn)?.context("no active or suspended work unit")?;
+            let status = conn.query_row(
+                "select status from work_units where id = ?1",
+                params![suspended.work_unit_id],
+                |row| row.get::<_, String>(0),
+            )?;
+            Ok(LifecycleWorkUnit {
+                work_unit_id: suspended.work_unit_id,
+                activation_id: Some(suspended.activation_id),
+                status,
+            })
+        }
+    }
+}
+
+fn lifecycle_activation_for_work(conn: &Connection, work_unit_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        select id
+        from work_unit_activations
+        where work_unit_id = ?1 and status in ('active', 'suspended')
+        order by case status when 'active' then 0 else 1 end, stack_depth desc, id desc
+        limit 1
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 fn prepare_parent_frame(
     conn: &Connection,
     reason: &str,
@@ -1887,9 +2069,13 @@ fn close_process_state(
           and wr.work_unit_id = ?2
           and (
               instr(gc.subject, ': ') = 0
-              or lower(gc.subject) like '%review%'
-              or lower(gc.subject) glob '*phase[0-9]*'
-              or lower(gc.subject) glob '*phase [0-9]*'
+              or lower(gc.subject) = 'review'
+              or lower(gc.subject) like 'review:%'
+              or lower(gc.subject) like 'review %'
+              or lower(gc.subject) like '% review'
+              or lower(gc.subject) like '% review %'
+              or lower(gc.subject) glob '*' || char(112,104,97,115,101) || '[0-9]*'
+              or lower(gc.subject) glob '*' || char(112,104,97,115,101) || ' [0-9]*'
           )
         "#,
         params![project_id, work_unit_id],
@@ -2820,6 +3006,12 @@ struct ReviewPlanTargetForResume {
     repository_snapshot_id: Option<i64>,
 }
 
+struct LifecycleWorkUnit {
+    work_unit_id: i64,
+    activation_id: Option<i64>,
+    status: String,
+}
+
 #[derive(Default)]
 struct RepositoryResumeState {
     repository_count: i64,
@@ -2845,6 +3037,14 @@ struct StoredForkSource {
 pub struct WorkOutcome {
     pub work_unit_id: i64,
     pub activation_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkStatusOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: Option<i64>,
+    pub previous_status: String,
+    pub status: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]

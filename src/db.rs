@@ -154,6 +154,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
+    ensure_column(conn, "authority_events", "authority_id", "integer")?;
+    backfill_authorities(conn)?;
     let had_work_record_commit_auto_linked =
         table_has_column(conn, "work_record_commits", "auto_linked")?;
     let had_work_record_file_auto_linked =
@@ -1183,6 +1185,15 @@ fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
     let source = "AGENTS.md";
     let summary = fs::read_to_string(&agents_path)
         .with_context(|| format!("failed to read {}", agents_path.display()))?;
+    let authority_id = ensure_authority_row(
+        conn,
+        project_id,
+        source,
+        "policy",
+        Some("project"),
+        70,
+        &summary,
+    )?;
     let authority_event_id = conn
         .query_row(
             r#"
@@ -1204,10 +1215,10 @@ fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
             conn.execute(
                 r#"
                 update authority_events
-                set text_or_summary = ?1
-                where id = ?2
+                set authority_id = ?1, text_or_summary = ?2
+                where id = ?3
                 "#,
-                params![summary, id],
+                params![authority_id, summary, id],
             )?;
             id
         }
@@ -1215,12 +1226,12 @@ fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
             conn.execute(
                 r#"
                 insert into authority_events(
-                    project_id, event_type, source, text_or_summary, scope,
+                    project_id, authority_id, event_type, source, text_or_summary, scope,
                     precedence, status, created_at
                 )
-                values (?1, 'agents', ?2, ?3, 'project', 70, 'active', current_timestamp)
+                values (?1, ?2, 'agents', ?3, ?4, 'project', 70, 'active', current_timestamp)
                 "#,
-                params![project_id, source, summary],
+                params![project_id, authority_id, source, summary],
             )?;
             conn.last_insert_rowid()
         }
@@ -1248,7 +1259,16 @@ fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
 fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
     let project_id = project_id(conn)?;
     let source = "agent-workbench:commit-message";
-    let summary = "Commit messages must use `prefix: message` and must not contain internal phase names or the word review.";
+    let summary = "Commit subjects must use `prefix: message` and must not contain internal milestone names or the literal review token.";
+    let authority_id = ensure_authority_row(
+        conn,
+        project_id,
+        source,
+        "policy",
+        Some("project"),
+        75,
+        summary,
+    )?;
     let authority_event_id = conn
         .query_row(
             r#"
@@ -1268,8 +1288,8 @@ fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
     let authority_event_id = match authority_event_id {
         Some(id) => {
             conn.execute(
-                "update authority_events set text_or_summary = ?1 where id = ?2",
-                params![summary, id],
+                "update authority_events set authority_id = ?1, text_or_summary = ?2 where id = ?3",
+                params![authority_id, summary, id],
             )?;
             id
         }
@@ -1277,12 +1297,12 @@ fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
             conn.execute(
                 r#"
                 insert into authority_events(
-                    project_id, event_type, source, text_or_summary, scope,
+                    project_id, authority_id, event_type, source, text_or_summary, scope,
                     precedence, status, created_at
                 )
-                values (?1, 'policy', ?2, ?3, 'project', 75, 'active', current_timestamp)
+                values (?1, ?2, 'policy', ?3, ?4, 'project', 75, 'active', current_timestamp)
                 "#,
-                params![project_id, source, summary],
+                params![project_id, authority_id, source, summary],
             )?;
             conn.last_insert_rowid()
         }
@@ -1305,6 +1325,129 @@ fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
         params![project_id, authority_event_id],
     )?;
     Ok(())
+}
+
+fn backfill_authorities(conn: &Connection) -> Result<()> {
+    conn.execute(
+        r#"
+        insert into authorities(
+            project_id, path_or_label, authority_type, scope, precedence,
+            summary, status, created_at, updated_at
+        )
+        select e.project_id,
+               coalesce(e.source, e.event_type),
+               case e.event_type
+                   when 'user_instruction' then 'user'
+                   when 'design_doc' then 'design'
+                   when 'validation_result' then 'validation'
+                   when 'review_result' then 'validation'
+                   else 'policy'
+               end,
+               e.scope,
+               max(e.precedence),
+               e.text_or_summary,
+               'active',
+               current_timestamp,
+               current_timestamp
+        from authority_events e
+        left join authorities a
+          on a.project_id = e.project_id
+         and a.path_or_label = coalesce(e.source, e.event_type)
+         and a.authority_type = case e.event_type
+                   when 'user_instruction' then 'user'
+                   when 'design_doc' then 'design'
+                   when 'validation_result' then 'validation'
+                   when 'review_result' then 'validation'
+                   else 'policy'
+               end
+         and coalesce(a.scope, 'project') = coalesce(e.scope, 'project')
+        where e.authority_id is null
+          and a.id is null
+        group by e.project_id, coalesce(e.source, e.event_type), e.event_type, e.scope
+        "#,
+        [],
+    )?;
+    conn.execute(
+        r#"
+        update authority_events
+        set authority_id = (
+            select a.id
+            from authorities a
+            where a.project_id = authority_events.project_id
+              and a.path_or_label = coalesce(authority_events.source, authority_events.event_type)
+              and a.authority_type = case authority_events.event_type
+                   when 'user_instruction' then 'user'
+                   when 'design_doc' then 'design'
+                   when 'validation_result' then 'validation'
+                   when 'review_result' then 'validation'
+                   else 'policy'
+              end
+              and coalesce(a.scope, 'project') = coalesce(authority_events.scope, 'project')
+            order by a.id desc
+            limit 1
+        )
+        where authority_id is null
+        "#,
+        [],
+    )?;
+    Ok(())
+}
+
+fn ensure_authority_row(
+    conn: &Connection,
+    project_id: i64,
+    path_or_label: &str,
+    authority_type: &str,
+    scope: Option<&str>,
+    precedence: i64,
+    summary: &str,
+) -> Result<i64> {
+    let existing_id = conn
+        .query_row(
+            r#"
+            select id
+            from authorities
+            where project_id = ?1
+              and path_or_label = ?2
+              and authority_type = ?3
+              and coalesce(scope, 'project') = coalesce(?4, 'project')
+            "#,
+            params![project_id, path_or_label, authority_type, scope],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(id) = existing_id {
+        conn.execute(
+            r#"
+            update authorities
+            set precedence = ?1,
+                summary = ?2,
+                status = 'active',
+                updated_at = current_timestamp
+            where id = ?3
+            "#,
+            params![precedence, summary, id],
+        )?;
+        return Ok(id);
+    }
+    conn.execute(
+        r#"
+        insert into authorities(
+            project_id, path_or_label, authority_type, scope, precedence,
+            summary, status, created_at, updated_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, 'active', current_timestamp, current_timestamp)
+        "#,
+        params![
+            project_id,
+            path_or_label,
+            authority_type,
+            scope,
+            precedence,
+            summary
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 fn count_rows(conn: &Connection, table: &str, predicate: &str) -> Result<i64> {
@@ -1645,9 +1788,26 @@ begin
     select raise(abort, 'git file change repository must match git commit repository');
 end;
 
+create table if not exists authorities (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    path_or_label text not null,
+    authority_type text not null check (authority_type in ('user', 'design', 'spec', 'plan', 'policy', 'validation')),
+    scope text,
+    precedence integer not null default 0,
+    summary text not null,
+    status text not null default 'active' check (status in ('active', 'inactive', 'superseded')),
+    created_at text not null,
+    updated_at text not null
+);
+
+create unique index if not exists ux_authorities_identity
+on authorities(project_id, path_or_label, authority_type, coalesce(scope, 'project'));
+
 create table if not exists authority_events (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
+    authority_id integer references authorities(id),
     event_type text not null check (event_type in ('user_instruction', 'design_doc', 'agents', 'policy', 'review_result', 'validation_result')),
     source text,
     text_or_summary text not null,
@@ -1657,6 +1817,24 @@ create table if not exists authority_events (
     status text not null default 'active' check (status in ('active', 'inactive', 'superseded')),
     created_at text not null
 );
+
+create trigger if not exists trg_authority_event_authority_project_insert
+before insert on authority_events
+for each row
+when new.authority_id is not null
+ and new.project_id != (select project_id from authorities where id = new.authority_id)
+begin
+    select raise(abort, 'authority event authority must match project_id');
+end;
+
+create trigger if not exists trg_authority_event_authority_project_update
+before update of project_id, authority_id on authority_events
+for each row
+when new.authority_id is not null
+ and new.project_id != (select project_id from authorities where id = new.authority_id)
+begin
+    select raise(abort, 'authority event authority must match project_id');
+end;
 
 create table if not exists work_units (
     id integer primary key,
