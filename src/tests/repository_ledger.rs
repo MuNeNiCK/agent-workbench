@@ -2662,6 +2662,119 @@ fn init_marks_pre_marker_work_record_git_links_as_auto_linked() {
 }
 
 #[test]
+fn init_preserves_intermediate_auto_linked_repository_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let ledger_dir = temp.path().join(".agent-workbench");
+    fs::create_dir_all(&ledger_dir).unwrap();
+    let ledger_path = ledger_dir.join("ledger.sqlite");
+    let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+    conn.execute_batch(
+        r#"
+        create table schema_migrations (
+            version integer primary key,
+            applied_at text not null
+        );
+        insert into schema_migrations(version, applied_at)
+        values (4, current_timestamp);
+
+        create table projects (
+            id integer primary key,
+            name text not null,
+            root_path text not null,
+            created_at text not null,
+            updated_at text not null
+        );
+        insert into projects(id, name, root_path, created_at, updated_at)
+        values (1, 'main', '/tmp/main-awb-intermediate-marker', current_timestamp, current_timestamp);
+
+        create table repositories (
+            id integer primary key,
+            project_id integer not null,
+            name text not null,
+            path text not null,
+            status_summary text,
+            last_checked_at text not null
+        );
+        insert into repositories(id, project_id, name, path, status_summary, last_checked_at)
+        values (1, 1, 'main', '.', 'clean', current_timestamp);
+
+        create table git_commits (
+            id integer primary key,
+            repository_id integer not null,
+            commit_sha text not null,
+            short_sha text,
+            subject text,
+            author_name text,
+            author_email text,
+            committed_at text,
+            parent_shas text,
+            imported_at text not null
+        );
+        insert into git_commits(id, repository_id, commit_sha, short_sha, subject, imported_at)
+        values (1, 1, 'abc123', 'abc123', 'intermediate', current_timestamp);
+
+        create table git_file_changes (
+            id integer primary key,
+            git_commit_id integer not null,
+            repository_id integer not null,
+            path text not null,
+            old_path text,
+            change_type text not null,
+            additions integer,
+            deletions integer,
+            content_hash text
+        );
+        insert into git_file_changes(id, git_commit_id, repository_id, path, change_type)
+        values (1, 1, 1, 'src/lib.rs', 'modified');
+
+        create table work_records (
+            id integer primary key,
+            project_id integer,
+            work_unit_id integer,
+            topic text not null,
+            work_performed text,
+            next_actions text,
+            notable_operations text,
+            export_path text,
+            created_at text not null
+        );
+        insert into work_records(id, project_id, work_unit_id, topic, created_at)
+        values (1, 1, null, 'intermediate linked record', current_timestamp);
+
+        create table work_record_files (
+            id integer primary key,
+            work_record_id integer not null,
+            git_file_change_id integer,
+            repository_id integer,
+            path text not null,
+            role text not null,
+            note text,
+            auto_linked integer not null default 0
+        );
+        insert into work_record_files(
+            id, work_record_id, git_file_change_id, repository_id, path, role, auto_linked
+        )
+        values (1, 1, 1, 1, 'src/lib.rs', 'changed', 1);
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    init_project(temp.path()).unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let markers: (i64, i64) = conn
+        .query_row(
+            "select auto_linked, repository_auto_linked from work_record_files where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(markers, (1, 0));
+}
+
+#[test]
 fn fork_work_normalizes_freeform_reason_to_other_code() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -2935,6 +3048,24 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
         [],
     )
     .unwrap();
+    conn.execute(
+        r#"
+        insert into command_usages(
+            project_id, work_unit_id, command, result, repository_snapshot_id, created_at
+        )
+        values (
+            1,
+            (select max(id) from work_units where project_id = 1),
+            'cargo test',
+            'pass',
+            ?1,
+            current_timestamp
+        )
+        "#,
+        params![snapshot.repository_snapshot_id],
+    )
+    .unwrap();
+    let wrong_work_usage_id = conn.last_insert_rowid();
     let same_project_wrong_work_run = conn.execute(
         r#"
         insert into validation_runs(
@@ -2951,6 +3082,34 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
         params![
             gate.validation_gate_id,
             usage.command_usage_id,
+            snapshot.repository_snapshot_id
+        ],
+    );
+    let wrong_work_usage_run = add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: gate.validation_gate_id,
+            command_usage_id: Some(wrong_work_usage_id),
+            repository_snapshot_id: Some(snapshot.repository_snapshot_id),
+            result: "pass",
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("wrong work unit command usage"),
+        },
+    );
+    let wrong_work_usage_direct_run = conn.execute(
+        r#"
+        insert into validation_runs(
+            project_id, validation_gate_id, work_unit_id, task_id, command_usage_id,
+            repository_snapshot_id, result, created_at
+        )
+        values (1, ?1, ?2, ?3, ?4, ?5, 'pass', current_timestamp)
+        "#,
+        params![
+            gate.validation_gate_id,
+            work.work_unit_id,
+            task.task_id,
+            wrong_work_usage_id,
             snapshot.repository_snapshot_id
         ],
     );
@@ -3072,6 +3231,8 @@ fn validation_runs_record_gate_results_and_enforce_project_links() {
     assert!(mismatched_usage_artifact.is_err());
     assert!(mismatched_snapshot_artifact.is_err());
     assert!(same_project_wrong_work_run.is_err());
+    assert!(wrong_work_usage_run.is_err());
+    assert!(wrong_work_usage_direct_run.is_err());
     assert!(
         conn.execute(
             "delete from repository_snapshots where id = ?1",

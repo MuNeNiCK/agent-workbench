@@ -439,6 +439,11 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
            )
            or (vr.command_usage_id is not null and (cu.id is null or vr.project_id != cu.project_id))
            or (
+               vr.command_usage_id is not null
+               and cu.work_unit_id is not null
+               and cu.work_unit_id is not vr.work_unit_id
+           )
+           or (
                vr.repository_snapshot_id is not null
                and (s.id is null or sr.id is null or vr.project_id != sr.project_id)
            )
@@ -628,10 +633,7 @@ fn migrate_work_record_auto_link_markers(
             update work_record_files
             set repository_auto_linked = 1
             where git_file_change_id is not null
-              and (
-                  ?1 = 0
-                  or auto_linked = 1
-              )
+              and ?1 = 0
             "#,
             params![i64::from(had_work_record_file_auto_linked)],
         )?;
@@ -2415,7 +2417,14 @@ when new.project_id != (select project_id from validation_gates where id = new.v
           select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
       )
   ))
-  or (new.command_usage_id is not null and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or new.project_id != (select project_id from command_usages where id = new.command_usage_id)
+      or (
+          (select work_unit_id from command_usages where id = new.command_usage_id) is not null
+          and (select work_unit_id from command_usages where id = new.command_usage_id) is not new.work_unit_id
+      )
+  ))
   or (new.repository_snapshot_id is not null and (
       not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
       or new.project_id != (
@@ -2449,7 +2458,14 @@ when new.project_id != (select project_id from validation_gates where id = new.v
           select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)
       )
   ))
-  or (new.command_usage_id is not null and new.project_id != (select project_id from command_usages where id = new.command_usage_id))
+  or (new.command_usage_id is not null and (
+      not exists (select 1 from command_usages where id = new.command_usage_id)
+      or new.project_id != (select project_id from command_usages where id = new.command_usage_id)
+      or (
+          (select work_unit_id from command_usages where id = new.command_usage_id) is not null
+          and (select work_unit_id from command_usages where id = new.command_usage_id) is not new.work_unit_id
+      )
+  ))
   or (new.repository_snapshot_id is not null and (
       not exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
       or new.project_id != (

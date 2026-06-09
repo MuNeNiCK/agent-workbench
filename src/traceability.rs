@@ -577,12 +577,21 @@ pub fn add_validation_run(
         .context("active validation gate not found")?;
     if let Some(command_usage_id) = input.command_usage_id {
         conn.query_row(
-            "select 1 from command_usages where id = ?1 and project_id = ?2",
-            params![command_usage_id, project_id],
+            r#"
+            select 1
+            from command_usages
+            where id = ?1
+              and project_id = ?2
+              and (
+                  work_unit_id is null
+                  or work_unit_id is ?3
+              )
+            "#,
+            params![command_usage_id, project_id, gate.work_unit_id],
             |_| Ok(()),
         )
         .optional()?
-        .context("command usage not found")?;
+        .context("command usage not found for validation gate scope")?;
     }
     if let Some(repository_snapshot_id) = input.repository_snapshot_id {
         conn.query_row(
