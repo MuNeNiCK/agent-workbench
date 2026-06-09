@@ -20,11 +20,26 @@ in the repository:
 - `agent-workbench status`
 - `agent-workbench next`
 - `agent-workbench rules applicable --scope current`
+- `agent-workbench authority list`
 - `agent-workbench design init`
 - `agent-workbench design import`
 - `agent-workbench design refresh`
 - `agent-workbench design approve`
+- `agent-workbench acceptance add`
 - `agent-workbench authority event add`
+- `agent-workbench correction add`
+- `agent-workbench correction list`
+- `agent-workbench decision add`
+- `agent-workbench decision search`
+- `agent-workbench command fixed add`
+- `agent-workbench command preferred add`
+- `agent-workbench command list`
+- `agent-workbench command usage add`
+- `agent-workbench command deviation add`
+- `agent-workbench task add`
+- `agent-workbench task list`
+- `agent-workbench task close`
+- `agent-workbench task accept-out-of-scope`
 - `agent-workbench decompose design`
 - `agent-workbench trace derive-task`
 - `agent-workbench checklist list`
@@ -39,6 +54,7 @@ in the repository:
 - `agent-workbench review scope start`
 - `agent-workbench review policy add`
 - `agent-workbench review plan add`
+- `agent-workbench review plan target add`
 - `agent-workbench review run add`
 - `agent-workbench finding add`
 - `agent-workbench finding classify`
@@ -58,6 +74,16 @@ in the repository:
 - `agent-workbench repository compare add`
 - `agent-workbench repository commit add`
 - `agent-workbench repository file add`
+- `agent-workbench work start`
+- `agent-workbench work suspend`
+- `agent-workbench work interrupt`
+- `agent-workbench work resume`
+- `agent-workbench work reopen`
+- `agent-workbench work follow-up`
+- `agent-workbench work close`
+- `agent-workbench work block`
+- `agent-workbench work unblock`
+- `agent-workbench work abandon`
 - `agent-workbench resume-check --maturity basic|trace-aware|repo-aware`
 - `agent-workbench record create`
 - `agent-workbench record command add`

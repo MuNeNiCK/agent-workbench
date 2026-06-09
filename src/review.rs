@@ -277,6 +277,45 @@ pub fn list_review_plan_targets(
     collect_rows(rows)
 }
 
+pub fn add_review_plan_target(
+    root: &Path,
+    input: NewReviewPlanTarget<'_>,
+) -> Result<ReviewPlanTargetOutcome> {
+    validate_review_target_shape(&input)?;
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    conn.query_row(
+        "select 1 from review_plans where id = ?1 and project_id = ?2",
+        params![input.review_plan_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("review plan not found")?;
+    conn.execute(
+        r#"
+        insert into review_plan_targets(
+            review_plan_id, target_type, design_version_id, design_requirement_id,
+            task_id, work_unit_id, repository_snapshot_id, file_path, symbol
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+        params![
+            input.review_plan_id,
+            input.target_type,
+            input.design_version_id,
+            input.design_requirement_id,
+            input.task_id,
+            input.work_unit_id,
+            input.repository_snapshot_id,
+            input.file_path,
+            input.symbol,
+        ],
+    )?;
+    Ok(ReviewPlanTargetOutcome {
+        review_plan_target_id: conn.last_insert_rowid(),
+    })
+}
+
 pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
@@ -293,18 +332,18 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     {
         bail!("new findings are disabled for resume review by policy");
     }
-    let (target_type, design_version_id, work_unit_id, target_ref) =
-        resolve_run_target(&plan, input.target_ref);
+    let target = resolve_run_target(&tx, project_id, &plan, input.target_ref)?;
 
     tx.execute(
         r#"
         insert into review_runs(
             project_id, review_scope_id, review_plan_id, run_type, run_purpose,
-            target_type, design_version_id, work_unit_id, target_ref,
+            target_type, design_version_id, design_requirement_id, task_id,
+            work_unit_id, repository_snapshot_id, target_ref,
             prompt_deviations, result_summary, new_findings_count,
             carried_findings_checked, clean_run, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, current_timestamp)
         "#,
         params![
             project_id,
@@ -312,10 +351,13 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             plan.id,
             input.run_type,
             input.run_purpose,
-            target_type,
-            design_version_id,
-            work_unit_id,
-            target_ref,
+            target.target_type,
+            target.design_version_id,
+            target.design_requirement_id,
+            target.task_id,
+            target.work_unit_id,
+            target.repository_snapshot_id,
+            target.target_ref,
             input.prompt_deviations,
             input.result_summary,
             input.new_findings_count,
@@ -881,6 +923,40 @@ fn validate_review_plan_references(
     Ok(())
 }
 
+fn validate_review_target_shape(input: &NewReviewPlanTarget<'_>) -> Result<()> {
+    let present_count = [
+        input.design_version_id.is_some(),
+        input.design_requirement_id.is_some(),
+        input.task_id.is_some(),
+        input.work_unit_id.is_some(),
+        input.repository_snapshot_id.is_some(),
+        input.file_path.is_some(),
+        input.symbol.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if present_count != 1 {
+        bail!("review plan target requires exactly one typed target value");
+    }
+    let valid = match input.target_type {
+        "design_version" => input.design_version_id.is_some(),
+        "design_requirement" => input.design_requirement_id.is_some(),
+        "task" => input.task_id.is_some(),
+        "work_unit" => input.work_unit_id.is_some(),
+        "repository_snapshot" => input.repository_snapshot_id.is_some(),
+        "file" => input
+            .file_path
+            .is_some_and(|value| !value.trim().is_empty()),
+        "symbol" => input.symbol.is_some_and(|value| !value.trim().is_empty()),
+        _ => false,
+    };
+    if !valid {
+        bail!("review plan target value must match target type");
+    }
+    Ok(())
+}
+
 fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()> {
     if input.new_findings_count < 0 || input.carried_findings_checked < 0 {
         bail!("review run counters must be non-negative");
@@ -1025,28 +1101,146 @@ fn load_review_policy(
 }
 
 fn resolve_run_target(
+    conn: &rusqlite::Connection,
+    project_id: i64,
     plan: &StoredReviewPlan,
     explicit_target_ref: Option<&str>,
-) -> (&'static str, Option<i64>, Option<i64>, String) {
+) -> Result<ResolvedRunTarget> {
+    if let Some(target_ref) = explicit_target_ref
+        && let Some(target) = parse_structured_target_ref(target_ref)?
+    {
+        ensure_plan_has_target(conn, plan.id, &target)?;
+        return Ok(target.with_ref(target_ref));
+    }
     if let Some(design_version_id) = plan.design_version_id {
-        (
-            "design_version",
-            Some(design_version_id),
-            None,
-            explicit_target_ref
+        ensure_project_row(conn, "design_versions", design_version_id, project_id)?;
+        Ok(ResolvedRunTarget {
+            target_type: "design_version",
+            design_version_id: Some(design_version_id),
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            repository_snapshot_id: None,
+            target_ref: explicit_target_ref
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("design_version:{design_version_id}")),
-        )
+        })
     } else {
-        (
-            "work_unit",
-            None,
-            Some(plan.work_unit_id),
-            explicit_target_ref
+        ensure_project_row(conn, "work_units", plan.work_unit_id, project_id)?;
+        Ok(ResolvedRunTarget {
+            target_type: "work_unit",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: Some(plan.work_unit_id),
+            repository_snapshot_id: None,
+            target_ref: explicit_target_ref
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("work_unit:{}", plan.work_unit_id)),
-        )
+        })
     }
+}
+
+fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTarget>> {
+    let Some((target_type, value)) = target_ref.split_once(':') else {
+        return Ok(None);
+    };
+    match target_type {
+        "design_version" => Ok(Some(ResolvedRunTarget::typed_id(
+            "design_version",
+            value.parse()?,
+        ))),
+        "design_requirement" => Ok(Some(ResolvedRunTarget::typed_id(
+            "design_requirement",
+            value.parse()?,
+        ))),
+        "task" => Ok(Some(ResolvedRunTarget::typed_id("task", value.parse()?))),
+        "work_unit" => Ok(Some(ResolvedRunTarget::typed_id(
+            "work_unit",
+            value.parse()?,
+        ))),
+        "repository_snapshot" => Ok(Some(ResolvedRunTarget::typed_id(
+            "repository_snapshot",
+            value.parse()?,
+        ))),
+        "file" => Ok(Some(ResolvedRunTarget {
+            target_type: "file",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            repository_snapshot_id: None,
+            target_ref: value.to_string(),
+        })),
+        "symbol" => Ok(Some(ResolvedRunTarget {
+            target_type: "symbol",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            repository_snapshot_id: None,
+            target_ref: value.to_string(),
+        })),
+        _ => Ok(None),
+    }
+}
+
+fn ensure_plan_has_target(
+    conn: &rusqlite::Connection,
+    review_plan_id: i64,
+    target: &ResolvedRunTarget,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from review_plan_targets
+        where review_plan_id = ?1
+          and target_type = ?2
+          and coalesce(design_version_id, -1) = coalesce(?3, -1)
+          and coalesce(design_requirement_id, -1) = coalesce(?4, -1)
+          and coalesce(task_id, -1) = coalesce(?5, -1)
+          and coalesce(work_unit_id, -1) = coalesce(?6, -1)
+          and coalesce(repository_snapshot_id, -1) = coalesce(?7, -1)
+          and coalesce(file_path, '') = coalesce(?8, '')
+          and coalesce(symbol, '') = coalesce(?9, '')
+        "#,
+        params![
+            review_plan_id,
+            target.target_type,
+            target.design_version_id,
+            target.design_requirement_id,
+            target.task_id,
+            target.work_unit_id,
+            target.repository_snapshot_id,
+            if target.target_type == "file" {
+                Some(target.target_ref.as_str())
+            } else {
+                None
+            },
+            if target.target_type == "symbol" {
+                Some(target.target_ref.as_str())
+            } else {
+                None
+            },
+        ],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("review run target is not registered on the review plan")?;
+    Ok(())
+}
+
+fn ensure_project_row(
+    conn: &rusqlite::Connection,
+    table: &str,
+    id: i64,
+    project_id: i64,
+) -> Result<()> {
+    let sql = format!("select 1 from {table} where id = ?1 and project_id = ?2");
+    conn.query_row(&sql, params![id, project_id], |_| Ok(()))
+        .optional()?
+        .context("review run target not found for project")?;
+    Ok(())
 }
 
 fn agent_role_for_review_type(review_type: &str) -> Result<&'static str> {
@@ -1143,6 +1337,35 @@ struct StoredReviewRunPurpose {
     run_purpose: String,
 }
 
+struct ResolvedRunTarget {
+    target_type: &'static str,
+    design_version_id: Option<i64>,
+    design_requirement_id: Option<i64>,
+    task_id: Option<i64>,
+    work_unit_id: Option<i64>,
+    repository_snapshot_id: Option<i64>,
+    target_ref: String,
+}
+
+impl ResolvedRunTarget {
+    fn typed_id(target_type: &'static str, id: i64) -> Self {
+        Self {
+            target_type,
+            design_version_id: (target_type == "design_version").then_some(id),
+            design_requirement_id: (target_type == "design_requirement").then_some(id),
+            task_id: (target_type == "task").then_some(id),
+            work_unit_id: (target_type == "work_unit").then_some(id),
+            repository_snapshot_id: (target_type == "repository_snapshot").then_some(id),
+            target_ref: format!("{target_type}:{id}"),
+        }
+    }
+
+    fn with_ref(mut self, target_ref: &str) -> Self {
+        self.target_ref = target_ref.to_string();
+        self
+    }
+}
+
 pub struct NewReviewScope<'a> {
     pub name: &'a str,
     pub review_type: &'a str,
@@ -1182,6 +1405,18 @@ pub struct NewReviewPlan<'a> {
     pub stop_condition: Option<&'a str>,
     pub review_policy_id: Option<i64>,
     pub review_scope_id: Option<i64>,
+}
+
+pub struct NewReviewPlanTarget<'a> {
+    pub review_plan_id: i64,
+    pub target_type: &'a str,
+    pub design_version_id: Option<i64>,
+    pub design_requirement_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+    pub repository_snapshot_id: Option<i64>,
+    pub file_path: Option<&'a str>,
+    pub symbol: Option<&'a str>,
 }
 
 pub struct NewReviewRun<'a> {
@@ -1244,6 +1479,11 @@ pub struct ReviewPolicyOutcome {
 pub struct ReviewPlanOutcome {
     pub review_plan_id: i64,
     pub review_policy_id: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReviewPlanTargetOutcome {
+    pub review_plan_target_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

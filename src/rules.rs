@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::{active_activation, open_existing_project, project_id};
 
@@ -107,6 +107,17 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
         None
     };
     let work_unit_id = input.work_unit_id.or(active_work_unit_id);
+    let responsibility = match (input.scope_key, work_unit_id) {
+        (Some("current"), Some(work_unit_id)) => conn
+            .query_row(
+                "select responsibility from work_units where id = ?1 and project_id = ?2",
+                params![work_unit_id, project_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten(),
+        _ => None,
+    };
     let resolved_scope_key = match (input.scope_key, work_unit_id) {
         (Some("current"), Some(work_unit_id)) => Some(work_unit_id.to_string()),
         (Some(scope_key), _) => Some(scope_key.to_string()),
@@ -127,28 +138,37 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
             rb.scope_type = 'project'
             or rb.scope_key = ?2
             or (?3 is not null and rb.work_unit_id = ?3)
+            or (?4 is not null and rb.scope_key = ?4)
           )
         order by rb.precedence desc, rb.id asc
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, scope_key, work_unit_id], |row| {
-        Ok(RuleRecord {
-            id: row.get(0)?,
-            rule_source_type: row.get(1)?,
-            scope_type: row.get(2)?,
-            scope_key: row.get(3)?,
-            precedence: row.get(4)?,
-            authority_event_id: row.get(5)?,
-            user_correction_id: row.get(6)?,
-            command_profile_id: row.get(7)?,
-            review_policy_id: row.get(8)?,
-            review_plan_id: row.get(9)?,
-            work_unit_id: row.get(10)?,
-            validation_gate_id: row.get(11)?,
-            acceptance_record_id: row.get(12)?,
-            shadowed_by_rule_id: None,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![
+            project_id,
+            scope_key,
+            work_unit_id,
+            responsibility.as_deref()
+        ],
+        |row| {
+            Ok(RuleRecord {
+                id: row.get(0)?,
+                rule_source_type: row.get(1)?,
+                scope_type: row.get(2)?,
+                scope_key: row.get(3)?,
+                precedence: row.get(4)?,
+                authority_event_id: row.get(5)?,
+                user_correction_id: row.get(6)?,
+                command_profile_id: row.get(7)?,
+                review_policy_id: row.get(8)?,
+                review_plan_id: row.get(9)?,
+                work_unit_id: row.get(10)?,
+                validation_gate_id: row.get(11)?,
+                acceptance_record_id: row.get(12)?,
+                shadowed_by_rule_id: None,
+            })
+        },
+    )?;
     for row in rows {
         records.push(row?);
     }
@@ -163,6 +183,8 @@ fn annotate_shadowed_rules(records: &mut [RuleRecord]) {
             .iter()
             .find(|candidate| {
                 candidate.id != records[index].id
+                    && candidate.rule_source_type == records[index].rule_source_type
+                    && rule_identity(candidate) == rule_identity(&records[index])
                     && candidate.scope_type == records[index].scope_type
                     && candidate.scope_key == records[index].scope_key
                     && candidate.precedence > records[index].precedence
@@ -172,6 +194,18 @@ fn annotate_shadowed_rules(records: &mut [RuleRecord]) {
             records[index].shadowed_by_rule_id = Some(winner_id);
         }
     }
+}
+
+fn rule_identity(record: &RuleRecord) -> Option<i64> {
+    record
+        .authority_event_id
+        .or(record.user_correction_id)
+        .or(record.command_profile_id)
+        .or(record.review_policy_id)
+        .or(record.review_plan_id)
+        .or(record.work_unit_id)
+        .or(record.validation_gate_id)
+        .or(record.acceptance_record_id)
 }
 
 pub(crate) fn insert_rule_binding(conn: &Connection, input: RuleBindingInput<'_>) -> Result<i64> {

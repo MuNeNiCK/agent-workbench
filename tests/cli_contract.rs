@@ -2448,7 +2448,7 @@ fn design_cli_aliases_record_commands_authority_git_and_links() {
     assert!(deprecated.contains("command_profile_id: 1"));
     assert!(authority.contains("authority_id: "));
     assert!(authority.contains("authority_event_id: "));
-    assert!(rules.contains("shadowed_by="));
+    assert!(rules.contains("user_correction"));
     assert!(git_commit.contains("git_commit_id: 1"));
     assert!(git_file.contains("git_file_change_id: 1"));
     assert!(linked_commit.contains("work_record_commit_id: 1"));

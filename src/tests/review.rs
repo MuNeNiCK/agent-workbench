@@ -1754,3 +1754,90 @@ fn review_plan_targets_reject_cross_project_targets() {
     assert!(cross_project.is_err());
     assert!(repository_snapshot_target.is_err());
 }
+
+#[test]
+fn review_plan_targets_can_drive_typed_review_run_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "typed targets", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "targeted task",
+            priority: "medium",
+            source: "user",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("target is reviewed"),
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let target = add_review_plan_target(
+        temp.path(),
+        NewReviewPlanTarget {
+            review_plan_id: plan.review_plan_id,
+            target_type: "task",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: Some(task.task_id),
+            work_unit_id: None,
+            repository_snapshot_id: None,
+            file_path: None,
+            symbol: None,
+        },
+    )
+    .unwrap();
+
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!("task:{}", task.task_id)),
+            prompt_deviations: None,
+            result_summary: Some("task target clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let records = list_review_plan_targets(temp.path(), plan.review_plan_id).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let (target_type, task_id): (String, i64) = conn
+        .query_row(
+            "select target_type, task_id from review_runs where id = ?1",
+            params![run.review_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .any(|record| record.id == target.review_plan_target_id)
+    );
+    assert_eq!(target_type, "task");
+    assert_eq!(task_id, task.task_id);
+}

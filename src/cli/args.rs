@@ -1270,6 +1270,10 @@ pub(crate) enum ReviewPlanCommand {
     Add(ReviewPlanAddArgs),
     List,
     Context(ReviewPlanContextArgs),
+    Target {
+        #[command(subcommand)]
+        command: ReviewPlanTargetCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1295,6 +1299,33 @@ pub(crate) struct ReviewPlanAddArgs {
 #[derive(Debug, Args)]
 pub(crate) struct ReviewPlanContextArgs {
     pub(crate) review_plan_id: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReviewPlanTargetCommand {
+    Add(ReviewPlanTargetAddArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewPlanTargetAddArgs {
+    #[arg(long)]
+    pub(crate) plan: i64,
+    #[arg(long = "type")]
+    pub(crate) target_type: String,
+    #[arg(long)]
+    pub(crate) design_version: Option<i64>,
+    #[arg(long)]
+    pub(crate) design_requirement: Option<i64>,
+    #[arg(long)]
+    pub(crate) task: Option<i64>,
+    #[arg(long)]
+    pub(crate) work_unit: Option<i64>,
+    #[arg(long)]
+    pub(crate) repository_snapshot: Option<i64>,
+    #[arg(long)]
+    pub(crate) file: Option<String>,
+    #[arg(long)]
+    pub(crate) symbol: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

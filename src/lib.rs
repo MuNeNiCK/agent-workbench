@@ -81,12 +81,13 @@ pub use repository::{
 pub use review::{
     ClosureOutcome, FindingClassificationOutcome, FindingOutcome, FindingRecord,
     FindingVerificationOutcome, NewClosure, NewFinding, NewFindingVerification, NewReviewPlan,
-    NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome, ReviewPlanRecord,
-    ReviewPlanTargetRecord, ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome,
-    ReviewRunRecord, ReviewScopeOutcome, ReviewScopeRecord, add_closure, add_finding,
-    add_finding_verification, add_review_plan, add_review_policy, add_review_run, classify_finding,
-    list_findings, list_review_plan_targets, list_review_plans, list_review_policies,
-    list_review_runs, list_review_scopes, start_review_scope,
+    NewReviewPlanTarget, NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome,
+    ReviewPlanRecord, ReviewPlanTargetOutcome, ReviewPlanTargetRecord, ReviewPolicyOutcome,
+    ReviewPolicyRecord, ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome, ReviewScopeRecord,
+    add_closure, add_finding, add_finding_verification, add_review_plan, add_review_plan_target,
+    add_review_policy, add_review_run, classify_finding, list_findings, list_review_plan_targets,
+    list_review_plans, list_review_policies, list_review_runs, list_review_scopes,
+    start_review_scope,
 };
 pub use review_context::{
     ReviewContextDocument, ReviewContextQuery, render_review_context, review_context_ref,

@@ -85,6 +85,87 @@ fn current_scope_rules_include_active_work_unit_rules() {
 }
 
 #[test]
+fn current_scope_rules_include_active_work_responsibility_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "cleanup work", Some("cleanup")).unwrap();
+    let command = add_fixed_command(
+        temp.path(),
+        NewCommandProfile {
+            name: "cleanup-test",
+            command_type: "validation",
+            scope: "cleanup",
+            command: "cargo test cleanup",
+            timeout: Some("120s"),
+            expected_result: Some("pass"),
+        },
+    )
+    .unwrap();
+
+    let current_rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("current"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+
+    assert!(current_rules.iter().any(|rule| {
+        rule.command_profile_id == Some(command.command_profile_id)
+            && rule.scope_key.as_deref() == Some("cleanup")
+    }));
+}
+
+#[test]
+fn unrelated_project_rules_are_not_shadowed() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let first = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "skip status",
+            correction: "check status first",
+            applies_to: "project",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+    let second = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "command",
+            mistake_pattern: "vary command",
+            correction: "use fixed command",
+            applies_to: "project",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+
+    let rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("project"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+
+    assert!(rules.iter().any(|rule| {
+        rule.user_correction_id == Some(first.user_correction_id)
+            && rule.shadowed_by_rule_id.is_none()
+    }));
+    assert!(rules.iter().any(|rule| {
+        rule.user_correction_id == Some(second.user_correction_id)
+            && rule.shadowed_by_rule_id.is_none()
+    }));
+}
+
+#[test]
 fn current_scope_rules_include_review_policy_and_validation_gate_rules() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

@@ -146,6 +146,26 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                     );
                 }
             }
+            ReviewPlanCommand::Target { command } => match command {
+                ReviewPlanTargetCommand::Add(args) => {
+                    let outcome = add_review_plan_target(
+                        root,
+                        NewReviewPlanTarget {
+                            review_plan_id: args.plan,
+                            target_type: &args.target_type,
+                            design_version_id: args.design_version,
+                            design_requirement_id: args.design_requirement,
+                            task_id: args.task,
+                            work_unit_id: args.work_unit,
+                            repository_snapshot_id: args.repository_snapshot,
+                            file_path: args.file.as_deref(),
+                            symbol: args.symbol.as_deref(),
+                        },
+                    )?;
+                    println!("added review plan target");
+                    println!("review_plan_target_id: {}", outcome.review_plan_target_id);
+                }
+            },
         },
         ReviewCommand::Run { command } => match command {
             ReviewRunCommand::Add(args) => {
