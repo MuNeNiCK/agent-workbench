@@ -1231,6 +1231,44 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
 }
 
 #[test]
+fn work_start_with_design_version_requires_implementation_ready_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let blocked = err(
+        temp.path(),
+        &["work", "start", "implement design", "--design-version", "1"],
+    );
+    let work_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_units", [], |row| row.get(0))
+        .unwrap();
+
+    assert!(blocked.contains("implementation-ready"));
+    assert_eq!(work_count, 0);
+}
+
+#[test]
 fn decompose_design_requires_clean_design_ready_plan() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

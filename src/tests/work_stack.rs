@@ -82,6 +82,46 @@ fn work_start_creates_active_work_unit() {
 }
 
 #[test]
+fn work_start_with_design_version_requires_implementation_ready_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+
+    let started = start_work_with_options(
+        temp.path(),
+        WorkStart {
+            title: "implement design",
+            responsibility: None,
+            design_version_id: Some(import.design_version_id),
+        },
+    );
+    let next = next_action(temp.path()).unwrap();
+
+    assert!(started.is_err());
+    assert_eq!(next, NextAction::NoActiveWorkUnit);
+}
+
+#[test]
 fn work_start_refuses_second_active_activation() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

@@ -67,6 +67,66 @@ fn correction_creates_applicable_rule_binding() {
 }
 
 #[test]
+fn close_ready_allows_approved_repeated_correction_deferral() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "apply remembered process", None).unwrap();
+    let first = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "repeat stale process",
+            correction: "record explicit deferral when not addressing a repeated correction",
+            applies_to: "project",
+            severity: "high",
+        },
+    )
+    .unwrap();
+    add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "miss fixed commands",
+            correction: "use fixed command profiles before closing work",
+            applies_to: "project",
+            severity: "high",
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    let blocked_item = blocked
+        .items
+        .iter()
+        .find(|item| item.name == "corrections_kpt_checked")
+        .unwrap();
+    assert_eq!(blocked_item.result, "fail");
+
+    let authority = approval_authority_event(temp.path());
+    let target = format!("stale:user_correction:{}", first.user_correction_id);
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: &target,
+            acceptance_type: "stale_accepted",
+            reason: "user explicitly deferred this remembered correction",
+            approval_authority_event_id: authority,
+        },
+    )
+    .unwrap();
+
+    let allowed = close_ready(temp.path()).unwrap();
+    let allowed_item = allowed
+        .items
+        .iter()
+        .find(|item| item.name == "corrections_kpt_checked")
+        .unwrap();
+    assert_eq!(allowed_item.result, "pass");
+}
+
+#[test]
 fn fixed_command_creates_command_rule_binding() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

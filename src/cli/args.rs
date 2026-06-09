@@ -195,6 +195,8 @@ pub(crate) struct WorkStartArgs {
     pub(crate) title: String,
     #[arg(long)]
     pub(crate) responsibility: Option<String>,
+    #[arg(long)]
+    pub(crate) design_version: Option<i64>,
 }
 
 #[derive(Debug, Args)]

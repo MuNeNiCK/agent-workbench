@@ -4,15 +4,26 @@ use anyhow::Result;
 
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
-    NewWorkFork, WorkForkSource, WorkReopen, abandon_work, block_work, close_active_work,
-    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check, resume_work,
-    start_work, suspend_work, unblock_work,
+    NewWorkFork, WorkForkSource, WorkReopen, WorkStart, abandon_work, block_work,
+    close_active_work, create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
+    resume_work, start_work, start_work_with_options, suspend_work, unblock_work,
 };
 
 pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
     match command {
         WorkCommand::Start(args) => {
-            let outcome = start_work(root, &args.title, args.responsibility.as_deref())?;
+            let outcome = if let Some(design_version_id) = args.design_version {
+                start_work_with_options(
+                    root,
+                    WorkStart {
+                        title: &args.title,
+                        responsibility: args.responsibility.as_deref(),
+                        design_version_id: Some(design_version_id),
+                    },
+                )?
+            } else {
+                start_work(root, &args.title, args.responsibility.as_deref())?
+            };
             println!("started work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);

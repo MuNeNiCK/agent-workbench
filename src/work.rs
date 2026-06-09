@@ -9,8 +9,31 @@ use crate::db::{
 };
 use crate::review_context::review_plan_has_clean_context_run;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
+use crate::traceability::{ImplementationReadyCheck, implementation_ready};
 
 pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Result<WorkOutcome> {
+    start_work_with_options(
+        root,
+        WorkStart {
+            title,
+            responsibility,
+            design_version_id: None,
+        },
+    )
+}
+
+pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<WorkOutcome> {
+    if let Some(design_version_id) = input.design_version_id {
+        let ready = implementation_ready(
+            root,
+            ImplementationReadyCheck {
+                design_version_id: Some(design_version_id),
+            },
+        )?;
+        if ready.result != "pass" {
+            bail!("implementation work start requires implementation-ready to pass");
+        }
+    }
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
@@ -24,11 +47,11 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
         insert into work_units(project_id, title, status, responsibility, started_at)
         values (?1, ?2, 'open', ?3, current_timestamp)
         "#,
-        params![project_id, title, responsibility],
+        params![project_id, input.title, input.responsibility],
     )?;
     let work_unit_id = tx.last_insert_rowid();
     let work_scope = work_unit_id.to_string();
-    if responsibility.is_some() {
+    if input.responsibility.is_some() {
         insert_rule_binding(
             &tx,
             RuleBindingInput {
@@ -67,7 +90,7 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
             activation_id: Some(activation_id),
             related_activation_id: None,
             event_type: "opened",
-            reason: responsibility,
+            reason: input.responsibility,
             status_domain: "work_unit",
             previous_status: None,
             next_status: Some("open"),
@@ -2472,7 +2495,22 @@ fn close_process_state(
         |row| row.get(0),
     )?;
     let repeated_correction_count = conn.query_row(
-        "select count(*) from user_corrections where project_id = ?1 and status = 'active'",
+        r#"
+        select count(*)
+        from user_corrections uc
+        where uc.project_id = ?1
+          and uc.status = 'active'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.project_id = uc.project_id
+                and ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'user_correction'
+                and ar.stale_record_id = uc.id
+                and ar.status = 'approved'
+                and ar.acceptance_type in ('stale_accepted', 'explicit_exception')
+          )
+        "#,
         params![project_id],
         |row| row.get(0),
     )?;
@@ -3476,6 +3514,12 @@ struct StoredForkSource {
 pub struct WorkOutcome {
     pub work_unit_id: i64,
     pub activation_id: i64,
+}
+
+pub struct WorkStart<'a> {
+    pub title: &'a str,
+    pub responsibility: Option<&'a str>,
+    pub design_version_id: Option<i64>,
 }
 
 pub struct WorkReopen<'a> {

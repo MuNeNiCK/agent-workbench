@@ -31,8 +31,10 @@ authority.
    `agent-workbench design import .agent-workbench/designs/<design-id> --status draft`.
 3. Add the required design document review plan with
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required`.
-4. Record a clean design review run with
-   `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --clean`.
+4. Build the design review context with
+   `agent-workbench review-context design-review --design-version <design-version-id> --work-unit <work-unit-id>`,
+   then record a clean design review run with
+   `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
 5. Check design readiness with
    `agent-workbench gate design-ready --dry-run`.
 6. Decompose the design with
@@ -48,17 +50,22 @@ authority.
    profile should drive the gate.
 9. Add the required decomposition review plan with
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_task_decomposition --stage implementation-ready --design-version <design-version-id> --required`.
-10. Record a clean decomposition review run with
-    `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --clean`.
+10. Build the decomposition review context with
+    `agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>`,
+    then record a clean decomposition review run with
+    `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
 11. Check implementation readiness with
    `agent-workbench gate implementation-ready --dry-run`.
+12. Start implementation work with
+   `agent-workbench work start "<title>" --design-version <design-version-id>`
+   so the implementation-ready gate is enforced before work begins.
 
 ## Close Work
 
 1. Record implementation evidence with
-   `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <requirement-key> --type implementation --file <path> --note "<evidence>"`.
+   `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <requirement-key> --type file --file <path> --note "<evidence>"`.
 2. Record coverage with
-   `agent-workbench coverage add --design <design-version-id> --requirement <requirement-key> --task <task-id> --status covered --requirement-text "<requirement summary>"`.
+   `agent-workbench coverage add --design <design-version-id> --requirement <requirement-key> --task <task-id> --status covered --requirement-text "<requirement summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"`.
 3. Close or accept out-of-scope all tasks derived from the design.
 4. Record command usage, validation runs, repository state, Git evidence, and
    work record evidence.
@@ -79,6 +86,8 @@ authority.
    `agent-workbench authority event add --type user_instruction --summary "<approval>"`,
    then run
    `agent-workbench acceptance add --target <kind:id> --type <acceptance-type> --reason "<reason>" --authority <authority-event-id>`.
+   To intentionally defer a repeated user correction, use
+   `agent-workbench acceptance add --target stale:user_correction:<correction-id> --type stale_accepted --reason "<reason>" --authority <authority-event-id>`.
    For design-package exceptions, include either `--design <design-version-id>`
    or `--package <design-id>` in that `acceptance add` command.
    When converting KPT items into fixed command profiles, use the same authority
