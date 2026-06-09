@@ -245,7 +245,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     let repository = repository_close_state(&conn, &active)?;
     let review = review_plan_stage_state(&conn, active.work_unit_id, "close-ready")?;
     let trace = close_trace_state(&conn, active.work_unit_id)?;
-    let phase2 = close_phase2_state(&conn, active.project_id, active.work_unit_id)?;
+    let process = close_process_state(&conn, active.project_id, active.work_unit_id)?;
     let missing_close_review_types =
         missing_required_close_review_types(&conn, active.work_unit_id)?;
     let mut items = Vec::new();
@@ -261,12 +261,12 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             format!("{open_tasks} open or blocked tasks"),
         )
     });
-    items.push(if phase2.rule_conflict_count == 0 {
+    items.push(if process.rule_conflict_count == 0 {
         CloseReadyItem::pass(
             "rules_checked",
             format!(
                 "{} applicable rules, {} shadowed conflicts",
-                phase2.applicable_rule_count, phase2.rule_conflict_count
+                process.applicable_rule_count, process.rule_conflict_count
             ),
         )
     } else {
@@ -275,16 +275,16 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             "resolve or accept shadowed rule conflicts before closing work",
             format!(
                 "{} applicable rules, {} shadowed conflicts",
-                phase2.applicable_rule_count, phase2.rule_conflict_count
+                process.applicable_rule_count, process.rule_conflict_count
             ),
         )
     });
-    items.push(if phase2.missing_fixed_command_usage_count == 0 {
+    items.push(if process.missing_fixed_command_usage_count == 0 {
         CloseReadyItem::pass(
             "fixed_commands_used",
             format!(
                 "{} fixed command profiles, {} missing usage or approved deviation",
-                phase2.fixed_command_count, phase2.missing_fixed_command_usage_count
+                process.fixed_command_count, process.missing_fixed_command_usage_count
             ),
         )
     } else {
@@ -293,16 +293,16 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             "record fixed command usage or approve a command deviation before closing work",
             format!(
                 "{} fixed command profiles, {} missing usage or approved deviation",
-                phase2.fixed_command_count, phase2.missing_fixed_command_usage_count
+                process.fixed_command_count, process.missing_fixed_command_usage_count
             ),
         )
     });
-    items.push(if phase2.invalid_commit_message_count == 0 {
+    items.push(if process.invalid_commit_message_count == 0 {
         CloseReadyItem::pass(
             "commit_messages_checked",
             format!(
                 "{} invalid linked commit messages",
-                phase2.invalid_commit_message_count
+                process.invalid_commit_message_count
             ),
         )
     } else {
@@ -311,17 +311,17 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
             "link only commits with prefix messages and without forbidden internal terms",
             format!(
                 "{} invalid linked commit messages",
-                phase2.invalid_commit_message_count
+                process.invalid_commit_message_count
             ),
         )
     });
     items.push(
-        if phase2.repeated_correction_count < 2 || phase2.open_kpt_review_count > 0 {
+        if process.repeated_correction_count < 2 || process.open_kpt_review_count > 0 {
             CloseReadyItem::pass(
                 "corrections_kpt_checked",
                 format!(
                     "{} active corrections, {} open KPT reviews",
-                    phase2.repeated_correction_count, phase2.open_kpt_review_count
+                    process.repeated_correction_count, process.open_kpt_review_count
                 ),
             )
         } else {
@@ -330,17 +330,17 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 "open or record a KPT review for repeated active corrections",
                 format!(
                     "{} active corrections, {} open KPT reviews",
-                    phase2.repeated_correction_count, phase2.open_kpt_review_count
+                    process.repeated_correction_count, process.open_kpt_review_count
                 ),
             )
         },
     );
-    items.push(if phase2.work_record_count > 0 {
+    items.push(if process.work_record_count > 0 {
         CloseReadyItem::pass(
             "work_record_recorded",
             format!(
                 "{} work records, {} linked evidence rows",
-                phase2.work_record_count, phase2.work_record_evidence_link_count
+                process.work_record_count, process.work_record_evidence_link_count
             ),
         )
     } else {
@@ -1771,11 +1771,11 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
     .map_err(Into::into)
 }
 
-fn close_phase2_state(
+fn close_process_state(
     conn: &Connection,
     project_id: i64,
     work_unit_id: i64,
-) -> Result<ClosePhase2State> {
+) -> Result<CloseProcessState> {
     let applicable_rule_count = conn.query_row(
         r#"
         select count(*)
@@ -1895,7 +1895,7 @@ fn close_phase2_state(
         params![project_id, work_unit_id],
         |row| row.get(0),
     )?;
-    Ok(ClosePhase2State {
+    Ok(CloseProcessState {
         applicable_rule_count,
         rule_conflict_count,
         fixed_command_count,
@@ -2785,7 +2785,7 @@ struct ValidationCloseState {
     unaccepted_failure_count: i64,
 }
 
-struct ClosePhase2State {
+struct CloseProcessState {
     applicable_rule_count: i64,
     rule_conflict_count: i64,
     fixed_command_count: i64,

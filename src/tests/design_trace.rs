@@ -2416,7 +2416,7 @@ fn design_import_rejects_external_or_duplicate_package() {
 }
 
 #[test]
-fn design_import_rejects_invalid_phase3_design_blocks() {
+fn design_import_rejects_invalid_design_blocks() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
 
