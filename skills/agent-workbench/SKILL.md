@@ -119,6 +119,13 @@ from structured ledger state.
   work when the CLI is available.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.
+- Before planning, editing, or reviewing, run `agent-workbench correction list`
+  and apply active user corrections for the current scope.
+- Before choosing validation or test commands, run `agent-workbench command list`
+  and prefer applicable fixed or preferred command profiles.
+- When repeated corrections, command drift, recurring findings, or recurring
+  close/resume failures appear, propose or run `agent-workbench kpt start` and
+  inspect items with `agent-workbench kpt item list`.
 - Use read-only gates before state-changing steps: `design-ready`,
   `implementation-ready`, `close-ready`, and `resume-ready`.
 - For design-derived implementation work, create the required review plans and

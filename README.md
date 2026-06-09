@@ -34,7 +34,8 @@ cargo run -- work start "current task"
 cargo run -- work suspend --reason "interrupting issue" --next "resume current task"
 cargo run -- resume-check --maturity basic
 cargo run -- gate resume-ready --dry-run
-cargo run -- work reopen 1 --reason "closure evidence was invalid"
+cargo run -- authority event add --type user_instruction --scope project --summary "closure evidence was invalid"
+cargo run -- work reopen 1 --reason "closure evidence was invalid" --reason-type closure_invalid --authority 1
 cargo run -- work follow-up 1 "related follow-up" --reason "later work found a related issue"
 cargo run -- correction add --scope project --type process --pattern "old behavior" --correction "new rule"
 cargo run -- command fixed add --name tests --type test --scope project --command "cargo test"
@@ -63,7 +64,8 @@ cargo run -- design import .agent-workbench/designs/storage-lifecycle --status d
 cargo run -- requirement list --design 1
 cargo run -- design-decision list --design 1
 cargo run -- gate-template list --design 1
-cargo run -- acceptance add --design 1 --target requirement:REQ-001 --type accepted_out_of_scope --reason "not needed for current scope"
+cargo run -- authority event add --type user_instruction --scope project --summary "REQ-001 is out of scope for this work"
+cargo run -- acceptance add --design 1 --target requirement:REQ-001 --type accepted_out_of_scope --reason "not needed for current scope" --authority 2
 cargo run -- design approve 1 --summary "design passed document checks"
 cargo run -- gate design-ready --design-version 1 --dry-run
 cargo run -- gate implementation-ready --dry-run
