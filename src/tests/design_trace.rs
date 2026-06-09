@@ -1912,6 +1912,60 @@ This requirement describes changed cleanup behavior that must be implemented.
             .iter()
             .any(|item| { item.name == "coverage_items_current" && item.result == "fail" })
     );
+
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: "stale:task_derivation:1",
+            acceptance_type: "stale_accepted",
+            reason: "user accepted stale derivation while preserving scope",
+        },
+    )
+    .unwrap();
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: "stale:checklist:1",
+            acceptance_type: "stale_accepted",
+            reason: "user accepted stale checklist while preserving scope",
+        },
+    )
+    .unwrap();
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: "stale:coverage_item:1",
+            acceptance_type: "stale_accepted",
+            reason: "user accepted stale coverage while preserving scope",
+        },
+    )
+    .unwrap();
+    let accepted = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(import_b.design_version_id),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| { item.name == "task_derivations_current" && item.result == "pass" })
+    );
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| { item.name == "checklists_current" && item.result == "pass" })
+    );
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| { item.name == "coverage_items_current" && item.result == "pass" })
+    );
 }
 
 #[test]

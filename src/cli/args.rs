@@ -460,6 +460,7 @@ pub(crate) struct CommandListArgs {
 pub(crate) enum CommandUsageCommand {
     Add(CommandUsageAddArgs),
     List(CommandUsageListArgs),
+    Promote(CommandUsagePromoteArgs),
 }
 
 #[derive(Debug, Args)]
@@ -484,6 +485,25 @@ pub(crate) struct CommandUsageListArgs {
     pub(crate) profile: Option<String>,
     #[arg(long)]
     pub(crate) work_unit: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CommandUsagePromoteArgs {
+    pub(crate) usage_id: i64,
+    #[arg(long)]
+    pub(crate) name: String,
+    #[arg(long = "type", default_value = "validation")]
+    pub(crate) command_type: String,
+    #[arg(long, default_value = "project")]
+    pub(crate) scope: String,
+    #[arg(long, default_value = "preferred")]
+    pub(crate) status: String,
+    #[arg(long)]
+    pub(crate) timeout: Option<String>,
+    #[arg(long)]
+    pub(crate) expected_result: Option<String>,
+    #[arg(long)]
+    pub(crate) authority: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]

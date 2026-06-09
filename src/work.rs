@@ -2024,11 +2024,13 @@ fn review_plan_stage_state(
     for row in rows {
         let (review_plan_id, status, review_type, design_version_id, plan_work_unit_id) = row?;
         state.required_plan_count += 1;
-        if status != "clean" {
+        let accepted = review_plan_accepted(conn, review_plan_id)?;
+        if status != "clean" && !accepted {
             state.incomplete_required_plan_count += 1;
         }
         if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
             && design_version_id.is_some()
+            && !accepted
             && !review_plan_has_clean_context_run(
                 conn,
                 review_plan_id,
@@ -2039,9 +2041,29 @@ fn review_plan_stage_state(
         {
             state.missing_context_run_count += 1;
         }
-        state.stale_target_count += stale_review_plan_target_count(conn, review_plan_id)?;
+        if !accepted {
+            state.stale_target_count += stale_review_plan_target_count(conn, review_plan_id)?;
+        }
     }
     Ok(state)
+}
+
+fn review_plan_accepted(conn: &Connection, review_plan_id: i64) -> Result<bool> {
+    conn.query_row(
+        r#"
+        select exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'review_plan'
+              and ar.review_plan_id = ?1
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'stale_accepted')
+        )
+        "#,
+        params![review_plan_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 fn review_context_kind_for_plan(stage: &str, review_type: &str) -> Option<&'static str> {
@@ -2489,6 +2511,15 @@ fn count_stale_design_records_for_work(conn: &Connection, work_unit_id: i64) -> 
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
           )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'task_derivation'
+              and ar.stale_record_id = td.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -2516,6 +2547,15 @@ fn count_stale_task_derivations_for_work(conn: &Connection, work_unit_id: i64) -
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
           )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'task_derivation'
+              and ar.stale_record_id = td.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -2542,6 +2582,15 @@ fn count_stale_checklists_for_work(conn: &Connection, work_unit_id: i64) -> Resu
               and current_r.requirement_key = r.requirement_key
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
+          )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'checklist'
+              and ar.stale_record_id = c.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
           )
         "#,
         params![work_unit_id],
@@ -2582,6 +2631,23 @@ fn count_stale_selected_gates_for_work(conn: &Connection, work_unit_id: i64) -> 
                 and current_gt.status = 'active'
             )
           )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where (
+                (
+                  ar.target_type = 'validation_gate'
+                  and ar.validation_gate_id = vg.id
+                )
+                or (
+                  ar.target_type = 'stale_record'
+                  and ar.stale_record_type = 'validation_gate'
+                  and ar.stale_record_id = vg.id
+                )
+              )
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -2607,6 +2673,23 @@ fn count_stale_coverage_items_for_work(conn: &Connection, work_unit_id: i64) -> 
               and current_r.requirement_key = r.requirement_key
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
+          )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where (
+                (
+                  ar.target_type = 'coverage_item'
+                  and ar.coverage_item_id = c.id
+                )
+                or (
+                  ar.target_type = 'stale_record'
+                  and ar.stale_record_type = 'coverage_item'
+                  and ar.stale_record_id = c.id
+                )
+              )
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
           )
         "#,
         params![work_unit_id],

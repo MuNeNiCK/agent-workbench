@@ -671,6 +671,16 @@ fn evaluate_plan_status(
           and f.project_id = ?2
           and f.status = 'open'
           and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'finding'
+              and ar.finding_id = f.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in (
+                'accepted_out_of_scope', 'explicit_exception', 'classified_failure'
+              )
+          )
         "#,
         params![review_plan_id, project_id],
         |row| row.get(0),

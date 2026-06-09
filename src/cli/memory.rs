@@ -141,6 +141,24 @@ pub(crate) fn handle_command(root: &Path, command: MemoryCommand) -> Result<()> 
                     );
                 }
             }
+            CommandUsageCommand::Promote(args) => {
+                let outcome = promote_command_usage(
+                    root,
+                    NewCommandPromotion {
+                        command_usage_id: args.usage_id,
+                        name: &args.name,
+                        command_type: &args.command_type,
+                        scope: &args.scope,
+                        status: &args.status,
+                        timeout: args.timeout.as_deref(),
+                        expected_result: args.expected_result.as_deref(),
+                        authority_event_id: args.authority,
+                    },
+                )?;
+                println!("promoted command usage");
+                println!("command_profile_id: {}", outcome.command_profile_id);
+                println!("status: {}", args.status);
+            }
         },
         MemoryCommand::Deviation { command } => match command {
             CommandDeviationCommand::Add(args) => {
@@ -194,12 +212,17 @@ pub(crate) fn handle_rules(root: &Path, command: RulesCommand) -> Result<()> {
                     .shadowed_by_rule_id
                     .map(|id| format!(" shadowed_by={id}"))
                     .unwrap_or_default();
+                let authority = record
+                    .authority_event_id
+                    .map(|id| format!(" authority_event_id={id}"))
+                    .unwrap_or_default();
                 println!(
-                    "{} [{}:{} precedence={}]{}",
+                    "{} [{}:{} precedence={}]{}{}",
                     record.id,
                     record.rule_source_type,
                     record.scope_type,
                     record.precedence,
+                    authority,
                     shadowed
                 );
             }

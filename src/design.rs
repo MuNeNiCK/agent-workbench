@@ -1182,6 +1182,14 @@ fn design_review_gate_state(
           and review_type = 'design_review'
           and required = 1
           and status != 'clean'
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'review_plan'
+              and ar.review_plan_id = review_plans.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'stale_accepted')
+          )
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
@@ -1198,6 +1206,16 @@ fn design_review_gate_state(
           and rp.review_type = 'design_review'
           and f.status not in ('closed', 'accepted_out_of_scope')
           and f.classification not in ('invalid')
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'finding'
+              and ar.finding_id = f.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in (
+                'accepted_out_of_scope', 'explicit_exception', 'classified_failure'
+              )
+          )
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),

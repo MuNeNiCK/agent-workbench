@@ -45,6 +45,7 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
     let conn = open_ledger(&ledger_path)?;
     migrate(&conn)?;
     ensure_project(&conn, root)?;
+    sync_agents_md_authority(&conn, root)?;
 
     Ok(InitOutcome { ledger_path })
 }
@@ -141,6 +142,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
     conn.execute_batch(SCHEMA)?;
     migrate_acceptance_records(conn)?;
+    migrate_repository_snapshot_comparisons(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
     validate_project_scoped_ledger_links(conn)?;
@@ -910,6 +912,55 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_repository_snapshot_comparisons(conn: &Connection) -> Result<()> {
+    let table_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'repository_snapshot_comparisons'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+    if table_sql.contains("'review'") && !table_sql.contains("'inspection'") {
+        return Ok(());
+    }
+
+    conn.pragma_update(None, "foreign_keys", false)?;
+    conn.execute_batch(
+        r#"
+        create table repository_snapshot_comparisons_new (
+            id integer primary key,
+            base_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+            current_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
+            comparison_type text not null check (comparison_type in ('resume', 'close', 'validation', 'review')),
+            head_changed integer not null check (head_changed in (0, 1)),
+            dirty_state_changed integer not null check (dirty_state_changed in (0, 1)),
+            nested_repository_changed integer not null default 0 check (nested_repository_changed in (0, 1)),
+            result text not null check (result in ('same', 'changed_classified', 'changed_unclassified')),
+            created_at text not null
+        );
+
+        insert into repository_snapshot_comparisons_new(
+            id, base_repository_snapshot_id, current_repository_snapshot_id,
+            comparison_type, head_changed, dirty_state_changed,
+            nested_repository_changed, result, created_at
+        )
+        select
+            id, base_repository_snapshot_id, current_repository_snapshot_id,
+            case when comparison_type = 'inspection' then 'review' else comparison_type end,
+            head_changed, dirty_state_changed, nested_repository_changed, result, created_at
+        from repository_snapshot_comparisons;
+
+        drop table repository_snapshot_comparisons;
+        alter table repository_snapshot_comparisons_new rename to repository_snapshot_comparisons;
+        "#,
+    )?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    Ok(())
+}
+
 fn migrate_kpt_items(conn: &Connection) -> Result<()> {
     let table_sql = conn
         .query_row(
@@ -1119,6 +1170,77 @@ fn ensure_project(conn: &Connection, root: &Path) -> Result<()> {
         params![name, root_path],
     )?;
 
+    Ok(())
+}
+
+fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
+    let agents_path = root.join("AGENTS.md");
+    if !agents_path.exists() {
+        return Ok(());
+    }
+    let project_id = project_id(conn)?;
+    let source = "AGENTS.md";
+    let summary = fs::read_to_string(&agents_path)
+        .with_context(|| format!("failed to read {}", agents_path.display()))?;
+    let authority_event_id = conn
+        .query_row(
+            r#"
+            select id
+            from authority_events
+            where project_id = ?1
+              and event_type = 'agents'
+              and source = ?2
+              and status = 'active'
+            order by id desc
+            limit 1
+            "#,
+            params![project_id, source],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let authority_event_id = match authority_event_id {
+        Some(id) => {
+            conn.execute(
+                r#"
+                update authority_events
+                set text_or_summary = ?1
+                where id = ?2
+                "#,
+                params![summary, id],
+            )?;
+            id
+        }
+        None => {
+            conn.execute(
+                r#"
+                insert into authority_events(
+                    project_id, event_type, source, text_or_summary, scope,
+                    precedence, status, created_at
+                )
+                values (?1, 'agents', ?2, ?3, 'project', 70, 'active', current_timestamp)
+                "#,
+                params![project_id, source, summary],
+            )?;
+            conn.last_insert_rowid()
+        }
+    };
+    conn.execute(
+        r#"
+        insert into rule_bindings(
+            project_id, rule_source_type, authority_event_id, scope_type, scope_key,
+            precedence, status, created_at
+        )
+        select ?1, 'authority_event', ?2, 'project', 'project', 70, 'active', current_timestamp
+        where not exists (
+            select 1
+            from rule_bindings
+            where project_id = ?1
+              and authority_event_id = ?2
+              and status = 'active'
+        )
+        "#,
+        params![project_id, authority_event_id],
+    )?;
     Ok(())
 }
 
@@ -1346,7 +1468,7 @@ create table if not exists repository_snapshot_comparisons (
     id integer primary key,
     base_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
     current_repository_snapshot_id integer not null references repository_snapshots(id) on delete cascade,
-    comparison_type text not null check (comparison_type in ('resume', 'close', 'validation', 'inspection')),
+    comparison_type text not null check (comparison_type in ('resume', 'close', 'validation', 'review')),
     head_changed integer not null check (head_changed in (0, 1)),
     dirty_state_changed integer not null check (dirty_state_changed in (0, 1)),
     nested_repository_changed integer not null default 0 check (nested_repository_changed in (0, 1)),

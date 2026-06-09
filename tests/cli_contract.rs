@@ -184,6 +184,32 @@ fn init_creates_workbench_artifact_directories() {
 }
 
 #[test]
+fn init_imports_agents_md_as_project_rule() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Agent Instructions\n\nUse focused validation commands.\n",
+    )
+    .unwrap();
+
+    ok(temp.path(), &["init"]);
+    let rules = ok(temp.path(), &["rules", "applicable", "--scope", "project"]);
+    let conn = conn(temp.path());
+    let event: (String, String, String) = conn
+        .query_row(
+            "select event_type, source, text_or_summary from authority_events where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert!(rules.contains("authority_event_id=1"));
+    assert_eq!(event.0, "agents");
+    assert_eq!(event.1, "AGENTS.md");
+    assert!(event.2.contains("Use focused validation commands."));
+}
+
+#[test]
 fn design_init_creates_package_under_workbench() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -323,6 +349,22 @@ fn repository_commands_record_state_and_git_evidence() {
             "src/lib.rs",
             "--type",
             "modified",
+        ],
+    );
+    let comparison = ok(
+        temp.path(),
+        &[
+            "repository",
+            "compare",
+            "add",
+            "--base",
+            "1",
+            "--current",
+            "1",
+            "--type",
+            "review",
+            "--result",
+            "same",
         ],
     );
     let commit = ok(
@@ -471,6 +513,7 @@ fn repository_commands_record_state_and_git_evidence() {
     assert!(repo.contains("repository_id: 1"));
     assert!(snapshot.contains("repository_snapshot_id: 1"));
     assert!(dirty.contains("repository_dirty_entry_id: 1"));
+    assert!(comparison.contains("repository_snapshot_comparison_id: 1"));
     assert!(commit.contains("git_commit_id: 1"));
     assert!(file.contains("git_file_change_id: 1"));
     assert!(record.contains("work_record_id: 1"));
@@ -1338,14 +1381,11 @@ fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
 }
 
 #[test]
-fn gate_resume_ready_requires_dry_run_and_reports_blocked() {
+fn gate_resume_ready_defaults_to_read_only_and_reports_blocked() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
 
-    let error = err(temp.path(), &["gate", "resume-ready"]);
-    assert!(error.contains("pass --dry-run"));
-
-    let output = ok(temp.path(), &["gate", "resume-ready", "--dry-run"]);
+    let output = ok(temp.path(), &["gate", "resume-ready"]);
     assert!(output.contains("gate: resume-ready"));
     assert!(output.contains("dry_run: true"));
     assert!(output.contains("result: blocked"));
@@ -1357,13 +1397,10 @@ fn gate_close_ready_reports_active_work_readiness() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
 
-    let error = err(temp.path(), &["gate", "close-ready"]);
-    assert!(error.contains("pass --dry-run"));
-
     ok(temp.path(), &["work", "start", "close ready"]);
     cli_record_close_evidence(temp.path(), 1, 1);
 
-    let output = ok(temp.path(), &["gate", "close-ready", "--dry-run"]);
+    let output = ok(temp.path(), &["gate", "close-ready"]);
 
     assert!(output.contains("gate: close-ready"));
     assert!(output.contains("result: pass"));
@@ -1960,10 +1997,76 @@ fn kpt_item_convert_can_create_fixed_command_profile() {
     );
     let commands = ok(temp.path(), &["command", "list", "--type", "test"]);
     let rules = ok(temp.path(), &["rules", "applicable", "--scope", "project"]);
+    let usage = ok(
+        temp.path(),
+        &[
+            "command",
+            "usage",
+            "add",
+            "--command",
+            "cargo test -p agent-workbench",
+            "--result",
+            "pass",
+        ],
+    );
+    let promoted_preferred = ok(
+        temp.path(),
+        &[
+            "command",
+            "usage",
+            "promote",
+            "1",
+            "--name",
+            "focused-tests",
+            "--type",
+            "test",
+            "--scope",
+            "project",
+        ],
+    );
+    let user_authority = ok(
+        temp.path(),
+        &[
+            "authority",
+            "event",
+            "add",
+            "--type",
+            "user_instruction",
+            "--scope",
+            "project",
+            "--summary",
+            "fix the validation command",
+        ],
+    );
+    let promoted_fixed = ok(
+        temp.path(),
+        &[
+            "command",
+            "usage",
+            "promote",
+            "1",
+            "--name",
+            "fixed-focused-tests",
+            "--type",
+            "test",
+            "--scope",
+            "project",
+            "--status",
+            "fixed",
+            "--authority",
+            "1",
+        ],
+    );
 
     assert!(converted.contains("command_profile_id: 1"));
     assert!(commands.contains("1 [test:fixed] workspace-tests = cargo test --workspace"));
     assert!(rules.contains("[command_profile:project precedence=70]"));
+    assert!(usage.contains("command_usage_id: 1"));
+    assert!(promoted_preferred.contains("command_profile_id: 2"));
+    assert!(promoted_preferred.contains("status: preferred"));
+    assert!(user_authority.contains("authority_event_id: 1"));
+    assert!(promoted_fixed.contains("command_profile_id: 3"));
+    assert!(promoted_fixed.contains("status: fixed"));
 }
 
 #[test]

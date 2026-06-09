@@ -12,9 +12,7 @@ use agent_workbench::{
 pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
     match command {
         GateCommand::CloseReady(args) => {
-            if !args.dry_run {
-                anyhow::bail!("gate close-ready is read-only; pass --dry-run");
-            }
+            let _ = args.dry_run;
             let outcome = close_ready(root)?;
             println!("gate: close-ready");
             println!("dry_run: true");
@@ -119,9 +117,6 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
         },
         GateCommand::ResumeReady(args) => {
-            if !args.dry_run {
-                anyhow::bail!("gate resume-ready is read-only; pass --dry-run");
-            }
             let outcome = resume_ready(root, &args.maturity)?;
             println!("gate: resume-ready");
             println!("maturity: {}", args.maturity);
@@ -148,9 +143,6 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
         }
         GateCommand::DesignReady(args) => {
-            if !args.dry_run {
-                anyhow::bail!("gate design-ready is read-only; pass --dry-run");
-            }
             let outcome = design_ready(
                 root,
                 DesignReadyCheck {
@@ -177,9 +169,6 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
         }
         GateCommand::ImplementationReady(args) => {
-            if !args.dry_run {
-                anyhow::bail!("gate implementation-ready is read-only; pass --dry-run");
-            }
             let outcome = implementation_ready(
                 root,
                 ImplementationReadyCheck {

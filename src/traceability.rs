@@ -1459,6 +1459,14 @@ fn implementation_review_gate_state(
           and stage = 'implementation-ready'
           and required = 1
           and status != 'clean'
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'review_plan'
+              and ar.review_plan_id = review_plans.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'stale_accepted')
+          )
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
@@ -1475,6 +1483,16 @@ fn implementation_review_gate_state(
           and f.finding_type in ('design_finding', 'design_task_gap')
           and f.status not in ('closed', 'accepted_out_of_scope')
           and f.classification not in ('invalid')
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'finding'
+              and ar.finding_id = f.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in (
+                'accepted_out_of_scope', 'explicit_exception', 'classified_failure'
+              )
+          )
         "#,
         params![project_id, design_version_id],
         |row| row.get::<_, i64>(0),
@@ -1674,6 +1692,15 @@ fn count_stale_task_derivations(
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
           )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'task_derivation'
+              and ar.stale_record_id = td.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
         "#,
         params![design_package_id],
         |row| row.get(0),
@@ -1700,6 +1727,15 @@ fn count_stale_checklists(conn: &rusqlite::Connection, design_package_id: i64) -
               and current_r.requirement_key = r.requirement_key
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
+          )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'checklist'
+              and ar.stale_record_id = c.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
           )
         "#,
         params![design_package_id],
@@ -1742,6 +1778,23 @@ fn count_stale_validation_gates(
                 and current_gt.status = 'active'
             )
           )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where (
+                (
+                  ar.target_type = 'validation_gate'
+                  and ar.validation_gate_id = vg.id
+                )
+                or (
+                  ar.target_type = 'stale_record'
+                  and ar.stale_record_type = 'validation_gate'
+                  and ar.stale_record_id = vg.id
+                )
+              )
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
         "#,
         params![design_package_id],
         |row| row.get(0),
@@ -1766,6 +1819,23 @@ fn count_stale_coverage_items(conn: &rusqlite::Connection, design_package_id: i6
               and current_r.requirement_key = r.requirement_key
               and current_r.requirement_hash = r.requirement_hash
               and current_r.status = 'active'
+          )
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where (
+                (
+                  ar.target_type = 'coverage_item'
+                  and ar.coverage_item_id = c.id
+                )
+                or (
+                  ar.target_type = 'stale_record'
+                  and ar.stale_record_type = 'coverage_item'
+                  and ar.stale_record_id = c.id
+                )
+              )
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
           )
         "#,
         params![design_package_id],

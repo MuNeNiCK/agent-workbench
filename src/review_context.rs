@@ -117,6 +117,14 @@ pub(crate) fn required_plans_missing_context_count(
           and rp.required = 1
           and (?4 is null or rp.design_version_id = ?4)
           and (?5 is null or rp.work_unit_id = ?5)
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'review_plan'
+              and ar.review_plan_id = rp.id
+              and ar.status = 'approved'
+              and ar.acceptance_type in ('explicit_exception', 'stale_accepted')
+          )
         "#,
     )?;
     let rows = stmt.query_map(

@@ -14,6 +14,96 @@ pub fn add_preferred_command(root: &Path, input: NewCommandProfile<'_>) -> Resul
     add_command_profile_with_status(root, input, "preferred", "stable", "user")
 }
 
+pub fn promote_command_usage(
+    root: &Path,
+    input: NewCommandPromotion<'_>,
+) -> Result<CommandOutcome> {
+    if !matches!(input.status, "preferred" | "fixed") {
+        bail!("promoted command status must be preferred or fixed");
+    }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let (command, result): (String, String) = tx
+        .query_row(
+            r#"
+            select command, result
+            from command_usages
+            where id = ?1 and project_id = ?2
+            "#,
+            params![input.command_usage_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .context("command usage not found")?;
+    if input.status == "fixed" {
+        let Some(authority_event_id) = input.authority_event_id else {
+            bail!("fixed command promotion requires --authority");
+        };
+        let allowed = tx.query_row(
+            r#"
+            select exists (
+                select 1
+                from authority_events
+                where id = ?1
+                  and project_id = ?2
+                  and status = 'active'
+                  and event_type in ('user_instruction', 'policy')
+            )
+            "#,
+            params![authority_event_id, project_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !allowed {
+            bail!("fixed command promotion requires active user or policy authority");
+        }
+    }
+    let expected_result = input.expected_result.unwrap_or(&result);
+    tx.execute(
+        r#"
+        insert into command_profiles(
+            project_id, name, command, command_type, scope, status, stability,
+            timeout, expected_result, source, created_at, updated_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, 'stable', ?7, ?8, ?9,
+                current_timestamp, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.name,
+            command,
+            input.command_type,
+            input.scope,
+            input.status,
+            input.timeout,
+            expected_result,
+            if input.status == "fixed" {
+                "user"
+            } else {
+                "agent_observed"
+            },
+        ],
+    )?;
+    let command_profile_id = tx.last_insert_rowid();
+    insert_rule_binding(
+        &tx,
+        RuleBindingInput {
+            project_id,
+            rule_source_type: "command_profile",
+            authority_event_id: None,
+            user_correction_id: None,
+            command_profile_id: Some(command_profile_id),
+            work_unit_id: None,
+            scope_type: scope_type_for(input.scope),
+            scope_key: Some(input.scope),
+            precedence: if input.status == "fixed" { 70 } else { 55 },
+        },
+    )?;
+    tx.commit()?;
+
+    Ok(CommandOutcome { command_profile_id })
+}
+
 pub fn deprecate_command_profile(root: &Path, name: &str, reason: &str) -> Result<CommandOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
@@ -498,6 +588,17 @@ pub struct NewCommandUsageWithRepositorySnapshot<'a> {
     pub log_path: Option<&'a str>,
     pub work_unit_id: Option<i64>,
     pub repository_snapshot_id: Option<i64>,
+}
+
+pub struct NewCommandPromotion<'a> {
+    pub command_usage_id: i64,
+    pub name: &'a str,
+    pub command_type: &'a str,
+    pub scope: &'a str,
+    pub status: &'a str,
+    pub timeout: Option<&'a str>,
+    pub expected_result: Option<&'a str>,
+    pub authority_event_id: Option<i64>,
 }
 
 struct CommandUsageInput<'a> {

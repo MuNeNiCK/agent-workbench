@@ -20,9 +20,10 @@ pub use authority::{
 pub use commands::{
     CommandDeviationOutcome, CommandOutcome, CommandProfileRecord, CommandUsageListQuery,
     CommandUsageOutcome, CommandUsageRecord, NewCommandDeviation, NewCommandProfile,
-    NewCommandUsage, NewCommandUsageWithRepositorySnapshot, add_command_deviation,
-    add_command_usage, add_command_usage_with_repository_snapshot, add_fixed_command,
-    add_preferred_command, deprecate_command_profile, list_command_profiles, list_command_usages,
+    NewCommandPromotion, NewCommandUsage, NewCommandUsageWithRepositorySnapshot,
+    add_command_deviation, add_command_usage, add_command_usage_with_repository_snapshot,
+    add_fixed_command, add_preferred_command, deprecate_command_profile, list_command_profiles,
+    list_command_usages, promote_command_usage,
 };
 pub use coverage::{
     CoverageItemListQuery, CoverageItemOutcome, CoverageItemRecord, NewCoverageItem,
