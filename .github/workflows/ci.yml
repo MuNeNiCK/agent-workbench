@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - docs/**
+      - skills/**
+      - README.md
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - docs/**
+      - skills/**
+      - README.md
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install documentation dependencies
+        run: python -m pip install -r docs/requirements.txt
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Test Rust CLI
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build documentation
+        run: mkdocs build --config-file docs/mkdocs.yml --strict
+
+      - name: Check wrapper shell
+        run: shellcheck skills/agent-workbench/scripts/agent-workbench.sh
+
+      - name: Package release asset smoke
+        run: |
+          set -eu
+          tag="v0.0.0-ci"
+          mkdir -p dist/package
+          cp target/release/agent-workbench dist/package/agent-workbench
+          tar -C dist/package -czf "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" agent-workbench
+          (cd dist && sha256sum "agent-workbench-${tag}-linux-x86_64.tar.gz" > "agent-workbench-${tag}-checksums.txt")
+          grep "  agent-workbench-${tag}-linux-x86_64.tar.gz$" "dist/agent-workbench-${tag}-checksums.txt"
+
+      - name: Smoke installed wrapper against pinned release
+        env:
+          XDG_CACHE_HOME: ${{ runner.temp }}/agent-workbench-cache
+        run: sh skills/agent-workbench/scripts/agent-workbench.sh status --help
+
+      - name: Check skill command inventory
+        shell: bash
+        env:
+          XDG_CACHE_HOME: ${{ runner.temp }}/agent-workbench-cache
+        run: |
+          set -euo pipefail
+          wrapper="skills/agent-workbench/scripts/agent-workbench.sh"
+          sed -n 's/^- `agent-workbench \([^ `][^ `]*\).*/\1/p' skills/agent-workbench/SKILL.md \
+            | sort -u \
+            | while read -r command; do
+                sh "$wrapper" "$command" --help >/dev/null
+              done

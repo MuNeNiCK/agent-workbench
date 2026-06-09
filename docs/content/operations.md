@@ -33,7 +33,9 @@ The source skill package in this repository is `skills/agent-workbench/`.
 
 ## Public release asset
 
-The installed skill wrapper fetches the Linux x86_64 CLI from GitHub Releases.
+The installed skill wrapper fetches the pinned Linux x86_64 CLI from GitHub
+Releases. Release binaries are built on `ubuntu-latest` and target a
+glibc-compatible Linux runtime.
 
 The release contains:
 
@@ -43,7 +45,8 @@ The release contains:
 The wrapper verifies the archive before executing the cached CLI.
 
 Publishing a new version means creating a release that includes both the
-archive and checksum file.
+archive and checksum file. Published release assets are immutable; use a new
+tag instead of replacing an existing release.
 
 ## Public documentation
 

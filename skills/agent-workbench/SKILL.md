@@ -14,26 +14,32 @@ logs.
 ## CLI Entry
 
 This skill uses the Agent Workbench CLI through the Linux x86_64 wrapper bundled
-with the installed skill:
+with the installed skill.
+
+Resolve the wrapper path relative to this `SKILL.md` file. Do not assume the
+current repository has a top-level `scripts/` directory. If this skill is
+installed at `<installed-skill-dir>/SKILL.md`, run:
 
 ```sh
-sh scripts/agent-workbench.sh <agent-workbench-args>
+sh <installed-skill-dir>/scripts/agent-workbench.sh <agent-workbench-args>
 ```
 
-The wrapper downloads the published Linux x86_64 release asset, verifies its
-SHA256 checksum, caches it under the user's cache directory, and then executes
-it.
+The wrapper uses the bundled `CLI_VERSION` file by default, downloads the
+matching Linux x86_64 release asset, verifies its SHA256 checksum, caches it
+under the user's cache directory, and then executes it.
 
 When references show commands as `agent-workbench ...`, run the same arguments
 through the wrapper. For example, `agent-workbench status` means:
 
 ```sh
-sh scripts/agent-workbench.sh status
+sh <installed-skill-dir>/scripts/agent-workbench.sh status
 ```
 
-## Current Scope
+## Command Scope
 
-The wrapped CLI supports:
+The wrapped CLI is the command authority. Use `agent-workbench help` and
+`agent-workbench <command> --help` through the wrapper when exact syntax matters.
+Common command groups include:
 
 - `agent-workbench init`
 - `agent-workbench status`
@@ -44,6 +50,9 @@ The wrapped CLI supports:
 - `agent-workbench design import`
 - `agent-workbench design refresh`
 - `agent-workbench design approve`
+- `agent-workbench requirement list`
+- `agent-workbench design-decision list`
+- `agent-workbench gate-template list`
 - `agent-workbench acceptance add`
 - `agent-workbench authority event add`
 - `agent-workbench correction add`
@@ -96,6 +105,8 @@ The wrapped CLI supports:
 - `agent-workbench repository compare add`
 - `agent-workbench repository commit add`
 - `agent-workbench repository file add`
+- `agent-workbench git commit add`
+- `agent-workbench git file add`
 - `agent-workbench work start`
 - `agent-workbench work suspend`
 - `agent-workbench work interrupt`
@@ -145,7 +156,7 @@ from structured ledger state.
 
 - Prefer structured project memory over broad Markdown history searches.
 - Use `agent-workbench status` and `agent-workbench next` before long-running
-  work, executed through `sh scripts/agent-workbench.sh`.
+  work, executed through the wrapper path resolved relative to this skill.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.
 - Before planning, editing, or reviewing, run `agent-workbench correction list`

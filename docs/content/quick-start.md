@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Linux x86_64.
+- Linux x86_64 with glibc-compatible runtime.
 - GitHub CLI with `gh skill`.
 - A coding agent that supports Agent Skills.
 - Network access to GitHub Releases and the GitHub API on first use.
