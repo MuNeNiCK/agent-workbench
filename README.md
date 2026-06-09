@@ -67,8 +67,16 @@ cargo run -- gate-template list --design 1
 cargo run -- authority event add --type user_instruction --scope project --summary "REQ-001 is out of scope for this work"
 cargo run -- acceptance add --design 1 --target requirement:REQ-001 --type accepted_out_of_scope --reason "not needed for current scope" --authority 2
 cargo run -- design approve 1 --summary "design passed document checks"
+cargo run -- review plan add --work-unit 1 --type design_review --stage design-ready --design-version 1 --required
+cargo run -- review-context design-review --design-version 1 --work-unit 1
+cargo run -- review run add --plan 1 --type fresh --purpose new_unbiased_review --target "<context-ref>" --clean
 cargo run -- gate design-ready --design-version 1 --dry-run
-cargo run -- gate implementation-ready --dry-run
+cargo run -- decompose design 1 --work-unit 1
+cargo run -- review plan add --work-unit 1 --type design_task_decomposition --stage implementation-ready --design-version 1 --required
+cargo run -- review-context design-task-decomposition --design-version 1 --work-unit 1
+cargo run -- review run add --plan 2 --type fresh --purpose new_unbiased_review --target "<context-ref>" --clean
+cargo run -- gate implementation-ready --design-version 1 --dry-run
+cargo run -- work start "implement approved design" --design-version 1
 cargo run -- gate close-ready --dry-run
 cargo run -- authority event add --type user_instruction --scope project --summary "prefer local design notes"
 cargo run -- kpt start --scope project --from corrections --period 30d --summary "process review"
