@@ -279,6 +279,47 @@ fn trace_aware_resume_check_evaluates_trace_items() {
 }
 
 #[test]
+fn trace_aware_resume_blocks_when_suspend_task_snapshot_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "snapshot task set", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "open task at suspend",
+            priority: "medium",
+            source: "user",
+            work_unit_id: None,
+            details: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    suspend_work(temp.path(), "pause with task", "resume task").unwrap();
+    close_task(temp.path(), task.task_id, None).unwrap();
+
+    let check = resume_check(temp.path(), "trace-aware").unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let (snapshot_tasks, item_result): (String, String) = conn
+        .query_row(
+            r#"
+            select s.active_task_ids, i.result
+            from resume_checks c
+            join suspend_snapshots s on s.id = c.suspend_snapshot_id
+            join resume_check_items i on i.resume_check_id = c.id
+            where c.id = ?1 and i.check_name = 'active_tasks_current'
+            "#,
+            params![check.resume_check_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(check.result, "blocked");
+    assert_eq!(snapshot_tasks, task.task_id.to_string());
+    assert_eq!(item_result, "fail");
+}
+
+#[test]
 fn trace_aware_resume_blocks_stale_coverage_items() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

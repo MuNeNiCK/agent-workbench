@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
-    NewWorkFork, WorkForkSource, abandon_work, block_work, close_active_work,
+    NewWorkFork, WorkForkSource, WorkReopen, abandon_work, block_work, close_active_work,
     create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check, resume_work,
     start_work, suspend_work, unblock_work,
 };
@@ -124,7 +124,16 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
             println!("activation_id: {}", outcome.activation_id);
         }
         WorkCommand::Reopen(args) => {
-            let outcome = reopen_work(root, args.work_unit_id, &args.reason)?;
+            let outcome = reopen_work(
+                root,
+                WorkReopen {
+                    work_unit_id: args.work_unit_id,
+                    reason: &args.reason,
+                    reason_type: &args.reason_type,
+                    authority_event_id: args.authority,
+                    acceptance_record_id: args.acceptance,
+                },
+            )?;
             println!("reopened work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);

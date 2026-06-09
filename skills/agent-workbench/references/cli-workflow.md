@@ -18,6 +18,11 @@ resume decision. Register every relevant repository first; repo-aware resume
 expects every registered repository to have comparable suspend and current
 snapshots.
 
+Use `agent-workbench work follow-up` for ordinary additional work after closure.
+Use `agent-workbench work reopen <work-unit-id> --reason "<reason>" --reason-type closure_invalid|closure_incomplete|authority_superseded --authority <authority-event-id>`
+only when a closed unit itself is invalidated by user, policy, or design
+authority.
+
 ## Design To Implementation
 
 1. Create or convert design material into a workbench design package with

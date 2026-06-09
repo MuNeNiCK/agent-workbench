@@ -146,6 +146,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_repository_snapshot_comparisons(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
+    migrate_resume_check_items(conn)?;
     validate_project_scoped_ledger_links(conn)?;
     validate_review_required_links(conn)?;
     refresh_review_integrity_triggers(conn)?;
@@ -1140,6 +1141,54 @@ fn migrate_review_runs(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_resume_check_items(conn: &Connection) -> Result<()> {
+    let table_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'resume_check_items'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+    if table_sql.contains("'active_tasks_current'")
+        && table_sql.contains("'repository_heads_current'")
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        pragma foreign_keys = off;
+
+        alter table resume_check_items rename to resume_check_items_old;
+
+        create table resume_check_items (
+            id integer primary key,
+            resume_check_id integer not null references resume_checks(id) on delete cascade,
+            check_name text not null check (check_name in ('resume_target_suspended', 'snapshot_exists', 'suspend_reason_exists', 'next_action_exists', 'deeper_frames_closed', 'blocking_dependencies_clear', 'active_tasks_current', 'authority_refs_current', 'review_scope_refs_current', 'design_version_current', 'task_derivation_current', 'checklist_current', 'selected_gate_current', 'review_plan_current', 'open_findings_current', 'repository_heads_current', 'repository_state_current', 'assumptions_current')),
+            result text not null check (result in ('pass', 'fail', 'not_checked', 'needs_evidence')),
+            evidence_ref text,
+            blocking_action text,
+            details text
+        );
+
+        insert into resume_check_items(
+            id, resume_check_id, check_name, result, evidence_ref, blocking_action, details
+        )
+        select id, resume_check_id, check_name, result, evidence_ref, blocking_action, details
+        from resume_check_items_old;
+
+        drop table resume_check_items_old;
+
+        pragma foreign_keys = on;
+        "#,
+    )?;
+
+    Ok(())
+}
+
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
     if table_has_column(conn, table, column)? {
         return Ok(());
@@ -1539,7 +1588,10 @@ pub(crate) fn suspend_snapshot(
 ) -> Result<StoredSuspendSnapshot> {
     conn.query_row(
         r#"
-        select id, reason, next_action
+        select id, reason, active_task_ids, next_action, selected_gate_id,
+               authority_refs, review_scope_refs, repository_heads,
+               repository_snapshot_ids, repository_status, dirty_state_summary,
+               open_findings, assumptions
         from suspend_snapshots
         where work_unit_activation_id = ?1
         order by id desc
@@ -1550,7 +1602,17 @@ pub(crate) fn suspend_snapshot(
             Ok(StoredSuspendSnapshot {
                 id: row.get(0)?,
                 reason: row.get(1)?,
-                next_action: row.get(2)?,
+                active_task_ids: row.get(2)?,
+                next_action: row.get(3)?,
+                selected_gate_id: row.get(4)?,
+                authority_refs: row.get(5)?,
+                review_scope_refs: row.get(6)?,
+                repository_heads: row.get(7)?,
+                repository_snapshot_ids: row.get(8)?,
+                repository_status: row.get(9)?,
+                dirty_state_summary: row.get(10)?,
+                open_findings: row.get(11)?,
+                assumptions: row.get(12)?,
             })
         },
     )
@@ -1594,7 +1656,17 @@ pub(crate) struct StoredActivation {
 pub(crate) struct StoredSuspendSnapshot {
     pub(crate) id: i64,
     pub(crate) reason: String,
+    pub(crate) active_task_ids: Option<String>,
     pub(crate) next_action: String,
+    pub(crate) selected_gate_id: Option<i64>,
+    pub(crate) authority_refs: Option<String>,
+    pub(crate) review_scope_refs: Option<String>,
+    pub(crate) repository_heads: Option<String>,
+    pub(crate) repository_snapshot_ids: Option<String>,
+    pub(crate) repository_status: Option<String>,
+    pub(crate) dirty_state_summary: Option<String>,
+    pub(crate) open_findings: Option<String>,
+    pub(crate) assumptions: Option<String>,
 }
 
 pub(crate) struct NewEvent<'a> {
@@ -1966,7 +2038,7 @@ create table if not exists resume_checks (
 create table if not exists resume_check_items (
     id integer primary key,
     resume_check_id integer not null references resume_checks(id) on delete cascade,
-    check_name text not null check (check_name in ('resume_target_suspended', 'snapshot_exists', 'suspend_reason_exists', 'next_action_exists', 'deeper_frames_closed', 'blocking_dependencies_clear', 'design_version_current', 'task_derivation_current', 'checklist_current', 'selected_gate_current', 'review_plan_current', 'repository_state_current', 'assumptions_current')),
+    check_name text not null check (check_name in ('resume_target_suspended', 'snapshot_exists', 'suspend_reason_exists', 'next_action_exists', 'deeper_frames_closed', 'blocking_dependencies_clear', 'active_tasks_current', 'authority_refs_current', 'review_scope_refs_current', 'design_version_current', 'task_derivation_current', 'checklist_current', 'selected_gate_current', 'review_plan_current', 'open_findings_current', 'repository_heads_current', 'repository_state_current', 'assumptions_current')),
     result text not null check (result in ('pass', 'fail', 'not_checked', 'needs_evidence')),
     evidence_ref text,
     blocking_action text,

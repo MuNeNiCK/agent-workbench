@@ -1231,6 +1231,81 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
 }
 
 #[test]
+fn decompose_design_requires_clean_design_ready_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let blocked = err(
+        temp.path(),
+        &["decompose", "design", "1", "--work-unit", "1"],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_review",
+            "--stage",
+            "design-ready",
+            "--design-version",
+            "1",
+            "--required",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-review:design=1:work=1",
+            "--clean",
+        ],
+    );
+    let decomposed = ok(
+        temp.path(),
+        &["decompose", "design", "1", "--work-unit", "1"],
+    );
+
+    assert!(blocked.contains("requires a clean design-ready review plan"));
+    assert!(decomposed.contains("decomposed design"));
+}
+
+#[test]
 fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -1771,9 +1846,18 @@ fn reopen_and_follow_up_preserve_stack_and_dependencies() {
     let source_snapshot = cli_record_close_evidence(temp.path(), 1, 1);
     ok(temp.path(), &["work", "close", "--summary", "source done"]);
 
+    let authority = cli_approval_authority_event(temp.path());
     ok(
         temp.path(),
-        &["work", "reopen", "1", "--reason", "closure invalid"],
+        &[
+            "work",
+            "reopen",
+            "1",
+            "--reason",
+            "closure invalid",
+            "--authority",
+            &authority,
+        ],
     );
     let reopened_activation_id: i64 = conn(temp.path())
         .query_row(

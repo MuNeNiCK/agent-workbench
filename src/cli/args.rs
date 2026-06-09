@@ -271,6 +271,12 @@ pub(crate) struct WorkReopenArgs {
     pub(crate) work_unit_id: i64,
     #[arg(long)]
     pub(crate) reason: String,
+    #[arg(long, default_value = "closure_invalid")]
+    pub(crate) reason_type: String,
+    #[arg(long)]
+    pub(crate) authority: Option<i64>,
+    #[arg(long)]
+    pub(crate) acceptance: Option<i64>,
 }
 
 #[derive(Debug, Args)]

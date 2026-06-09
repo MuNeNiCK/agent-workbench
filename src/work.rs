@@ -747,18 +747,27 @@ fn required_resume_check_items(maturity: &str) -> Result<Vec<&'static str>> {
     match maturity {
         "basic" => {}
         "trace-aware" => items.extend([
+            "active_tasks_current",
+            "authority_refs_current",
+            "review_scope_refs_current",
             "design_version_current",
             "task_derivation_current",
             "checklist_current",
             "selected_gate_current",
             "review_plan_current",
+            "open_findings_current",
         ]),
         "repo-aware" => items.extend([
+            "active_tasks_current",
+            "authority_refs_current",
+            "review_scope_refs_current",
             "design_version_current",
             "task_derivation_current",
             "checklist_current",
             "selected_gate_current",
             "review_plan_current",
+            "open_findings_current",
+            "repository_heads_current",
             "repository_state_current",
             "assumptions_current",
         ]),
@@ -877,15 +886,22 @@ pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
     })
 }
 
-pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkOutcome> {
+pub fn reopen_work(root: &Path, input: WorkReopen<'_>) -> Result<WorkOutcome> {
+    validate_reopen_reason_type(input.reason_type)?;
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_reopen_authority(
+        &tx,
+        project_id,
+        input.authority_event_id,
+        input.acceptance_record_id,
+    )?;
 
     let status = tx
         .query_row(
             "select status from work_units where id = ?1 and project_id = ?2",
-            params![work_unit_id, project_id],
+            params![input.work_unit_id, project_id],
             |row| row.get::<_, String>(0),
         )
         .optional()?
@@ -896,13 +912,13 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
 
     let parent = prepare_parent_frame(
         &tx,
-        reason,
-        &format!("resume after reopening work unit {work_unit_id}"),
+        input.reason,
+        &format!("resume after reopening work unit {}", input.work_unit_id),
     )?;
 
     tx.execute(
         "update work_units set status = 'open', closed_at = null where id = ?1",
-        params![work_unit_id],
+        params![input.work_unit_id],
     )?;
     tx.execute(
         r#"
@@ -914,7 +930,7 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
         "#,
         params![
             project_id,
-            work_unit_id,
+            input.work_unit_id,
             parent.as_ref().map(|activation| activation.activation_id),
             parent
                 .as_ref()
@@ -932,11 +948,11 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
     insert_event(
         &tx,
         NewEvent {
-            work_unit_id,
+            work_unit_id: input.work_unit_id,
             activation_id: Some(activation_id),
             related_activation_id: parent.as_ref().map(|activation| activation.activation_id),
             event_type: "reopened",
-            reason: Some(reason),
+            reason: Some(input.reason),
             status_domain: "work_unit",
             previous_status: Some(&status),
             next_status: Some("open"),
@@ -950,7 +966,7 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
         )
         values (?1, ?1, 'invalidates_closure', ?2, 'open', current_timestamp)
         "#,
-        params![work_unit_id, reason],
+        params![input.work_unit_id, input.reason],
     )?;
     if let Some(parent) = &parent {
         tx.execute(
@@ -961,13 +977,13 @@ pub fn reopen_work(root: &Path, work_unit_id: i64, reason: &str) -> Result<WorkO
             )
             values (?1, ?2, 'blocks', ?3, 'open', current_timestamp)
             "#,
-            params![parent.work_unit_id, work_unit_id, reason],
+            params![parent.work_unit_id, input.work_unit_id, input.reason],
         )?;
     }
     tx.commit()?;
 
     Ok(WorkOutcome {
-        work_unit_id,
+        work_unit_id: input.work_unit_id,
         activation_id,
     })
 }
@@ -1091,6 +1107,67 @@ pub fn create_follow_up_work(
         work_unit_id: follow_up_work_unit_id,
         activation_id,
     })
+}
+
+fn validate_reopen_reason_type(reason_type: &str) -> Result<()> {
+    match reason_type {
+        "closure_invalid" | "closure_incomplete" | "authority_superseded" => Ok(()),
+        _ => bail!(
+            "reopen reason type must be closure_invalid, closure_incomplete, or authority_superseded"
+        ),
+    }
+}
+
+fn ensure_reopen_authority(
+    conn: &Connection,
+    project_id: i64,
+    authority_event_id: Option<i64>,
+    acceptance_record_id: Option<i64>,
+) -> Result<()> {
+    match (authority_event_id, acceptance_record_id) {
+        (Some(_), Some(_)) | (None, None) => {
+            bail!("work reopen requires exactly one of --authority or --acceptance")
+        }
+        (Some(authority_event_id), None) => {
+            let allowed: bool = conn.query_row(
+                r#"
+                select exists(
+                    select 1
+                    from authority_events
+                    where id = ?1
+                      and project_id = ?2
+                      and status = 'active'
+                      and event_type in ('user_instruction', 'policy', 'design_doc')
+                )
+                "#,
+                params![authority_event_id, project_id],
+                |row| row.get(0),
+            )?;
+            if !allowed {
+                bail!("work reopen requires active user, policy, or design authority");
+            }
+        }
+        (None, Some(acceptance_record_id)) => {
+            let allowed: bool = conn.query_row(
+                r#"
+                select exists(
+                    select 1
+                    from acceptance_records
+                    where id = ?1
+                      and project_id = ?2
+                      and status = 'approved'
+                      and acceptance_type in ('explicit_exception', 'stale_accepted')
+                )
+                "#,
+                params![acceptance_record_id, project_id],
+                |row| row.get(0),
+            )?;
+            if !allowed {
+                bail!("work reopen requires an approved acceptance record");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome> {
@@ -1220,15 +1297,28 @@ fn suspend_active_activation(
     conn.execute(
         r#"
         insert into suspend_snapshots(
-            work_unit_activation_id, work_unit_id, reason, next_action, created_at
+            work_unit_activation_id, work_unit_id, reason, active_task_ids, next_action,
+            selected_gate_id, authority_refs, review_scope_refs, repository_heads,
+            repository_snapshot_ids, repository_status, dirty_state_summary,
+            open_findings, assumptions, created_at
         )
-        values (?1, ?2, ?3, ?4, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, current_timestamp)
         "#,
         params![
             active.activation_id,
             active.work_unit_id,
             reason,
-            next_action
+            snapshot_active_task_ids(conn, active.work_unit_id)?,
+            next_action,
+            snapshot_selected_gate_id(conn, active.work_unit_id)?,
+            snapshot_authority_refs(conn)?,
+            snapshot_review_scope_refs(conn, active.work_unit_id)?,
+            snapshot_repository_heads(conn)?,
+            snapshot_repository_snapshot_ids(conn, active.activation_id)?,
+            snapshot_repository_status(conn)?,
+            snapshot_dirty_state_summary(conn, active.activation_id)?,
+            snapshot_open_findings(conn, active.work_unit_id)?,
+            snapshot_assumptions(conn, active.work_unit_id)?,
         ],
     )?;
     let snapshot_id = conn.last_insert_rowid();
@@ -1251,6 +1341,144 @@ fn suspend_active_activation(
     )?;
 
     Ok(snapshot_id)
+}
+
+fn csv_query(conn: &Connection, sql: &str, values: &[&dyn rusqlite::ToSql]) -> Result<String> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(values, |row| row.get::<_, String>(0))?;
+    let mut collected = Vec::new();
+    for row in rows {
+        collected.push(row?);
+    }
+    Ok(collected.join(","))
+}
+
+fn snapshot_active_task_ids(conn: &Connection, work_unit_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        "select cast(id as text) from tasks where work_unit_id = ?1 and status = 'open' order by id",
+        &[&work_unit_id],
+    )
+}
+
+fn snapshot_selected_gate_id(conn: &Connection, work_unit_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        select id
+        from validation_gates
+        where work_unit_id = ?1 and status = 'selected'
+        order by id desc
+        limit 1
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn snapshot_authority_refs(conn: &Connection) -> Result<String> {
+    csv_query(
+        conn,
+        "select cast(id as text) || ':' || event_type from authority_events where status = 'active' order by id",
+        &[],
+    )
+}
+
+fn snapshot_review_scope_refs(conn: &Connection, work_unit_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        r#"
+        select cast(coalesce(review_scope_id, 0) as text) || ':' || review_type || ':' || status
+        from review_plans
+        where work_unit_id = ?1 and stage != 'resume-ready'
+        order by id
+        "#,
+        &[&work_unit_id],
+    )
+}
+
+fn snapshot_repository_heads(conn: &Connection) -> Result<String> {
+    csv_query(
+        conn,
+        "select name || ':' || coalesce(current_head, '') from repositories order by name",
+        &[],
+    )
+}
+
+fn snapshot_repository_snapshot_ids(conn: &Connection, activation_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        r#"
+        select cast(id as text)
+        from repository_snapshots
+        where work_unit_activation_id = ?1
+        order by id
+        "#,
+        &[&activation_id],
+    )
+}
+
+fn snapshot_repository_status(conn: &Connection) -> Result<String> {
+    csv_query(
+        conn,
+        "select name || ':' || coalesce(status_summary, '') from repositories order by name",
+        &[],
+    )
+}
+
+fn snapshot_dirty_state_summary(conn: &Connection, activation_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        r#"
+        select coalesce(s.status_summary, '') || ':' || count(d.id)
+        from repository_snapshots s
+        left join repository_dirty_entries d on d.repository_snapshot_id = s.id
+        where s.work_unit_activation_id = ?1
+        group by s.id
+        order by s.id
+        "#,
+        &[&activation_id],
+    )
+}
+
+fn snapshot_open_findings(conn: &Connection, work_unit_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        r#"
+        select cast(f.id as text) || ':' || f.finding_type || ':' || f.severity
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        where p.work_unit_id = ?1 and f.status = 'open'
+        order by f.id
+        "#,
+        &[&work_unit_id],
+    )
+}
+
+fn snapshot_assumptions(conn: &Connection, work_unit_id: i64) -> Result<String> {
+    csv_query(
+        conn,
+        r#"
+        select cast(id as text) || ':' || status
+        from work_unit_dependencies
+        where work_unit_id = ?1 and dependency_type = 'invalidates_assumption'
+        order by id
+        "#,
+        &[&work_unit_id],
+    )
+}
+
+fn snapshot_entries_still_current(stored: &str, current: &str) -> bool {
+    stored
+        .split(',')
+        .filter(|entry| !entry.is_empty())
+        .all(|entry| {
+            current
+                .split(',')
+                .any(|current_entry| current_entry == entry)
+        })
 }
 
 fn update_work_unit_lifecycle(
@@ -1601,8 +1829,52 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         .transpose()?;
     let mut trace_allowed = true;
     if let Some(trace_counts) = trace_counts {
+        let active_tasks_current = snapshot.active_task_ids.as_deref().unwrap_or("")
+            == snapshot_active_task_ids(conn, target.work_unit_id)?;
+        let authority_refs_current =
+            snapshot.authority_refs.as_deref().unwrap_or("") == snapshot_authority_refs(conn)?;
+        let review_scope_refs_current = snapshot.review_scope_refs.as_deref().unwrap_or("")
+            == snapshot_review_scope_refs(conn, target.work_unit_id)?;
+        let open_findings_current = snapshot.open_findings.as_deref().unwrap_or("")
+            == snapshot_open_findings(conn, target.work_unit_id)?;
+        for (name, pass, details) in [
+            (
+                "active_tasks_current",
+                active_tasks_current,
+                "active task set matches suspend snapshot".to_string(),
+            ),
+            (
+                "authority_refs_current",
+                authority_refs_current,
+                "active authority refs match suspend snapshot".to_string(),
+            ),
+            (
+                "review_scope_refs_current",
+                review_scope_refs_current,
+                "review scope refs match suspend snapshot".to_string(),
+            ),
+            (
+                "open_findings_current",
+                open_findings_current,
+                "open findings match suspend snapshot".to_string(),
+            ),
+        ] {
+            if !pass {
+                trace_allowed = false;
+                blocking_reason
+                    .get_or_insert_with(|| "trace-aware resume checks failed".to_string());
+            }
+            items.push(ResumeReadyItem {
+                name: name.to_string(),
+                result: if pass { "pass" } else { "fail" }.to_string(),
+                blocking_action: (!pass).then_some(details.clone()),
+                details,
+            });
+        }
         let stale_design_total =
             trace_counts.stale_design_records + trace_counts.stale_coverage_items;
+        let selected_gate_snapshot_current =
+            snapshot.selected_gate_id == snapshot_selected_gate_id(conn, target.work_unit_id)?;
         let trace_items = [
             (
                 "design_version_current",
@@ -1630,10 +1902,10 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             ),
             (
                 "selected_gate_current",
-                trace_counts.stale_selected_gates == 0,
+                trace_counts.stale_selected_gates == 0 && selected_gate_snapshot_current,
                 format!(
-                    "{} selected validation gates reference changed requirements",
-                    trace_counts.stale_selected_gates
+                    "{} selected validation gates reference changed requirements; snapshot match={}",
+                    trace_counts.stale_selected_gates, selected_gate_snapshot_current
                 ),
             ),
         ];
@@ -1674,6 +1946,18 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
     } else {
         let later_items = [
             (
+                "active_tasks_current",
+                "trace-aware active task snapshot check was not requested",
+            ),
+            (
+                "authority_refs_current",
+                "trace-aware authority refs snapshot check was not requested",
+            ),
+            (
+                "review_scope_refs_current",
+                "trace-aware review scope refs snapshot check was not requested",
+            ),
+            (
                 "design_version_current",
                 "trace-aware design version check was not requested",
             ),
@@ -1692,6 +1976,10 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             (
                 "review_plan_current",
                 "trace-aware review plan check was not requested",
+            ),
+            (
+                "open_findings_current",
+                "trace-aware open findings snapshot check was not requested",
             ),
         ];
         items.extend(
@@ -1714,16 +2002,48 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
         let repo_state = repository_resume_state(conn, &target)?;
         repository_snapshot_id = repo_state.latest_current_snapshot_id;
         repository_state_revision = Some(repository_state_revision_for_resume(conn)?);
+        let current_repository_heads = snapshot_repository_heads(conn)?;
+        let repository_heads_current = snapshot_entries_still_current(
+            snapshot.repository_heads.as_deref().unwrap_or(""),
+            &current_repository_heads,
+        );
+        let suspend_repository_snapshot_ids =
+            snapshot.repository_snapshot_ids.as_deref().unwrap_or("");
+        let current_repository_status = snapshot_repository_status(conn)?;
+        let repository_status_current = snapshot_entries_still_current(
+            snapshot.repository_status.as_deref().unwrap_or(""),
+            &current_repository_status,
+        );
+        let current_dirty_state_summary = snapshot_dirty_state_summary(conn, target.activation_id)?;
+        let dirty_state_summary_current = snapshot_entries_still_current(
+            snapshot.dirty_state_summary.as_deref().unwrap_or(""),
+            &current_dirty_state_summary,
+        );
         let pass = repo_state.repository_count == 0
             || (repo_state.missing_base_snapshot_count == 0
                 && repo_state.missing_current_snapshot_count == 0
                 && repo_state.missing_comparison_count == 0
                 && repo_state.unclassified_comparison_count == 0
-                && repo_state.unclassified_dirty_state_count == 0);
+                && repo_state.unclassified_dirty_state_count == 0
+                && repository_heads_current
+                && repository_status_current
+                && dirty_state_summary_current);
         if !pass {
             repo_allowed = false;
             blocking_reason.get_or_insert_with(|| "repo-aware resume checks failed".to_string());
         }
+        items.push(ResumeReadyItem {
+            name: "repository_heads_current".to_string(),
+            result: if repository_heads_current {
+                "pass"
+            } else {
+                "fail"
+            }
+            .to_string(),
+            blocking_action: (!repository_heads_current)
+                .then_some("record and compare current repository heads".to_string()),
+            details: "repository heads match suspend snapshot".to_string(),
+        });
         items.push(ResumeReadyItem {
             name: "repository_state_current".to_string(),
             result: if pass { "pass" } else { "fail" }.to_string(),
@@ -1731,17 +2051,26 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
                 "record current repository snapshots and classify resume differences".to_string(),
             ),
             details: format!(
-                "{} repositories, {} suspend snapshots, {} missing base snapshots, {} missing current snapshots, {} missing comparisons, {} unclassified comparisons, {} unclassified dirty states",
+                "{} repositories, {} suspend snapshots, {} missing base snapshots, {} missing current snapshots, {} missing comparisons, {} unclassified comparisons, {} unclassified dirty states; suspend snapshot ids={}; status match={}; dirty summary match={}",
                 repo_state.repository_count,
                 repo_state.base_snapshot_count,
                 repo_state.missing_base_snapshot_count,
                 repo_state.missing_current_snapshot_count,
                 repo_state.missing_comparison_count,
                 repo_state.unclassified_comparison_count,
-                repo_state.unclassified_dirty_state_count
+                repo_state.unclassified_dirty_state_count,
+                suspend_repository_snapshot_ids,
+                repository_status_current,
+                dirty_state_summary_current
             ),
         });
     } else {
+        items.push(ResumeReadyItem {
+            name: "repository_heads_current".to_string(),
+            result: "not_checked".to_string(),
+            blocking_action: None,
+            details: "repo-aware repository head snapshot check was not requested".to_string(),
+        });
         items.push(ResumeReadyItem {
             name: "repository_state_current".to_string(),
             result: "not_checked".to_string(),
@@ -1752,7 +2081,9 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
 
     if repo_maturity {
         let invalidated_assumptions = open_assumption_invalidations(conn, target.work_unit_id)?;
-        let pass = invalidated_assumptions == 0;
+        let assumptions_current = snapshot.assumptions.as_deref().unwrap_or("")
+            == snapshot_assumptions(conn, target.work_unit_id)?;
+        let pass = invalidated_assumptions == 0 && assumptions_current;
         if !pass {
             repo_allowed = false;
             blocking_reason.get_or_insert_with(|| "repo-aware resume checks failed".to_string());
@@ -1762,7 +2093,9 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
             result: if pass { "pass" } else { "fail" }.to_string(),
             blocking_action: (!pass)
                 .then_some("resolve open assumption invalidation dependencies".to_string()),
-            details: format!("{invalidated_assumptions} open assumption invalidations"),
+            details: format!(
+                "{invalidated_assumptions} open assumption invalidations; snapshot match={assumptions_current}"
+            ),
         });
     } else {
         items.push(ResumeReadyItem {
@@ -3143,6 +3476,14 @@ struct StoredForkSource {
 pub struct WorkOutcome {
     pub work_unit_id: i64,
     pub activation_id: i64,
+}
+
+pub struct WorkReopen<'a> {
+    pub work_unit_id: i64,
+    pub reason: &'a str,
+    pub reason_type: &'a str,
+    pub authority_event_id: Option<i64>,
+    pub acceptance_record_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

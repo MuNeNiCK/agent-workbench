@@ -599,7 +599,18 @@ fn reopen_and_follow_up_create_active_work() {
         record_close_evidence(temp.path(), original.work_unit_id, original.activation_id);
     close_active_work(temp.path(), "closed", None).unwrap();
 
-    let reopened = reopen_work(temp.path(), original.work_unit_id, "closure invalid").unwrap();
+    let authority_event_id = approval_authority_event(temp.path());
+    let reopened = reopen_work(
+        temp.path(),
+        WorkReopen {
+            work_unit_id: original.work_unit_id,
+            reason: "closure invalid",
+            reason_type: "closure_invalid",
+            authority_event_id: Some(authority_event_id),
+            acceptance_record_id: None,
+        },
+    )
+    .unwrap();
     assert_eq!(reopened.work_unit_id, original.work_unit_id);
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let invalidation_count: i64 = conn

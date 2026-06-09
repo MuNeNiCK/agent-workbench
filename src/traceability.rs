@@ -146,6 +146,7 @@ pub fn decompose_design(
     )
     .optional()?
     .context("design version not found")?;
+    ensure_design_ready_for_decomposition(&tx, project_id, input.design_version_id)?;
 
     let mut stmt = tx.prepare(
         r#"
@@ -536,6 +537,33 @@ fn collect_stale_rows(
     })?;
     for row in rows {
         records.push(row?);
+    }
+    Ok(())
+}
+
+fn ensure_design_ready_for_decomposition(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+) -> Result<()> {
+    let ready: bool = conn.query_row(
+        r#"
+        select exists(
+            select 1
+            from review_plans p
+            where p.project_id = ?1
+              and p.design_version_id = ?2
+              and p.review_type = 'design_review'
+              and p.stage = 'design-ready'
+              and p.required = 1
+              and p.status = 'clean'
+        )
+        "#,
+        params![project_id, design_version_id],
+        |row| row.get(0),
+    )?;
+    if !ready {
+        bail!("design decomposition requires a clean design-ready review plan");
     }
     Ok(())
 }
