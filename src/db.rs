@@ -151,6 +151,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
+    let had_work_record_commit_auto_linked =
+        table_has_column(conn, "work_record_commits", "auto_linked")?;
+    let had_work_record_file_auto_linked =
+        table_has_column(conn, "work_record_files", "auto_linked")?;
+    let had_work_record_file_repository_auto_linked =
+        table_has_column(conn, "work_record_files", "repository_auto_linked")?;
     ensure_column(
         conn,
         "work_record_commits",
@@ -162,6 +168,18 @@ fn migrate(conn: &Connection) -> Result<()> {
         "work_record_files",
         "auto_linked",
         "integer not null default 0",
+    )?;
+    ensure_column(
+        conn,
+        "work_record_files",
+        "repository_auto_linked",
+        "integer not null default 0",
+    )?;
+    migrate_work_record_auto_link_markers(
+        conn,
+        had_work_record_commit_auto_linked,
+        had_work_record_file_auto_linked,
+        had_work_record_file_repository_auto_linked,
     )?;
     ensure_column(conn, "acceptance_records", "design_package_key", "text")?;
     ensure_column(conn, "acceptance_records", "design_file_path", "text")?;
@@ -575,6 +593,50 @@ fn reject_invalid_rows(
     if count > 0 {
         bail!("{message}");
     }
+    Ok(())
+}
+
+fn migrate_work_record_auto_link_markers(
+    conn: &Connection,
+    had_work_record_commit_auto_linked: bool,
+    had_work_record_file_auto_linked: bool,
+    had_work_record_file_repository_auto_linked: bool,
+) -> Result<()> {
+    if !had_work_record_commit_auto_linked {
+        conn.execute(
+            r#"
+            update work_record_commits
+            set auto_linked = 1
+            where git_commit_id is not null
+            "#,
+            [],
+        )?;
+    }
+    if !had_work_record_file_auto_linked {
+        conn.execute(
+            r#"
+            update work_record_files
+            set auto_linked = 1
+            where git_file_change_id is not null
+            "#,
+            [],
+        )?;
+    }
+    if !had_work_record_file_repository_auto_linked {
+        conn.execute(
+            r#"
+            update work_record_files
+            set repository_auto_linked = 1
+            where git_file_change_id is not null
+              and (
+                  ?1 = 0
+                  or auto_linked = 1
+              )
+            "#,
+            params![i64::from(had_work_record_file_auto_linked)],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1909,7 +1971,8 @@ create table if not exists work_record_files (
     path text not null,
     role text not null default 'changed' check (role in ('changed', 'reviewed', 'generated', 'evidence', 'ignored')),
     note text,
-    auto_linked integer not null default 0 check (auto_linked in (0, 1))
+    auto_linked integer not null default 0 check (auto_linked in (0, 1)),
+    repository_auto_linked integer not null default 0 check (repository_auto_linked in (0, 1))
 );
 
 create trigger if not exists trg_work_record_command_project_insert

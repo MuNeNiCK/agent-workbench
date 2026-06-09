@@ -272,6 +272,123 @@ fn git_import_keeps_explicit_work_record_links_when_later_ambiguous() {
 }
 
 #[test]
+fn git_import_keeps_explicit_repository_file_scope_when_later_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let main_repo = add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "nested",
+            path: "vendor/lib",
+            current_head: None,
+            status_summary: None,
+        },
+    )
+    .unwrap();
+    let work_record = create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: None,
+            topic: "repository scoped evidence remains stable",
+            work_performed: None,
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_work_record_git_file(
+        temp.path(),
+        NewWorkRecordGitFile {
+            work_record_id: work_record.work_record_id,
+            git_file_change_id: None,
+            repository_id: Some(main_repo.repository_id),
+            path: "src/lib.rs",
+            role: "changed",
+            note: None,
+        },
+    )
+    .unwrap();
+    let main_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "main",
+            commit_sha: "abc123",
+            short_sha: Some("abc123"),
+            subject: Some("main"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: main_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+    let nested_commit = add_git_commit(
+        temp.path(),
+        NewGitCommit {
+            repository: "nested",
+            commit_sha: "def456",
+            short_sha: Some("def456"),
+            subject: Some("nested"),
+            author_name: None,
+            author_email: None,
+            committed_at: None,
+            parent_shas: None,
+        },
+    )
+    .unwrap();
+    add_git_file_change(
+        temp.path(),
+        NewGitFileChange {
+            git_commit_id: nested_commit.git_commit_id,
+            repository: None,
+            path: "src/lib.rs",
+            old_path: None,
+            change_type: "modified",
+            additions: Some(1),
+            deletions: Some(0),
+            content_hash: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let linked: (Option<i64>, Option<i64>, i64, i64) = conn
+        .query_row(
+            "select git_file_change_id, repository_id, auto_linked, repository_auto_linked from work_record_files where work_record_id = ?1",
+            params![work_record.work_record_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+
+    assert_eq!(linked, (None, Some(main_repo.repository_id), 0, 0));
+}
+
+#[test]
 fn git_import_backfills_manual_work_record_links() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -2413,6 +2530,135 @@ fn implementation_evidence_rejects_tasks_without_work_units() {
 
     assert!(api_result.is_err());
     assert!(direct_result.is_err());
+}
+
+#[test]
+fn init_marks_pre_marker_work_record_git_links_as_auto_linked() {
+    let temp = tempfile::tempdir().unwrap();
+    let ledger_dir = temp.path().join(".agent-workbench");
+    fs::create_dir_all(&ledger_dir).unwrap();
+    let ledger_path = ledger_dir.join("ledger.sqlite");
+    let conn = rusqlite::Connection::open(&ledger_path).unwrap();
+    conn.execute_batch(
+        r#"
+        create table schema_migrations (
+            version integer primary key,
+            applied_at text not null
+        );
+        insert into schema_migrations(version, applied_at)
+        values (4, current_timestamp);
+
+        create table projects (
+            id integer primary key,
+            name text not null,
+            root_path text not null,
+            created_at text not null,
+            updated_at text not null
+        );
+        insert into projects(id, name, root_path, created_at, updated_at)
+        values (1, 'main', '/tmp/main-awb-auto-link-marker', current_timestamp, current_timestamp);
+
+        create table repositories (
+            id integer primary key,
+            project_id integer not null,
+            name text not null,
+            path text not null,
+            status_summary text,
+            last_checked_at text not null
+        );
+        insert into repositories(id, project_id, name, path, status_summary, last_checked_at)
+        values (1, 1, 'main', '.', 'clean', current_timestamp);
+
+        create table git_commits (
+            id integer primary key,
+            repository_id integer not null,
+            commit_sha text not null,
+            short_sha text,
+            subject text,
+            author_name text,
+            author_email text,
+            committed_at text,
+            parent_shas text,
+            imported_at text not null
+        );
+        insert into git_commits(id, repository_id, commit_sha, short_sha, subject, imported_at)
+        values (1, 1, 'abc123', 'abc123', 'legacy', current_timestamp);
+
+        create table git_file_changes (
+            id integer primary key,
+            git_commit_id integer not null,
+            repository_id integer not null,
+            path text not null,
+            old_path text,
+            change_type text not null,
+            additions integer,
+            deletions integer,
+            content_hash text
+        );
+        insert into git_file_changes(id, git_commit_id, repository_id, path, change_type)
+        values (1, 1, 1, 'src/lib.rs', 'modified');
+
+        create table work_records (
+            id integer primary key,
+            project_id integer,
+            work_unit_id integer,
+            topic text not null,
+            work_performed text,
+            next_actions text,
+            notable_operations text,
+            export_path text,
+            created_at text not null
+        );
+        insert into work_records(id, project_id, work_unit_id, topic, created_at)
+        values (1, 1, null, 'legacy linked record', current_timestamp);
+
+        create table work_record_commits (
+            id integer primary key,
+            work_record_id integer not null,
+            git_commit_id integer,
+            commit_sha text,
+            role text not null,
+            note text
+        );
+        insert into work_record_commits(id, work_record_id, git_commit_id, commit_sha, role)
+        values (1, 1, 1, 'abc123', 'created');
+
+        create table work_record_files (
+            id integer primary key,
+            work_record_id integer not null,
+            git_file_change_id integer,
+            repository_id integer,
+            path text not null,
+            role text not null,
+            note text
+        );
+        insert into work_record_files(id, work_record_id, git_file_change_id, repository_id, path, role)
+        values (1, 1, 1, 1, 'src/lib.rs', 'changed');
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    init_project(temp.path()).unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let commit_auto_linked: i64 = conn
+        .query_row(
+            "select auto_linked from work_record_commits where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let file_markers: (i64, i64) = conn
+        .query_row(
+            "select auto_linked, repository_auto_linked from work_record_files where id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(commit_auto_linked, 1);
+    assert_eq!(file_markers, (1, 1));
 }
 
 #[test]

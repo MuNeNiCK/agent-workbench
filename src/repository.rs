@@ -402,8 +402,12 @@ fn backfill_work_record_files(
             r#"
             update work_record_files
             set git_file_change_id = null,
-                repository_id = null,
-                auto_linked = 0
+                repository_id = case
+                    when repository_auto_linked = 1 then null
+                    else repository_id
+                end,
+                auto_linked = 0,
+                repository_auto_linked = 0
             where auto_linked = 1
               and path = ?1
               and work_record_id in (
@@ -420,7 +424,11 @@ fn backfill_work_record_files(
         update work_record_files
         set git_file_change_id = ?1,
             repository_id = ?2,
-            auto_linked = 1
+            auto_linked = 1,
+            repository_auto_linked = case
+                when repository_id is null then 1
+                else repository_auto_linked
+            end
         where git_file_change_id is null
           and path = ?3
           and work_record_id in (
