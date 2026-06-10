@@ -407,6 +407,15 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         from task_derivations td
         join design_requirements dr on dr.id = td.design_requirement_id
         where td.project_id = ?1 and td.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'task_derivation'
+                and ar.stale_record_id = td.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by td.id
         "#,
         &mut records,
@@ -419,6 +428,15 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         select c.id, c.title
         from checklists c
         where c.project_id = ?1 and c.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'checklist'
+                and ar.stale_record_id = c.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by c.id
         "#,
         &mut records,
@@ -431,6 +449,15 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         select vg.id, vg.gate_key
         from validation_gates vg
         where vg.project_id = ?1 and vg.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'validation_gate'
+                and ar.stale_record_id = vg.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by vg.id
         "#,
         &mut records,
@@ -444,6 +471,15 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         from coverage_items c
         join design_requirements dr on dr.id = c.design_requirement_id
         where c.project_id = ?1 and c.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'coverage_item'
+                and ar.stale_record_id = c.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by c.id
         "#,
         &mut records,
@@ -460,11 +496,212 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
         where rp.project_id = ?1
           and rp.status = 'blocked'
           and p.current_design_version_id != rp.design_version_id
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'review_plan'
+                and ar.stale_record_id = rp.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by rp.id
         "#,
         &mut records,
     )?;
     Ok(records)
+}
+
+pub fn accept_stale_record(
+    root: &Path,
+    input: StaleRecordDisposition<'_>,
+) -> Result<StaleRecordDispositionOutcome> {
+    update_stale_record_disposition(root, input, false)
+}
+
+pub fn close_stale_record(
+    root: &Path,
+    input: StaleRecordDisposition<'_>,
+) -> Result<StaleRecordDispositionOutcome> {
+    update_stale_record_disposition(root, input, true)
+}
+
+fn update_stale_record_disposition(
+    root: &Path,
+    input: StaleRecordDisposition<'_>,
+    close: bool,
+) -> Result<StaleRecordDispositionOutcome> {
+    validate_stale_record_type(input.record_type)?;
+    if close {
+        validate_closeable_stale_record_type(input.record_type)?;
+    }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let label = ensure_stale_record(&tx, project_id, input.record_type, input.record_id)?;
+
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id, event_type, source, text_or_summary, scope, precedence,
+            status, created_at
+        )
+        values (?1, 'user_instruction', 'stale disposition', ?2, 'project', 100, 'active', current_timestamp)
+        "#,
+        params![
+            project_id,
+            format!(
+                "{} stale {}:{}: {}",
+                if close { "closed" } else { "accepted" },
+                input.record_type,
+                input.record_id,
+                input.reason
+            ),
+        ],
+    )?;
+    let authority_event_id = tx.last_insert_rowid();
+
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, stale_record_type, stale_record_id,
+            acceptance_type, reason, scope, created_by, status,
+            approved_by_authority_event_id, approved_at, created_at, review_impact
+        )
+        values (
+            ?1, 'stale_record', ?2, ?3, 'stale_accepted', ?4, ?5,
+            'user', 'approved', ?6, current_timestamp, current_timestamp,
+            'stale record disposition recorded through stale command'
+        )
+        "#,
+        params![
+            project_id,
+            input.record_type,
+            input.record_id,
+            input.reason,
+            format!("stale:{}:{}", input.record_type, input.record_id),
+            authority_event_id,
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+
+    let status = if close {
+        close_stale_record_row(&tx, project_id, input.record_type, input.record_id)?;
+        "closed"
+    } else {
+        "stale_accepted"
+    };
+
+    tx.commit()?;
+    Ok(StaleRecordDispositionOutcome {
+        record_type: input.record_type.to_string(),
+        record_id: input.record_id,
+        label,
+        status: status.to_string(),
+        acceptance_record_id,
+        authority_event_id,
+    })
+}
+
+fn validate_stale_record_type(record_type: &str) -> Result<()> {
+    match record_type {
+        "task_derivation" | "checklist" | "validation_gate" | "coverage_item" | "review_plan" => {
+            Ok(())
+        }
+        _ => bail!(
+            "stale record type must be task_derivation, checklist, validation_gate, coverage_item, or review_plan"
+        ),
+    }
+}
+
+fn validate_closeable_stale_record_type(record_type: &str) -> Result<()> {
+    match record_type {
+        "task_derivation" | "checklist" | "validation_gate" => Ok(()),
+        "coverage_item" | "review_plan" => bail!(
+            "stale {record_type} cannot be closed; use stale accept {record_type} <id> --reason <reason>"
+        ),
+        _ => validate_stale_record_type(record_type),
+    }
+}
+
+fn ensure_stale_record(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    record_type: &str,
+    record_id: i64,
+) -> Result<String> {
+    let sql = match record_type {
+        "task_derivation" => {
+            r#"
+            select dr.requirement_key
+            from task_derivations td
+            join design_requirements dr on dr.id = td.design_requirement_id
+            where td.project_id = ?1 and td.id = ?2 and td.status = 'stale'
+            "#
+        }
+        "checklist" => {
+            r#"
+            select title
+            from checklists
+            where project_id = ?1 and id = ?2 and status = 'stale'
+            "#
+        }
+        "validation_gate" => {
+            r#"
+            select gate_key
+            from validation_gates
+            where project_id = ?1 and id = ?2 and status = 'stale'
+            "#
+        }
+        "coverage_item" => {
+            r#"
+            select dr.requirement_key
+            from coverage_items c
+            join design_requirements dr on dr.id = c.design_requirement_id
+            where c.project_id = ?1 and c.id = ?2 and c.status = 'stale'
+            "#
+        }
+        "review_plan" => {
+            r#"
+            select rp.review_type || ':' || rp.stage
+            from review_plans rp
+            join design_versions v on v.id = rp.design_version_id
+            join design_packages p on p.id = v.design_package_id
+            where rp.project_id = ?1
+              and rp.id = ?2
+              and rp.status = 'blocked'
+              and p.current_design_version_id != rp.design_version_id
+            "#
+        }
+        _ => unreachable!("validated stale record type"),
+    };
+    conn.query_row(sql, params![project_id, record_id], |row| row.get(0))
+        .optional()?
+        .with_context(|| format!("stale {record_type} record not found: {record_id}"))
+}
+
+fn close_stale_record_row(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    record_type: &str,
+    record_id: i64,
+) -> Result<()> {
+    let (table, id_column) = match record_type {
+        "task_derivation" => ("task_derivations", "id"),
+        "checklist" => ("checklists", "id"),
+        "validation_gate" => ("validation_gates", "id"),
+        _ => unreachable!("validated closeable stale record type"),
+    };
+    let changed = conn.execute(
+        &format!(
+            "update {table} set status = 'closed' where project_id = ?1 and {id_column} = ?2 and status = 'stale'"
+        ),
+        params![project_id, record_id],
+    )?;
+    if changed == 0 {
+        bail!("stale {record_type} record not found or not closeable: {record_id}");
+    }
+    Ok(())
 }
 
 pub fn list_validation_gate_context(
@@ -2335,6 +2572,23 @@ pub struct StaleRecord {
     pub record_type: String,
     pub id: i64,
     pub label: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StaleRecordDisposition<'a> {
+    pub record_type: &'a str,
+    pub record_id: i64,
+    pub reason: &'a str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StaleRecordDispositionOutcome {
+    pub record_type: String,
+    pub record_id: i64,
+    pub label: String,
+    pub status: String,
+    pub acceptance_record_id: i64,
+    pub authority_event_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

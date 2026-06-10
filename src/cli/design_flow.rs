@@ -7,9 +7,10 @@ use super::args::{
     ChecklistCommand, DecomposeCommand, ExportCommand, ReviewContextArgs, StaleCommand,
 };
 use agent_workbench::{
-    DesignDecomposition, DesignRequirementListQuery, ReviewContextQuery, TaskDerivationListQuery,
-    decompose_design, list_checklists, list_design_requirements, list_stale_records,
-    list_task_derivations, render_review_context,
+    DesignDecomposition, DesignRequirementListQuery, ReviewContextQuery, StaleRecordDisposition,
+    TaskDerivationListQuery, accept_stale_record, close_stale_record, decompose_design,
+    list_checklists, list_design_requirements, list_stale_records, list_task_derivations,
+    render_review_context,
 };
 
 pub(crate) fn handle_decompose(root: &Path, command: DecomposeCommand) -> Result<()> {
@@ -73,6 +74,37 @@ pub(crate) fn handle_stale(root: &Path, command: StaleCommand) -> Result<()> {
             for record in records {
                 println!("{}:{} {}", record.record_type, record.id, record.label);
             }
+        }
+        StaleCommand::Accept(args) => {
+            let outcome = accept_stale_record(
+                root,
+                StaleRecordDisposition {
+                    record_type: &args.record_type,
+                    record_id: args.record_id,
+                    reason: &args.reason,
+                },
+            )?;
+            println!("accepted stale record");
+            println!("record_type: {}", outcome.record_type);
+            println!("record_id: {}", outcome.record_id);
+            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+            println!("authority_event_id: {}", outcome.authority_event_id);
+        }
+        StaleCommand::Close(args) => {
+            let outcome = close_stale_record(
+                root,
+                StaleRecordDisposition {
+                    record_type: &args.record_type,
+                    record_id: args.record_id,
+                    reason: &args.reason,
+                },
+            )?;
+            println!("closed stale record");
+            println!("record_type: {}", outcome.record_type);
+            println!("record_id: {}", outcome.record_id);
+            println!("status: {}", outcome.status);
+            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+            println!("authority_event_id: {}", outcome.authority_event_id);
         }
     }
     Ok(())

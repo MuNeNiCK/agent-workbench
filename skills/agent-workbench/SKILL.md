@@ -75,6 +75,8 @@ Common command groups include:
 - `agent-workbench trace derive-task`
 - `agent-workbench checklist list`
 - `agent-workbench stale list`
+- `agent-workbench stale accept`
+- `agent-workbench stale close`
 - `agent-workbench gate design-ready --dry-run`
 - `agent-workbench gate implementation-ready --dry-run`
 - `agent-workbench gate close-ready --dry-run`
@@ -174,6 +176,13 @@ from structured ledger state.
   `design_implementation_diff` plus `implementation_review` for `close-ready`.
 - Use `decompose design` for normal design-to-plan conversion. Use
   `trace derive-task` for explicit manual links or corrections.
+- Use `stale list` to inspect stale design-derived records. Use
+  `stale accept <record-type> <id> --reason "<reason>"` when a stale record
+  should remain auditable without changing its lifecycle status. Use
+  `stale close <record-type> <id> --reason "<reason>"` for stale
+  `task_derivation`, `checklist`, or `validation_gate` records that should be
+  closed. Do not use `task accept-out-of-scope` for stale validation gates;
+  that command is only for task scope exceptions.
 - Record implementation evidence and coverage items for design-derived tasks
   before closing the work unit.
 - Use `review-context` when launching a review agent so the prompt is focused

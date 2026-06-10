@@ -478,6 +478,15 @@ fn list_work_stale_records(root: &Path, work_unit_id: i64) -> Result<Vec<StaleRe
         where td.project_id = ?1
           and t.work_unit_id = ?2
           and td.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'task_derivation'
+                and ar.stale_record_id = td.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by td.id
         "#,
         &mut records,
@@ -493,6 +502,15 @@ fn list_work_stale_records(root: &Path, work_unit_id: i64) -> Result<Vec<StaleRe
         where c.project_id = ?1
           and c.work_unit_id = ?2
           and c.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'checklist'
+                and ar.stale_record_id = c.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by c.id
         "#,
         &mut records,
@@ -509,6 +527,15 @@ fn list_work_stale_records(root: &Path, work_unit_id: i64) -> Result<Vec<StaleRe
         where vg.project_id = ?1
           and coalesce(vg.work_unit_id, t.work_unit_id) = ?2
           and vg.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'validation_gate'
+                and ar.stale_record_id = vg.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by vg.id
         "#,
         &mut records,
@@ -526,6 +553,15 @@ fn list_work_stale_records(root: &Path, work_unit_id: i64) -> Result<Vec<StaleRe
         where c.project_id = ?1
           and coalesce(c.work_unit_id, t.work_unit_id) = ?2
           and c.status = 'stale'
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.target_type = 'stale_record'
+                and ar.stale_record_type = 'coverage_item'
+                and ar.stale_record_id = c.id
+                and ar.acceptance_type = 'stale_accepted'
+                and ar.status = 'approved'
+          )
         order by c.id
         "#,
         &mut records,

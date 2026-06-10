@@ -64,6 +64,9 @@ When work is based on design requirements:
 6. Start implementation only after implementation readiness passes.
 
 This keeps the agent from implementing stale or unreviewed design material.
+When stale records remain intentionally, record the disposition with
+`stale accept` or, for closeable stale records such as selected validation
+gates, `stale close`.
 
 ## Review-driven close
 

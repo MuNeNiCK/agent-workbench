@@ -1684,7 +1684,20 @@ pub(crate) struct ChecklistListArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum StaleCommand {
+    /// List stale design-derived records.
     List,
+    /// Accept a stale record without changing its underlying status.
+    Accept(StaleRecordDispositionArgs),
+    /// Close a stale record that has a closed lifecycle state.
+    Close(StaleRecordDispositionArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct StaleRecordDispositionArgs {
+    pub(crate) record_type: String,
+    pub(crate) record_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]

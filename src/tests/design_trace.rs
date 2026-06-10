@@ -1843,6 +1843,151 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
 }
 
 #[test]
+fn stale_close_disposes_selected_validation_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: None,
+            completion_condition: Some("cleanup behavior is covered"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let first_import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: first_import.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: first_import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: first_import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001").replace(
+            "Run the project test suite",
+            "Run the complete project test suite",
+        ),
+    )
+    .unwrap();
+    let second_import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: second_import.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(second_import.design_version_id),
+        },
+    )
+    .unwrap();
+
+    let outcome = close_stale_record(
+        temp.path(),
+        StaleRecordDisposition {
+            record_type: "validation_gate",
+            record_id: gate.validation_gate_id,
+            reason: "superseded gate template is no longer in scope",
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.record_type, "validation_gate");
+    assert_eq!(outcome.record_id, gate.validation_gate_id);
+    assert_eq!(outcome.status, "closed");
+    let stale = list_stale_records(temp.path()).unwrap();
+    assert!(!stale.iter().any(|record| {
+        record.record_type == "validation_gate" && record.id == gate.validation_gate_id
+    }));
+    let conn = open_ledger(&temp.path().join(".agent-workbench").join("ledger.sqlite")).unwrap();
+    let gate_status: String = conn
+        .query_row(
+            "select status from validation_gates where id = ?1",
+            rusqlite::params![gate.validation_gate_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let acceptance_type: String = conn
+        .query_row(
+            "select acceptance_type from acceptance_records where id = ?1",
+            rusqlite::params![outcome.acceptance_record_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(gate_status, "closed");
+    assert_eq!(acceptance_type, "stale_accepted");
+}
+
+#[test]
 fn implementation_ready_blocks_stale_derivations_and_checklists() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -2013,10 +2158,26 @@ This requirement describes changed cleanup behavior that must be implemented.
             .iter()
             .any(|record| record.record_type == "coverage_item")
     );
+    let coverage_item_id = stale
+        .iter()
+        .find(|record| record.record_type == "coverage_item")
+        .map(|record| record.id)
+        .unwrap();
     assert!(
         stale
             .iter()
             .any(|record| record.record_type == "review_plan")
+    );
+    assert!(
+        close_stale_record(
+            temp.path(),
+            StaleRecordDisposition {
+                record_type: "coverage_item",
+                record_id: coverage_item_id,
+                reason: "coverage stale records are accepted rather than closed",
+            },
+        )
+        .is_err()
     );
 
     let approval_authority_event_id = approval_authority_event(temp.path());
@@ -2040,16 +2201,18 @@ This requirement describes changed cleanup behavior that must be implemented.
         },
     )
     .unwrap();
-    add_general_acceptance(
+    let accepted_coverage = accept_stale_record(
         temp.path(),
-        NewGeneralAcceptance {
-            target: "stale:coverage_item:1",
-            acceptance_type: "stale_accepted",
+        StaleRecordDisposition {
+            record_type: "coverage_item",
+            record_id: coverage_item_id,
             reason: "user accepted stale coverage while preserving scope",
-            approval_authority_event_id,
         },
     )
     .unwrap();
+    assert_eq!(accepted_coverage.record_type, "coverage_item");
+    assert_eq!(accepted_coverage.record_id, coverage_item_id);
+    assert_eq!(accepted_coverage.status, "stale_accepted");
     let accepted = implementation_ready(
         temp.path(),
         ImplementationReadyCheck {

@@ -43,6 +43,13 @@ authority.
    `agent-workbench checklist list`,
    `agent-workbench requirement list --design <design-version-id>`, and
    `agent-workbench stale list`.
+   If stale records appear, resolve the design mismatch, or explicitly record a
+   disposition with
+   `agent-workbench stale accept <record-type> <id> --reason "<reason>"` or
+   `agent-workbench stale close <record-type> <id> --reason "<reason>"`.
+   Use `stale close` only for `task_derivation`, `checklist`, and
+   `validation_gate`; use `stale accept` for stale `coverage_item` and
+   `review_plan` records.
 8. Select validation gates with
    `agent-workbench gate select --design <design-version-id> --template <gate-key> --requirement <requirement-key> --task <task-id>`
    when the decomposition did not already select the required gate. Add
@@ -82,6 +89,11 @@ authority.
    `review run add` command must include `--plan <review-plan-id>`.
 8. Run `agent-workbench gate close-ready --dry-run`.
 9. If blocked, perform the blocking action printed by the gate before closing.
+   For stale validation gates, do not use `task accept-out-of-scope`; run
+   `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`
+   when the selected stale gate should be closed, or
+   `agent-workbench stale accept validation_gate <gate-id> --reason "<reason>"`
+   when the stale state is intentionally accepted without changing gate status.
    To accept an exception, first record the user's approval with
    `agent-workbench authority event add --type user_instruction --summary "<approval>"`,
    then run

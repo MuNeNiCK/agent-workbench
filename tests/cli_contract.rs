@@ -2049,6 +2049,169 @@ fn task_accept_out_of_scope_creates_acceptance_record() {
 }
 
 #[test]
+fn stale_close_validation_gate_records_disposition_and_closes_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "design implementation"]);
+    ok(
+        temp.path(),
+        &[
+            "task",
+            "add",
+            "implement cleanup",
+            "--priority",
+            "high",
+            "--source",
+            "design",
+            "--completion-condition",
+            "cleanup behavior is covered",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "approve",
+            "1",
+            "--summary",
+            "initial design approved",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "trace",
+            "derive-task",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "gate",
+            "select",
+            "--design",
+            "1",
+            "--template",
+            "GATE-001",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+        ],
+    );
+
+    std::fs::write(
+        temp.path()
+            .join(".agent-workbench")
+            .join("designs")
+            .join("storage-lifecycle")
+            .join("validation")
+            .join("gates.md"),
+        r#"## GATE-001: Unit test command
+```yaml agent-workbench
+type: validation_gate_template
+key: GATE-001
+applies_to: [REQ-001]
+expected_result: pass
+phase: implementation
+status: active
+```
+
+Run the complete project test suite before implementation handoff.
+"#,
+    )
+    .unwrap();
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "approve",
+            "2",
+            "--summary",
+            "revised design approved",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "2",
+            "--dry-run",
+        ],
+    );
+    let stale = ok(temp.path(), &["stale", "list"]);
+    assert!(stale.contains("validation_gate:1 GATE-001"));
+
+    let closed = ok(
+        temp.path(),
+        &[
+            "stale",
+            "close",
+            "validation_gate",
+            "1",
+            "--reason",
+            "superseded validation gate is no longer applicable",
+        ],
+    );
+    assert!(closed.contains("closed stale record"));
+    assert!(closed.contains("record_type: validation_gate"));
+    assert!(closed.contains("record_id: 1"));
+    assert!(closed.contains("status: closed"));
+    assert!(closed.contains("acceptance_record_id: 1"));
+    assert!(closed.contains("authority_event_id: "));
+    assert!(!ok(temp.path(), &["stale", "list"]).contains("validation_gate:1"));
+
+    let gate_status: String = conn(temp.path())
+        .query_row(
+            "select status from validation_gates where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(gate_status, "closed");
+}
+
+#[test]
 fn review_flow_records_policy_runs_findings_and_verification() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

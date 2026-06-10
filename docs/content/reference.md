@@ -28,7 +28,7 @@ skill instructions and uses the wrapper internally.
 | `record` | Structured work records and evidence links. |
 | `repository`, `git` | Repository snapshots, Git commits, file changes, and comparisons. |
 | `design`, `requirement`, `design-decision`, `gate-template` | Design package import and inspection. |
-| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability and stale records. |
+| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability and explicit stale record disposition. |
 | `review`, `finding`, `closure`, `review-context` | Review planning, runs, findings, closures, and focused context. |
 | `evidence`, `coverage`, `gate` | Implementation evidence, coverage, validation gates, and readiness checks. |
 | `kpt` | Process review over corrections, command drift, findings, and outcomes. |

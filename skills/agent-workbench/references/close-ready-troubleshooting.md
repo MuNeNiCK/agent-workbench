@@ -9,6 +9,7 @@ items.
 | missing implementation evidence | `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <key> --type file --file <path> --note "<evidence>"` |
 | missing coverage | `agent-workbench coverage add --design <design-version-id> --requirement <key> --task <task-id> --status covered --requirement-text "<summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"` |
 | selected gate has no run | `agent-workbench command usage add ...` then `agent-workbench gate record --gate <gate-id> --result pass --usage <usage-id>` |
+| selected gate is stale | update the selected gate from the current design, or run `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`; do not use `task accept-out-of-scope` |
 | validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |
 | fixed command was not used | run the fixed command and record usage, or add a command deviation and acceptance |
 | repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
@@ -32,6 +33,13 @@ For repeated corrections intentionally deferred by the user:
 
 ```sh
 agent-workbench acceptance add --target stale:user_correction:<correction-id> --type stale_accepted --reason "<why deferred>" --authority <authority-event-id>
+```
+
+For stale design-derived records:
+
+```sh
+agent-workbench stale accept <record-type> <id> --reason "<why accepted>"
+agent-workbench stale close validation_gate <gate-id> --reason "<why closed>"
 ```
 
 For command deviations:
