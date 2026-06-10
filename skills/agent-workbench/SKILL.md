@@ -87,10 +87,13 @@ Common command groups include:
 - `agent-workbench review scope start`
 - `agent-workbench review policy add`
 - `agent-workbench review plan add`
+- `agent-workbench review plan list`
 - `agent-workbench review plan target add`
 - `agent-workbench review run add`
+- `agent-workbench review run list`
 - `agent-workbench finding add`
 - `agent-workbench finding classify`
+- `agent-workbench finding list`
 - `agent-workbench finding verify`
 - `agent-workbench closure add`
 - `agent-workbench review-context`
@@ -110,6 +113,7 @@ Common command groups include:
 - `agent-workbench git commit add`
 - `agent-workbench git file add`
 - `agent-workbench work start`
+- `agent-workbench work activate`
 - `agent-workbench work suspend`
 - `agent-workbench work interrupt`
 - `agent-workbench work resume`
@@ -159,12 +163,22 @@ from structured ledger state.
 - Prefer structured project memory over broad Markdown history searches.
 - Use `agent-workbench status` and `agent-workbench next` before long-running
   work, executed through the wrapper path resolved relative to this skill.
+- If `status` or `next` reports `phase_blocked: true` or `blocked phase`, do
+  not start implementation, edit code, record implementation evidence, or run
+  implementation validation as the next action. Follow the printed blocker
+  command for finding classification, closure, verification, gate repair, or
+  work unblock first.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.
 - Before planning, editing, or reviewing, run `agent-workbench correction list`
   and apply active user corrections for the current scope.
 - Before choosing validation or test commands, run `agent-workbench command list`
   and prefer applicable fixed or preferred command profiles.
+- Treat the ledger as a private implementation detail. Do not use `sqlite3`,
+  SQL queries, table names, schema inspection, or direct ledger joins during
+  normal agent workflow. Use Agent Workbench CLI commands and `review-context`.
+  If a required state question has no CLI or review-context answer, report the
+  missing product surface as a blocker instead of reading the database directly.
 - When repeated corrections, command drift, recurring findings, or recurring
   close/resume failures appear, propose or run `agent-workbench kpt start` and
   inspect items with `agent-workbench kpt item list`.

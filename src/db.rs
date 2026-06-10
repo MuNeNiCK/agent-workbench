@@ -61,6 +61,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             open_work_units: 0,
             active_activations: 0,
             schema_version: None,
+            phase_blocker: None,
         });
     }
 
@@ -79,6 +80,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
+    let phase_blocker = current_phase_blocker(&conn)?;
 
     Ok(ProjectStatus {
         initialized: true,
@@ -87,6 +89,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
         open_work_units,
         active_activations,
         schema_version,
+        phase_blocker,
     })
 }
 
@@ -97,10 +100,20 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     }
 
     let conn = open_ledger(&ledger_path)?;
+    if let Some(blocker) = current_phase_blocker(&conn)? {
+        return Ok(NextAction::BlockedPhase { blocker });
+    }
+
     let active = conn
         .query_row(
             r#"
-            select w.id, w.title
+            select w.id, w.title,
+                   (
+                       select max(c.design_version_id)
+                       from checklists c
+                       where c.work_unit_id = w.id
+                         and c.status in ('active', 'stale')
+                   ) as design_version_id
             from work_unit_activations a
             join work_units w on w.id = a.work_unit_id
             where a.status = 'active'
@@ -112,15 +125,239 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
                 Ok(ActiveWorkUnit {
                     id: row.get(0)?,
                     title: row.get(1)?,
+                    design_version_id: row.get(2)?,
                 })
             },
         )
         .optional()?;
 
-    Ok(match active {
-        Some(work_unit) => NextAction::ContinueActive { work_unit },
-        None => NextAction::NoActiveWorkUnit,
+    if let Some(work_unit) = active {
+        return Ok(NextAction::ContinueActive { work_unit });
+    }
+
+    let suspended = conn
+        .query_row(
+            r#"
+            select w.id, w.title,
+                   (
+                       select max(c.design_version_id)
+                       from checklists c
+                       where c.work_unit_id = w.id
+                         and c.status in ('active', 'stale')
+                   ) as design_version_id
+            from work_unit_activations a
+            join work_units w on w.id = a.work_unit_id
+            where a.status = 'suspended'
+              and w.status in ('open', 'blocked')
+            order by a.id desc
+            limit 1
+            "#,
+            [],
+            |row| {
+                Ok(ActiveWorkUnit {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    design_version_id: row.get(2)?,
+                })
+            },
+        )
+        .optional()?;
+    if let Some(work_unit) = suspended {
+        return Ok(NextAction::ResumeSuspended { work_unit });
+    }
+
+    let inactive = conn
+        .query_row(
+            r#"
+            select w.id, w.title,
+                   (
+                       select max(c.design_version_id)
+                       from checklists c
+                       where c.work_unit_id = w.id
+                         and c.status in ('active', 'stale')
+                   ) as design_version_id
+            from work_units w
+            where w.status = 'open'
+              and not exists (
+                  select 1
+                  from work_unit_activations a
+                  where a.work_unit_id = w.id
+                    and a.status in ('active', 'suspended')
+              )
+            order by w.id
+            limit 1
+            "#,
+            [],
+            |row| {
+                Ok(ActiveWorkUnit {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    design_version_id: row.get(2)?,
+                })
+            },
+        )
+        .optional()?;
+
+    Ok(match inactive {
+        Some(work_unit) => NextAction::ActivateOpen { work_unit },
+        None => NextAction::NoOpenWorkUnit,
     })
+}
+
+fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
+    let project_id = project_id(conn)?;
+    let review_blocker = conn
+        .query_row(
+            r#"
+            select
+                p.id,
+                p.work_unit_id,
+                p.review_type,
+                p.stage,
+                r.id,
+                f.id,
+                f.severity,
+                f.classification,
+                f.description,
+                (
+                    select c.id
+                    from closures c
+                    where c.finding_id = f.id
+                      and c.project_id = f.project_id
+                    order by c.id desc
+                    limit 1
+                ),
+                (
+                    select rr.id
+                    from review_runs rr
+                    where rr.review_plan_id = p.id
+                      and rr.project_id = p.project_id
+                      and rr.run_type = 'resume'
+                      and rr.run_purpose = 'finding_fix_verification'
+                    order by rr.id desc
+                    limit 1
+                )
+            from review_plans p
+            join review_runs r on r.review_plan_id = p.id
+            join findings f on f.review_run_id = r.id
+            where p.required = 1
+              and p.project_id = ?1
+              and r.project_id = ?1
+              and f.project_id = ?1
+              and f.status = 'open'
+              and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+              and not exists (
+                select 1
+                from acceptance_records ar
+                where ar.target_type = 'finding'
+                  and ar.finding_id = f.id
+                  and ar.status = 'approved'
+                  and ar.acceptance_type in (
+                    'accepted_out_of_scope', 'explicit_exception', 'classified_failure'
+                  )
+              )
+            order by
+                case p.stage
+                    when 'design-ready' then 1
+                    when 'implementation-ready' then 2
+                    when 'close-ready' then 3
+                    when 'resume-ready' then 4
+                    else 5
+                end,
+                f.id
+            limit 1
+            "#,
+            params![project_id],
+            |row| {
+                let finding_id = row.get(5)?;
+                let classification: String = row.get(7)?;
+                let review_plan_id = row.get(0)?;
+                let closure_id = row.get(9)?;
+                let verification_run_id = row.get(10)?;
+                Ok(PhaseBlocker {
+                    kind: "required_review_finding".to_string(),
+                    review_plan_id: Some(review_plan_id),
+                    work_unit_id: Some(row.get(1)?),
+                    review_type: Some(row.get(2)?),
+                    stage: Some(row.get(3)?),
+                    review_run_id: Some(row.get(4)?),
+                    finding_id: Some(finding_id),
+                    severity: Some(row.get(6)?),
+                    classification: Some(classification.clone()),
+                    description: row.get(8)?,
+                    next_action: finding_next_action(
+                        finding_id,
+                        review_plan_id,
+                        closure_id,
+                        verification_run_id,
+                        &classification,
+                    ),
+                })
+            },
+        )
+        .optional()?;
+    if review_blocker.is_some() {
+        return Ok(review_blocker);
+    }
+
+    conn.query_row(
+        r#"
+        select w.id, w.title
+        from work_units w
+        where w.status = 'blocked'
+          and w.project_id = ?1
+        order by w.id
+        limit 1
+        "#,
+        params![project_id],
+        |row| {
+            let work_unit_id = row.get(0)?;
+            let title: String = row.get(1)?;
+            Ok(PhaseBlocker {
+                kind: "blocked_work_unit".to_string(),
+                review_plan_id: None,
+                work_unit_id: Some(work_unit_id),
+                review_type: None,
+                stage: None,
+                review_run_id: None,
+                finding_id: None,
+                severity: None,
+                classification: None,
+                description: format!("work unit {work_unit_id} is blocked: {title}"),
+                next_action: format!(
+                    "resolve the blocker, then run agent-workbench work unblock {work_unit_id} --reason \"<reason>\""
+                ),
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn finding_next_action(
+    finding_id: i64,
+    review_plan_id: i64,
+    closure_id: Option<i64>,
+    verification_run_id: Option<i64>,
+    classification: &str,
+) -> String {
+    match classification {
+        "unclassified" => format!(
+            "agent-workbench finding classify {finding_id} --classification valid|invalid|design_conflict|needs_evidence"
+        ),
+        "valid" | "design_conflict" | "needs_evidence" => match (closure_id, verification_run_id) {
+            (Some(closure_id), Some(run_id)) => format!(
+                "agent-workbench finding verify --run {run_id} --finding {finding_id} --closure {closure_id} --result verified|not_fixed|needs_evidence|out_of_scope"
+            ),
+            (Some(closure_id), None) => format!(
+                "agent-workbench review run add --plan {review_plan_id} --type resume --purpose finding_fix_verification --target finding:{finding_id}; then agent-workbench finding verify --run <run-id> --finding {finding_id} --closure {closure_id} --result verified|not_fixed|needs_evidence|out_of_scope"
+            ),
+            (None, _) => format!(
+                "agent-workbench closure add --finding {finding_id} --invariant \"<invariant>\""
+            ),
+        },
+        _ => format!("resolve finding {finding_id}"),
+    }
 }
 
 pub(crate) fn open_ledger(path: &Path) -> Result<Connection> {
@@ -236,6 +473,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         "command_deviation_id",
         "integer",
     )?;
+    ensure_column(conn, "acceptance_records", "rule_binding_id", "integer")?;
     ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
     ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
     ensure_column(conn, "validation_runs", "command", "text")?;
@@ -266,6 +504,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         "command_deviation_id",
         "integer",
     )?;
+    ensure_column(conn, "acceptance_records", "rule_binding_id", "integer")?;
     ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
     ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
 
@@ -393,6 +632,7 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
         "command_deviation_id",
         "integer",
     )?;
+    ensure_column(conn, "acceptance_records", "rule_binding_id", "integer")?;
     ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
     ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
     Ok(())
@@ -798,12 +1038,14 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         && table_sql.contains("'coverage_item'")
         && table_sql.contains("'design_requirement_key'")
         && table_sql.contains("'validation_run'")
+        && table_sql.contains("'rule_binding'")
         && table_sql.contains("'evidence_gap'")
         && table_has_column(conn, "acceptance_records", "design_package_key")?
         && table_has_column(conn, "acceptance_records", "design_file_path")?
         && table_has_column(conn, "acceptance_records", "design_requirement_key")?
         && table_has_column(conn, "acceptance_records", "coverage_item_id")?
         && table_has_column(conn, "acceptance_records", "validation_run_id")?
+        && table_has_column(conn, "acceptance_records", "rule_binding_id")?
     {
         return Ok(());
     }
@@ -826,7 +1068,8 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
                 'design_requirement_key', 'coverage_item', 'finding', 'validation_gate',
                 'validation_run', 'repository_state_classification',
                 'repository_snapshot_comparison', 'review_plan', 'checklist_item',
-                'command_profile', 'command_usage', 'command_deviation', 'stale_record'
+                'command_profile', 'command_usage', 'command_deviation',
+                'rule_binding', 'stale_record'
             )),
             task_id integer references tasks(id),
             design_requirement_id integer references design_requirements(id),
@@ -842,6 +1085,7 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             command_profile_id integer references command_profiles(id),
             command_usage_id integer references command_usages(id),
             command_deviation_id integer references command_deviations(id),
+            rule_binding_id integer references rule_bindings(id),
             stale_record_type text,
             stale_record_id integer,
             design_package_key text,
@@ -875,6 +1119,7 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
                     (case when command_profile_id is not null then 1 else 0 end) +
                     (case when command_usage_id is not null then 1 else 0 end) +
                     (case when command_deviation_id is not null then 1 else 0 end) +
+                    (case when rule_binding_id is not null then 1 else 0 end) +
                     (case when design_package_key is not null and design_file_path is not null and design_requirement_key is null then 1 else 0 end) +
                     (case when design_package_key is not null and design_requirement_key is not null and design_file_path is null then 1 else 0 end) +
                     (case when stale_record_type is not null and stale_record_id is not null then 1 else 0 end)
@@ -894,6 +1139,7 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
                     or (target_type = 'command_profile' and command_profile_id is not null)
                     or (target_type = 'command_usage' and command_usage_id is not null)
                     or (target_type = 'command_deviation' and command_deviation_id is not null)
+                    or (target_type = 'rule_binding' and rule_binding_id is not null)
                     or (target_type = 'design_file' and design_package_key is not null and design_file_path is not null)
                     or (target_type = 'design_requirement_key' and design_package_key is not null and design_requirement_key is not null)
                     or (target_type = 'stale_record' and stale_record_type is not null and stale_record_id is not null)
@@ -906,8 +1152,9 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             validation_gate_template_id, coverage_item_id, finding_id, validation_gate_id,
             validation_run_id, repository_state_classification_id,
             repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
-            command_profile_id, command_usage_id, command_deviation_id, stale_record_type,
-            stale_record_id, design_package_key, design_file_path, design_requirement_key,
+            command_profile_id, command_usage_id, command_deviation_id,
+            rule_binding_id, stale_record_type, stale_record_id, design_package_key,
+            design_file_path, design_requirement_key,
             acceptance_type, reason, scope, created_by, status,
             approved_by_authority_event_id, approved_at, created_at, review_impact
         )
@@ -916,8 +1163,9 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
             validation_gate_template_id, coverage_item_id, finding_id, validation_gate_id,
             validation_run_id, repository_state_classification_id,
             repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
-            command_profile_id, command_usage_id, command_deviation_id, stale_record_type,
-            stale_record_id, design_package_key, design_file_path, design_requirement_key,
+            command_profile_id, command_usage_id, command_deviation_id, null,
+            stale_record_type, stale_record_id, design_package_key, design_file_path,
+            design_requirement_key,
             acceptance_type, reason, scope,
             case
                 when created_by in ('user', 'agent', 'system') then created_by
@@ -1693,19 +1941,39 @@ pub struct ProjectStatus {
     pub open_work_units: i64,
     pub active_activations: i64,
     pub schema_version: Option<i64>,
+    pub phase_blocker: Option<PhaseBlocker>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum NextAction {
     NotInitialized { ledger_path: PathBuf },
-    NoActiveWorkUnit,
+    BlockedPhase { blocker: PhaseBlocker },
+    NoOpenWorkUnit,
+    ResumeSuspended { work_unit: ActiveWorkUnit },
+    ActivateOpen { work_unit: ActiveWorkUnit },
     ContinueActive { work_unit: ActiveWorkUnit },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseBlocker {
+    pub kind: String,
+    pub review_plan_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+    pub review_type: Option<String>,
+    pub stage: Option<String>,
+    pub review_run_id: Option<i64>,
+    pub finding_id: Option<i64>,
+    pub severity: Option<String>,
+    pub classification: Option<String>,
+    pub description: String,
+    pub next_action: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ActiveWorkUnit {
     pub id: i64,
     pub title: String,
+    pub design_version_id: Option<i64>,
 }
 
 const SCHEMA: &str = r#"
@@ -2125,7 +2393,8 @@ create table if not exists acceptance_records (
         'design_requirement_key', 'coverage_item', 'finding', 'validation_gate',
         'validation_run', 'repository_state_classification',
         'repository_snapshot_comparison', 'review_plan', 'checklist_item',
-        'command_profile', 'command_usage', 'command_deviation', 'stale_record'
+        'command_profile', 'command_usage', 'command_deviation',
+        'rule_binding', 'stale_record'
     )),
     task_id integer references tasks(id),
     design_requirement_id integer references design_requirements(id),
@@ -2141,6 +2410,7 @@ create table if not exists acceptance_records (
     command_profile_id integer references command_profiles(id),
     command_usage_id integer references command_usages(id),
     command_deviation_id integer references command_deviations(id),
+    rule_binding_id integer references rule_bindings(id),
     stale_record_type text,
     stale_record_id integer,
     design_package_key text,
@@ -2174,6 +2444,7 @@ create table if not exists acceptance_records (
             (case when command_profile_id is not null then 1 else 0 end) +
             (case when command_usage_id is not null then 1 else 0 end) +
             (case when command_deviation_id is not null then 1 else 0 end) +
+            (case when rule_binding_id is not null then 1 else 0 end) +
             (case when design_package_key is not null and design_file_path is not null and design_requirement_key is null then 1 else 0 end) +
             (case when design_package_key is not null and design_requirement_key is not null and design_file_path is null then 1 else 0 end) +
             (case when stale_record_type is not null and stale_record_id is not null then 1 else 0 end)
@@ -2193,6 +2464,7 @@ create table if not exists acceptance_records (
             or (target_type = 'command_profile' and command_profile_id is not null)
             or (target_type = 'command_usage' and command_usage_id is not null)
             or (target_type = 'command_deviation' and command_deviation_id is not null)
+            or (target_type = 'rule_binding' and rule_binding_id is not null)
             or (target_type = 'design_file' and design_package_key is not null and design_file_path is not null)
             or (target_type = 'design_requirement_key' and design_package_key is not null and design_requirement_key is not null)
             or (target_type = 'stale_record' and stale_record_type is not null and stale_record_id is not null)
@@ -4479,12 +4751,15 @@ when (new.target_type = 'finding' and new.project_id != (select project_id from 
       join command_profiles p on p.id = d.command_profile_id
       where d.id = new.command_deviation_id
   ))
+  or (new.target_type = 'rule_binding' and new.project_id != (
+      select project_id from rule_bindings where id = new.rule_binding_id
+  ))
 begin
     select raise(abort, 'acceptance project_id must match general target project_id');
 end;
 
 create trigger if not exists trg_acceptance_general_project_update
-before update of project_id, target_type, finding_id, validation_gate_id, validation_run_id, repository_state_classification_id, repository_snapshot_comparison_id, review_plan_id, checklist_item_id, command_profile_id, command_usage_id, command_deviation_id on acceptance_records
+before update of project_id, target_type, finding_id, validation_gate_id, validation_run_id, repository_state_classification_id, repository_snapshot_comparison_id, review_plan_id, checklist_item_id, command_profile_id, command_usage_id, command_deviation_id, rule_binding_id on acceptance_records
 for each row
 when (new.target_type = 'finding' and new.project_id != (select project_id from findings where id = new.finding_id))
   or (new.target_type = 'validation_gate' and new.project_id != (select project_id from validation_gates where id = new.validation_gate_id))
@@ -4521,6 +4796,9 @@ when (new.target_type = 'finding' and new.project_id != (select project_id from 
       from command_deviations d
       join command_profiles p on p.id = d.command_profile_id
       where d.id = new.command_deviation_id
+  ))
+  or (new.target_type = 'rule_binding' and new.project_id != (
+      select project_id from rule_bindings where id = new.rule_binding_id
   ))
 begin
     select raise(abort, 'acceptance project_id must match general target project_id');

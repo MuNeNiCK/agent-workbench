@@ -868,6 +868,107 @@ fn clean_design_document_review_allows_design_ready_gate_to_pass() {
 }
 
 #[test]
+fn next_can_activate_existing_open_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    conn(temp.path())
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'planned implementation', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+    let next = ok(temp.path(), &["next"]);
+    assert!(next.contains("open inactive work unit"));
+    assert!(next.contains("work_unit_id: 1"));
+    assert!(next.contains("title: planned implementation"));
+    assert!(next.contains("next: agent-workbench work activate 1"));
+
+    let activated = ok(
+        temp.path(),
+        &[
+            "work",
+            "activate",
+            "1",
+            "--reason",
+            "implementation-ready passed",
+        ],
+    );
+    let continued = ok(temp.path(), &["next"]);
+    assert!(activated.contains("activated work unit"));
+    assert!(activated.contains("activation_id: 1"));
+    assert!(continued.contains("continue active work unit"));
+    assert!(continued.contains("work_unit_id: 1"));
+}
+
+#[test]
+fn next_reports_phase_blocker_for_open_required_review_finding() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "guarded work"]);
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_review",
+            "--stage",
+            "design-ready",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "HEAD",
+            "--new-findings",
+            "1",
+            "--summary",
+            "found design issue",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "finding",
+            "add",
+            "--run",
+            "1",
+            "--type",
+            "design_finding",
+            "--severity",
+            "critical",
+            "--description",
+            "design blocker must be resolved first",
+        ],
+    );
+
+    let status = ok(temp.path(), &["status"]);
+    let next = ok(temp.path(), &["next"]);
+
+    assert!(status.contains("phase_blocked: true"));
+    assert!(status.contains("blocker_kind: required_review_finding"));
+    assert!(next.contains("blocked phase"));
+    assert!(next.contains("stage: design-ready"));
+    assert!(next.contains("finding_id: 1"));
+    assert!(next.contains("next: agent-workbench finding classify 1"));
+    assert!(!next.contains("continue active work unit"));
+}
+
+#[test]
 fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

@@ -13,6 +13,7 @@ skill instructions and uses the wrapper internally.
 | --- | --- |
 | `AGENT_WORKBENCH_REPO` | Override the GitHub repository used for release downloads. |
 | `AGENT_WORKBENCH_VERSION` | Pin the release tag used by the wrapper. |
+| `AGENT_WORKBENCH_BIN` | Execute an already-built local CLI instead of downloading a release asset. Used for CI and release-candidate validation. |
 | `GITHUB_TOKEN` | Optional token for GitHub API and release download requests. |
 | `XDG_CACHE_HOME` | Override the cache root. |
 
@@ -43,6 +44,11 @@ latest user instruction
   > historical export or work record
 ```
 
+When `close-ready` reports shadowed rule conflicts, agents should inspect
+`rules applicable --scope current`. Lines with `shadowed_by=<id>` identify the
+shadowed rule. If the override is intentional, record approval with
+`acceptance add --target rule:<shadowed-rule-id> --type explicit_exception`.
+
 ## Review modes
 
 | Mode | Use |
@@ -58,3 +64,15 @@ latest user instruction
 | `implementation-ready` | Design-derived tasks and gate selections are ready for implementation. |
 | `close-ready` | Active work has required evidence, reviews, command usage, repository state, and records. |
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
+
+## Agent-facing state
+
+The ledger is storage, not the agent-facing API. Agents should use `status`,
+`next`, `review-context`, list commands, and readiness gates to decide what to
+do. If the CLI cannot answer a workflow question, that is a product gap to fix,
+not a reason for agents to inspect the ledger directly.
+
+`status` and `next` can report a phase blocker. In that state the agent-facing
+next action is the printed blocker-resolution command, such as finding
+classification, closure, verification, or work unblock. Implementation should
+wait until the blocker is gone.

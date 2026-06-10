@@ -168,6 +168,8 @@ pub(crate) enum Command {
 pub(crate) enum WorkCommand {
     /// Start a new active work unit.
     Start(WorkStartArgs),
+    /// Activate an existing open work unit.
+    Activate(WorkActivateArgs),
     /// Mark an open work unit as blocked.
     Block(WorkBlockArgs),
     /// Mark a blocked work unit as open.
@@ -197,6 +199,15 @@ pub(crate) struct WorkStartArgs {
     pub(crate) responsibility: Option<String>,
     #[arg(long)]
     pub(crate) design_version: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct WorkActivateArgs {
+    pub(crate) work_unit_id: i64,
+    #[arg(long)]
+    pub(crate) design_version: Option<i64>,
+    #[arg(long)]
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -74,12 +74,14 @@ jobs:
 
       - name: Smoke installed wrapper against pinned release
         env:
+          AGENT_WORKBENCH_BIN: ${{ github.workspace }}/target/release/agent-workbench
           XDG_CACHE_HOME: ${{ runner.temp }}/agent-workbench-cache
         run: sh skills/agent-workbench/scripts/agent-workbench.sh status --help
 
       - name: Check skill command inventory
         shell: bash
         env:
+          AGENT_WORKBENCH_BIN: ${{ github.workspace }}/target/release/agent-workbench
           XDG_CACHE_HOME: ${{ runner.temp }}/agent-workbench-cache
         run: |
           set -euo pipefail

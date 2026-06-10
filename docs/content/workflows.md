@@ -27,6 +27,11 @@ rules, corrections, and command profiles.
 The agent should not rely only on chat history. It should query the ledger and
 explain what is active or blocked.
 
+If status or next reports a blocked phase, the agent should resolve the printed
+finding, review, gate, or work-unit blocker before implementation. It should
+not edit code or record implementation evidence while that phase blocker is
+present.
+
 ## Handling interruptions
 
 If the agent finds a blocking issue, it should not silently switch tasks.
@@ -62,6 +67,10 @@ When work is based on design requirements:
 4. Decompose requirements into tasks and checklists.
 5. Run task decomposition review.
 6. Start implementation only after implementation readiness passes.
+7. Continue, resume, or activate the same work unit that owns the decomposed
+   records. The agent should follow the exact next action printed by
+   `agent-workbench next`; it should not open an unrelated new work unit after
+   decomposition.
 
 This keeps the agent from implementing stale or unreviewed design material.
 When stale records remain intentionally, record the disposition with

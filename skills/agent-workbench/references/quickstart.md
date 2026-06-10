@@ -23,6 +23,10 @@ agent-workbench correction list
 agent-workbench command list
 ```
 
+If `status` or `next` reports `phase_blocked: true` or `blocked phase`, follow
+the printed blocker-resolution command before asking the agent to implement or
+validate code.
+
 If the project already has design material, convert it into the workbench design
 package shape under `.agent-workbench/designs/<design-id>` before importing it.
 Do not import arbitrary external prose directly as authority.
@@ -47,7 +51,17 @@ agent-workbench design-decision list --design <design-version-id>
 8. Build `review-context design-task-decomposition`.
 9. Launch a fresh decomposition review agent with the printed `context_ref`.
 10. Run `gate implementation-ready --dry-run`.
-11. Start design-linked implementation only after the gate passes.
+11. Run `next` and implement through the same work unit that owns the
+    decomposed tasks, checklists, validation gates, and review plans.
+12. If `next` reports a blocked phase, resolve the printed finding, review,
+    gate, or work-unit blocker first.
+13. If `next` reports an open inactive work unit, run the exact printed
+    `work activate <work-unit-id> --design-version <design-version-id>`
+    command. If it reports suspended work, run the printed resume-check and
+    resume commands.
+14. If the CLI cannot continue, activate, or resume that same work unit, report
+    the workflow blocker. Do not create an unrelated work unit with
+    `work start`, and do not inspect the ledger directly.
 
 ```sh
 agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required
@@ -61,7 +75,8 @@ agent-workbench review plan add --work-unit <work-unit-id> --type design_task_de
 agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>
 agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean
 agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run
-agent-workbench work start "<title>" --design-version <design-version-id>
+agent-workbench next
+agent-workbench work activate <work-unit-id> --design-version <design-version-id>
 ```
 
 ## While Implementing

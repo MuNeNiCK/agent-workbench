@@ -698,7 +698,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     }));
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].requirement_key, "REQ-001");
-    assert_eq!(passed.result, "pass");
+    assert_eq!(passed.result, "pass", "{:#?}", passed.items);
     assert!(close_without_trace.is_err());
     assert!(task_only_evidence.is_err());
     assert!(design_evidence_before_requirement_link.is_empty());
@@ -723,7 +723,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             && item.result == "fail"
             && item.details.contains("missing review-context runs")
     }));
-    assert_eq!(close_passed.result, "pass");
+    assert_eq!(close_passed.result, "pass", "{:#?}", close_passed.items);
     assert_eq!(coverage.task_id, Some(task.task_id));
     assert_eq!(coverage_records.len(), 1);
     assert_eq!(coverage_records[0].requirement_key, "REQ-001");

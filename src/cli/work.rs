@@ -4,9 +4,9 @@ use anyhow::Result;
 
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
-    NewWorkFork, WorkForkSource, WorkReopen, WorkStart, abandon_work, block_work,
-    close_active_work, create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
-    resume_work, start_work, start_work_with_options, suspend_work, unblock_work,
+    NewWorkFork, WorkActivate, WorkForkSource, WorkReopen, WorkStart, abandon_work, activate_work,
+    block_work, close_active_work, create_follow_up_work, fork_work, interrupt_work, reopen_work,
+    resume_check, resume_work, start_work, start_work_with_options, suspend_work, unblock_work,
 };
 
 pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
@@ -25,6 +25,19 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
                 start_work(root, &args.title, args.responsibility.as_deref())?
             };
             println!("started work unit");
+            println!("work_unit_id: {}", outcome.work_unit_id);
+            println!("activation_id: {}", outcome.activation_id);
+        }
+        WorkCommand::Activate(args) => {
+            let outcome = activate_work(
+                root,
+                WorkActivate {
+                    work_unit_id: args.work_unit_id,
+                    design_version_id: args.design_version,
+                    reason: args.reason.as_deref(),
+                },
+            )?;
+            println!("activated work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);
         }

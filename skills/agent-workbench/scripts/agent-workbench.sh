@@ -25,6 +25,14 @@ need() {
   fi
 }
 
+if [ -n "${AGENT_WORKBENCH_BIN:-}" ]; then
+  if [ ! -x "$AGENT_WORKBENCH_BIN" ]; then
+    echo "agent-workbench: AGENT_WORKBENCH_BIN is not executable: $AGENT_WORKBENCH_BIN" >&2
+    exit 1
+  fi
+  exec "$AGENT_WORKBENCH_BIN" "$@"
+fi
+
 download() {
   url="$1"
   output="$2"

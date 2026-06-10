@@ -12,6 +12,7 @@ items.
 | selected gate is stale | update the selected gate from the current design, or run `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`; do not use `task accept-out-of-scope` |
 | validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |
 | fixed command was not used | run the fixed command and record usage, or add a command deviation and acceptance |
+| shadowed rule conflicts remain | run `agent-workbench rules applicable --scope current`, inspect lines with `shadowed_by=<id>`, then fix the conflicting rule or record `agent-workbench acceptance add --target rule:<rule-id> --type explicit_exception ...` for the shadowed rule |
 | repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
 | required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
 | review finding is open | classify, fix, add closure invariant, verify, then record a new clean run |
@@ -33,6 +34,13 @@ For repeated corrections intentionally deferred by the user:
 
 ```sh
 agent-workbench acceptance add --target stale:user_correction:<correction-id> --type stale_accepted --reason "<why deferred>" --authority <authority-event-id>
+```
+
+For an intentional rule precedence override:
+
+```sh
+agent-workbench rules applicable --scope current
+agent-workbench acceptance add --target rule:<shadowed-rule-id> --type explicit_exception --reason "<why the higher-precedence rule should win>" --authority <authority-event-id>
 ```
 
 For stale design-derived records:

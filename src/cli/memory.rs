@@ -216,13 +216,54 @@ pub(crate) fn handle_rules(root: &Path, command: RulesCommand) -> Result<()> {
                     .authority_event_id
                     .map(|id| format!(" authority_event_id={id}"))
                     .unwrap_or_default();
+                let scope_key = record
+                    .scope_key
+                    .as_ref()
+                    .map(|key| format!(" scope_key={key}"))
+                    .unwrap_or_default();
+                let user_correction = record
+                    .user_correction_id
+                    .map(|id| format!(" user_correction_id={id}"))
+                    .unwrap_or_default();
+                let command_profile = record
+                    .command_profile_id
+                    .map(|id| format!(" command_profile_id={id}"))
+                    .unwrap_or_default();
+                let review_policy = record
+                    .review_policy_id
+                    .map(|id| format!(" review_policy_id={id}"))
+                    .unwrap_or_default();
+                let review_plan = record
+                    .review_plan_id
+                    .map(|id| format!(" review_plan_id={id}"))
+                    .unwrap_or_default();
+                let work_unit = record
+                    .work_unit_id
+                    .map(|id| format!(" work_unit_id={id}"))
+                    .unwrap_or_default();
+                let validation_gate = record
+                    .validation_gate_id
+                    .map(|id| format!(" validation_gate_id={id}"))
+                    .unwrap_or_default();
+                let acceptance_record = record
+                    .acceptance_record_id
+                    .map(|id| format!(" acceptance_record_id={id}"))
+                    .unwrap_or_default();
                 println!(
-                    "{} [{}:{} precedence={}]{}{}",
+                    "{} [{}:{} precedence={}]{}{}{}{}{}{}{}{}{}{}",
                     record.id,
                     record.rule_source_type,
                     record.scope_type,
                     record.precedence,
+                    scope_key,
                     authority,
+                    user_correction,
+                    command_profile,
+                    review_policy,
+                    review_plan,
+                    work_unit,
+                    validation_gate,
+                    acceptance_record,
                     shadowed
                 );
             }

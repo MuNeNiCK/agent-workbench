@@ -7,10 +7,14 @@ normal coding-agent work.
 
 1. Run `agent-workbench status`.
 2. Run `agent-workbench next`.
-3. Run `agent-workbench rules applicable --scope current`.
-4. If resuming suspended work, run
+3. If either command reports `phase_blocked: true` or `blocked phase`, perform
+   the printed blocker-resolution command before planning implementation. Do
+   not edit code, start implementation work, or record implementation evidence
+   until the blocker is resolved and `next` stops reporting the blocked phase.
+4. Run `agent-workbench rules applicable --scope current`.
+5. If resuming suspended work, run
    `agent-workbench gate resume-ready --maturity trace-aware --dry-run`.
-5. Use `agent-workbench resume-check --maturity trace-aware` only when the
+6. Use `agent-workbench resume-check --maturity trace-aware` only when the
    resume decision should be recorded.
 
 Use `--maturity repo-aware` when repository snapshots or dirty state affect the
@@ -63,9 +67,22 @@ authority.
     `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
 11. Check implementation readiness with
    `agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run`.
-12. Start implementation work with
-   `agent-workbench work start "<title>" --design-version <design-version-id>`
-   so the implementation-ready gate is enforced before work begins.
+12. Run `agent-workbench next` and implement through the same work unit passed
+   to `decompose design` and the required review plans. If `next` reports a
+   blocked phase, resolve the printed blocker first. If `next` reports an open
+   inactive work unit, run the exact printed
+   `agent-workbench work activate <work-unit-id> --design-version <design-version-id>`
+   command. If `next` reports suspended work, run the printed resume-check and
+   resume commands. Do not start an unrelated new work unit after decomposition.
+   If `next` cannot identify the correct continue, activate, or resume command,
+   report the workflow blocker instead of inspecting the ledger.
+13. Treat `task list` as an inventory. Follow explicit implementation plan,
+   dependency, wave, checklist, or requirement order. Do not invent a different
+   task order from implementation intuition.
+
+Agents must treat the ledger as private storage during this workflow. Use
+Agent Workbench CLI commands and `review-context`; do not run `sqlite3`, SQL
+queries, table-name inspection, or direct ledger joins.
 
 ## Close Work
 
@@ -100,6 +117,9 @@ authority.
    `agent-workbench acceptance add --target <kind:id> --type <acceptance-type> --reason "<reason>" --authority <authority-event-id>`.
    To intentionally defer a repeated user correction, use
    `agent-workbench acceptance add --target stale:user_correction:<correction-id> --type stale_accepted --reason "<reason>" --authority <authority-event-id>`.
+   To intentionally accept a shadowed rule, run
+   `agent-workbench rules applicable --scope current` and then
+   `agent-workbench acceptance add --target rule:<shadowed-rule-id> --type explicit_exception --reason "<reason>" --authority <authority-event-id>`.
    For design-package exceptions, include either `--design <design-version-id>`
    or `--package <design-id>` in that `acceptance add` command.
    When converting KPT items into fixed command profiles, use the same authority

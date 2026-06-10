@@ -127,6 +127,79 @@ fn close_ready_allows_approved_repeated_correction_deferral() {
 }
 
 #[test]
+fn close_ready_allows_approved_shadowed_rule_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "rule governed work", None).unwrap();
+    let project_rule = add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "generic workflow",
+            correction: "use the project-level workflow",
+            applies_to: "project",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+    add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: &work.work_unit_id.to_string(),
+            correction_type: "process",
+            mistake_pattern: "specific workflow",
+            correction: "use the work-unit workflow",
+            applies_to: "current_work_unit",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    let blocked_item = blocked
+        .items
+        .iter()
+        .find(|item| item.name == "rules_checked")
+        .unwrap();
+    assert_eq!(blocked_item.result, "fail");
+
+    let rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("current"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+    let shadowed_rule = rules
+        .iter()
+        .find(|rule| rule.user_correction_id == Some(project_rule.user_correction_id))
+        .unwrap();
+    assert!(shadowed_rule.shadowed_by_rule_id.is_some());
+
+    let authority = approval_authority_event(temp.path());
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: &format!("rule:{}", shadowed_rule.id),
+            acceptance_type: "explicit_exception",
+            reason: "user accepted the work-unit rule overriding the project rule",
+            approval_authority_event_id: authority,
+        },
+    )
+    .unwrap();
+
+    let allowed = close_ready(temp.path()).unwrap();
+    let allowed_item = allowed
+        .items
+        .iter()
+        .find(|item| item.name == "rules_checked")
+        .unwrap();
+    assert_eq!(allowed_item.result, "pass");
+}
+
+#[test]
 fn fixed_command_creates_command_rule_binding() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -476,6 +549,7 @@ fn fork_work_from_record_creates_new_active_work_unit() {
             work_unit: ActiveWorkUnit {
                 id: fork.work_unit_id,
                 title: "redo after drift".to_string(),
+                design_version_id: None,
             }
         }
     );
@@ -714,6 +788,7 @@ fn reopen_and_follow_up_create_active_work() {
             work_unit: ActiveWorkUnit {
                 id: follow_up.work_unit_id,
                 title: "related follow-up".to_string(),
+                design_version_id: None,
             }
         }
     );
@@ -737,6 +812,7 @@ fn follow_up_suspends_active_work_and_records_source_event() {
             work_unit: ActiveWorkUnit {
                 id: follow_up.work_unit_id,
                 title: "follow-up".to_string(),
+                design_version_id: None,
             }
         }
     );

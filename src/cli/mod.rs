@@ -13,7 +13,7 @@ mod work;
 
 use args::*;
 
-use agent_workbench::{NextAction, init_project, next_action, project_status};
+use agent_workbench::{NextAction, PhaseBlocker, init_project, next_action, project_status};
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = match cli.root {
@@ -43,6 +43,12 @@ pub(crate) fn run() -> Result<()> {
                 }
                 println!("open_work_units: {}", status.open_work_units);
                 println!("active_activations: {}", status.active_activations);
+                if let Some(blocker) = status.phase_blocker {
+                    println!("phase_blocked: true");
+                    print_phase_blocker(&blocker);
+                } else {
+                    println!("phase_blocked: false");
+                }
             }
         }
         Command::Next => match next_action(&root)? {
@@ -51,14 +57,43 @@ pub(crate) fn run() -> Result<()> {
                 println!("ledger: {}", ledger_path.display());
                 println!("next: agent-workbench init");
             }
-            NextAction::NoActiveWorkUnit => {
-                println!("no active work unit");
+            NextAction::BlockedPhase { blocker } => {
+                println!("blocked phase");
+                print_phase_blocker(&blocker);
+            }
+            NextAction::NoOpenWorkUnit => {
+                println!("no open work unit");
                 println!("next: agent-workbench work start <title>");
+            }
+            NextAction::ResumeSuspended { work_unit } => {
+                println!("suspended work unit");
+                println!("work_unit_id: {}", work_unit.id);
+                println!("title: {}", work_unit.title);
+                if let Some(design_version_id) = work_unit.design_version_id {
+                    println!("design_version_id: {design_version_id}");
+                }
+                println!("next: agent-workbench resume-check --maturity trace-aware");
+                println!("then: agent-workbench work resume --check <resume-check-id>");
+            }
+            NextAction::ActivateOpen { work_unit } => {
+                println!("open inactive work unit");
+                println!("work_unit_id: {}", work_unit.id);
+                println!("title: {}", work_unit.title);
+                match work_unit.design_version_id {
+                    Some(design_version_id) => println!(
+                        "next: agent-workbench work activate {} --design-version {}",
+                        work_unit.id, design_version_id
+                    ),
+                    None => println!("next: agent-workbench work activate {}", work_unit.id),
+                }
             }
             NextAction::ContinueActive { work_unit } => {
                 println!("continue active work unit");
                 println!("work_unit_id: {}", work_unit.id);
                 println!("title: {}", work_unit.title);
+                if let Some(design_version_id) = work_unit.design_version_id {
+                    println!("design_version_id: {design_version_id}");
+                }
             }
         },
         Command::Work { command } => work::handle(&root, command)?,
@@ -92,4 +127,34 @@ pub(crate) fn run() -> Result<()> {
         Command::Export { command } => design_flow::handle_export(&root, command)?,
     }
     Ok(())
+}
+
+fn print_phase_blocker(blocker: &PhaseBlocker) {
+    println!("blocker_kind: {}", blocker.kind);
+    if let Some(work_unit_id) = blocker.work_unit_id {
+        println!("work_unit_id: {work_unit_id}");
+    }
+    if let Some(review_plan_id) = blocker.review_plan_id {
+        println!("review_plan_id: {review_plan_id}");
+    }
+    if let Some(review_run_id) = blocker.review_run_id {
+        println!("review_run_id: {review_run_id}");
+    }
+    if let Some(finding_id) = blocker.finding_id {
+        println!("finding_id: {finding_id}");
+    }
+    if let Some(review_type) = blocker.review_type.as_deref() {
+        println!("review_type: {review_type}");
+    }
+    if let Some(stage) = blocker.stage.as_deref() {
+        println!("stage: {stage}");
+    }
+    if let Some(severity) = blocker.severity.as_deref() {
+        println!("severity: {severity}");
+    }
+    if let Some(classification) = blocker.classification.as_deref() {
+        println!("classification: {classification}");
+    }
+    println!("description: {}", blocker.description);
+    println!("next: {}", blocker.next_action);
 }

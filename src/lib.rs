@@ -30,7 +30,7 @@ pub use coverage::{
     add_coverage_item, list_coverage_items,
 };
 pub use db::{
-    ActiveWorkUnit, InitOutcome, NextAction, ProjectStatus, default_design_root,
+    ActiveWorkUnit, InitOutcome, NextAction, PhaseBlocker, ProjectStatus, default_design_root,
     default_export_root, default_ledger_path, default_log_root, init_project, next_action,
     project_status,
 };
@@ -114,9 +114,9 @@ pub use traceability::{
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,
     NewWorkFork, ResumeCheckOutcome, ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome,
-    SuspendOutcome, WorkForkOutcome, WorkForkSource, WorkOutcome, WorkReopen, WorkStart,
-    WorkStatusOutcome, abandon_work, block_work, close_active_work, close_ready,
-    create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
+    SuspendOutcome, WorkActivate, WorkForkOutcome, WorkForkSource, WorkOutcome, WorkReopen,
+    WorkStart, WorkStatusOutcome, abandon_work, activate_work, block_work, close_active_work,
+    close_ready, create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
     resume_check_basic, resume_ready, resume_ready_basic, resume_work, start_work,
     start_work_with_options, suspend_work, unblock_work,
 };

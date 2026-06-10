@@ -81,6 +81,10 @@ Use $agent-workbench and report the current workbench status.
 The response should tell you whether the ledger is initialized, what work is
 active, and what action is next.
 
+If the response says the phase is blocked, ask the agent to resolve that blocker
+before implementation. A blocked phase means Agent Workbench has review,
+finding, gate, or work-state evidence that must be handled first.
+
 ## Normal human flow
 
 Most users only need this loop:
@@ -90,3 +94,8 @@ Most users only need this loop:
 3. Ask the agent to start or resume work with `$agent-workbench`.
 4. Ask the agent to report blockers, evidence, and close readiness before it
    claims completion.
+
+For design-driven work, the agent should keep using the work unit that owns the
+decomposed tasks and checklists. After `implementation-ready` passes,
+`agent-workbench next` should tell the agent whether to continue active work,
+resume suspended work, activate an open inactive work unit, or start new work.

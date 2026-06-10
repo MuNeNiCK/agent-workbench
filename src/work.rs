@@ -105,6 +105,80 @@ pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<Work
     })
 }
 
+pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome> {
+    if let Some(design_version_id) = input.design_version_id {
+        let ready = implementation_ready(
+            root,
+            ImplementationReadyCheck {
+                design_version_id: Some(design_version_id),
+            },
+        )?;
+        if ready.result != "pass" {
+            bail!("implementation work activation requires implementation-ready to pass");
+        }
+    }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+
+    if active_activation(&tx)?.is_some() {
+        bail!("cannot activate work while another activation is active");
+    }
+    if suspended_activation(&tx)?.is_some() {
+        bail!(
+            "cannot activate open work while a suspended activation exists; run resume-check and work resume"
+        );
+    }
+
+    tx.query_row(
+        "select 1 from work_units where id = ?1 and project_id = ?2 and status = 'open'",
+        params![input.work_unit_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("open work unit not found")?;
+
+    let prior_activation_count: i64 = tx.query_row(
+        "select count(*) from work_unit_activations where work_unit_id = ?1",
+        params![input.work_unit_id],
+        |row| row.get(0),
+    )?;
+    if prior_activation_count > 0 {
+        bail!("work unit already has activation history; use resume or reopen flow");
+    }
+
+    tx.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason, opened_at
+        )
+        values (?1, ?2, 0, 'active', 'start', current_timestamp)
+        "#,
+        params![project_id, input.work_unit_id],
+    )?;
+    let activation_id = tx.last_insert_rowid();
+
+    insert_event(
+        &tx,
+        NewEvent {
+            work_unit_id: input.work_unit_id,
+            activation_id: Some(activation_id),
+            related_activation_id: None,
+            event_type: "opened",
+            reason: input.reason,
+            status_domain: "activation",
+            previous_status: None,
+            next_status: Some("active"),
+        },
+    )?;
+    tx.commit()?;
+
+    Ok(WorkOutcome {
+        work_unit_id: input.work_unit_id,
+        activation_id,
+    })
+}
+
 pub fn block_work(
     root: &Path,
     work_unit_id: Option<i64>,
@@ -2380,9 +2454,15 @@ fn close_process_state(
               or scope_type = 'design_package'
               or work_unit_id = ?2
               or scope_key in ('project', ?3)
+              or (?4 is not null and scope_key = ?4)
           )
         "#,
-        params![project_id, work_unit_id, work_unit_id.to_string()],
+        params![
+            project_id,
+            work_unit_id,
+            work_unit_id.to_string(),
+            work_responsibility.as_deref()
+        ],
         |row| row.get(0),
     )?;
     let rule_conflict_count = conn.query_row(
@@ -2391,31 +2471,79 @@ fn close_process_state(
         from rule_bindings lower
         where lower.project_id = ?1
           and lower.status = 'active'
-          and lower.rule_source_type in ('authority_event', 'user_correction', 'acceptance_record', 'skill_default')
+          and lower.rule_source_type = 'user_correction'
+          and (
+              lower.scope_type = 'project'
+              or lower.scope_type = 'design_package'
+              or lower.work_unit_id = ?2
+              or lower.scope_key in ('project', ?3)
+              or (?4 is not null and lower.scope_key = ?4)
+          )
+          and not exists (
+              select 1
+              from acceptance_records ar
+              where ar.project_id = lower.project_id
+                and ar.target_type = 'rule_binding'
+                and ar.rule_binding_id = lower.id
+                and ar.status = 'approved'
+                and ar.acceptance_type in ('explicit_exception', 'stale_accepted')
+          )
           and exists (
               select 1
               from rule_bindings higher
               where higher.project_id = lower.project_id
                 and higher.status = 'active'
-                and higher.rule_source_type in ('authority_event', 'user_correction', 'acceptance_record', 'skill_default')
                 and higher.id != lower.id
                 and higher.rule_source_type = lower.rule_source_type
-                and higher.precedence = lower.precedence
-                and higher.scope_type = lower.scope_type
-                and coalesce(higher.scope_key, 'project') = coalesce(lower.scope_key, 'project')
                 and (
-                    coalesce(higher.authority_event_id, -1) != coalesce(lower.authority_event_id, -1)
-                    or coalesce(higher.user_correction_id, -1) != coalesce(lower.user_correction_id, -1)
-                    or coalesce(higher.command_profile_id, -1) != coalesce(lower.command_profile_id, -1)
-                    or coalesce(higher.review_policy_id, -1) != coalesce(lower.review_policy_id, -1)
-                    or coalesce(higher.review_plan_id, -1) != coalesce(lower.review_plan_id, -1)
-                    or coalesce(higher.work_unit_id, -1) != coalesce(lower.work_unit_id, -1)
-                    or coalesce(higher.validation_gate_id, -1) != coalesce(lower.validation_gate_id, -1)
-                    or coalesce(higher.acceptance_record_id, -1) != coalesce(lower.acceptance_record_id, -1)
+                    higher.scope_type = 'project'
+                    or higher.scope_type = 'design_package'
+                    or higher.work_unit_id = ?2
+                    or higher.scope_key in ('project', ?3)
+                    or (?4 is not null and higher.scope_key = ?4)
+                )
+                and (
+                    higher.scope_key = lower.scope_key
+                    or higher.scope_key = 'project'
+                    or lower.scope_key = 'project'
+                    or higher.work_unit_id = lower.work_unit_id
+                    or higher.scope_type = 'work_unit'
+                    or lower.scope_type = 'work_unit'
+                )
+                and (
+                    higher.precedence > lower.precedence
+                    or (
+                        higher.precedence = lower.precedence
+                        and case higher.scope_type
+                                when 'work_unit' then 4
+                                when 'repository' then 3
+                                when 'design_package' then 3
+                                when 'agent_role' then 3
+                                when 'command' then 3
+                                when 'review' then 3
+                                when 'project' then 1
+                                else 2
+                            end
+                            > case lower.scope_type
+                                when 'work_unit' then 4
+                                when 'repository' then 3
+                                when 'design_package' then 3
+                                when 'agent_role' then 3
+                                when 'command' then 3
+                                when 'review' then 3
+                                when 'project' then 1
+                                else 2
+                            end
+                    )
                 )
           )
         "#,
-        params![project_id],
+        params![
+            project_id,
+            work_unit_id,
+            work_unit_id.to_string(),
+            work_responsibility.as_deref()
+        ],
         |row| row.get(0),
     )?;
     let fixed_command_count = conn.query_row(
@@ -3520,6 +3648,12 @@ pub struct WorkStart<'a> {
     pub title: &'a str,
     pub responsibility: Option<&'a str>,
     pub design_version_id: Option<i64>,
+}
+
+pub struct WorkActivate<'a> {
+    pub work_unit_id: i64,
+    pub design_version_id: Option<i64>,
+    pub reason: Option<&'a str>,
 }
 
 pub struct WorkReopen<'a> {

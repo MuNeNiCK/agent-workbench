@@ -57,7 +57,7 @@ fn next_reports_no_active_work_unit_after_init() {
 
     let next = next_action(temp.path()).unwrap();
 
-    assert_eq!(next, NextAction::NoActiveWorkUnit);
+    assert_eq!(next, NextAction::NoOpenWorkUnit);
 }
 
 #[test]
@@ -75,7 +75,8 @@ fn work_start_creates_active_work_unit() {
         NextAction::ContinueActive {
             work_unit: ActiveWorkUnit {
                 id: 1,
-                title: "write lifecycle test".to_string()
+                title: "write lifecycle test".to_string(),
+                design_version_id: None
             }
         }
     );
@@ -118,7 +119,95 @@ fn work_start_with_design_version_requires_implementation_ready_gate() {
     let next = next_action(temp.path()).unwrap();
 
     assert!(started.is_err());
-    assert_eq!(next, NextAction::NoActiveWorkUnit);
+    assert_eq!(next, NextAction::NoOpenWorkUnit);
+}
+
+#[test]
+fn work_activate_existing_open_unit_after_planning() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id, title, status, started_at) values (1, 'planned implementation', 'open', current_timestamp)",
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        next_action(temp.path()).unwrap(),
+        NextAction::ActivateOpen {
+            work_unit: ActiveWorkUnit {
+                id: 1,
+                title: "planned implementation".to_string(),
+                design_version_id: None
+            }
+        }
+    );
+    let activated = activate_work(
+        temp.path(),
+        WorkActivate {
+            work_unit_id: 1,
+            design_version_id: None,
+            reason: Some("implementation-ready passed"),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(activated.work_unit_id, 1);
+    assert_eq!(activated.activation_id, 1);
+    assert!(matches!(
+        next_action(temp.path()).unwrap(),
+        NextAction::ContinueActive { .. }
+    ));
+}
+
+#[test]
+fn next_reports_design_version_for_open_inactive_planned_work() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id, title, status, started_at) values (1, 'planned design implementation', 'open', current_timestamp)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into checklists(project_id, work_unit_id, design_version_id, title, status, created_at) values (1, 1, ?1, 'REQ-001 implementation checklist', 'active', current_timestamp)",
+        params![import.design_version_id],
+    )
+    .unwrap();
+
+    assert_eq!(
+        next_action(temp.path()).unwrap(),
+        NextAction::ActivateOpen {
+            work_unit: ActiveWorkUnit {
+                id: 1,
+                title: "planned design implementation".to_string(),
+                design_version_id: Some(import.design_version_id)
+            }
+        }
+    );
 }
 
 #[test]
@@ -218,6 +307,10 @@ fn suspend_and_resume_round_trip() {
         "continue implementation",
     )
     .unwrap();
+    assert!(matches!(
+        next_action(temp.path()).unwrap(),
+        NextAction::ResumeSuspended { .. }
+    ));
     let check = resume_check_basic(temp.path()).unwrap();
     let resumed = resume_work(temp.path(), check.resume_check_id).unwrap();
 

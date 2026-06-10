@@ -797,13 +797,14 @@ pub fn add_general_acceptance(
             validation_run_id, repository_state_classification_id,
             repository_snapshot_comparison_id, review_plan_id, checklist_item_id,
             command_profile_id, command_usage_id, command_deviation_id,
-            stale_record_type, stale_record_id, acceptance_type, reason, scope,
+            rule_binding_id, stale_record_type, stale_record_id,
+            acceptance_type, reason, scope,
             created_by, status, approved_by_authority_event_id, approved_at,
             created_at, review_impact
         )
         values (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, 'user', 'approved', ?19, current_timestamp,
+            ?16, ?17, ?18, ?19, 'user', 'approved', ?20, current_timestamp,
             current_timestamp, 'general acceptance recorded for current workflow'
         )
         "#,
@@ -821,6 +822,7 @@ pub fn add_general_acceptance(
             target.command_profile_id,
             target.command_usage_id,
             target.command_deviation_id,
+            target.rule_binding_id,
             target.stale_record_type,
             target.stale_record_id,
             input.acceptance_type,
@@ -934,6 +936,13 @@ fn resolve_general_acceptance_target(
             Ok(ResolvedGeneralAcceptanceTarget {
                 command_deviation_id: Some(id),
                 ..ResolvedGeneralAcceptanceTarget::new("command_deviation")
+            })
+        }
+        "rule" | "rule-binding" => {
+            ensure_direct_project_row(conn, "rule_bindings", id, project_id)?;
+            Ok(ResolvedGeneralAcceptanceTarget {
+                rule_binding_id: Some(id),
+                ..ResolvedGeneralAcceptanceTarget::new("rule_binding")
             })
         }
         _ => bail!("unsupported general acceptance target kind: {kind}"),
@@ -2764,6 +2773,7 @@ struct ResolvedGeneralAcceptanceTarget {
     command_profile_id: Option<i64>,
     command_usage_id: Option<i64>,
     command_deviation_id: Option<i64>,
+    rule_binding_id: Option<i64>,
     stale_record_type: Option<String>,
     stale_record_id: Option<i64>,
 }
@@ -2783,6 +2793,7 @@ impl ResolvedGeneralAcceptanceTarget {
             command_profile_id: None,
             command_usage_id: None,
             command_deviation_id: None,
+            rule_binding_id: None,
             stale_record_type: None,
             stale_record_id: None,
         }

@@ -858,6 +858,251 @@ fn resume_verification_closes_valid_findings() {
 }
 
 #[test]
+fn open_required_review_finding_blocks_next_action() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "review guarded phase", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "design-review-required",
+            review_type: "design_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 1,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 1,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("HEAD"),
+            prompt_deviations: None,
+            result_summary: Some("found design issue"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_finding",
+            severity: "critical",
+            description: "design review blocker must be resolved first",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+
+    let status = project_status(temp.path()).unwrap();
+    let next = next_action(temp.path()).unwrap();
+
+    assert_eq!(
+        status.phase_blocker.as_ref().and_then(|b| b.finding_id),
+        Some(finding.finding_id)
+    );
+    assert_eq!(
+        next,
+        NextAction::BlockedPhase {
+            blocker: PhaseBlocker {
+                kind: "required_review_finding".to_string(),
+                review_plan_id: Some(plan.review_plan_id),
+                work_unit_id: Some(work.work_unit_id),
+                review_type: Some("design_review".to_string()),
+                stage: Some("design-ready".to_string()),
+                review_run_id: Some(run.review_run_id),
+                finding_id: Some(finding.finding_id),
+                severity: Some("critical".to_string()),
+                classification: Some("unclassified".to_string()),
+                description: "design review blocker must be resolved first".to_string(),
+                next_action: format!(
+                    "agent-workbench finding classify {} --classification valid|invalid|design_conflict|needs_evidence",
+                    finding.finding_id
+                ),
+            }
+        }
+    );
+}
+
+#[test]
+fn required_review_finding_with_closure_reports_verification_next_action() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "review guarded phase", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "implementation-review-required",
+            review_type: "implementation_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 1,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 1,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("HEAD"),
+            prompt_deviations: None,
+            result_summary: Some("found implementation issue"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "implementation blocker must be verified",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "phase blocker verification path is explicit",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: None,
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: None,
+            tests_or_gates: None,
+            verification_plan: None,
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let next_without_run = next_action(temp.path()).unwrap();
+    match next_without_run {
+        NextAction::BlockedPhase { blocker } => {
+            assert_eq!(blocker.finding_id, Some(finding.finding_id));
+            assert!(blocker.next_action.contains("review run add"));
+            assert!(blocker.next_action.contains("finding verify"));
+            assert!(
+                blocker
+                    .next_action
+                    .contains(&format!("--closure {}", closure.closure_id))
+            );
+        }
+        other => panic!("expected blocked phase, got {other:?}"),
+    }
+
+    let resume = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "resume",
+            run_purpose: "finding_fix_verification",
+            target_ref: Some("finding:1"),
+            prompt_deviations: None,
+            result_summary: Some("closure is ready for verification"),
+            new_findings_count: 0,
+            carried_findings_checked: 1,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+        },
+    )
+    .unwrap();
+
+    let next_with_run = next_action(temp.path()).unwrap();
+    match next_with_run {
+        NextAction::BlockedPhase { blocker } => {
+            assert_eq!(blocker.finding_id, Some(finding.finding_id));
+            assert!(
+                blocker
+                    .next_action
+                    .contains(&format!("finding verify --run {}", resume.review_run_id))
+            );
+            assert!(
+                blocker
+                    .next_action
+                    .contains(&format!("--closure {}", closure.closure_id))
+            );
+        }
+        other => panic!("expected blocked phase, got {other:?}"),
+    }
+}
+
+#[test]
 fn finding_verification_rejects_unrelated_closure() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
