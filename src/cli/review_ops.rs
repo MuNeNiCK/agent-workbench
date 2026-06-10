@@ -146,6 +146,20 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                     );
                 }
             }
+            ReviewPlanCommand::Waive(args) => {
+                let outcome = waive_review_plan(
+                    root,
+                    ReviewPlanWaiver {
+                        review_plan_id: args.review_plan_id,
+                        reason: &args.reason,
+                        approval_authority_event_id: args.authority,
+                    },
+                )?;
+                println!("waived review plan");
+                println!("review_plan_id: {}", outcome.review_plan_id);
+                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+                println!("authority_event_id: {}", outcome.authority_event_id);
+            }
             ReviewPlanCommand::Target { command } => match command {
                 ReviewPlanTargetCommand::Add(args) => {
                     let outcome = add_review_plan_target(

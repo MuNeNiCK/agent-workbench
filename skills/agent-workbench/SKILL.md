@@ -91,6 +91,7 @@ Common command groups include:
 - `agent-workbench review policy add`
 - `agent-workbench review plan add`
 - `agent-workbench review plan list`
+- `agent-workbench review plan waive`
 - `agent-workbench review plan target add`
 - `agent-workbench review run add`
 - `agent-workbench review run list`
@@ -214,6 +215,10 @@ from structured ledger state.
   <agent-id> --provenance-ref <review-output-ref>` or
   `--provenance human_review --provenance-ref <review-output-ref>`.
   Self-recorded clean runs must not be used to satisfy readiness gates.
+- If a required review plan was created for the wrong scope, is no longer
+  required, or is intentionally superseded, do not inspect or edit ledger
+  internals. Record the authority event, then run
+  `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
 - For final completion checks, use a fresh unbiased review unless the user
   explicitly asks only for resume verification of known findings. Do not use a
   resume review as the final completion signal by default.

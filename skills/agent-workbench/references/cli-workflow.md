@@ -128,6 +128,10 @@ queries, table-name inspection, or direct ledger joins.
    To intentionally accept a shadowed rule, run
    `agent-workbench rules applicable --scope current` and then
    `agent-workbench acceptance add --target rule:<shadowed-rule-id> --type explicit_exception --reason "<reason>" --authority <authority-event-id>`.
+   If a required review plan was created for the wrong scope or is intentionally
+   not required, run
+   `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`
+   after recording the authority event.
    For design-package exceptions, include either `--design <design-version-id>`
    or `--package <design-id>` in that `acceptance add` command.
    When converting KPT items into fixed command profiles, use the same authority

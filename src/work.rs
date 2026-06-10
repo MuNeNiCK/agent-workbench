@@ -675,7 +675,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         } else {
             CloseReadyItem::fail(
                 "review_plans_clean",
-                "complete required close-ready plans or refresh stale targets",
+                "complete required close-ready plans, refresh stale targets, or waive an approved exception with review plan waive",
                 format!(
                     "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs",
                     review.required_plan_count,

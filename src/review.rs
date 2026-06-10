@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
+use crate::design::{NewGeneralAcceptance, add_general_acceptance};
 use crate::review_context::review_context_ref;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
@@ -275,6 +276,30 @@ pub fn list_review_plan_targets(
         })
     })?;
     collect_rows(rows)
+}
+
+pub fn waive_review_plan(
+    root: &Path,
+    input: ReviewPlanWaiver<'_>,
+) -> Result<ReviewPlanWaiverOutcome> {
+    if input.review_plan_id <= 0 {
+        bail!("review plan id must be positive");
+    }
+    let target = format!("review-plan:{}", input.review_plan_id);
+    let outcome = add_general_acceptance(
+        root,
+        NewGeneralAcceptance {
+            target: &target,
+            acceptance_type: "explicit_exception",
+            reason: input.reason,
+            approval_authority_event_id: input.approval_authority_event_id,
+        },
+    )?;
+    Ok(ReviewPlanWaiverOutcome {
+        review_plan_id: input.review_plan_id,
+        acceptance_record_id: outcome.acceptance_record_id,
+        authority_event_id: outcome.authority_event_id,
+    })
 }
 
 pub fn add_review_plan_target(
@@ -1547,6 +1572,12 @@ pub struct NewReviewPlanTarget<'a> {
     pub symbol: Option<&'a str>,
 }
 
+pub struct ReviewPlanWaiver<'a> {
+    pub review_plan_id: i64,
+    pub reason: &'a str,
+    pub approval_authority_event_id: i64,
+}
+
 pub struct NewReviewRun<'a> {
     pub review_plan_id: i64,
     pub run_type: &'a str,
@@ -1614,6 +1645,13 @@ pub struct ReviewPlanOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReviewPlanTargetOutcome {
     pub review_plan_target_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReviewPlanWaiverOutcome {
+    pub review_plan_id: i64,
+    pub acceptance_record_id: i64,
+    pub authority_event_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

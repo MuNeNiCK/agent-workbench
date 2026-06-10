@@ -16,6 +16,7 @@ items.
 | shadowed rule conflicts remain | run `agent-workbench rules applicable --scope current`, inspect lines with `shadowed_by=<id>`, then fix the conflicting rule or record `agent-workbench acceptance add --target rule:<rule-id> --type explicit_exception ...` for the shadowed rule |
 | repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
 | required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
+| required review plan was created for the wrong scope or is intentionally not required | record authority, then `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>` |
 | review finding is open | classify, fix, add closure invariant, verify, then record a new clean run |
 | repository state is missing | add repositories and snapshots for every relevant working tree |
 | repository changed during work | add close comparison and classify the changed state |
@@ -42,6 +43,12 @@ For an intentional rule precedence override:
 ```sh
 agent-workbench rules applicable --scope current
 agent-workbench acceptance add --target rule:<shadowed-rule-id> --type explicit_exception --reason "<why the higher-precedence rule should win>" --authority <authority-event-id>
+```
+
+For an intentionally waived review plan:
+
+```sh
+agent-workbench review plan waive <review-plan-id> --reason "<why the plan is not required>" --authority <authority-event-id>
 ```
 
 For stale design-derived records:

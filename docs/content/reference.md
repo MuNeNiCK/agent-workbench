@@ -70,6 +70,12 @@ review. Self-recorded clean runs do not satisfy gate review evidence.
 | `design-ready` | Design can move to decomposition. |
 | `implementation-ready` | Design-derived tasks and gate selections are ready for implementation. |
 | `close-ready` | Active work has required evidence, coverage, closed checklists, reviews, command usage, repository state, and records. |
+
+If a required review plan was created for the wrong scope or is intentionally
+not required, record a user, policy, or design authority event and run
+`agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
+This records an approved exception that readiness gates understand without
+direct ledger edits.
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
 
 ## Agent-facing state

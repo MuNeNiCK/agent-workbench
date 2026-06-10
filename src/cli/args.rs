@@ -1289,6 +1289,8 @@ pub(crate) enum ReviewPlanCommand {
     Add(ReviewPlanAddArgs),
     List,
     Context(ReviewPlanContextArgs),
+    /// Record an approved exception for a required review plan.
+    Waive(ReviewPlanWaiveArgs),
     Target {
         #[command(subcommand)]
         command: ReviewPlanTargetCommand,
@@ -1318,6 +1320,15 @@ pub(crate) struct ReviewPlanAddArgs {
 #[derive(Debug, Args)]
 pub(crate) struct ReviewPlanContextArgs {
     pub(crate) review_plan_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewPlanWaiveArgs {
+    pub(crate) review_plan_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
 }
 
 #[derive(Debug, Subcommand)]

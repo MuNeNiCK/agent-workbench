@@ -1898,6 +1898,57 @@ fn gate_close_ready_reports_active_work_readiness() {
 }
 
 #[test]
+fn review_plan_waive_records_exception_that_unblocks_close_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    ok(temp.path(), &["work", "start", "close ready"]);
+    cli_record_close_evidence(temp.path(), 1, 1);
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "implementation_review",
+            "--stage",
+            "close-ready",
+            "--required",
+        ],
+    );
+
+    let blocked = ok(temp.path(), &["gate", "close-ready"]);
+    assert!(blocked.contains("result: blocked"));
+    assert!(blocked.contains("review_plans_clean: fail ("));
+    assert!(blocked.contains("review plan waive"));
+
+    let authority = cli_approval_authority_event(temp.path());
+    let waived = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "waive",
+            "1",
+            "--reason",
+            "review plan was created for the wrong scope",
+            "--authority",
+            &authority,
+        ],
+    );
+    assert!(waived.contains("waived review plan"));
+    assert!(waived.contains("review_plan_id: 1"));
+    assert!(waived.contains("acceptance_record_id: 1"));
+
+    let ready = ok(temp.path(), &["gate", "close-ready"]);
+    assert!(ready.contains("result: pass"));
+    assert!(ready.contains("review_plans_clean: pass ["));
+}
+
+#[test]
 fn work_lifecycle_commands_block_unblock_and_abandon() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
