@@ -626,6 +626,18 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
+    let checklist_items = list_checklist_items(
+        temp.path(),
+        ChecklistItemListQuery {
+            checklist_id: Some(derivation.checklist_id),
+            status: Some("open"),
+        },
+    )
+    .unwrap();
+    let premature_checklist_close = close_checklist(temp.path(), derivation.checklist_id);
+    let close_blocked_by_checklist = close_ready(temp.path()).unwrap();
+    close_checklist_item(temp.path(), derivation.checklist_item_id).unwrap();
+    close_checklist(temp.path(), derivation.checklist_id).unwrap();
     let close_blocked_without_reviews = close_ready(temp.path()).unwrap();
     add_validation_run(
         temp.path(),
@@ -711,6 +723,14 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     );
     assert_eq!(evidence_records[0].commit_sha.as_deref(), Some("abc123"));
     assert_eq!(passed_after_close.result, "pass");
+    assert_eq!(checklist_items.len(), 1);
+    assert!(premature_checklist_close.is_err());
+    assert!(close_blocked_by_checklist.items.iter().any(|item| {
+        item.name == "design_trace_closed"
+            && item.result == "fail"
+            && item.details.contains("1 open checklist items")
+            && item.details.contains("1 active checklists")
+    }));
     assert_eq!(close_blocked_without_reviews.result, "blocked");
     assert!(close_blocked_without_reviews.items.iter().any(|item| {
         item.name == "review_plans_clean"
@@ -3588,8 +3608,10 @@ fn design_ready_passes_after_clean_design_document_review_without_approval() {
             carried_findings_checked: 0,
             clean_run: true,
             status: "completed",
-            agent_label: None,
-            external_agent_id: None,
+            agent_label: Some("test-reviewer"),
+            external_agent_id: Some("test-reviewer-1"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("test-reviewer-output"),
         },
     )
     .unwrap();
@@ -3831,8 +3853,10 @@ fn add_clean_review_run_result(
             carried_findings_checked: 0,
             clean_run: true,
             status: "completed",
-            agent_label: None,
-            external_agent_id: None,
+            agent_label: Some("test-reviewer"),
+            external_agent_id: Some("test-reviewer-1"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("test-reviewer-output"),
         },
     )
 }

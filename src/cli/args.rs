@@ -1377,6 +1377,10 @@ pub(crate) struct ReviewRunAddArgs {
     pub(crate) agent_label: Option<String>,
     #[arg(long)]
     pub(crate) external_agent_id: Option<String>,
+    #[arg(long, default_value = "self_recorded")]
+    pub(crate) provenance: String,
+    #[arg(long)]
+    pub(crate) provenance_ref: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1685,12 +1689,41 @@ pub(crate) struct DecomposeDesignArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ChecklistCommand {
     List(ChecklistListArgs),
+    Close(ChecklistCloseArgs),
+    Item {
+        #[command(subcommand)]
+        command: ChecklistItemCommand,
+    },
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ChecklistListArgs {
     #[arg(long)]
     pub(crate) status: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ChecklistCloseArgs {
+    pub(crate) checklist_id: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ChecklistItemCommand {
+    List(ChecklistItemListArgs),
+    Close(ChecklistItemCloseArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ChecklistItemListArgs {
+    #[arg(long)]
+    pub(crate) checklist: Option<i64>,
+    #[arg(long)]
+    pub(crate) status: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ChecklistItemCloseArgs {
+    pub(crate) checklist_item_id: i64,
 }
 
 #[derive(Debug, Subcommand)]

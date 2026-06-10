@@ -97,6 +97,7 @@ pub use rules::{
     add_user_correction, applicable_rules, list_user_corrections,
 };
 pub use traceability::{
+    ChecklistItemListQuery, ChecklistItemOutcome, ChecklistItemRecord, ChecklistOutcome,
     ChecklistRecord, DesignDecomposition, DesignDecompositionOutcome,
     ImplementationEvidenceListQuery, ImplementationEvidenceOutcome, ImplementationEvidenceRecord,
     ImplementationReadyCheck, ImplementationReadyItem, ImplementationReadyOutcome,
@@ -106,10 +107,11 @@ pub use traceability::{
     ValidationGateContextQuery, ValidationGateContextRecord, ValidationGateSelection,
     ValidationGateSelectionOutcome, ValidationRunListQuery, ValidationRunOutcome,
     ValidationRunRecord, accept_stale_record, add_implementation_evidence,
-    add_implementation_evidence_with_git, add_validation_run, close_stale_record, decompose_design,
-    derive_task_from_requirement, implementation_ready, list_checklists,
-    list_implementation_evidence, list_stale_records, list_task_derivations,
-    list_validation_gate_context, list_validation_runs, select_validation_gate,
+    add_implementation_evidence_with_git, add_validation_run, close_checklist,
+    close_checklist_item, close_stale_record, decompose_design, derive_task_from_requirement,
+    implementation_ready, list_checklist_items, list_checklists, list_implementation_evidence,
+    list_stale_records, list_task_derivations, list_validation_gate_context, list_validation_runs,
+    select_validation_gate,
 };
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,

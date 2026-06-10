@@ -611,29 +611,35 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         if trace.missing_evidence_count == 0
             && trace.missing_coverage_count == 0
             && trace.missing_requirement_coverage_count == 0
+            && trace.open_checklist_item_count == 0
+            && trace.active_checklist_count == 0
         {
             CloseReadyItem::pass(
                 "design_trace_closed",
                 format!(
-                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage",
+                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage, {} open checklist items, {} active checklists",
                     trace.active_requirement_count,
                     trace.derived_task_count,
                     trace.missing_evidence_count,
                     trace.missing_coverage_count,
-                    trace.missing_requirement_coverage_count
+                    trace.missing_requirement_coverage_count,
+                    trace.open_checklist_item_count,
+                    trace.active_checklist_count
                 ),
             )
         } else {
             CloseReadyItem::fail(
                 "design_trace_closed",
-                "record implementation evidence and coverage for closed design-derived tasks",
+                "record implementation evidence and coverage, then close checklist items and checklists",
                 format!(
-                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage",
+                    "{} active requirements, {} design-derived tasks, {} missing evidence, {} missing task coverage, {} missing requirement coverage, {} open checklist items, {} active checklists",
                     trace.active_requirement_count,
                     trace.derived_task_count,
                     trace.missing_evidence_count,
                     trace.missing_coverage_count,
-                    trace.missing_requirement_coverage_count
+                    trace.missing_requirement_coverage_count,
+                    trace.open_checklist_item_count,
+                    trace.active_checklist_count
                 ),
             )
         },
@@ -3074,6 +3080,8 @@ fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceS
             conn,
             work_unit_id,
         )?,
+        open_checklist_item_count: count_open_checklist_items_for_work(conn, work_unit_id)?,
+        active_checklist_count: count_active_checklists_for_work(conn, work_unit_id)?,
     })
 }
 
@@ -3243,6 +3251,36 @@ fn count_derived_tasks_missing_selected_gate_for_work(
               and vg.selected_before_edit = 1
               and vg.status = 'active'
           )
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_open_checklist_items_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from checklist_items ci
+        join checklists c on c.id = ci.checklist_id
+        where c.work_unit_id = ?1
+          and c.status = 'active'
+          and ci.status in ('open', 'blocked')
+        "#,
+        params![work_unit_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn count_active_checklists_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
+    conn.query_row(
+        r#"
+        select count(*)
+        from checklists
+        where work_unit_id = ?1
+          and status = 'active'
         "#,
         params![work_unit_id],
         |row| row.get(0),
@@ -3567,6 +3605,8 @@ struct CloseTraceState {
     missing_coverage_count: i64,
     missing_requirement_coverage_count: i64,
     missing_validation_gate_count: i64,
+    open_checklist_item_count: i64,
+    active_checklist_count: i64,
 }
 
 struct ValidationCloseState {

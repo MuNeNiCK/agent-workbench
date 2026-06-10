@@ -29,7 +29,7 @@ skill instructions and uses the wrapper internally.
 | `record` | Structured work records and evidence links. |
 | `repository`, `git` | Repository snapshots, Git commits, file changes, and comparisons. |
 | `design`, `requirement`, `design-decision`, `gate-template` | Design package import and inspection. |
-| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability and explicit stale record disposition. |
+| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability, checklist completion, and explicit stale record disposition. |
 | `review`, `finding`, `closure`, `review-context` | Review planning, runs, findings, closures, and focused context. |
 | `evidence`, `coverage`, `gate` | Implementation evidence, coverage, validation gates, and readiness checks. |
 | `kpt` | Process review over corrections, command drift, findings, and outcomes. |
@@ -56,13 +56,20 @@ shadowed rule. If the override is intentional, record approval with
 | `fresh` / `new_unbiased_review` | New unbiased review and completion checks. |
 | `resume` / `finding_fix_verification` | Verify known finding closures. |
 
+`review run add` records a review result; it does not execute a review.
+Design-derived readiness gates only accept clean context-targeted review runs
+with trusted provenance. Use `--provenance external_agent --external-agent-id
+<agent-id> --provenance-ref <review-output-ref>` for a separate agent review,
+or `--provenance human_review --provenance-ref <review-output-ref>` for a human
+review. Self-recorded clean runs do not satisfy gate review evidence.
+
 ## Readiness gates
 
 | Gate | Purpose |
 | --- | --- |
 | `design-ready` | Design can move to decomposition. |
 | `implementation-ready` | Design-derived tasks and gate selections are ready for implementation. |
-| `close-ready` | Active work has required evidence, reviews, command usage, repository state, and records. |
+| `close-ready` | Active work has required evidence, coverage, closed checklists, reviews, command usage, repository state, and records. |
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
 
 ## Agent-facing state

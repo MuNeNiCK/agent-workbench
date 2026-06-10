@@ -4,11 +4,13 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::args::{
-    ChecklistCommand, DecomposeCommand, ExportCommand, ReviewContextArgs, StaleCommand,
+    ChecklistCommand, ChecklistItemCommand, DecomposeCommand, ExportCommand, ReviewContextArgs,
+    StaleCommand,
 };
 use agent_workbench::{
-    DesignDecomposition, DesignRequirementListQuery, ReviewContextQuery, StaleRecordDisposition,
-    TaskDerivationListQuery, accept_stale_record, close_stale_record, decompose_design,
+    ChecklistItemListQuery, DesignDecomposition, DesignRequirementListQuery, ReviewContextQuery,
+    StaleRecordDisposition, TaskDerivationListQuery, accept_stale_record, close_checklist,
+    close_checklist_item, close_stale_record, decompose_design, list_checklist_items,
     list_checklists, list_design_requirements, list_stale_records, list_task_derivations,
     render_review_context,
 };
@@ -60,6 +62,46 @@ pub(crate) fn handle_checklist(root: &Path, command: ChecklistCommand) -> Result
                 );
             }
         }
+        ChecklistCommand::Close(args) => {
+            let outcome = close_checklist(root, args.checklist_id)?;
+            println!("closed checklist");
+            println!("checklist_id: {}", outcome.checklist_id);
+        }
+        ChecklistCommand::Item { command } => match command {
+            ChecklistItemCommand::List(args) => {
+                let records = list_checklist_items(
+                    root,
+                    ChecklistItemListQuery {
+                        checklist_id: args.checklist,
+                        status: args.status.as_deref(),
+                    },
+                )?;
+                if records.is_empty() {
+                    println!("no checklist items");
+                }
+                for record in records {
+                    let condition = record.completion_condition.as_deref().unwrap_or("-");
+                    println!(
+                        "{} [checklist={} work_unit={} design_version={} requirement={} task={} order={} {}] {} | completion={}",
+                        record.id,
+                        record.checklist_id,
+                        record.work_unit_id,
+                        record.design_version_id,
+                        record.requirement_key,
+                        record.task_id,
+                        record.item_order,
+                        record.status,
+                        record.title,
+                        condition
+                    );
+                }
+            }
+            ChecklistItemCommand::Close(args) => {
+                let outcome = close_checklist_item(root, args.checklist_item_id)?;
+                println!("closed checklist item");
+                println!("checklist_item_id: {}", outcome.checklist_item_id);
+            }
+        },
     }
     Ok(())
 }

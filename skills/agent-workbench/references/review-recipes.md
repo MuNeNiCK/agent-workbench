@@ -43,11 +43,18 @@ agent-workbench review-context design-implementation-diff --design-version <desi
 agent-workbench review-context implementation-review --design-version <design-version-id> --work-unit <work-unit-id>
 ```
 
-Copy the printed `context_ref` into the run:
+Run an actual independent review first. `review run add` records the result; it
+does not launch or perform the review.
+
+For a clean design-derived gate review, copy the printed `context_ref` into the
+run and include trusted provenance for the reviewer output:
 
 ```sh
-agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean
+agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
 ```
+
+Use `--provenance human_review --provenance-ref <review-output-ref>` for a
+human reviewer. Do not use a self-recorded clean run to satisfy readiness gates.
 
 ## Finding Lifecycle
 

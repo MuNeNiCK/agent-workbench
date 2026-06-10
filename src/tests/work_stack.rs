@@ -1267,6 +1267,8 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1721,6 +1723,8 @@ fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();

@@ -99,3 +99,6 @@ For design-driven work, the agent should keep using the work unit that owns the
 decomposed tasks and checklists. After `implementation-ready` passes,
 `agent-workbench next` should tell the agent whether to continue active work,
 resume suspended work, activate an open inactive work unit, or start new work.
+Before close, the agent should close completed checklist items with
+`checklist item close` and then close the parent checklist with
+`checklist close`.

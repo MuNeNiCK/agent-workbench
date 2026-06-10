@@ -66,6 +66,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
     }
 
     let conn = open_ledger(&ledger_path)?;
+    migrate_if_needed(&conn)?;
     let project_name = conn
         .query_row("select name from projects order by id limit 1", [], |row| {
             row.get::<_, String>(0)
@@ -372,14 +373,67 @@ pub(crate) fn open_existing_project(root: &Path) -> Result<Connection> {
     if !ledger_path.exists() {
         bail!("project is not initialized; run agent-workbench init");
     }
-    open_ledger(&ledger_path)
+    let conn = open_ledger(&ledger_path)?;
+    migrate_if_needed(&conn)?;
+    Ok(conn)
+}
+
+fn migrate_if_needed(conn: &Connection) -> Result<()> {
+    if ledger_needs_migration(conn)? {
+        migrate(conn)?;
+    }
+    Ok(())
+}
+
+fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
+    if !table_exists(conn, "schema_migrations")? {
+        return Ok(true);
+    }
+    let schema_version = conn
+        .query_row(
+            "select version from schema_migrations order by version desc limit 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    if schema_version < SCHEMA_VERSION {
+        return Ok(true);
+    }
+
+    let broken_acceptance_refs: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from sqlite_schema
+        where sql like '%acceptance_records_old%'
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if broken_acceptance_refs > 0 {
+        return Ok(true);
+    }
+
+    if acceptance_records_needs_migration(conn)? {
+        return Ok(true);
+    }
+
+    if table_exists(conn, "review_runs")?
+        && !table_has_column(conn, "review_runs", "review_provenance")?
+    {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
     prepare_acceptance_records_for_schema(conn)?;
+    prepare_review_runs_for_schema(conn)?;
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
     conn.execute_batch(SCHEMA)?;
     migrate_acceptance_records(conn)?;
+    repair_acceptance_record_references(conn)?;
     migrate_repository_snapshot_comparisons(conn)?;
     migrate_kpt_items(conn)?;
     migrate_review_runs(conn)?;
@@ -413,6 +467,13 @@ fn migrate(conn: &Connection) -> Result<()> {
     )?;
     ensure_column(conn, "review_runs", "file_path", "text")?;
     ensure_column(conn, "review_runs", "symbol", "text")?;
+    ensure_column(
+        conn,
+        "review_runs",
+        "review_provenance",
+        "text not null default 'self_recorded'",
+    )?;
+    ensure_column(conn, "review_runs", "review_provenance_ref", "text")?;
     backfill_authorities(conn)?;
     let had_work_record_commit_auto_linked =
         table_has_column(conn, "work_record_commits", "auto_linked")?;
@@ -635,6 +696,20 @@ fn prepare_acceptance_records_for_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "rule_binding_id", "integer")?;
     ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
     ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
+    Ok(())
+}
+
+fn prepare_review_runs_for_schema(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "review_runs")? {
+        return Ok(());
+    }
+    ensure_column(
+        conn,
+        "review_runs",
+        "review_provenance",
+        "text not null default 'self_recorded'",
+    )?;
+    ensure_column(conn, "review_runs", "review_provenance_ref", "text")?;
     Ok(())
 }
 
@@ -1018,6 +1093,18 @@ fn refresh_ledger_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_artifact_project_insert;
         drop trigger if exists trg_artifact_project_update;
         drop trigger if exists trg_repository_snapshot_referenced_delete;
+        drop trigger if exists trg_acceptance_design_requirement_project_insert;
+        drop trigger if exists trg_acceptance_design_requirement_project_update;
+        drop trigger if exists trg_acceptance_task_project_insert;
+        drop trigger if exists trg_acceptance_task_project_update;
+        drop trigger if exists trg_acceptance_validation_gate_template_project_insert;
+        drop trigger if exists trg_acceptance_validation_gate_template_project_update;
+        drop trigger if exists trg_acceptance_coverage_item_project_insert;
+        drop trigger if exists trg_acceptance_coverage_item_project_update;
+        drop trigger if exists trg_acceptance_general_project_insert;
+        drop trigger if exists trg_acceptance_general_project_update;
+        drop trigger if exists trg_repository_state_classification_acceptance_insert;
+        drop trigger if exists trg_repository_state_classification_acceptance_update;
         "#,
     )?;
     Ok(())
@@ -1034,19 +1121,7 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
     let Some(table_sql) = table_sql else {
         return Ok(());
     };
-    if table_sql.contains("'design_file'")
-        && table_sql.contains("'coverage_item'")
-        && table_sql.contains("'design_requirement_key'")
-        && table_sql.contains("'validation_run'")
-        && table_sql.contains("'rule_binding'")
-        && table_sql.contains("'evidence_gap'")
-        && table_has_column(conn, "acceptance_records", "design_package_key")?
-        && table_has_column(conn, "acceptance_records", "design_file_path")?
-        && table_has_column(conn, "acceptance_records", "design_requirement_key")?
-        && table_has_column(conn, "acceptance_records", "coverage_item_id")?
-        && table_has_column(conn, "acceptance_records", "validation_run_id")?
-        && table_has_column(conn, "acceptance_records", "rule_binding_id")?
-    {
+    if acceptance_records_schema_current(conn, &table_sql)? {
         return Ok(());
     }
 
@@ -1058,7 +1133,15 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_acceptance_task_project_update;
         drop trigger if exists trg_acceptance_validation_gate_template_project_insert;
         drop trigger if exists trg_acceptance_validation_gate_template_project_update;
+        drop trigger if exists trg_acceptance_coverage_item_project_insert;
+        drop trigger if exists trg_acceptance_coverage_item_project_update;
+        drop trigger if exists trg_acceptance_general_project_insert;
+        drop trigger if exists trg_acceptance_general_project_update;
+        drop trigger if exists trg_repository_state_classification_acceptance_insert;
+        drop trigger if exists trg_repository_state_classification_acceptance_update;
+        pragma legacy_alter_table = on;
         alter table acceptance_records rename to acceptance_records_old;
+        pragma legacy_alter_table = off;
 
         create table acceptance_records (
             id integer primary key,
@@ -1183,6 +1266,63 @@ fn migrate_acceptance_records(conn: &Connection) -> Result<()> {
         drop table acceptance_records_old;
         "#,
     )?;
+    Ok(())
+}
+
+fn acceptance_records_needs_migration(conn: &Connection) -> Result<bool> {
+    let table_sql = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'acceptance_records'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Ok(false);
+    };
+    Ok(!acceptance_records_schema_current(conn, &table_sql)?)
+}
+
+fn acceptance_records_schema_current(conn: &Connection, table_sql: &str) -> Result<bool> {
+    Ok(table_sql.contains("'design_file'")
+        && table_sql.contains("'coverage_item'")
+        && table_sql.contains("'design_requirement_key'")
+        && table_sql.contains("'validation_run'")
+        && table_sql.contains("'rule_binding'")
+        && table_sql.contains("'evidence_gap'")
+        && table_has_column(conn, "acceptance_records", "design_package_key")?
+        && table_has_column(conn, "acceptance_records", "design_file_path")?
+        && table_has_column(conn, "acceptance_records", "design_requirement_key")?
+        && table_has_column(conn, "acceptance_records", "coverage_item_id")?
+        && table_has_column(conn, "acceptance_records", "validation_run_id")?
+        && table_has_column(conn, "acceptance_records", "rule_binding_id")?)
+}
+
+fn repair_acceptance_record_references(conn: &Connection) -> Result<()> {
+    let broken_reference_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from sqlite_schema
+        where sql like '%acceptance_records_old%'
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if broken_reference_count == 0 {
+        return Ok(());
+    }
+
+    let schema_version: i64 = conn.pragma_query_value(None, "schema_version", |row| row.get(0))?;
+    conn.execute_batch(
+        r#"
+        pragma writable_schema = on;
+        update sqlite_schema
+        set sql = replace(replace(sql, '"acceptance_records_old"', 'acceptance_records'), 'acceptance_records_old', 'acceptance_records')
+        where sql like '%acceptance_records_old%';
+        pragma writable_schema = off;
+        "#,
+    )?;
+    conn.pragma_update(None, "schema_version", schema_version + 1)?;
     Ok(())
 }
 
@@ -4029,6 +4169,8 @@ create table if not exists review_runs (
     new_findings_count integer not null default 0 check (new_findings_count >= 0),
     carried_findings_checked integer not null default 0 check (carried_findings_checked >= 0),
     clean_run integer not null default 0 check (clean_run in (0, 1)),
+    review_provenance text not null default 'self_recorded' check (review_provenance in ('self_recorded', 'external_agent', 'human_review')),
+    review_provenance_ref text,
     status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
     created_at text not null,
     check (
@@ -4479,16 +4621,20 @@ for each row
 when new.new_findings_count < 0
   or new.carried_findings_checked < 0
   or (new.clean_run = 1 and (new.status != 'completed' or new.new_findings_count != 0))
+  or new.review_provenance not in ('self_recorded', 'external_agent', 'human_review')
+  or (new.review_provenance in ('external_agent', 'human_review') and coalesce(new.review_provenance_ref, '') = '')
 begin
     select raise(abort, 'review run result is inconsistent');
 end;
 
 create trigger if not exists trg_review_run_result_update
-before update of new_findings_count, carried_findings_checked, clean_run, status on review_runs
+before update of new_findings_count, carried_findings_checked, clean_run, status, review_provenance, review_provenance_ref on review_runs
 for each row
 when new.new_findings_count < 0
   or new.carried_findings_checked < 0
   or (new.clean_run = 1 and (new.status != 'completed' or new.new_findings_count != 0))
+  or new.review_provenance not in ('self_recorded', 'external_agent', 'human_review')
+  or (new.review_provenance in ('external_agent', 'human_review') and coalesce(new.review_provenance_ref, '') = '')
   or (new.clean_run = 1 and exists (
       select 1 from findings where review_run_id = new.id
   ))

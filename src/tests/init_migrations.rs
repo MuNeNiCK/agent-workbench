@@ -107,6 +107,133 @@ fn init_migrates_existing_acceptance_records_shape() {
 }
 
 #[test]
+fn status_migrates_existing_acceptance_records_shape_without_reinit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        pragma writable_schema = on;
+        update sqlite_schema
+        set sql = 'CREATE TABLE acceptance_records (
+            id integer primary key,
+            project_id integer not null,
+            target_type text not null check (target_type in (''task'', ''design_requirement'', ''validation_gate_template'')),
+            task_id integer,
+            design_requirement_id integer,
+            validation_gate_template_id integer,
+            acceptance_type text not null check (acceptance_type in (''accepted_out_of_scope'', ''explicit_exception'')),
+            reason text not null,
+            scope text,
+            created_by text not null,
+            status text not null default ''approved'' check (status in (''approved'', ''revoked'')),
+            approved_by_authority_event_id integer,
+            approved_at text,
+            created_at text not null,
+            review_impact text
+        )'
+        where type = 'table' and name = 'acceptance_records';
+        pragma writable_schema = off;
+        "#,
+    )
+    .unwrap();
+    let schema_version: i64 = conn
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    conn.pragma_update(None, "schema_version", schema_version + 1)
+        .unwrap();
+    drop(conn);
+
+    let status = project_status(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let schema_sql: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type = 'table' and name = 'acceptance_records'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(status.initialized);
+    assert!(schema_sql.contains("'design_file'"));
+    assert!(schema_sql.contains("'coverage_item'"));
+    assert!(schema_sql.contains("'validation_run'"));
+    assert!(schema_sql.contains("rule_binding_id"));
+}
+
+#[test]
+fn init_repairs_acceptance_record_references_rewritten_by_legacy_rename() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        pragma writable_schema = on;
+        update sqlite_schema
+        set sql = replace(sql, 'references acceptance_records(id)', 'references "acceptance_records_old"(id)')
+        where type = 'table'
+          and name in ('validation_runs', 'repository_state_classifications');
+        pragma writable_schema = off;
+        "#,
+    )
+    .unwrap();
+    let schema_version: i64 = conn
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    conn.pragma_update(None, "schema_version", schema_version + 1)
+        .unwrap();
+    drop(conn);
+
+    project_status(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let broken_count: i64 = conn
+        .query_row(
+            "select count(*) from sqlite_schema where sql like '%acceptance_records_old%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let work = start_work(temp.path(), "classify repository state", None).unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("dirty"),
+        },
+    )
+    .unwrap();
+    let snapshot = add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(work.activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("main"),
+            status_summary: Some("dirty"),
+            is_clean: false,
+        },
+    )
+    .unwrap();
+    let classification = add_repository_state_classification(
+        temp.path(),
+        NewRepositoryStateClassification {
+            repository_snapshot_id: snapshot.repository_snapshot_id,
+            dirty_entry_id: None,
+            classification: "expected",
+            reason: "migration repair keeps classification insert usable",
+            acceptance_record_id: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(broken_count, 0);
+    assert!(classification.repository_state_classification_id > 0);
+}
+
+#[test]
 fn init_migrates_existing_kpt_item_status_constraint() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

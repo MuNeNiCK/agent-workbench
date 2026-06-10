@@ -37,8 +37,8 @@ authority.
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required`.
 4. Build the design review context with
    `agent-workbench review-context design-review --design-version <design-version-id> --work-unit <work-unit-id>`,
-   then record a clean design review run with
-   `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
+   then run an independent review agent and record its clean result with
+   `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>`.
 5. Check design readiness with
    `agent-workbench gate design-ready --dry-run`.
 6. Decompose the design with
@@ -63,8 +63,8 @@ authority.
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_task_decomposition --stage implementation-ready --design-version <design-version-id> --required`.
 10. Build the decomposition review context with
     `agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>`,
-    then record a clean decomposition review run with
-    `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean`.
+    then run an independent review agent and record its clean result with
+    `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>`.
 11. Check implementation readiness with
    `agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run`.
 12. Run `agent-workbench next` and implement through the same work unit passed
@@ -90,22 +90,30 @@ queries, table-name inspection, or direct ledger joins.
    `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <requirement-key> --type file --file <path> --note "<evidence>"`.
 2. Record coverage with
    `agent-workbench coverage add --design <design-version-id> --requirement <requirement-key> --task <task-id> --status covered --requirement-text "<requirement summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"`.
-3. Close or accept out-of-scope all tasks derived from the design.
-4. Record command usage, validation runs, repository state, Git evidence, and
+3. Close completed checklist items and their parent checklist:
+   `agent-workbench checklist item list --checklist <checklist-id>`,
+   `agent-workbench checklist item close <checklist-item-id>`, then
+   `agent-workbench checklist close <checklist-id>`.
+   Use `stale close checklist <id>` only for stale checklist disposition, not
+   normal completion.
+4. Close or accept out-of-scope all tasks derived from the design.
+5. Record command usage, validation runs, repository state, Git evidence, and
    work record evidence.
-5. Add required close review plans:
+6. Add required close review plans:
    `design_implementation_diff` and `implementation_review`, both at
    `--stage close-ready`, with `--work-unit <work-unit-id>` and
    `--design-version <design-version-id>`.
-6. Use `agent-workbench review-context design-implementation-diff` or
+7. Use `agent-workbench review-context design-implementation-diff` or
    `agent-workbench review-context implementation-review` to launch focused
    review agents. Include the relevant `--design-version` and `--work-unit`
    flags, then pass the printed `context_ref` to `review run add --target`.
-7. Record clean close review runs or record findings, closures, and
+8. Record clean close review runs or record findings, closures, and
    verifications until the configured review policy is satisfied. Every
-   `review run add` command must include `--plan <review-plan-id>`.
-8. Run `agent-workbench gate close-ready --dry-run`.
-9. If blocked, perform the blocking action printed by the gate before closing.
+   `review run add` command must include `--plan <review-plan-id>` and trusted
+   provenance, for example
+   `--provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>`.
+9. Run `agent-workbench gate close-ready --dry-run`.
+10. If blocked, perform the blocking action printed by the gate before closing.
    For stale validation gates, do not use `task accept-out-of-scope`; run
    `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`
    when the selected stale gate should be closed, or
@@ -125,5 +133,5 @@ queries, table-name inspection, or direct ledger joins.
    When converting KPT items into fixed command profiles, use the same authority
    pattern and pass `--authority <authority-event-id>` with
    `agent-workbench kpt item convert --to command-profile --command-status fixed`.
-10. Create or export work records when the user expects human-readable output.
-11. Close the work unit only after `close-ready` passes.
+11. Create or export work records when the user expects human-readable output.
+12. Close the work unit only after `close-ready` passes.

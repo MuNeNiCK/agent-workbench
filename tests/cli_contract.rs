@@ -856,6 +856,14 @@ fn clean_design_document_review_allows_design_ready_gate_to_pass() {
             "--clean",
             "--summary",
             "clean design review",
+            "--agent-label",
+            "test-reviewer",
+            "--external-agent-id",
+            "test-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "test-reviewer-output",
         ],
     );
     let passed = ok(
@@ -865,6 +873,110 @@ fn clean_design_document_review_allows_design_ready_gate_to_pass() {
     assert!(missing_review_context_target.contains("must use review-context target"));
     assert!(passed.contains("result: pass"));
     assert!(passed.contains("design_review_clean: pass"));
+}
+
+#[test]
+fn clean_gate_review_requires_trusted_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "design docs"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    write_gate_template(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        temp.path(),
+        &["design", "approve", "1", "--summary", "approve design"],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_review",
+            "--stage",
+            "design-ready",
+            "--design-version",
+            "1",
+            "--required",
+        ],
+    );
+
+    let self_recorded = err(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-review:design=1:work=1",
+            "--clean",
+            "--summary",
+            "self-recorded clean review",
+        ],
+    );
+    assert!(self_recorded.contains("requires trusted review provenance"));
+
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-review:design=1:work=1",
+            "--clean",
+            "--summary",
+            "clean design review",
+            "--agent-label",
+            "test-reviewer",
+            "--external-agent-id",
+            "test-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "test-reviewer-output",
+        ],
+    );
+    let passed = ok(
+        temp.path(),
+        &["gate", "design-ready", "--design-version", "1", "--dry-run"],
+    );
+    assert!(passed.contains("result: pass"));
 }
 
 #[test]
@@ -1051,6 +1163,14 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
         temp.path(),
         &["trace", "derivation", "list", "--design", "1"],
     );
+    let checklist_items = ok(
+        temp.path(),
+        &["checklist", "item", "list", "--checklist", "1"],
+    );
+    let checklist_close_blocked = err(temp.path(), &["checklist", "close", "1"]);
+    let checklist_item_close = ok(temp.path(), &["checklist", "item", "close", "1"]);
+    let checklist_close = ok(temp.path(), &["checklist", "close", "1"]);
+    let closed_checklists = ok(temp.path(), &["checklist", "list", "--status", "closed"]);
     let without_gate = ok(
         temp.path(),
         &[
@@ -1126,6 +1246,14 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
             "--clean",
             "--summary",
             "clean decomposition review",
+            "--agent-label",
+            "test-reviewer",
+            "--external-agent-id",
+            "test-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "test-reviewer-output",
         ],
     );
     let passed = ok(
@@ -1296,6 +1424,14 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     assert!(derivation.contains("derived task from requirement"));
     assert!(derivation.contains("task_derivation_id: 1"));
     assert!(list.contains("requirement=REQ-001 task=1"));
+    assert!(
+        checklist_items
+            .contains("1 [checklist=1 work_unit=1 design_version=1 requirement=REQ-001 task=1")
+    );
+    assert!(checklist_close_blocked.contains("checklist items are still open or blocked"));
+    assert!(checklist_item_close.contains("closed checklist item"));
+    assert!(checklist_close.contains("closed checklist"));
+    assert!(closed_checklists.contains("1 [work_unit=1 design_version=1 closed 1/1]"));
     assert!(without_gate.contains("validation_gates_selected: fail"));
     assert!(selected.contains("selected validation gate"));
     assert!(selected.contains("validation_gate_id: 1"));
@@ -1433,6 +1569,14 @@ fn decompose_design_requires_clean_design_ready_plan() {
             "--target",
             "review-context:design-review:design=1:work=1",
             "--clean",
+            "--agent-label",
+            "test-reviewer",
+            "--external-agent-id",
+            "test-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "test-reviewer-output",
         ],
     );
     let decomposed = ok(

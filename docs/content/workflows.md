@@ -84,6 +84,7 @@ Before closing work, the agent should run close readiness.
 Close readiness can require:
 
 - open tasks to be closed or accepted out of scope
+- checklist items and active checklists to be closed
 - required reviews to be clean
 - findings to be classified and closed
 - validation commands to be recorded

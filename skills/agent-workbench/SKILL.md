@@ -74,6 +74,9 @@ Common command groups include:
 - `agent-workbench decompose design`
 - `agent-workbench trace derive-task`
 - `agent-workbench checklist list`
+- `agent-workbench checklist item list`
+- `agent-workbench checklist item close`
+- `agent-workbench checklist close`
 - `agent-workbench stale list`
 - `agent-workbench stale accept`
 - `agent-workbench stale close`
@@ -197,12 +200,20 @@ from structured ledger state.
   `task_derivation`, `checklist`, or `validation_gate` records that should be
   closed. Do not use `task accept-out-of-scope` for stale validation gates;
   that command is only for task scope exceptions.
-- Record implementation evidence and coverage items for design-derived tasks
-  before closing the work unit.
+- Record implementation evidence and coverage items for design-derived tasks,
+  then close completed checklist items with `checklist item close <item-id>`
+  and close their parent checklist with `checklist close <checklist-id>`.
+  Use `checklist item list --checklist <checklist-id>` to inspect items. Do
+  not use stale disposition commands for non-stale checklist completion.
 - Use `review-context` when launching a review agent so the prompt is focused
   on the relevant design version, work unit, or review kind. Copy the printed
-  `context_ref` into `review run add --target <context_ref>`; design-derived
-  gates require clean fresh runs tied to that context.
+  `context_ref` into `review run add --target <context_ref>`. The command
+  records a completed review; it does not launch or perform the review.
+  Design-derived gates require clean fresh runs tied to that context with
+  trusted provenance such as `--provenance external_agent --external-agent-id
+  <agent-id> --provenance-ref <review-output-ref>` or
+  `--provenance human_review --provenance-ref <review-output-ref>`.
+  Self-recorded clean runs must not be used to satisfy readiness gates.
 - For final completion checks, use a fresh unbiased review unless the user
   explicitly asks only for resume verification of known findings. Do not use a
   resume review as the final completion signal by default.

@@ -66,14 +66,14 @@ agent-workbench design-decision list --design <design-version-id>
 ```sh
 agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required
 agent-workbench review-context design-review --design-version <design-version-id> --work-unit <work-unit-id>
-agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean
+agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
 agent-workbench gate design-ready --design-version <design-version-id> --dry-run
 agent-workbench decompose design <design-version-id> --work-unit <work-unit-id>
 agent-workbench checklist list
 agent-workbench stale list
 agent-workbench review plan add --work-unit <work-unit-id> --type design_task_decomposition --stage implementation-ready --design-version <design-version-id> --required
 agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>
-agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean
+agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
 agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run
 agent-workbench next
 agent-workbench work activate <work-unit-id> --design-version <design-version-id>
@@ -94,6 +94,9 @@ For design-derived tasks, record both implementation evidence and coverage.
 ```sh
 agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <requirement-key> --type file --file <path> --note "<evidence>"
 agent-workbench coverage add --design <design-version-id> --requirement <requirement-key> --task <task-id> --status covered --requirement-text "<summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"
+agent-workbench checklist item list --checklist <checklist-id>
+agent-workbench checklist item close <checklist-item-id>
+agent-workbench checklist close <checklist-id>
 ```
 
 ## Close

@@ -394,6 +394,114 @@ pub fn list_checklists(root: &Path, status: Option<&str>) -> Result<Vec<Checklis
     Ok(records)
 }
 
+pub fn list_checklist_items(
+    root: &Path,
+    input: ChecklistItemListQuery<'_>,
+) -> Result<Vec<ChecklistItemRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select ci.id, ci.checklist_id, c.work_unit_id, c.design_version_id,
+               ci.design_requirement_id, r.requirement_key, ci.task_id, ci.item_order,
+               ci.title, ci.completion_condition, ci.status
+        from checklist_items ci
+        join checklists c on c.id = ci.checklist_id
+        join design_requirements r on r.id = ci.design_requirement_id
+        where ci.project_id = ?1
+          and (?2 is null or ci.checklist_id = ?2)
+          and (?3 is null or ci.status = ?3)
+        order by ci.checklist_id, ci.item_order, ci.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, input.checklist_id, input.status],
+        |row| {
+            Ok(ChecklistItemRecord {
+                id: row.get(0)?,
+                checklist_id: row.get(1)?,
+                work_unit_id: row.get(2)?,
+                design_version_id: row.get(3)?,
+                design_requirement_id: row.get(4)?,
+                requirement_key: row.get(5)?,
+                task_id: row.get(6)?,
+                item_order: row.get(7)?,
+                title: row.get(8)?,
+                completion_condition: row.get(9)?,
+                status: row.get(10)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub fn close_checklist_item(root: &Path, checklist_item_id: i64) -> Result<ChecklistItemOutcome> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let changed = conn.execute(
+        r#"
+        update checklist_items
+        set status = 'closed'
+        where id = ?1
+          and project_id = ?2
+          and status in ('open', 'blocked')
+        "#,
+        params![checklist_item_id, project_id],
+    )?;
+    if changed == 0 {
+        bail!("checklist item not found or not closeable");
+    }
+
+    Ok(ChecklistItemOutcome { checklist_item_id })
+}
+
+pub fn close_checklist(root: &Path, checklist_id: i64) -> Result<ChecklistOutcome> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let status = conn
+        .query_row(
+            "select status from checklists where id = ?1 and project_id = ?2",
+            params![checklist_id, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("checklist not found")?;
+    if status == "stale" {
+        bail!("cannot close stale checklist with checklist close; use stale close checklist");
+    }
+    if status == "closed" {
+        bail!("checklist already closed");
+    }
+
+    let open_item_count: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from checklist_items
+        where checklist_id = ?1
+          and project_id = ?2
+          and status in ('open', 'blocked')
+        "#,
+        params![checklist_id, project_id],
+        |row| row.get(0),
+    )?;
+    if open_item_count > 0 {
+        bail!(
+            "cannot close checklist; {open_item_count} checklist items are still open or blocked"
+        );
+    }
+
+    conn.execute(
+        "update checklists set status = 'closed' where id = ?1 and project_id = ?2 and status = 'active'",
+        params![checklist_id, project_id],
+    )?;
+
+    Ok(ChecklistOutcome { checklist_id })
+}
+
 pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
@@ -2565,6 +2673,37 @@ pub struct ChecklistRecord {
     pub status: String,
     pub item_count: i64,
     pub closed_count: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChecklistItemListQuery<'a> {
+    pub checklist_id: Option<i64>,
+    pub status: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChecklistItemRecord {
+    pub id: i64,
+    pub checklist_id: i64,
+    pub work_unit_id: i64,
+    pub design_version_id: i64,
+    pub design_requirement_id: i64,
+    pub requirement_key: String,
+    pub task_id: i64,
+    pub item_order: i64,
+    pub title: String,
+    pub completion_condition: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChecklistItemOutcome {
+    pub checklist_item_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChecklistOutcome {
+    pub checklist_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -83,13 +83,30 @@ pub(crate) fn review_plan_has_clean_context_run(
         r#"
         select exists (
             select 1
-            from review_runs
-            where review_plan_id = ?1
-              and target_ref = ?2
-              and run_type = 'fresh'
-              and run_purpose = 'new_unbiased_review'
-              and clean_run = 1
-              and status = 'completed'
+            from review_runs r
+            where r.review_plan_id = ?1
+              and r.target_ref = ?2
+              and r.run_type = 'fresh'
+              and r.run_purpose = 'new_unbiased_review'
+              and r.clean_run = 1
+              and r.status = 'completed'
+              and (
+                  (
+                      r.review_provenance = 'external_agent'
+                      and coalesce(r.review_provenance_ref, '') != ''
+                      and exists (
+                          select 1
+                          from review_agent_invocations i
+                          where i.review_run_id = r.id
+                            and i.external_agent_id is not null
+                            and i.external_agent_id != ''
+                      )
+                  )
+                  or (
+                      r.review_provenance = 'human_review'
+                      and coalesce(r.review_provenance_ref, '') != ''
+                  )
+              )
         )
         "#,
         rusqlite::params![review_plan_id, context_ref],

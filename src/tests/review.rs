@@ -75,6 +75,8 @@ fn review_policy_clean_run_stop_condition_is_enforced() {
             status: "completed",
             agent_label: Some("agent-a"),
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -93,6 +95,8 @@ fn review_policy_clean_run_stop_condition_is_enforced() {
             status: "completed",
             agent_label: Some("agent-b"),
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -159,6 +163,8 @@ fn review_agent_launch_limit_blocks_extra_runs() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -178,6 +184,8 @@ fn review_agent_launch_limit_blocks_extra_runs() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     );
 
@@ -241,6 +249,8 @@ fn review_run_rejects_clean_state_with_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     );
     assert!(inconsistent.is_err());
@@ -260,6 +270,8 @@ fn review_run_rejects_clean_state_with_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -312,6 +324,8 @@ fn review_run_rejects_clean_state_with_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -446,6 +460,8 @@ fn finding_type_must_match_review_type() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -546,6 +562,8 @@ fn review_integrity_triggers_guard_cross_project_updates() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -777,6 +795,8 @@ fn resume_verification_closes_valid_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -836,6 +856,8 @@ fn resume_verification_closes_valid_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -913,6 +935,8 @@ fn open_required_review_finding_blocks_next_action() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1015,6 +1039,8 @@ fn required_review_finding_with_closure_reports_verification_next_action() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1079,6 +1105,8 @@ fn required_review_finding_with_closure_reports_verification_next_action() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1158,6 +1186,8 @@ fn finding_verification_rejects_unrelated_closure() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1219,6 +1249,8 @@ fn finding_verification_rejects_unrelated_closure() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1293,6 +1325,8 @@ fn finding_verification_update_preserves_scope_constraints() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1341,6 +1375,8 @@ fn finding_verification_update_preserves_scope_constraints() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1421,6 +1457,8 @@ fn finding_verification_rejects_different_plan_finding() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1486,6 +1524,8 @@ fn finding_verification_rejects_different_plan_finding() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1541,6 +1581,8 @@ fn review_run_rejects_invalid_type_purpose_pairs() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     );
     let resume_unbiased = add_review_run(
@@ -1558,6 +1600,8 @@ fn review_run_rejects_invalid_type_purpose_pairs() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     );
 
@@ -1622,6 +1666,8 @@ fn resume_policy_blocks_new_findings_when_disallowed() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     );
     assert!(resume_with_count.is_err());
@@ -1641,6 +1687,8 @@ fn resume_policy_blocks_new_findings_when_disallowed() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1743,6 +1791,8 @@ fn resume_policy_blocks_new_findings_when_disallowed() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1761,6 +1811,8 @@ fn resume_policy_blocks_new_findings_when_disallowed() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1889,6 +1941,8 @@ fn stop_on_severity_ignores_lower_severity_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -1965,6 +2019,8 @@ fn stop_on_severity_none_does_not_block_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -2009,6 +2065,8 @@ fn stop_on_severity_none_does_not_block_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -2132,6 +2190,8 @@ fn review_plan_targets_can_drive_typed_review_run_targets() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -2206,6 +2266,8 @@ fn file_review_run_targets_are_stored_in_typed_columns() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();

@@ -614,6 +614,8 @@ fn kpt_review_can_import_review_and_work_outcomes() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -712,6 +714,8 @@ fn kpt_review_can_import_open_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();
@@ -813,6 +817,8 @@ fn kpt_review_period_filters_findings() {
             status: "completed",
             agent_label: None,
             external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
         },
     )
     .unwrap();

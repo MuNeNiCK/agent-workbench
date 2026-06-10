@@ -341,9 +341,10 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             target_type, design_version_id, design_requirement_id, task_id,
             work_unit_id, repository_snapshot_id, file_path, symbol, target_ref,
             prompt_deviations, result_summary, new_findings_count,
-            carried_findings_checked, clean_run, status, created_at
+            carried_findings_checked, clean_run, status, review_provenance,
+            review_provenance_ref, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, current_timestamp)
         "#,
         params![
             project_id,
@@ -366,6 +367,8 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             input.carried_findings_checked,
             bool_to_i64(input.clean_run),
             input.status,
+            input.review_provenance,
+            input.review_provenance_ref,
         ],
     )?;
     let review_run_id = tx.last_insert_rowid();
@@ -417,7 +420,8 @@ pub fn list_review_runs(root: &Path, review_plan_id: Option<i64>) -> Result<Vec<
         r#"
         select
             id, review_plan_id, run_type, run_purpose, target_type, target_ref,
-            new_findings_count, carried_findings_checked, clean_run, status
+            new_findings_count, carried_findings_checked, clean_run, status,
+            review_provenance, review_provenance_ref
         from review_runs
         where project_id = ?1 and (?2 is null or review_plan_id = ?2)
         order by id
@@ -435,6 +439,8 @@ pub fn list_review_runs(root: &Path, review_plan_id: Option<i64>) -> Result<Vec<
             carried_findings_checked: row.get(7)?,
             clean_run: row.get::<_, i64>(8)? == 1,
             status: row.get(9)?,
+            review_provenance: row.get(10)?,
+            review_provenance_ref: row.get(11)?,
         })
     })?;
     collect_rows(rows)
@@ -761,8 +767,9 @@ fn evaluate_plan_status(
         params![review_plan_id, project_id, severity_filter],
         |row| row.get(0),
     )?;
-    let clean_fresh = consecutive_clean_runs(conn, review_plan_id, "fresh")?;
-    let clean_resume = consecutive_clean_runs(conn, review_plan_id, "resume")?;
+    let plan = load_review_plan(conn, project_id, review_plan_id)?;
+    let clean_fresh = consecutive_clean_runs(conn, &plan, "fresh")?;
+    let clean_resume = consecutive_clean_runs(conn, &plan, "resume")?;
     let status = if open_blocking_findings > 0 {
         "blocked"
     } else if clean_fresh >= policy.required_consecutive_clean_fresh_runs
@@ -836,26 +843,52 @@ fn enforce_run_allowed(
 
 fn consecutive_clean_runs(
     conn: &rusqlite::Connection,
-    review_plan_id: i64,
+    plan: &StoredReviewPlan,
     run_type: &str,
 ) -> Result<i64> {
+    let required_context =
+        review_context_kind_for_plan(&plan.stage, &plan.review_type).and_then(|kind| {
+            plan.design_version_id.map(|design_version_id| {
+                review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id))
+            })
+        });
     let mut stmt = conn.prepare(
         r#"
-        select clean_run
+        select r.clean_run, r.review_provenance, r.review_provenance_ref,
+               exists (
+                   select 1
+                   from review_agent_invocations i
+                   where i.review_run_id = r.id
+                     and i.external_agent_id is not null
+                     and i.external_agent_id != ''
+               )
         from review_runs
-        where review_plan_id = ?1
-          and run_type = ?2
-          and status = 'completed'
-          and new_findings_count = 0
+        r
+        where r.review_plan_id = ?1
+          and r.run_type = ?2
+          and r.status = 'completed'
+          and r.new_findings_count = 0
         order by id desc
         "#,
     )?;
-    let rows = stmt.query_map(params![review_plan_id, run_type], |row| {
-        row.get::<_, i64>(0)
+    let rows = stmt.query_map(params![plan.id, run_type], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, i64>(3)? == 1,
+        ))
     })?;
     let mut count = 0;
     for row in rows {
-        if row? == 1 {
+        let (clean_run, provenance, provenance_ref, has_external_agent) = row?;
+        let trusted = required_context.is_none()
+            || trusted_review_provenance(
+                &provenance,
+                provenance_ref.as_deref(),
+                has_external_agent,
+            );
+        if clean_run == 1 && trusted {
             count += 1;
         } else {
             break;
@@ -981,6 +1014,7 @@ fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()> {
     if input.clean_run && input.status != "completed" {
         bail!("clean review run must be completed");
     }
+    validate_review_provenance(input.review_provenance, input.review_provenance_ref)?;
     Ok(())
 }
 
@@ -1004,7 +1038,45 @@ fn validate_gate_context_target(plan: &StoredReviewPlan, input: &NewReviewRun<'_
             "clean gate review run must use review-context target {expected}; run review-context first and pass context_ref with --target"
         );
     }
+    let has_external_agent = input
+        .external_agent_id
+        .is_some_and(|external_agent_id| !external_agent_id.trim().is_empty());
+    if !trusted_review_provenance(
+        input.review_provenance,
+        input.review_provenance_ref,
+        has_external_agent,
+    ) {
+        bail!(
+            "clean gate review run requires trusted review provenance; pass --provenance external_agent --external-agent-id <id> --provenance-ref <review-output-ref>, or --provenance human_review --provenance-ref <review-output-ref>"
+        );
+    }
     Ok(())
+}
+
+fn validate_review_provenance(provenance: &str, provenance_ref: Option<&str>) -> Result<()> {
+    match provenance {
+        "self_recorded" => Ok(()),
+        "external_agent" | "human_review" => {
+            if provenance_ref.is_none_or(|value| value.trim().is_empty()) {
+                bail!("{provenance} review provenance requires --provenance-ref");
+            }
+            Ok(())
+        }
+        _ => bail!("review provenance must be self_recorded, external_agent, or human_review"),
+    }
+}
+
+fn trusted_review_provenance(
+    provenance: &str,
+    provenance_ref: Option<&str>,
+    has_external_agent: bool,
+) -> bool {
+    let has_ref = provenance_ref.is_some_and(|value| !value.trim().is_empty());
+    match provenance {
+        "external_agent" => has_external_agent && has_ref,
+        "human_review" => has_ref,
+        _ => false,
+    }
 }
 
 fn review_context_kind_for_plan(stage: &str, review_type: &str) -> Option<&'static str> {
@@ -1488,6 +1560,8 @@ pub struct NewReviewRun<'a> {
     pub status: &'a str,
     pub agent_label: Option<&'a str>,
     pub external_agent_id: Option<&'a str>,
+    pub review_provenance: &'a str,
+    pub review_provenance_ref: Option<&'a str>,
 }
 
 pub struct NewFinding<'a> {
@@ -1640,6 +1714,8 @@ pub struct ReviewRunRecord {
     pub carried_findings_checked: i64,
     pub clean_run: bool,
     pub status: String,
+    pub review_provenance: String,
+    pub review_provenance_ref: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

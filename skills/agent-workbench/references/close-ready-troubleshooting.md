@@ -8,6 +8,7 @@ items.
 | active tasks remain open | `agent-workbench task close <task-id>` or `agent-workbench task accept-out-of-scope <task-id> --reason "<reason>"` |
 | missing implementation evidence | `agent-workbench evidence add --task <task-id> --design <design-version-id> --requirement <key> --type file --file <path> --note "<evidence>"` |
 | missing coverage | `agent-workbench coverage add --design <design-version-id> --requirement <key> --task <task-id> --status covered --requirement-text "<summary>" --runtime "<runtime evidence>" --tests-or-gates "<validation evidence>"` |
+| open checklist items or active checklists | inspect with `agent-workbench checklist item list --checklist <checklist-id>`, close completed items with `agent-workbench checklist item close <item-id>`, then close the active checklist with `agent-workbench checklist close <checklist-id>` |
 | selected gate has no run | `agent-workbench command usage add ...` then `agent-workbench gate record --gate <gate-id> --result pass --usage <usage-id>` |
 | selected gate is stale | update the selected gate from the current design, or run `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`; do not use `task accept-out-of-scope` |
 | validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |

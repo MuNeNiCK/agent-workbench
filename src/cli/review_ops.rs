@@ -184,6 +184,8 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                         status: &args.status,
                         agent_label: args.agent_label.as_deref(),
                         external_agent_id: args.external_agent_id.as_deref(),
+                        review_provenance: &args.provenance,
+                        review_provenance_ref: args.provenance_ref.as_deref(),
                     },
                 )?;
                 println!("added review run");
@@ -203,7 +205,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                 for record in records {
                     let target = record.target_ref.as_deref().unwrap_or("-");
                     println!(
-                        "{} [plan={} {}:{} clean={}] target={}",
+                        "{} [plan={} {}:{} clean={} provenance={}] target={}",
                         record.id,
                         record
                             .review_plan_id
@@ -212,6 +214,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                         record.run_type,
                         record.status,
                         record.clean_run,
+                        record.review_provenance,
                         target
                     );
                 }
