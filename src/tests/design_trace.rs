@@ -2008,6 +2008,193 @@ fn stale_close_disposes_selected_validation_gate() {
 }
 
 #[test]
+fn close_ready_accepts_current_selected_gate_for_unchanged_carried_requirement() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "implement carried requirement", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("cleanup behavior is covered"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let first_import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: first_import.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let old_derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: first_import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("original decomposition"),
+            checklist_title: Some("Original checklist"),
+            item_title: Some("Implement original cleanup requirement"),
+            completion_condition: Some("cleanup behavior is covered"),
+        },
+    )
+    .unwrap();
+
+    fs::write(
+        init.package_path.join("01-introduction-goals.md"),
+        "# Introduction And Goals\n\nNon-requirement wording changed.\n",
+    )
+    .unwrap();
+    let second_import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: second_import.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let current_derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: second_import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("current decomposition"),
+            checklist_title: Some("Current checklist"),
+            item_title: Some("Implement current cleanup requirement"),
+            completion_condition: Some("cleanup behavior is covered"),
+        },
+    )
+    .unwrap();
+    let current_gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: second_import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+
+    for design_version_id in [
+        first_import.design_version_id,
+        second_import.design_version_id,
+    ] {
+        add_implementation_evidence(
+            temp.path(),
+            NewImplementationEvidence {
+                task_id: Some(task.task_id),
+                design_version_id: Some(design_version_id),
+                requirement_key: Some("REQ-001"),
+                evidence_type: "commit",
+                commit_sha: Some("abc123"),
+                file_path: None,
+                line_ref: None,
+                symbol: None,
+                artifact_path: None,
+                note: Some("cleanup implementation evidence"),
+            },
+        )
+        .unwrap();
+        add_coverage_item(
+            temp.path(),
+            NewCoverageItem {
+                design_version_id,
+                requirement_key: "REQ-001",
+                review_scope_id: None,
+                work_unit_id: None,
+                task_id: Some(task.task_id),
+                requirement: "cleanup behavior is connected",
+                runtime_boundary_evidence: Some("cleanup path is exercised"),
+                ux_boundary_evidence: None,
+                lifecycle_boundary_evidence: None,
+                tests_or_gates: Some("GATE-001"),
+                missing_or_unverified: None,
+                status: "covered",
+            },
+        )
+        .unwrap();
+    }
+    close_checklist_item(temp.path(), old_derivation.checklist_item_id).unwrap();
+    close_checklist(temp.path(), old_derivation.checklist_id).unwrap();
+    close_checklist_item(temp.path(), current_derivation.checklist_item_id).unwrap();
+    close_checklist(temp.path(), current_derivation.checklist_id).unwrap();
+    close_task(temp.path(), task.task_id, Some("abc123")).unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: current_gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("current validation passed"),
+        },
+    )
+    .unwrap();
+    record_close_evidence(temp.path(), work.work_unit_id, work.activation_id);
+
+    let ready = close_ready(temp.path()).unwrap();
+
+    assert!(
+        ready.items.iter().any(|item| {
+            item.name == "validation_runs_recorded"
+                && item.result == "pass"
+                && item.details.contains("0 missing selected gates")
+        }),
+        "{ready:#?}"
+    );
+}
+
+#[test]
 fn implementation_ready_blocks_stale_derivations_and_checklists() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

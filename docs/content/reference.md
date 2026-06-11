@@ -76,6 +76,11 @@ not required, record a user, policy, or design authority event and run
 `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
 This records an approved exception that readiness gates understand without
 direct ledger edits.
+
+For carried requirements whose key and content are unchanged across design
+versions, close-ready treats the current design's selected validation gate as
+covering the older equivalent requirement record for the same task. Agents
+should not repair that case by selecting gates against obsolete design records.
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
 
 ## Agent-facing state

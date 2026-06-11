@@ -3240,13 +3240,36 @@ fn count_derived_tasks_missing_selected_gate_for_work(
         select count(*)
         from task_derivations td
         join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
         where t.work_unit_id = ?1
           and td.status in ('active', 'stale')
           and t.status in ('closed', 'accepted_out_of_scope')
           and not exists (
             select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'task_derivation'
+              and ar.stale_record_id = td.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
+          and not exists (
+            select 1
             from validation_gates vg
-            where vg.design_requirement_id = td.design_requirement_id
+            where (
+                vg.design_requirement_id = td.design_requirement_id
+                or exists (
+                    select 1
+                    from design_requirements current_r
+                    where current_r.id = vg.design_requirement_id
+                      and current_r.design_version_id = p.current_design_version_id
+                      and current_r.requirement_key = r.requirement_key
+                      and current_r.requirement_hash = r.requirement_hash
+                      and current_r.status = 'active'
+                )
+              )
               and vg.task_id = td.task_id
               and vg.selected_before_edit = 1
               and vg.status = 'active'

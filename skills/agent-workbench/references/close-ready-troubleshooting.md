@@ -11,6 +11,7 @@ items.
 | open checklist items or active checklists | inspect with `agent-workbench checklist item list --checklist <checklist-id>`, close completed items with `agent-workbench checklist item close <item-id>`, then close the active checklist with `agent-workbench checklist close <checklist-id>` |
 | selected gate has no run | `agent-workbench command usage add ...` then `agent-workbench gate record --gate <gate-id> --result pass --usage <usage-id>` |
 | selected gate is stale | update the selected gate from the current design, or run `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`; do not use `task accept-out-of-scope` |
+| missing selected gates remain only for an old design version | confirm the current design has selected gates and passing runs; unchanged carried requirements should be satisfied by the current selected gate, and any remaining blocker is a product surface gap rather than permission to inspect the ledger |
 | validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |
 | fixed command was not used | run the fixed command and record usage, or add a command deviation and acceptance |
 | shadowed rule conflicts remain | run `agent-workbench rules applicable --scope current`, inspect lines with `shadowed_by=<id>`, then fix the conflicting rule or record `agent-workbench acceptance add --target rule:<rule-id> --type explicit_exception ...` for the shadowed rule |

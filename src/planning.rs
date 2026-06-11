@@ -174,12 +174,26 @@ fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -
         r#"
         select count(*)
         from task_derivations td
+        join design_requirements r on r.id = td.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
         where td.task_id = ?1
           and td.status = 'active'
           and not exists (
             select 1
             from validation_gates vg
-            where vg.design_requirement_id = td.design_requirement_id
+            where (
+                vg.design_requirement_id = td.design_requirement_id
+                or exists (
+                    select 1
+                    from design_requirements current_r
+                    where current_r.id = vg.design_requirement_id
+                      and current_r.design_version_id = p.current_design_version_id
+                      and current_r.requirement_key = r.requirement_key
+                      and current_r.requirement_hash = r.requirement_hash
+                      and current_r.status = 'active'
+                )
+              )
               and vg.task_id = td.task_id
               and vg.selected_before_edit = 1
               and vg.status = 'active'
