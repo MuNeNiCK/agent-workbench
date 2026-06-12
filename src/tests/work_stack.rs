@@ -1112,6 +1112,92 @@ fn close_ready_requires_validation_runs_for_selected_gates() {
 }
 
 #[test]
+fn close_ready_names_derivations_missing_selected_gates() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "missing selected gate detail", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement cleanup",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("selected gate is visible in close-ready"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    let import = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: import.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update tasks set status = 'closed', closed_by_commit = 'abc123' where id = ?1",
+        params![task.task_id],
+    )
+    .unwrap();
+
+    let blocked = close_ready(temp.path()).unwrap();
+    let item = blocked
+        .items
+        .iter()
+        .find(|item| item.name == "validation_runs_recorded")
+        .unwrap();
+
+    assert_eq!(item.result, "fail");
+    assert!(item.details.contains("1 missing selected gates"));
+    assert!(
+        item.details.contains(&format!(
+            "task_derivation:{}",
+            derivation.task_derivation_id
+        )),
+        "{item:#?}"
+    );
+    assert!(
+        item.details.contains(&format!("task:{}", task.task_id)),
+        "{item:#?}"
+    );
+    assert!(item.details.contains("requirement:REQ-001"), "{item:#?}");
+    assert!(
+        item.details
+            .contains(&format!("design:{}", import.design_version_id)),
+        "{item:#?}"
+    );
+}
+
+#[test]
 fn close_ready_allows_explicitly_accepted_validation_failures() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -1275,12 +1361,15 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
     let allowed = close_ready(temp.path()).unwrap();
 
     assert_eq!(blocked.result, "blocked");
-    assert!(
-        blocked
-            .items
-            .iter()
-            .any(|item| item.name == "review_plans_clean" && item.result == "fail")
-    );
+    assert!(blocked.items.iter().any(|item| {
+        item.name == "review_plans_clean"
+            && item.result == "fail"
+            && item
+                .details
+                .contains(&format!("review_plan:{}", plan.review_plan_id))
+            && item.details.contains("type:implementation_review")
+            && item.details.contains("status:open")
+    }));
     assert_eq!(allowed.result, "pass");
     assert!(
         allowed

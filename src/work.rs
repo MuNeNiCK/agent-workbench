@@ -440,6 +440,12 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     let process = close_process_state(&conn, active.project_id, active.work_unit_id)?;
     let missing_close_review_types =
         missing_required_close_review_types(&conn, active.work_unit_id)?;
+    let missing_selected_gate_details =
+        missing_selected_gate_details_for_work(&conn, active.work_unit_id)?;
+    let validation_gate_blocker_details =
+        validation_gate_blocker_details_for_work(&conn, active.work_unit_id)?;
+    let review_plan_blocker_details =
+        review_plan_blocker_details_for_stage(&conn, active.work_unit_id, "close-ready")?;
     let mut items = Vec::new();
     items.push(if open_tasks == 0 {
         CloseReadyItem::pass(
@@ -560,9 +566,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 ),
             )
         } else {
-            CloseReadyItem::fail(
-                "validation_runs_recorded",
-                "record passing validation runs or classify the remaining failures",
+            let details = append_detail_list(
                 format!(
                     "{} selected gates, {} missing selected gates, {} missing runs, {} accepted failures, {} unaccepted failures",
                     validation.selected_gate_count,
@@ -571,6 +575,18 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                     validation.accepted_failure_count,
                     validation.unaccepted_failure_count
                 ),
+                "missing selected gate derivations",
+                &missing_selected_gate_details,
+            );
+            let details = append_detail_list(
+                details,
+                "validation gate run blockers",
+                &validation_gate_blocker_details,
+            );
+            CloseReadyItem::fail(
+                "validation_runs_recorded",
+                "record passing validation runs or classify the remaining failures",
+                details,
             )
         },
     );
@@ -646,9 +662,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
     );
     items.push(
         if trace.derived_task_count > 0 && !missing_close_review_types.is_empty() {
-            CloseReadyItem::fail(
-                "review_plans_clean",
-                "add required close-ready review plans for design-derived work",
+            let details = append_detail_list(
                 format!(
                     "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs, missing types: {}",
                     review.required_plan_count,
@@ -657,6 +671,13 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                     review.missing_context_run_count,
                     missing_close_review_types.join(", ")
                 ),
+                "review plan blockers",
+                &review_plan_blocker_details,
+            );
+            CloseReadyItem::fail(
+                "review_plans_clean",
+                "add required close-ready review plans for design-derived work",
+                details,
             )
         } else if review.incomplete_required_plan_count == 0
             && review.stale_target_count == 0
@@ -673,9 +694,7 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                 ),
             )
         } else {
-            CloseReadyItem::fail(
-                "review_plans_clean",
-                "complete required close-ready plans, refresh stale targets, or waive an approved exception with review plan waive",
+            let details = append_detail_list(
                 format!(
                     "{} required close-ready plans, {} incomplete, {} stale targets, {} missing review-context runs",
                     review.required_plan_count,
@@ -683,6 +702,13 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
                     review.stale_target_count,
                     review.missing_context_run_count
                 ),
+                "review plan blockers",
+                &review_plan_blocker_details,
+            );
+            CloseReadyItem::fail(
+                "review_plans_clean",
+                "complete required close-ready plans, refresh stale targets, or waive an approved exception with review plan waive",
+                details,
             )
         },
     );
@@ -2436,6 +2462,85 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
     .map_err(Into::into)
 }
 
+fn validation_gate_blocker_details_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            gate_id,
+            gate_key,
+            task_id,
+            requirement_key,
+            design_version_id,
+            latest_result
+        from (
+            select
+                vg.id as gate_id,
+                vgt.gate_key as gate_key,
+                vg.task_id as task_id,
+                dr.requirement_key as requirement_key,
+                dr.design_version_id as design_version_id,
+                (
+                    select vr.result
+                    from validation_runs vr
+                    where vr.validation_gate_id = vg.id
+                    order by vr.id desc
+                    limit 1
+                ) as latest_result,
+                exists (
+                    select 1
+                    from validation_runs vr
+                    left join acceptance_records run_ar on run_ar.id = vr.acceptance_record_id
+                    where vr.validation_gate_id = vg.id
+                      and (
+                        (
+                          run_ar.status = 'approved'
+                          and run_ar.acceptance_type in ('classified_failure', 'evidence_gap', 'explicit_exception')
+                        )
+                        or exists (
+                          select 1
+                          from acceptance_records ar
+                          where ar.target_type = 'validation_gate_template'
+                            and ar.validation_gate_template_id = vg.template_id
+                            and ar.acceptance_type in ('explicit_exception', 'classified_failure', 'evidence_gap')
+                            and ar.status = 'approved'
+                        )
+                      )
+                    order by vr.id desc
+                    limit 1
+                ) as accepted_failure
+            from validation_gates vg
+            join validation_gate_templates vgt on vgt.id = vg.template_id
+            join design_requirements dr on dr.id = vg.design_requirement_id
+            left join tasks t on t.id = vg.task_id
+            where vg.status = 'active'
+              and coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+        )
+        where latest_result is null
+           or (latest_result != 'pass' and accepted_failure = 0)
+        order by gate_id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id], |row| {
+        let gate_id: i64 = row.get(0)?;
+        let gate_key: String = row.get(1)?;
+        let task_id: Option<i64> = row.get(2)?;
+        let requirement_key: String = row.get(3)?;
+        let design_version_id: i64 = row.get(4)?;
+        let latest_result: Option<String> = row.get(5)?;
+        let reason = latest_result
+            .map(|result| format!("unaccepted_result:{result}"))
+            .unwrap_or_else(|| "missing_run".to_string());
+        Ok(format!(
+            "validation_gate:{gate_id} key:{gate_key} task:{} requirement:{requirement_key} design:{design_version_id} {reason}",
+            format_optional_id(task_id)
+        ))
+    })?;
+    collect_rows(rows)
+}
+
 fn close_process_state(
     conn: &Connection,
     project_id: i64,
@@ -2880,6 +2985,68 @@ fn review_plan_stage_state(
     Ok(state)
 }
 
+fn review_plan_blocker_details_for_stage(
+    conn: &Connection,
+    work_unit_id: i64,
+    stage: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select id, status, review_type, design_version_id, work_unit_id
+        from review_plans
+        where work_unit_id = ?1
+          and stage = ?2
+          and required = 1
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id, stage], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
+    })?;
+    let mut details = Vec::new();
+    for row in rows {
+        let (review_plan_id, status, review_type, design_version_id, plan_work_unit_id) = row?;
+        if review_plan_accepted(conn, review_plan_id)? {
+            continue;
+        }
+        if status != "clean" {
+            details.push(format!(
+                "review_plan:{review_plan_id} type:{review_type} status:{status} design:{} incomplete",
+                format_optional_id(design_version_id)
+            ));
+        }
+        if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
+            && design_version_id.is_some()
+            && !review_plan_has_clean_context_run(
+                conn,
+                review_plan_id,
+                kind,
+                design_version_id,
+                plan_work_unit_id,
+            )?
+        {
+            details.push(format!(
+                "review_plan:{review_plan_id} type:{review_type} missing_context:{kind} context_ref:review-context:{kind}:design={}:work={}",
+                format_optional_id(design_version_id),
+                format_optional_id(plan_work_unit_id)
+            ));
+        }
+        let stale_targets = stale_review_plan_target_count(conn, review_plan_id)?;
+        if stale_targets > 0 {
+            details.push(format!(
+                "review_plan:{review_plan_id} type:{review_type} stale_targets:{stale_targets}"
+            ));
+        }
+    }
+    Ok(details)
+}
+
 fn review_plan_accepted(conn: &Connection, review_plan_id: i64) -> Result<bool> {
     conn.query_row(
         r#"
@@ -3279,6 +3446,73 @@ fn count_derived_tasks_missing_selected_gate_for_work(
         |row| row.get(0),
     )
     .map_err(Into::into)
+}
+
+fn missing_selected_gate_details_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select
+            td.id,
+            td.task_id,
+            t.status,
+            r.requirement_key,
+            r.design_version_id,
+            p.current_design_version_id
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        join design_versions v on v.id = r.design_version_id
+        join design_packages p on p.id = v.design_package_id
+        where t.work_unit_id = ?1
+          and td.status in ('active', 'stale')
+          and t.status in ('closed', 'accepted_out_of_scope')
+          and not exists (
+            select 1
+            from acceptance_records ar
+            where ar.target_type = 'stale_record'
+              and ar.stale_record_type = 'task_derivation'
+              and ar.stale_record_id = td.id
+              and ar.acceptance_type = 'stale_accepted'
+              and ar.status = 'approved'
+          )
+          and not exists (
+            select 1
+            from validation_gates vg
+            where (
+                vg.design_requirement_id = td.design_requirement_id
+                or exists (
+                    select 1
+                    from design_requirements current_r
+                    where current_r.id = vg.design_requirement_id
+                      and current_r.design_version_id = p.current_design_version_id
+                      and current_r.requirement_key = r.requirement_key
+                      and current_r.requirement_hash = r.requirement_hash
+                      and current_r.status = 'active'
+                )
+              )
+              and vg.task_id = td.task_id
+              and vg.selected_before_edit = 1
+              and vg.status = 'active'
+          )
+        order by td.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id], |row| {
+        let derivation_id: i64 = row.get(0)?;
+        let task_id: i64 = row.get(1)?;
+        let task_status: String = row.get(2)?;
+        let requirement_key: String = row.get(3)?;
+        let design_version_id: i64 = row.get(4)?;
+        let current_design_version_id: Option<i64> = row.get(5)?;
+        Ok(format!(
+            "task_derivation:{derivation_id} task:{task_id} task_status:{task_status} requirement:{requirement_key} design:{design_version_id} current_design:{}",
+            format_optional_id(current_design_version_id)
+        ))
+    })?;
+    collect_rows(rows)
 }
 
 fn count_open_checklist_items_for_work(conn: &Connection, work_unit_id: i64) -> Result<i64> {
@@ -3792,6 +4026,35 @@ impl CloseReadyItem {
             details: details.into(),
         }
     }
+}
+
+fn append_detail_list(base: String, label: &str, details: &[String]) -> String {
+    if details.is_empty() {
+        return base;
+    }
+    let shown = details.iter().take(20).cloned().collect::<Vec<_>>();
+    let suffix = if details.len() > shown.len() {
+        format!(", ... +{} more", details.len() - shown.len())
+    } else {
+        String::new()
+    };
+    format!("{base}; {label}: {}{suffix}", shown.join(", "))
+}
+
+fn format_optional_id(id: Option<i64>) -> String {
+    id.map(|id| id.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn collect_rows<T, F>(rows: rusqlite::MappedRows<'_, F>) -> Result<Vec<T>>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(row?);
+    }
+    Ok(values)
 }
 
 #[derive(Debug, PartialEq, Eq)]

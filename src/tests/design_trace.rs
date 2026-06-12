@@ -742,6 +742,16 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         item.name == "review_plans_clean"
             && item.result == "fail"
             && item.details.contains("missing review-context runs")
+            && item
+                .details
+                .contains("missing_context:design-implementation-diff")
+            && item
+                .details
+                .contains("missing_context:implementation-review")
+            && item.details.contains(&format!(
+                "context_ref:review-context:implementation-review:design={}:work={}",
+                import.design_version_id, work.work_unit_id
+            ))
     }));
     assert_eq!(close_passed.result, "pass", "{:#?}", close_passed.items);
     assert_eq!(coverage.task_id, Some(task.task_id));

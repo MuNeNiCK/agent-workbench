@@ -70,6 +70,7 @@ review. Self-recorded clean runs do not satisfy gate review evidence.
 | `design-ready` | Design can move to decomposition. |
 | `implementation-ready` | Design-derived tasks and gate selections are ready for implementation. |
 | `close-ready` | Active work has required evidence, coverage, closed checklists, reviews, command usage, repository state, and records. |
+| `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
 
 If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run
@@ -81,7 +82,14 @@ For carried requirements whose key and content are unchanged across design
 versions, close-ready treats the current design's selected validation gate as
 covering the older equivalent requirement record for the same task. Agents
 should not repair that case by selecting gates against obsolete design records.
-| `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
+
+When `close-ready` is blocked, the failed item details are intended to be the
+agent-facing repair surface. `validation_runs_recorded` lists missing selected
+gate derivations as `task_derivation:<id>` and validation run blockers as
+`validation_gate:<id>`. `review_plans_clean` lists `review_plan:<id>`, stale
+target counts, and the exact `context_ref` required for context-targeted review
+runs. Agents should use those printed IDs with normal CLI commands, not inspect
+the ledger directly.
 
 ## Agent-facing state
 
