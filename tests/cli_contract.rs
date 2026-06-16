@@ -197,6 +197,144 @@ Run the project test suite before implementation handoff.
     .unwrap();
 }
 
+fn prepare_ready_design_work(root: &Path) {
+    ok(root, &["init"]);
+    conn(root)
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'planned design implementation', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+    ok(
+        root,
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(root);
+    write_gate_template(root);
+    ok(
+        root,
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "design",
+            "approve",
+            "1",
+            "--summary",
+            "design passed document checks",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_review",
+            "--stage",
+            "design-ready",
+            "--design-version",
+            "1",
+            "--required",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-review:design=1:work=1",
+            "--clean",
+            "--agent-label",
+            "design-reviewer",
+            "--external-agent-id",
+            "design-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "design-review-output",
+        ],
+    );
+    ok(root, &["decompose", "design", "1", "--work-unit", "1"]);
+    ok(
+        root,
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "design_task_decomposition",
+            "--stage",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--required",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "2",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:design-task-decomposition:design=1:work=1",
+            "--clean",
+            "--agent-label",
+            "decomposition-reviewer",
+            "--external-agent-id",
+            "decomposition-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "decomposition-review-output",
+        ],
+    );
+    let ready = ok(
+        root,
+        &[
+            "gate",
+            "implementation-ready",
+            "--design-version",
+            "1",
+            "--dry-run",
+        ],
+    );
+    assert!(ready.contains("result: pass"));
+}
+
 #[test]
 fn init_creates_workbench_artifact_directories() {
     let temp = tempfile::tempdir().unwrap();
@@ -1014,6 +1152,291 @@ fn next_can_activate_existing_open_work_unit() {
 }
 
 #[test]
+fn next_prints_implementation_activation_for_design_work() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    conn(temp.path())
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'planned design implementation', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+    conn(temp.path())
+        .execute(
+            "insert into checklists(project_id, work_unit_id, design_version_id, title, status, created_at) values (1, 1, 1, 'REQ-001 implementation checklist', 'active', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+    let next = ok(temp.path(), &["next"]);
+
+    assert!(next.contains("open inactive work unit"));
+    assert!(next.contains("design_version_id: 1"));
+    assert!(
+        next.contains("next: agent-workbench work activate --implementation --design-version 1 1")
+    );
+}
+
+#[test]
+fn implementation_intent_requires_design_binding_and_blocks_plain_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+
+    let plain_alias = err(temp.path(), &["work", "start", "implementation"]);
+    let missing_design = err(
+        temp.path(),
+        &["work", "start", "--implementation", "implement design"],
+    );
+    let work_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_units", [], |row| row.get(0))
+        .unwrap();
+    let activation_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_unit_activations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert!(plain_alias.contains("implementation work requires explicit intent"));
+    assert!(plain_alias.contains("work activate --implementation --design-version"));
+    assert!(missing_design.contains("implementation work start requires --design-version"));
+    assert_eq!(work_count, 0);
+    assert_eq!(activation_count, 0);
+}
+
+#[test]
+fn design_bound_work_requires_explicit_implementation_intent() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    conn(temp.path())
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'planned design implementation', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+    let start = err(
+        temp.path(),
+        &["work", "start", "--design-version", "1", "implement design"],
+    );
+    let activate = err(
+        temp.path(),
+        &["work", "activate", "--design-version", "1", "1"],
+    );
+    let activation_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_unit_activations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert!(start.contains("design-bound implementation work start requires --implementation"));
+    assert!(start.contains("work activate --implementation --design-version"));
+    assert!(
+        activate.contains("design-bound implementation work activation requires --implementation")
+    );
+    assert_eq!(activation_count, 0);
+}
+
+#[test]
+fn implementation_intent_with_unready_design_has_no_work_side_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+
+    let blocked = err(
+        temp.path(),
+        &[
+            "work",
+            "start",
+            "--implementation",
+            "--design-version",
+            "1",
+            "implement design",
+        ],
+    );
+    let work_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_units", [], |row| row.get(0))
+        .unwrap();
+    let activation_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_unit_activations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert!(blocked.contains("design-derived implementation must activate the work unit"));
+    assert_eq!(work_count, 0);
+    assert_eq!(activation_count, 0);
+}
+
+#[test]
+fn implementation_activation_requires_ready_design_without_activation_side_effect() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "storage-lifecycle",
+            "--title",
+            "Storage Lifecycle",
+        ],
+    );
+    write_requirement(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "import",
+            ".agent-workbench/designs/storage-lifecycle",
+            "--status",
+            "draft",
+        ],
+    );
+    conn(temp.path())
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'planned design implementation', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+    let missing_design = err(temp.path(), &["work", "activate", "--implementation", "1"]);
+    let unready_design = err(
+        temp.path(),
+        &[
+            "work",
+            "activate",
+            "--implementation",
+            "--design-version",
+            "1",
+            "1",
+        ],
+    );
+    let work_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_units", [], |row| row.get(0))
+        .unwrap();
+    let activation_count: i64 = conn(temp.path())
+        .query_row("select count(*) from work_unit_activations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert!(missing_design.contains("implementation work activation requires --design-version"));
+    assert!(unready_design.contains("implementation-ready"));
+    assert_eq!(work_count, 1);
+    assert_eq!(activation_count, 0);
+}
+
+#[test]
+fn implementation_activation_requires_target_work_to_own_design_records() {
+    let temp = tempfile::tempdir().unwrap();
+    prepare_ready_design_work(temp.path());
+    conn(temp.path())
+        .execute(
+            "insert into work_units(project_id, title, status, started_at) values (1, 'unrelated work', 'open', current_timestamp)",
+            [],
+        )
+        .unwrap();
+
+    let unrelated = err(
+        temp.path(),
+        &[
+            "work",
+            "activate",
+            "--implementation",
+            "--design-version",
+            "1",
+            "2",
+        ],
+    );
+    let activation_count_after_failure: i64 = conn(temp.path())
+        .query_row("select count(*) from work_unit_activations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let correct = ok(
+        temp.path(),
+        &[
+            "work",
+            "activate",
+            "--implementation",
+            "--design-version",
+            "1",
+            "1",
+        ],
+    );
+
+    assert!(
+        unrelated.contains("target work unit to own design-derived records"),
+        "{unrelated}"
+    );
+    assert_eq!(activation_count_after_failure, 0);
+    assert!(correct.contains("activated work unit"));
+    assert!(correct.contains("work_unit_id: 1"));
+}
+
+#[test]
 fn next_reports_phase_blocker_for_open_required_review_finding() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -1084,7 +1507,7 @@ fn next_reports_phase_blocker_for_open_required_review_finding() {
 fn trace_derivation_allows_implementation_ready_gate_to_pass() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
-    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(temp.path(), &["work", "start", "implementation planning"]);
     ok(
         temp.path(),
         &[
@@ -1468,7 +1891,7 @@ fn trace_derivation_allows_implementation_ready_gate_to_pass() {
 }
 
 #[test]
-fn work_start_with_design_version_requires_implementation_ready_gate() {
+fn work_start_with_design_version_requires_existing_design_work_activation() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
     ok(
@@ -1495,13 +1918,20 @@ fn work_start_with_design_version_requires_implementation_ready_gate() {
 
     let blocked = err(
         temp.path(),
-        &["work", "start", "implement design", "--design-version", "1"],
+        &[
+            "work",
+            "start",
+            "--implementation",
+            "--design-version",
+            "1",
+            "implement design",
+        ],
     );
     let work_count: i64 = conn(temp.path())
         .query_row("select count(*) from work_units", [], |row| row.get(0))
         .unwrap();
 
-    assert!(blocked.contains("implementation-ready"));
+    assert!(blocked.contains("design-derived implementation must activate the work unit"));
     assert_eq!(work_count, 0);
 }
 
@@ -1509,7 +1939,7 @@ fn work_start_with_design_version_requires_implementation_ready_gate() {
 fn decompose_design_requires_clean_design_ready_plan() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
-    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(temp.path(), &["work", "start", "implementation planning"]);
     ok(
         temp.path(),
         &[
@@ -1592,7 +2022,7 @@ fn decompose_design_requires_clean_design_ready_plan() {
 fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
-    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(temp.path(), &["work", "start", "implementation planning"]);
     ok(
         temp.path(),
         &[
@@ -1763,7 +2193,7 @@ fn gate_record_links_validation_run_to_command_usage_and_snapshot() {
 fn gate_select_can_record_command_profile_and_timeout() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
-    ok(temp.path(), &["work", "start", "implementation"]);
+    ok(temp.path(), &["work", "start", "implementation planning"]);
     ok(
         temp.path(),
         &[

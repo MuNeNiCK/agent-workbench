@@ -33,6 +33,17 @@ if [ -n "${AGENT_WORKBENCH_BIN:-}" ]; then
   exec "$AGENT_WORKBENCH_BIN" "$@"
 fi
 
+for root_candidate in "$SKILL_DIR/../.." "$SKILL_DIR/../../.."; do
+  repo_root="$(CDPATH='' cd -- "$root_candidate" 2>/dev/null && pwd -P || true)"
+  if [ -n "$repo_root" ] && [ -f "$repo_root/Cargo.toml" ]; then
+    for local_cli in "$repo_root/target/debug/agent-workbench" "$repo_root/target/release/agent-workbench"; do
+      if [ -x "$local_cli" ]; then
+        exec "$local_cli" "$@"
+      fi
+    done
+  fi
+done
+
 download() {
   url="$1"
   output="$2"

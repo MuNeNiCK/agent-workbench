@@ -71,6 +71,10 @@ When work is based on design requirements:
    records. The agent should follow the exact next action printed by
    `agent-workbench next`; it should not open an unrelated new work unit after
    decomposition.
+8. Use explicit implementation activation for design-derived implementation:
+   `work activate --implementation --design-version <design-version-id>
+   <work-unit-id>`. Do not start an unrelated implementation work unit after
+   decomposition.
 
 This keeps the agent from implementing stale or unreviewed design material.
 When stale records remain intentionally, record the disposition with

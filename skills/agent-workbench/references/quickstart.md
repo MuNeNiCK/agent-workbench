@@ -56,7 +56,7 @@ agent-workbench design-decision list --design <design-version-id>
 12. If `next` reports a blocked phase, resolve the printed finding, review,
     gate, or work-unit blocker first.
 13. If `next` reports an open inactive work unit, run the exact printed
-    `work activate <work-unit-id> --design-version <design-version-id>`
+    `work activate --implementation --design-version <design-version-id> <work-unit-id>`
     command. If it reports suspended work, run the printed resume-check and
     resume commands.
 14. If the CLI cannot continue, activate, or resume that same work unit, report
@@ -76,7 +76,7 @@ agent-workbench review-context design-task-decomposition --design-version <desig
 agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
 agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run
 agent-workbench next
-agent-workbench work activate <work-unit-id> --design-version <design-version-id>
+agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>
 ```
 
 ## While Implementing

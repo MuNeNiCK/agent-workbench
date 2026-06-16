@@ -18,11 +18,13 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
             title,
             responsibility,
             design_version_id: None,
+            implementation: false,
         },
     )
 }
 
 pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<WorkOutcome> {
+    ensure_implementation_intent_start(&input)?;
     if let Some(design_version_id) = input.design_version_id {
         let ready = implementation_ready(
             root,
@@ -106,6 +108,7 @@ pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<Work
 }
 
 pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome> {
+    ensure_implementation_intent_activate(&input)?;
     if let Some(design_version_id) = input.design_version_id {
         let ready = implementation_ready(
             root,
@@ -120,6 +123,10 @@ pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+
+    if let Some(design_version_id) = input.design_version_id {
+        ensure_work_unit_has_design_scope(&tx, project_id, input.work_unit_id, design_version_id)?;
+    }
 
     if active_activation(&tx)?.is_some() {
         bail!("cannot activate work while another activation is active");
@@ -177,6 +184,88 @@ pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome
         work_unit_id: input.work_unit_id,
         activation_id,
     })
+}
+
+fn ensure_implementation_intent_start(input: &WorkStart<'_>) -> Result<()> {
+    if reserved_implementation_title(input.title) && !input.implementation {
+        bail!(
+            "implementation work requires explicit intent; run the design workflow, then use agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>"
+        );
+    }
+    if input.design_version_id.is_some() && !input.implementation {
+        bail!(
+            "design-bound implementation work start requires --implementation and an existing decomposed work unit; use agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>"
+        );
+    }
+    if input.implementation && input.design_version_id.is_none() {
+        bail!(
+            "implementation work start requires --design-version; create or import a design package, then run design-ready, decompose design, and implementation-ready first"
+        );
+    }
+    if input.implementation {
+        bail!(
+            "design-derived implementation must activate the work unit produced by decompose design; use agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_implementation_intent_activate(input: &WorkActivate<'_>) -> Result<()> {
+    if input.design_version_id.is_some() && !input.implementation {
+        bail!(
+            "design-bound implementation work activation requires --implementation; use agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>"
+        );
+    }
+    if input.implementation && input.design_version_id.is_none() {
+        bail!("implementation work activation requires --design-version");
+    }
+    Ok(())
+}
+
+fn reserved_implementation_title(title: &str) -> bool {
+    title.trim().eq_ignore_ascii_case("implementation")
+}
+
+fn ensure_work_unit_has_design_scope(
+    conn: &Connection,
+    project_id: i64,
+    work_unit_id: i64,
+    design_version_id: i64,
+) -> Result<()> {
+    let owns_design_scope: bool = conn.query_row(
+        r#"
+        select exists(
+            select 1
+            from checklists
+            where project_id = ?1
+              and work_unit_id = ?2
+              and design_version_id = ?3
+              and status in ('active', 'stale', 'closed')
+            union
+            select 1
+            from task_derivations td
+            join design_requirements r on r.id = td.design_requirement_id
+            where td.project_id = ?1
+              and td.task_id in (
+                select t.id
+                from tasks t
+                join work_units wu on wu.id = t.work_unit_id
+                where wu.project_id = ?1
+                  and t.work_unit_id = ?2
+              )
+              and r.design_version_id = ?3
+              and td.status in ('active', 'stale', 'closed')
+        )
+        "#,
+        params![project_id, work_unit_id, design_version_id],
+        |row| row.get(0),
+    )?;
+    if !owns_design_scope {
+        bail!(
+            "implementation work activation requires the target work unit to own design-derived records for the supplied design version"
+        );
+    }
+    Ok(())
 }
 
 pub fn block_work(
@@ -3945,11 +4034,13 @@ pub struct WorkStart<'a> {
     pub title: &'a str,
     pub responsibility: Option<&'a str>,
     pub design_version_id: Option<i64>,
+    pub implementation: bool,
 }
 
 pub struct WorkActivate<'a> {
     pub work_unit_id: i64,
     pub design_version_id: Option<i64>,
+    pub implementation: bool,
     pub reason: Option<&'a str>,
 }
 

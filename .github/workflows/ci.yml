@@ -72,11 +72,10 @@ jobs:
           (cd dist && sha256sum "agent-workbench-${tag}-linux-x86_64.tar.gz" > "agent-workbench-${tag}-checksums.txt")
           grep "  agent-workbench-${tag}-linux-x86_64.tar.gz$" "dist/agent-workbench-${tag}-checksums.txt"
 
-      - name: Smoke installed wrapper against pinned release
+      - name: Smoke source-checkout wrapper
         env:
-          AGENT_WORKBENCH_BIN: ${{ github.workspace }}/target/release/agent-workbench
           XDG_CACHE_HOME: ${{ runner.temp }}/agent-workbench-cache
-        run: sh skills/agent-workbench/scripts/agent-workbench.sh status --help
+        run: sh skills/agent-workbench/scripts/agent-workbench.sh work activate --implementation --help
 
       - name: Check skill command inventory
         shell: bash

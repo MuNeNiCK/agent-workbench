@@ -71,7 +71,7 @@ authority.
    to `decompose design` and the required review plans. If `next` reports a
    blocked phase, resolve the printed blocker first. If `next` reports an open
    inactive work unit, run the exact printed
-   `agent-workbench work activate <work-unit-id> --design-version <design-version-id>`
+   `agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`
    command. If `next` reports suspended work, run the printed resume-check and
    resume commands. Do not start an unrelated new work unit after decomposition.
    If `next` cannot identify the correct continue, activate, or resume command,

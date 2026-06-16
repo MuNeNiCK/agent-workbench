@@ -199,6 +199,8 @@ pub(crate) struct WorkStartArgs {
     pub(crate) responsibility: Option<String>,
     #[arg(long)]
     pub(crate) design_version: Option<i64>,
+    #[arg(long)]
+    pub(crate) implementation: bool,
 }
 
 #[derive(Debug, Args)]
@@ -206,6 +208,8 @@ pub(crate) struct WorkActivateArgs {
     pub(crate) work_unit_id: i64,
     #[arg(long)]
     pub(crate) design_version: Option<i64>,
+    #[arg(long)]
+    pub(crate) implementation: bool,
     #[arg(long)]
     pub(crate) reason: Option<String>,
 }

@@ -44,6 +44,11 @@ The release contains:
 
 The wrapper verifies the archive before executing the cached CLI.
 
+For project-scope development installs that live inside an Agent Workbench
+source checkout, the wrapper first uses an already-built checkout binary from
+`target/debug/agent-workbench` or `target/release/agent-workbench`. Normal
+installed skills without a source checkout use the pinned release path.
+
 Publishing a new version means creating a release that includes both the
 archive and checksum file. Published release assets are immutable; use a new
 tag instead of replacing an existing release.

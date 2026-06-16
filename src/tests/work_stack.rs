@@ -83,7 +83,7 @@ fn work_start_creates_active_work_unit() {
 }
 
 #[test]
-fn work_start_with_design_version_requires_implementation_ready_gate() {
+fn work_start_with_design_version_requires_existing_design_work_activation() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let init = init_design_package(
@@ -114,11 +114,13 @@ fn work_start_with_design_version_requires_implementation_ready_gate() {
             title: "implement design",
             responsibility: None,
             design_version_id: Some(import.design_version_id),
+            implementation: true,
         },
     );
     let next = next_action(temp.path()).unwrap();
+    let error = started.unwrap_err().to_string();
 
-    assert!(started.is_err());
+    assert!(error.contains("design-derived implementation must activate the work unit"));
     assert_eq!(next, NextAction::NoOpenWorkUnit);
 }
 
@@ -148,6 +150,7 @@ fn work_activate_existing_open_unit_after_planning() {
         WorkActivate {
             work_unit_id: 1,
             design_version_id: None,
+            implementation: false,
             reason: Some("implementation-ready passed"),
         },
     )

@@ -6,7 +6,7 @@ use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
     NewWorkFork, WorkActivate, WorkForkSource, WorkReopen, WorkStart, abandon_work, activate_work,
     block_work, close_active_work, create_follow_up_work, fork_work, interrupt_work, reopen_work,
-    resume_check, resume_work, start_work, start_work_with_options, suspend_work, unblock_work,
+    resume_check, resume_work, start_work_with_options, suspend_work, unblock_work,
 };
 
 pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
@@ -19,10 +19,19 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
                         title: &args.title,
                         responsibility: args.responsibility.as_deref(),
                         design_version_id: Some(design_version_id),
+                        implementation: args.implementation,
                     },
                 )?
             } else {
-                start_work(root, &args.title, args.responsibility.as_deref())?
+                start_work_with_options(
+                    root,
+                    WorkStart {
+                        title: &args.title,
+                        responsibility: args.responsibility.as_deref(),
+                        design_version_id: None,
+                        implementation: args.implementation,
+                    },
+                )?
             };
             println!("started work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
@@ -34,6 +43,7 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
                 WorkActivate {
                     work_unit_id: args.work_unit_id,
                     design_version_id: args.design_version,
+                    implementation: args.implementation,
                     reason: args.reason.as_deref(),
                 },
             )?;

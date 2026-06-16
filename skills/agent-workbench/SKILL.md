@@ -28,6 +28,12 @@ The wrapper uses the bundled `CLI_VERSION` file by default, downloads the
 matching Linux x86_64 release asset, verifies its SHA256 checksum, caches it
 under the user's cache directory, and then executes it.
 
+When the skill lives inside an Agent Workbench source checkout, the wrapper
+first uses the checkout's already-built `target/debug/agent-workbench` or
+`target/release/agent-workbench` binary when present. This keeps project-scope
+development installs aligned with the source tree under review. A normal
+installed skill without a source checkout continues to use `CLI_VERSION`.
+
 When references show commands as `agent-workbench ...`, run the same arguments
 through the wrapper. For example, `agent-workbench status` means:
 
@@ -192,6 +198,12 @@ from structured ledger state.
   clean runs before relying on gates: `design_review` for `design-ready`,
   `design_task_decomposition` for `implementation-ready`, and both
   `design_implementation_diff` plus `implementation_review` for `close-ready`.
+- Design-derived implementation work must use explicit implementation
+  activation for the work unit produced by `decompose design`:
+  `work activate --implementation --design-version <design-version-id>
+  <work-unit-id>`. `work start --implementation --design-version ...` and
+  plain reserved aliases such as `work start implementation` are not valid
+  implementation paths.
 - Use `decompose design` for normal design-to-plan conversion. Use
   `trace derive-task` for explicit manual links or corrections.
 - Use `stale list` to inspect stale design-derived records. Use

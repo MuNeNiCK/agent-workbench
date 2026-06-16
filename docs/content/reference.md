@@ -17,6 +17,10 @@ skill instructions and uses the wrapper internally.
 | `GITHUB_TOKEN` | Optional token for GitHub API and release download requests. |
 | `XDG_CACHE_HOME` | Override the cache root. |
 
+When the skill is inside an Agent Workbench source checkout, the wrapper uses
+the checkout's already-built `target/debug/agent-workbench` or
+`target/release/agent-workbench` before falling back to `CLI_VERSION`.
+
 ## Command groups
 
 | Group | Purpose |
@@ -71,6 +75,12 @@ review. Self-recorded clean runs do not satisfy gate review evidence.
 | `implementation-ready` | Design-derived tasks and gate selections are ready for implementation. |
 | `close-ready` | Active work has required evidence, coverage, closed checklists, reviews, command usage, repository state, and records. |
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
+
+Design-derived implementation should use explicit activation for the work unit
+produced by `decompose design`:
+`agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`.
+`agent-workbench work start --implementation --design-version ...` is rejected
+so agents do not create unbound implementation work.
 
 If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run

@@ -99,6 +99,10 @@ For design-driven work, the agent should keep using the work unit that owns the
 decomposed tasks and checklists. After `implementation-ready` passes,
 `agent-workbench next` should tell the agent whether to continue active work,
 resume suspended work, activate an open inactive work unit, or start new work.
+Design-derived implementation uses explicit implementation intent, for example
+`agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`.
+Start-based implementation intent is rejected; activate the work unit produced
+by `decompose design`.
 Before close, the agent should close completed checklist items with
 `checklist item close` and then close the parent checklist with
 `checklist close`.

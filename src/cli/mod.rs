@@ -80,10 +80,13 @@ pub(crate) fn run() -> Result<()> {
                 println!("work_unit_id: {}", work_unit.id);
                 println!("title: {}", work_unit.title);
                 match work_unit.design_version_id {
-                    Some(design_version_id) => println!(
-                        "next: agent-workbench work activate {} --design-version {}",
-                        work_unit.id, design_version_id
-                    ),
+                    Some(design_version_id) => {
+                        println!("design_version_id: {design_version_id}");
+                        println!(
+                            "next: agent-workbench work activate --implementation --design-version {} {}",
+                            design_version_id, work_unit.id
+                        );
+                    }
                     None => println!("next: agent-workbench work activate {}", work_unit.id),
                 }
             }
