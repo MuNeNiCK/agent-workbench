@@ -34,8 +34,10 @@ if [ -n "${AGENT_WORKBENCH_BIN:-}" ]; then
 fi
 
 for root_candidate in "$SKILL_DIR/../.." "$SKILL_DIR/../../.."; do
-  repo_root="$(CDPATH='' cd -- "$root_candidate" 2>/dev/null && pwd -P || true)"
-  if [ -n "$repo_root" ] && [ -f "$repo_root/Cargo.toml" ]; then
+  if repo_root="$(CDPATH='' cd -- "$root_candidate" 2>/dev/null && pwd -P)"; then
+    if [ ! -f "$repo_root/Cargo.toml" ]; then
+      continue
+    fi
     for local_cli in "$repo_root/target/debug/agent-workbench" "$repo_root/target/release/agent-workbench"; do
       if [ -x "$local_cli" ]; then
         exec "$local_cli" "$@"
