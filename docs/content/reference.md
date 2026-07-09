@@ -34,6 +34,7 @@ the checkout's already-built `target/debug/agent-workbench` or
 | `repository`, `git` | Repository snapshots, Git commits, file changes, and comparisons. |
 | `design`, `requirement`, `design-decision`, `gate-template` | Design package import and inspection. |
 | `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability, checklist completion, and explicit stale record disposition. |
+| `phase` | Ordered work-phase grouping, phase dependencies, trace decisions, dry-run rescope/split, and phase close. |
 | `review`, `finding`, `closure`, `review-context` | Review planning, runs, findings, closures, and focused context. |
 | `evidence`, `coverage`, `gate` | Implementation evidence, coverage, validation gates, and readiness checks. |
 | `kpt` | Process review over corrections, command drift, findings, and outcomes. |
@@ -87,6 +88,17 @@ not required, record a user, policy, or design authority event and run
 `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
 This records an approved exception that readiness gates understand without
 direct ledger edits.
+
+Work phases group tasks inside an aggregate work unit without changing
+ownership by default. Use `phase create`, `phase assign`, and `phase inventory`
+to define and inspect the grouping. Use `phase rescope --dry-run` or
+`phase split --dry-run` before moving a phase to another work unit; dry-run
+prints trace records, shared-record decisions, dependency blockers, and exact
+next commands. Phase-scoped reviews use
+`review plan target add --type phase --phase <phase-id>` and
+`review-context ... --phase <phase-id>`. Run
+`phase close-ready <phase-id> --dry-run` before `phase close`; aggregate work
+still closes through `gate close-ready`.
 
 For carried requirements whose key and content are unchanged across design
 versions, close-ready treats the current design's selected validation gate as

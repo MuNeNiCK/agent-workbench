@@ -77,6 +77,22 @@ Common command groups include:
 - `agent-workbench task list`
 - `agent-workbench task close`
 - `agent-workbench task accept-out-of-scope`
+- `agent-workbench phase create`
+- `agent-workbench phase list`
+- `agent-workbench phase show`
+- `agent-workbench phase assign`
+- `agent-workbench phase dependency add`
+- `agent-workbench phase dependency list`
+- `agent-workbench phase dependency satisfy`
+- `agent-workbench phase dependency accept`
+- `agent-workbench phase trace list`
+- `agent-workbench phase trace decide`
+- `agent-workbench phase inventory`
+- `agent-workbench phase rescope`
+- `agent-workbench phase split`
+- `agent-workbench phase close-ready`
+- `agent-workbench phase close`
+- `agent-workbench phase accept-out-of-scope`
 - `agent-workbench decompose design`
 - `agent-workbench trace derive-task`
 - `agent-workbench checklist list`
@@ -206,6 +222,21 @@ from structured ledger state.
   implementation paths.
 - Use `decompose design` for normal design-to-plan conversion. Use
   `trace derive-task` for explicit manual links or corrections.
+- When an aggregate work unit needs internal scheduling or smaller reviewable
+  chunks, use work phases instead of inventing task order from intuition. Create
+  ordered phases with `phase create`, assign tasks with `phase assign`, inspect
+  trace bundles with `phase inventory`, and run `phase rescope --dry-run` or
+  `phase split --dry-run` before any cross-work-unit move. Cross-phase
+  dependencies outrank simple phase order and must be satisfied or
+  authority-accepted with phase dependency commands.
+- For grouped phase reviews that remain inside the aggregate work unit, add a
+  phase review target with
+  `review plan target add --plan <id> --type phase --phase <phase-id>` and use
+  `review-context <kind> --design-version <id> --work-unit <id> --phase <phase-id>`.
+  Split phase work units use normal work-unit-scoped review contexts.
+- Run `phase close-ready <phase-id> --dry-run` before `phase close`. Closing a
+  phase does not close the aggregate work unit; aggregate close still requires
+  `gate close-ready --dry-run`.
 - Use `stale list` to inspect stale design-derived records. Use
   `stale accept <record-type> <id> --reason "<reason>"` when a stale record
   should remain auditable without changing its lifecycle status. Use

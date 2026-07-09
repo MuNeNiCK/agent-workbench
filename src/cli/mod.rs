@@ -6,6 +6,7 @@ mod args;
 mod design_flow;
 mod gate;
 mod memory;
+mod phases;
 mod planning;
 mod records;
 mod review_ops;
@@ -72,6 +73,7 @@ pub(crate) fn run() -> Result<()> {
                 if let Some(design_version_id) = work_unit.design_version_id {
                     println!("design_version_id: {design_version_id}");
                 }
+                print_next_phase(&work_unit);
                 println!("next: agent-workbench resume-check --maturity trace-aware");
                 println!("then: agent-workbench work resume --check <resume-check-id>");
             }
@@ -89,6 +91,7 @@ pub(crate) fn run() -> Result<()> {
                     }
                     None => println!("next: agent-workbench work activate {}", work_unit.id),
                 }
+                print_next_phase(&work_unit);
             }
             NextAction::ContinueActive { work_unit } => {
                 println!("continue active work unit");
@@ -97,6 +100,7 @@ pub(crate) fn run() -> Result<()> {
                 if let Some(design_version_id) = work_unit.design_version_id {
                     println!("design_version_id: {design_version_id}");
                 }
+                print_next_phase(&work_unit);
             }
         },
         Command::Work { command } => work::handle(&root, command)?,
@@ -109,6 +113,7 @@ pub(crate) fn run() -> Result<()> {
         Command::WorkRecord { command } => records::handle_work_record(&root, command)?,
         Command::Repository { command } => records::handle_repository(&root, command)?,
         Command::Task { command } => planning::handle_task(&root, command)?,
+        Command::Phase { command } => phases::handle_phase(&root, command)?,
         Command::Decision { command } => planning::handle_decision(&root, command)?,
         Command::Design { command } => planning::handle_design(&root, command)?,
         Command::Requirement { command } => planning::handle_requirement(&root, command)?,
@@ -130,6 +135,18 @@ pub(crate) fn run() -> Result<()> {
         Command::Export { command } => design_flow::handle_export(&root, command)?,
     }
     Ok(())
+}
+
+fn print_next_phase(work_unit: &agent_workbench::ActiveWorkUnit) {
+    if let Some(phase_id) = work_unit.next_phase_id {
+        println!("next_phase_id: {phase_id}");
+        if let Some(key) = work_unit.next_phase_key.as_deref() {
+            println!("next_phase_key: {key}");
+        }
+        if let Some(title) = work_unit.next_phase_title.as_deref() {
+            println!("next_phase_title: {title}");
+        }
+    }
 }
 
 fn print_phase_blocker(blocker: &PhaseBlocker) {

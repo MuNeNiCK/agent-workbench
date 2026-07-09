@@ -550,6 +550,9 @@ fn fork_work_from_record_creates_new_active_work_unit() {
                 id: fork.work_unit_id,
                 title: "redo after drift".to_string(),
                 design_version_id: None,
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );
@@ -789,6 +792,9 @@ fn reopen_and_follow_up_create_active_work() {
                 id: follow_up.work_unit_id,
                 title: "related follow-up".to_string(),
                 design_version_id: None,
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );
@@ -813,6 +819,9 @@ fn follow_up_suspends_active_work_and_records_source_event() {
                 id: follow_up.work_unit_id,
                 title: "follow-up".to_string(),
                 design_version_id: None,
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );

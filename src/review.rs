@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
 use crate::design::{NewGeneralAcceptance, add_general_acceptance};
-use crate::review_context::review_context_ref;
+use crate::review_context::{review_context_ref, review_context_ref_with_phase};
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 pub fn start_review_scope(root: &Path, input: NewReviewScope<'_>) -> Result<ReviewScopeOutcome> {
@@ -251,14 +251,24 @@ pub fn list_review_plan_targets(
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
         r#"
-        select
-            t.id, t.review_plan_id, t.target_type, t.design_version_id,
-            t.design_requirement_id, t.task_id, t.work_unit_id,
-            t.repository_snapshot_id, t.file_path, t.symbol
-        from review_plan_targets t
-        join review_plans p on p.id = t.review_plan_id
-        where t.review_plan_id = ?1 and p.project_id = ?2
-        order by t.id
+        select *
+        from (
+            select
+                t.id, t.review_plan_id, t.target_type, t.design_version_id,
+                t.design_requirement_id, t.task_id, t.work_unit_id,
+                null as phase_id, t.repository_snapshot_id, t.file_path, t.symbol
+            from review_plan_targets t
+            join review_plans p on p.id = t.review_plan_id
+            where t.review_plan_id = ?1 and p.project_id = ?2
+            union all
+            select
+                pt.id, pt.review_plan_id, 'phase', null,
+                null, null, null, pt.phase_id, null, null, null
+            from work_phase_review_targets pt
+            join review_plans p on p.id = pt.review_plan_id
+            where pt.review_plan_id = ?1 and p.project_id = ?2
+        )
+        order by id
         "#,
     )?;
     let rows = stmt.query_map(params![review_plan_id, project_id], |row| {
@@ -270,9 +280,10 @@ pub fn list_review_plan_targets(
             design_requirement_id: row.get(4)?,
             task_id: row.get(5)?,
             work_unit_id: row.get(6)?,
-            repository_snapshot_id: row.get(7)?,
-            file_path: row.get(8)?,
-            symbol: row.get(9)?,
+            phase_id: row.get(7)?,
+            repository_snapshot_id: row.get(8)?,
+            file_path: row.get(9)?,
+            symbol: row.get(10)?,
         })
     })?;
     collect_rows(rows)
@@ -316,6 +327,33 @@ pub fn add_review_plan_target(
     )
     .optional()?
     .context("review plan not found")?;
+    if input.target_type == "phase" {
+        let phase_id = input.phase_id.context("phase target requires phase id")?;
+        let plan_work_unit_id: i64 = conn.query_row(
+            "select work_unit_id from review_plans where id = ?1 and project_id = ?2",
+            params![input.review_plan_id, project_id],
+            |row| row.get(0),
+        )?;
+        conn.query_row(
+            "select 1 from work_phases where id = ?1 and project_id = ?2 and work_unit_id = ?3",
+            params![phase_id, project_id, plan_work_unit_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("phase target not found for review plan work unit")?;
+        conn.execute(
+            r#"
+            insert into work_phase_review_targets(
+                project_id, review_plan_id, phase_id, created_at
+            )
+            values (?1, ?2, ?3, current_timestamp)
+            "#,
+            params![project_id, input.review_plan_id, phase_id],
+        )?;
+        return Ok(ReviewPlanTargetOutcome {
+            review_plan_target_id: conn.last_insert_rowid(),
+        });
+    }
     conn.execute(
         r#"
         insert into review_plan_targets(
@@ -349,7 +387,8 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
     validate_run_type_purpose(input.run_type, input.run_purpose)?;
     validate_review_run_result(&input)?;
-    validate_gate_context_target(&plan, &input)?;
+    let target = resolve_run_target(&tx, project_id, &plan, input.target_ref)?;
+    validate_gate_context_target(&plan, &input, &target)?;
     enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
@@ -357,19 +396,18 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     {
         bail!("new findings are disabled for resume review by policy");
     }
-    let target = resolve_run_target(&tx, project_id, &plan, input.target_ref)?;
 
     tx.execute(
         r#"
         insert into review_runs(
             project_id, review_scope_id, review_plan_id, run_type, run_purpose,
             target_type, design_version_id, design_requirement_id, task_id,
-            work_unit_id, repository_snapshot_id, file_path, symbol, target_ref,
+            work_unit_id, phase_id, repository_snapshot_id, file_path, symbol, target_ref,
             prompt_deviations, result_summary, new_findings_count,
             carried_findings_checked, clean_run, status, review_provenance,
             review_provenance_ref, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, current_timestamp)
         "#,
         params![
             project_id,
@@ -382,6 +420,7 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             target.design_requirement_id,
             target.task_id,
             target.work_unit_id,
+            target.phase_id,
             target.repository_snapshot_id,
             target.file_path,
             target.symbol,
@@ -1001,6 +1040,7 @@ fn validate_review_target_shape(input: &NewReviewPlanTarget<'_>) -> Result<()> {
         input.design_requirement_id.is_some(),
         input.task_id.is_some(),
         input.work_unit_id.is_some(),
+        input.phase_id.is_some(),
         input.repository_snapshot_id.is_some(),
         input.file_path.is_some(),
         input.symbol.is_some(),
@@ -1016,6 +1056,7 @@ fn validate_review_target_shape(input: &NewReviewPlanTarget<'_>) -> Result<()> {
         "design_requirement" => input.design_requirement_id.is_some(),
         "task" => input.task_id.is_some(),
         "work_unit" => input.work_unit_id.is_some(),
+        "phase" => input.phase_id.is_some(),
         "repository_snapshot" => input.repository_snapshot_id.is_some(),
         "file" => input
             .file_path
@@ -1043,7 +1084,11 @@ fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()> {
     Ok(())
 }
 
-fn validate_gate_context_target(plan: &StoredReviewPlan, input: &NewReviewRun<'_>) -> Result<()> {
+fn validate_gate_context_target(
+    plan: &StoredReviewPlan,
+    input: &NewReviewRun<'_>,
+    target: &ResolvedRunTarget,
+) -> Result<()> {
     if !input.clean_run
         || input.status != "completed"
         || input.run_type != "fresh"
@@ -1057,7 +1102,16 @@ fn validate_gate_context_target(plan: &StoredReviewPlan, input: &NewReviewRun<'_
     let Some(design_version_id) = plan.design_version_id else {
         return Ok(());
     };
-    let expected = review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id));
+    let expected = if let Some(phase_id) = target.phase_id {
+        review_context_ref_with_phase(
+            kind,
+            Some(design_version_id),
+            Some(plan.work_unit_id),
+            Some(phase_id),
+        )
+    } else {
+        review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id))
+    };
     if input.target_ref != Some(expected.as_str()) {
         bail!(
             "clean gate review run must use review-context target {expected}; run review-context first and pass context_ref with --target"
@@ -1232,6 +1286,7 @@ fn resolve_run_target(
             design_requirement_id: None,
             task_id: None,
             work_unit_id: None,
+            phase_id: None,
             repository_snapshot_id: None,
             file_path: None,
             symbol: None,
@@ -1247,6 +1302,7 @@ fn resolve_run_target(
             design_requirement_id: None,
             task_id: None,
             work_unit_id: Some(plan.work_unit_id),
+            phase_id: None,
             repository_snapshot_id: None,
             file_path: None,
             symbol: None,
@@ -1258,6 +1314,9 @@ fn resolve_run_target(
 }
 
 fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTarget>> {
+    if let Some(phase_id) = review_context_phase_id(target_ref)? {
+        return Ok(Some(ResolvedRunTarget::typed_id("phase", phase_id)));
+    }
     let Some((target_type, value)) = target_ref.split_once(':') else {
         return Ok(None);
     };
@@ -1275,6 +1334,7 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
             "work_unit",
             value.parse()?,
         ))),
+        "phase" => Ok(Some(ResolvedRunTarget::typed_id("phase", value.parse()?))),
         "repository_snapshot" => Ok(Some(ResolvedRunTarget::typed_id(
             "repository_snapshot",
             value.parse()?,
@@ -1285,6 +1345,7 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
             design_requirement_id: None,
             task_id: None,
             work_unit_id: None,
+            phase_id: None,
             repository_snapshot_id: None,
             file_path: Some(value.to_string()),
             symbol: None,
@@ -1296,6 +1357,7 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
             design_requirement_id: None,
             task_id: None,
             work_unit_id: None,
+            phase_id: None,
             repository_snapshot_id: None,
             file_path: None,
             symbol: Some(value.to_string()),
@@ -1305,11 +1367,39 @@ fn parse_structured_target_ref(target_ref: &str) -> Result<Option<ResolvedRunTar
     }
 }
 
+fn review_context_phase_id(target_ref: &str) -> Result<Option<i64>> {
+    if !target_ref.starts_with("review-context:") {
+        return Ok(None);
+    }
+    for part in target_ref.split(':') {
+        if let Some(value) = part.strip_prefix("phase=") {
+            return Ok(Some(value.parse()?));
+        }
+    }
+    Ok(None)
+}
+
 fn ensure_plan_has_target(
     conn: &rusqlite::Connection,
     review_plan_id: i64,
     target: &ResolvedRunTarget,
 ) -> Result<()> {
+    if target.target_type == "phase" {
+        conn.query_row(
+            r#"
+            select 1
+            from work_phase_review_targets
+            where review_plan_id = ?1
+              and phase_id = ?2
+            "#,
+            params![review_plan_id, target.phase_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .context("review run target must be included in review plan targets")?;
+        return Ok(());
+    }
+
     conn.query_row(
         r#"
         select 1
@@ -1492,6 +1582,7 @@ struct ResolvedRunTarget {
     design_requirement_id: Option<i64>,
     task_id: Option<i64>,
     work_unit_id: Option<i64>,
+    phase_id: Option<i64>,
     repository_snapshot_id: Option<i64>,
     file_path: Option<String>,
     symbol: Option<String>,
@@ -1506,6 +1597,7 @@ impl ResolvedRunTarget {
             design_requirement_id: (target_type == "design_requirement").then_some(id),
             task_id: (target_type == "task").then_some(id),
             work_unit_id: (target_type == "work_unit").then_some(id),
+            phase_id: (target_type == "phase").then_some(id),
             repository_snapshot_id: (target_type == "repository_snapshot").then_some(id),
             file_path: None,
             symbol: None,
@@ -1567,6 +1659,7 @@ pub struct NewReviewPlanTarget<'a> {
     pub design_requirement_id: Option<i64>,
     pub task_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub phase_id: Option<i64>,
     pub repository_snapshot_id: Option<i64>,
     pub file_path: Option<&'a str>,
     pub symbol: Option<&'a str>,
@@ -1735,6 +1828,7 @@ pub struct ReviewPlanTargetRecord {
     pub design_requirement_id: Option<i64>,
     pub task_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub phase_id: Option<i64>,
     pub repository_snapshot_id: Option<i64>,
     pub file_path: Option<String>,
     pub symbol: Option<String>,

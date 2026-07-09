@@ -4,6 +4,7 @@ mod coverage;
 mod db;
 mod design;
 mod kpt;
+mod phases;
 mod planning;
 mod records;
 mod repository;
@@ -56,6 +57,17 @@ pub use kpt::{
     convert_kpt_item_to_review_policy, convert_kpt_item_to_task, list_kpt_items, list_kpt_reviews,
     start_kpt_review,
 };
+pub use phases::{
+    NewPhaseDependency, NewPhaseTraceDecision, NewWorkPhase, PhaseAcceptanceOutcome,
+    PhaseCloseOutcome, PhaseCloseReadyItem, PhaseCloseReadyOutcome, PhaseDependencyOutcome,
+    PhaseDependencyRecord, PhaseInventory, PhaseRescope, PhaseRescopeBlocker, PhaseRescopeOutcome,
+    PhaseReviewTargetOutcome, PhaseSplit, PhaseTaskOutcome, PhaseTraceDecisionOutcome,
+    PhaseTraceRecord, WorkPhaseOutcome, WorkPhaseRecord, accept_phase_dependency,
+    accept_phase_out_of_scope, add_phase_dependency, add_phase_review_target, assign_task_to_phase,
+    close_phase, create_phase, decide_phase_trace, list_phase_dependencies, list_phase_trace,
+    list_phases, phase_close_ready, phase_inventory, phase_rescope, phase_split,
+    satisfy_phase_dependency, show_phase,
+};
 pub use planning::{
     DecisionOutcome, DecisionRecord, NewDecision, NewTask, TaskAcceptanceOutcome, TaskCloseOutcome,
     TaskListQuery, TaskOutcome, TaskRecord, accept_task_out_of_scope, add_decision, add_task,
@@ -92,6 +104,7 @@ pub use review::{
 };
 pub use review_context::{
     ReviewContextDocument, ReviewContextQuery, render_review_context, review_context_ref,
+    review_context_ref_with_phase,
 };
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,

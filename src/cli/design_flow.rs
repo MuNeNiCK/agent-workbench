@@ -213,6 +213,7 @@ pub(crate) fn print_review_context(root: &std::path::Path, args: &ReviewContextA
             kind: &args.kind,
             design_version_id: args.design_version,
             work_unit_id: args.work_unit,
+            phase_id: args.phase,
         },
     )?;
     print!("{}", document.text);

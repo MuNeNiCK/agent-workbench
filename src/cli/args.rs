@@ -70,6 +70,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Manage work phases inside aggregate work units.
+    Phase {
+        #[command(subcommand)]
+        command: PhaseCommand,
+    },
     /// Manage project decisions.
     Decision {
         #[command(subcommand)]
@@ -964,6 +969,186 @@ pub(crate) enum TaskCommand {
     AcceptOutOfScope(TaskAcceptOutOfScopeArgs),
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum PhaseCommand {
+    Create(PhaseCreateArgs),
+    List(PhaseListArgs),
+    Show(PhaseShowArgs),
+    Assign(PhaseAssignArgs),
+    Dependency {
+        #[command(subcommand)]
+        command: PhaseDependencyCommand,
+    },
+    Trace {
+        #[command(subcommand)]
+        command: PhaseTraceCommand,
+    },
+    Inventory(PhaseInventoryArgs),
+    Rescope(PhaseRescopeArgs),
+    Split(PhaseSplitArgs),
+    CloseReady(PhaseCloseReadyArgs),
+    Close(PhaseCloseArgs),
+    AcceptOutOfScope(PhaseAcceptOutOfScopeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseCreateArgs {
+    #[arg(long)]
+    pub(crate) work_unit: i64,
+    #[arg(long)]
+    pub(crate) design_version: Option<i64>,
+    #[arg(long)]
+    pub(crate) key: String,
+    #[arg(long)]
+    pub(crate) title: String,
+    #[arg(long, default_value = "milestone")]
+    pub(crate) kind: String,
+    #[arg(long = "order")]
+    pub(crate) order: i64,
+    #[arg(long)]
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseListArgs {
+    #[arg(long)]
+    pub(crate) work_unit: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseShowArgs {
+    pub(crate) phase_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseAssignArgs {
+    pub(crate) phase_id: i64,
+    #[arg(long)]
+    pub(crate) task: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PhaseDependencyCommand {
+    Add(PhaseDependencyAddArgs),
+    List(PhaseDependencyListArgs),
+    Satisfy(PhaseDependencySatisfyArgs),
+    Accept(PhaseDependencyAcceptArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseDependencyAddArgs {
+    #[arg(long = "from")]
+    pub(crate) from_phase: i64,
+    #[arg(long = "to")]
+    pub(crate) to_phase: i64,
+    #[arg(long = "type")]
+    pub(crate) dependency_type: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseDependencyListArgs {
+    #[arg(long)]
+    pub(crate) work_unit: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseDependencySatisfyArgs {
+    pub(crate) dependency_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) evidence: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseDependencyAcceptArgs {
+    pub(crate) dependency_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PhaseTraceCommand {
+    List(PhaseTraceListArgs),
+    Decide(PhaseTraceDecideArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseTraceListArgs {
+    pub(crate) phase_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseTraceDecideArgs {
+    #[arg(long)]
+    pub(crate) phase: i64,
+    #[arg(long)]
+    pub(crate) record: String,
+    #[arg(long)]
+    pub(crate) decision: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseInventoryArgs {
+    pub(crate) phase_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseRescopeArgs {
+    #[arg(long)]
+    pub(crate) phase: i64,
+    #[arg(long)]
+    pub(crate) to_work_unit: i64,
+    #[arg(long, default_value = "require-decisions")]
+    pub(crate) shared_record_policy: String,
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseSplitArgs {
+    pub(crate) phase_id: i64,
+    #[arg(long)]
+    pub(crate) title: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long, default_value = "require-decisions")]
+    pub(crate) shared_record_policy: String,
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseCloseReadyArgs {
+    pub(crate) phase_id: i64,
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseCloseArgs {
+    pub(crate) phase_id: i64,
+    #[arg(long)]
+    pub(crate) summary: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PhaseAcceptOutOfScopeArgs {
+    pub(crate) phase_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct TaskAddArgs {
     pub(crate) title: String,
@@ -1354,6 +1539,8 @@ pub(crate) struct ReviewPlanTargetAddArgs {
     pub(crate) task: Option<i64>,
     #[arg(long)]
     pub(crate) work_unit: Option<i64>,
+    #[arg(long)]
+    pub(crate) phase: Option<i64>,
     #[arg(long)]
     pub(crate) repository_snapshot: Option<i64>,
     #[arg(long)]
@@ -1766,6 +1953,8 @@ pub(crate) struct ReviewContextArgs {
     pub(crate) design_version: Option<i64>,
     #[arg(long)]
     pub(crate) work_unit: Option<i64>,
+    #[arg(long)]
+    pub(crate) phase: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -9,7 +9,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -127,13 +127,18 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     design_version_id: row.get(2)?,
+                    next_phase_id: None,
+                    next_phase_key: None,
+                    next_phase_title: None,
                 })
             },
         )
         .optional()?;
 
     if let Some(work_unit) = active {
-        return Ok(NextAction::ContinueActive { work_unit });
+        return Ok(NextAction::ContinueActive {
+            work_unit: attach_next_phase(&conn, work_unit)?,
+        });
     }
 
     let suspended = conn
@@ -159,12 +164,17 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     design_version_id: row.get(2)?,
+                    next_phase_id: None,
+                    next_phase_key: None,
+                    next_phase_title: None,
                 })
             },
         )
         .optional()?;
     if let Some(work_unit) = suspended {
-        return Ok(NextAction::ResumeSuspended { work_unit });
+        return Ok(NextAction::ResumeSuspended {
+            work_unit: attach_next_phase(&conn, work_unit)?,
+        });
     }
 
     let inactive = conn
@@ -194,15 +204,55 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     design_version_id: row.get(2)?,
+                    next_phase_id: None,
+                    next_phase_key: None,
+                    next_phase_title: None,
                 })
             },
         )
         .optional()?;
 
     Ok(match inactive {
-        Some(work_unit) => NextAction::ActivateOpen { work_unit },
+        Some(work_unit) => NextAction::ActivateOpen {
+            work_unit: attach_next_phase(&conn, work_unit)?,
+        },
         None => NextAction::NoOpenWorkUnit,
     })
+}
+
+fn attach_next_phase(conn: &Connection, mut work_unit: ActiveWorkUnit) -> Result<ActiveWorkUnit> {
+    let next_phase = conn
+        .query_row(
+            r#"
+            select p.id, p.phase_key, p.title
+            from work_phases p
+            where p.work_unit_id = ?1
+              and p.status in ('open', 'blocked')
+              and not exists (
+                  select 1
+                  from work_phase_dependencies d
+                  where d.to_phase_id = p.id
+                    and d.status = 'open'
+              )
+            order by p.phase_order, p.id
+            limit 1
+            "#,
+            params![work_unit.id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((id, key, title)) = next_phase {
+        work_unit.next_phase_id = Some(id);
+        work_unit.next_phase_key = Some(key);
+        work_unit.next_phase_title = Some(title);
+    }
+    Ok(work_unit)
 }
 
 fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
@@ -431,6 +481,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     prepare_acceptance_records_for_schema(conn)?;
     prepare_review_runs_for_schema(conn)?;
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
+    drop_phase_review_target_reference_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
     migrate_acceptance_records(conn)?;
     repair_acceptance_record_references(conn)?;
@@ -442,7 +493,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     validate_review_required_links(conn)?;
     refresh_review_integrity_triggers(conn)?;
     refresh_ledger_integrity_triggers(conn)?;
+    ensure_phase_schema(conn)?;
+    migrate_review_runs_phase_targets(conn)?;
+    ensure_phase_review_target_reference_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
+    ensure_phase_review_target_reference_triggers(conn)?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
@@ -643,6 +698,8 @@ fn refresh_review_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_review_plan_target_project_update;
         drop trigger if exists trg_review_plan_target_referenced_update;
         drop trigger if exists trg_review_plan_target_referenced_delete;
+        drop trigger if exists trg_work_phase_review_target_referenced_update;
+        drop trigger if exists trg_work_phase_review_target_referenced_delete;
         drop trigger if exists trg_finding_project_insert;
         drop trigger if exists trg_finding_project_update;
         drop trigger if exists trg_finding_clean_run_insert;
@@ -655,6 +712,16 @@ fn refresh_review_integrity_triggers(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_closure_project_update;
         drop trigger if exists trg_finding_verification_project_insert;
         drop trigger if exists trg_finding_verification_project_update;
+        "#,
+    )?;
+    Ok(())
+}
+
+fn drop_phase_review_target_reference_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_work_phase_review_target_referenced_update;
+        drop trigger if exists trg_work_phase_review_target_referenced_delete;
         "#,
     )?;
     Ok(())
@@ -1529,6 +1596,99 @@ fn migrate_review_runs(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_review_runs_phase_targets(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "review_runs")? {
+        return Ok(());
+    }
+
+    ensure_column(conn, "review_runs", "file_path", "text")?;
+    ensure_column(conn, "review_runs", "symbol", "text")?;
+    ensure_column(
+        conn,
+        "review_runs",
+        "review_provenance",
+        "text not null default 'self_recorded'",
+    )?;
+    ensure_column(conn, "review_runs", "review_provenance_ref", "text")?;
+    ensure_column(conn, "review_runs", "phase_id", "integer")?;
+
+    let table_sql: String = conn.query_row(
+        "select sql from sqlite_schema where type = 'table' and name = 'review_runs'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_sql.contains("'phase'") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        pragma foreign_keys = off;
+
+        create table review_runs_new (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            review_scope_id integer references review_scopes(id),
+            review_plan_id integer not null references review_plans(id),
+            run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
+            run_purpose text not null check (run_purpose in ('new_unbiased_review', 'finding_fix_verification', 'coverage_audit')),
+            target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'phase', 'repository_snapshot', 'file', 'symbol')),
+            design_version_id integer references design_versions(id),
+            design_requirement_id integer references design_requirements(id),
+            task_id integer references tasks(id),
+            work_unit_id integer references work_units(id),
+            phase_id integer references work_phases(id),
+            repository_snapshot_id integer,
+            file_path text,
+            symbol text,
+            target_ref text,
+            prompt_deviations text,
+            result_summary text,
+            new_findings_count integer not null default 0 check (new_findings_count >= 0),
+            carried_findings_checked integer not null default 0 check (carried_findings_checked >= 0),
+            clean_run integer not null default 0 check (clean_run in (0, 1)),
+            review_provenance text not null default 'self_recorded' check (review_provenance in ('self_recorded', 'external_agent', 'human_review')),
+            review_provenance_ref text,
+            status text not null default 'requested' check (status in ('requested', 'running', 'completed', 'failed', 'cancelled')),
+            created_at text not null,
+            check (
+                (run_type = 'fresh' and run_purpose = 'new_unbiased_review')
+                or (run_type = 'resume' and run_purpose = 'finding_fix_verification')
+                or (run_type = 'coverage' and run_purpose = 'coverage_audit')
+            ),
+            check (
+                clean_run = 0
+                or (status = 'completed' and new_findings_count = 0)
+            )
+        );
+
+        insert into review_runs_new(
+            id, project_id, review_scope_id, review_plan_id, run_type, run_purpose,
+            target_type, design_version_id, design_requirement_id, task_id,
+            work_unit_id, phase_id, repository_snapshot_id, file_path, symbol,
+            target_ref, prompt_deviations, result_summary, new_findings_count,
+            carried_findings_checked, clean_run, review_provenance,
+            review_provenance_ref, status, created_at
+        )
+        select
+            id, project_id, review_scope_id, review_plan_id, run_type, run_purpose,
+            target_type, design_version_id, design_requirement_id, task_id,
+            work_unit_id, phase_id, repository_snapshot_id, file_path, symbol,
+            target_ref, prompt_deviations, result_summary, new_findings_count,
+            carried_findings_checked, clean_run, review_provenance,
+            review_provenance_ref, status, created_at
+        from review_runs;
+
+        drop table review_runs;
+        alter table review_runs_new rename to review_runs;
+
+        pragma foreign_keys = on;
+        "#,
+    )?;
+
+    Ok(())
+}
+
 fn migrate_resume_check_items(conn: &Connection) -> Result<()> {
     let table_sql = conn
         .query_row(
@@ -1577,6 +1737,52 @@ fn migrate_resume_check_items(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_phase_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(PHASE_SCHEMA)?;
+    Ok(())
+}
+
+fn ensure_phase_review_target_reference_triggers(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "work_phase_review_targets")? || !table_exists(conn, "review_runs")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_work_phase_review_target_referenced_update;
+        drop trigger if exists trg_work_phase_review_target_referenced_delete;
+
+        create trigger trg_work_phase_review_target_referenced_update
+        before update of review_plan_id, phase_id on work_phase_review_targets
+        for each row
+        when exists (
+            select 1
+            from review_runs r
+            where r.review_plan_id = old.review_plan_id
+              and r.target_type = 'phase'
+              and r.phase_id = old.phase_id
+        )
+        begin
+            select raise(abort, 'work phase review target is referenced by review runs');
+        end;
+
+        create trigger trg_work_phase_review_target_referenced_delete
+        before delete on work_phase_review_targets
+        for each row
+        when exists (
+            select 1
+            from review_runs r
+            where r.review_plan_id = old.review_plan_id
+              and r.target_type = 'phase'
+              and r.phase_id = old.phase_id
+        )
+        begin
+            select raise(abort, 'work phase review target is referenced by review runs');
+        end;
+        "#,
+    )?;
+    Ok(())
+}
+
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
     if table_has_column(conn, table, column)? {
         return Ok(());
@@ -1588,6 +1794,138 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
     )?;
     Ok(())
 }
+
+const PHASE_SCHEMA: &str = r#"
+create table if not exists work_phases (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    work_unit_id integer not null references work_units(id) on delete cascade,
+    phase_work_unit_id integer references work_units(id) on delete set null,
+    design_version_id integer references design_versions(id) on delete set null,
+    phase_key text not null,
+    title text not null,
+    kind text not null,
+    phase_order integer not null,
+    status text not null default 'open' check (status in ('open', 'blocked', 'closed', 'accepted_out_of_scope', 'split')),
+    reason text,
+    authority_event_id integer references authority_events(id),
+    created_at text not null,
+    closed_at text,
+    close_summary text,
+    unique(project_id, work_unit_id, phase_key)
+);
+
+create table if not exists work_phase_task_memberships (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    phase_id integer not null references work_phases(id) on delete cascade,
+    task_id integer not null references tasks(id) on delete cascade,
+    assigned_at text not null,
+    unique(task_id)
+);
+
+create table if not exists work_phase_dependencies (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    from_phase_id integer not null references work_phases(id) on delete cascade,
+    to_phase_id integer not null references work_phases(id) on delete cascade,
+    dependency_type text not null check (dependency_type in ('blocks', 'requires')),
+    reason text not null,
+    status text not null default 'open' check (status in ('open', 'satisfied', 'accepted')),
+    evidence_ref text,
+    authority_event_id integer references authority_events(id),
+    created_at text not null,
+    resolved_at text
+);
+
+create table if not exists work_phase_trace_decisions (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    phase_id integer not null references work_phases(id) on delete cascade,
+    record_type text not null check (record_type in (
+        'task', 'task_derivation', 'checklist_item', 'validation_gate',
+        'coverage_item', 'implementation_evidence', 'review_plan',
+        'rule_binding', 'work_record'
+    )),
+    record_id integer not null,
+    decision text not null check (decision in ('split', 'carry', 'accept')),
+    reason text not null,
+    authority_event_id integer not null references authority_events(id),
+    created_at text not null,
+    unique(phase_id, record_type, record_id)
+);
+
+create table if not exists work_phase_review_targets (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    review_plan_id integer not null references review_plans(id) on delete cascade,
+    phase_id integer not null references work_phases(id) on delete cascade,
+    created_at text not null,
+    unique(review_plan_id, phase_id)
+);
+
+create table if not exists work_phase_events (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    phase_id integer not null references work_phases(id) on delete cascade,
+    event_type text not null check (event_type in (
+        'created', 'assigned', 'dependency_added', 'dependency_satisfied',
+        'dependency_accepted', 'trace_decided', 'rescope_dry_run',
+        'rescoped', 'split', 'closed', 'accepted_out_of_scope'
+    )),
+    reason text,
+    authority_event_id integer references authority_events(id),
+    related_task_id integer references tasks(id),
+    related_work_unit_id integer references work_units(id),
+    previous_status text,
+    next_status text,
+    created_at text not null
+);
+
+create trigger if not exists trg_work_phase_work_unit_project_insert
+before insert on work_phases
+for each row
+when new.project_id != (select project_id from work_units where id = new.work_unit_id)
+  or (
+      new.phase_work_unit_id is not null
+      and new.project_id != (select project_id from work_units where id = new.phase_work_unit_id)
+  )
+begin
+    select raise(abort, 'work phase work units must match project_id');
+end;
+
+create trigger if not exists trg_work_phase_membership_project_insert
+before insert on work_phase_task_memberships
+for each row
+when new.project_id != (select project_id from work_phases where id = new.phase_id)
+  or new.project_id != coalesce(
+      (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+      new.project_id
+  )
+begin
+    select raise(abort, 'work phase task membership must match project_id');
+end;
+
+create trigger if not exists trg_work_phase_dependency_project_insert
+before insert on work_phase_dependencies
+for each row
+when new.project_id != (select project_id from work_phases where id = new.from_phase_id)
+  or new.project_id != (select project_id from work_phases where id = new.to_phase_id)
+  or (select work_unit_id from work_phases where id = new.from_phase_id)
+      != (select work_unit_id from work_phases where id = new.to_phase_id)
+begin
+    select raise(abort, 'work phase dependency phases must share project and aggregate work unit');
+end;
+
+create trigger if not exists trg_work_phase_review_target_project_insert
+before insert on work_phase_review_targets
+for each row
+when new.project_id != (select project_id from review_plans where id = new.review_plan_id)
+  or new.project_id != (select project_id from work_phases where id = new.phase_id)
+begin
+    select raise(abort, 'work phase review target must match project_id');
+end;
+"#;
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
@@ -2114,6 +2452,9 @@ pub struct ActiveWorkUnit {
     pub id: i64,
     pub title: String,
     pub design_version_id: Option<i64>,
+    pub next_phase_id: Option<i64>,
+    pub next_phase_key: Option<String>,
+    pub next_phase_title: Option<String>,
 }
 
 const SCHEMA: &str = r#"
@@ -4129,11 +4470,12 @@ end;
 create table if not exists review_plan_targets (
     id integer primary key,
     review_plan_id integer not null references review_plans(id) on delete cascade,
-    target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'repository_snapshot', 'file', 'symbol')),
+    target_type text not null check (target_type in ('design_version', 'design_requirement', 'task', 'work_unit', 'phase', 'repository_snapshot', 'file', 'symbol')),
     design_version_id integer references design_versions(id),
     design_requirement_id integer references design_requirements(id),
     task_id integer references tasks(id),
     work_unit_id integer references work_units(id),
+    phase_id integer references work_phases(id),
     repository_snapshot_id integer,
     file_path text,
     symbol text,
@@ -4385,6 +4727,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from design_versions where id = new.design_version_id)
     ))
@@ -4393,6 +4736,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is not null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from design_requirements where id = new.design_requirement_id)
     ))
@@ -4401,6 +4745,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is not null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = coalesce(
             (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
@@ -4412,14 +4757,27 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is not null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from work_units where id = new.work_unit_id)
+    ))
+  or (new.target_type = 'phase' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.phase_id is not null
+        and new.repository_snapshot_id is null
+        and new.file_path is null
+        and new.symbol is null
+        and new.project_id = (select project_id from work_phases where id = new.phase_id)
     ))
   or (new.target_type = 'repository_snapshot' and not (
         new.design_version_id is null
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is not null
         and exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
         and new.project_id = (
@@ -4434,6 +4792,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and (
             (new.target_type = 'file' and new.file_path is not null and new.symbol is null)
@@ -4454,13 +4813,14 @@ begin
 end;
 
 create trigger if not exists trg_review_run_target_update
-before update of project_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
+before update of project_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, phase_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
 for each row
 when (new.target_type = 'design_version' and not (
         new.design_version_id is not null
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from design_versions where id = new.design_version_id)
     ))
@@ -4469,6 +4829,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is not null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from design_requirements where id = new.design_requirement_id)
     ))
@@ -4477,6 +4838,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is not null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = coalesce(
             (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
@@ -4488,14 +4850,27 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is not null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and new.project_id = (select project_id from work_units where id = new.work_unit_id)
+    ))
+  or (new.target_type = 'phase' and not (
+        new.design_version_id is null
+        and new.design_requirement_id is null
+        and new.task_id is null
+        and new.work_unit_id is null
+        and new.phase_id is not null
+        and new.repository_snapshot_id is null
+        and new.file_path is null
+        and new.symbol is null
+        and new.project_id = (select project_id from work_phases where id = new.phase_id)
     ))
   or (new.target_type = 'repository_snapshot' and not (
         new.design_version_id is null
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is not null
         and exists (select 1 from repository_snapshots where id = new.repository_snapshot_id)
         and new.project_id = (
@@ -4510,6 +4885,7 @@ when (new.target_type = 'design_version' and not (
         and new.design_requirement_id is null
         and new.task_id is null
         and new.work_unit_id is null
+        and new.phase_id is null
         and new.repository_snapshot_id is null
         and (
             (new.target_type = 'file' and new.file_path is not null and new.symbol is null)
@@ -4524,41 +4900,69 @@ create trigger if not exists trg_review_run_plan_target_insert
 before insert on review_runs
 for each row
 when new.review_plan_id is not null
-  and not exists (
-      select 1
-      from review_plan_targets t
-      where t.review_plan_id = new.review_plan_id
-        and (
-            (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
-            or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
-            or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
-            or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
-            or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
-            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
-            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
-        )
+  and (
+      (
+          new.target_type != 'phase'
+          and not exists (
+              select 1
+              from review_plan_targets t
+              where t.review_plan_id = new.review_plan_id
+                and (
+                    (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
+                    or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
+                    or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
+                    or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
+                    or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
+                    or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
+                    or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
+                )
+          )
+      )
+      or (
+          new.target_type = 'phase'
+          and not exists (
+              select 1
+              from work_phase_review_targets t
+              where t.review_plan_id = new.review_plan_id
+                and t.phase_id = new.phase_id
+          )
+      )
   )
 begin
     select raise(abort, 'review run target must be included in review plan targets');
 end;
 
 create trigger if not exists trg_review_run_plan_target_update
-before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
+before update of review_plan_id, target_type, design_version_id, design_requirement_id, task_id, work_unit_id, phase_id, repository_snapshot_id, file_path, symbol, target_ref on review_runs
 for each row
 when new.review_plan_id is not null
-  and not exists (
-      select 1
-      from review_plan_targets t
-      where t.review_plan_id = new.review_plan_id
-        and (
-            (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
-            or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
-            or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
-            or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
-            or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
-            or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
-            or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
-        )
+  and (
+      (
+          new.target_type != 'phase'
+          and not exists (
+              select 1
+              from review_plan_targets t
+              where t.review_plan_id = new.review_plan_id
+                and (
+                    (new.target_type = 'design_version' and t.target_type = 'design_version' and t.design_version_id = new.design_version_id)
+                    or (new.target_type = 'design_requirement' and t.target_type = 'design_requirement' and t.design_requirement_id = new.design_requirement_id)
+                    or (new.target_type = 'task' and t.target_type = 'task' and t.task_id = new.task_id)
+                    or (new.target_type = 'work_unit' and t.target_type = 'work_unit' and t.work_unit_id = new.work_unit_id)
+                    or (new.target_type = 'repository_snapshot' and t.target_type = 'repository_snapshot' and t.repository_snapshot_id = new.repository_snapshot_id)
+                    or (new.target_type = 'file' and t.target_type = 'file' and t.file_path = new.file_path)
+                    or (new.target_type = 'symbol' and t.target_type = 'symbol' and t.symbol = new.symbol)
+                )
+          )
+      )
+      or (
+          new.target_type = 'phase'
+          and not exists (
+              select 1
+              from work_phase_review_targets t
+              where t.review_plan_id = new.review_plan_id
+                and t.phase_id = new.phase_id
+          )
+      )
   )
 begin
     select raise(abort, 'review run target must be included in review plan targets');

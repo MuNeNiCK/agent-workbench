@@ -1152,6 +1152,752 @@ fn next_can_activate_existing_open_work_unit() {
 }
 
 #[test]
+fn phase_commands_group_tasks_and_drive_next_phase_order() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "aggregate implementation"]);
+    ok(
+        temp.path(),
+        &["task", "add", "beta task", "--work-unit", "1"],
+    );
+    ok(
+        temp.path(),
+        &["task", "add", "alpha task", "--work-unit", "1"],
+    );
+
+    let beta = ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--key",
+            "beta",
+            "--title",
+            "Beta",
+            "--kind",
+            "feature",
+            "--order",
+            "2",
+        ],
+    );
+    let alpha = ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--key",
+            "alpha",
+            "--title",
+            "Alpha",
+            "--kind",
+            "feature",
+            "--order",
+            "1",
+        ],
+    );
+    assert!(beta.contains("phase_id: 1"));
+    assert!(alpha.contains("phase_id: 2"));
+    ok(temp.path(), &["phase", "assign", "1", "--task", "1"]);
+    ok(temp.path(), &["phase", "assign", "2", "--task", "2"]);
+
+    let next = ok(temp.path(), &["next"]);
+    assert!(next.contains("next_phase_id: 2"));
+    assert!(next.contains("next_phase_key: alpha"));
+
+    let dependency = ok(
+        temp.path(),
+        &[
+            "phase",
+            "dependency",
+            "add",
+            "--from",
+            "1",
+            "--to",
+            "2",
+            "--type",
+            "blocks",
+            "--reason",
+            "beta must settle first",
+        ],
+    );
+    assert!(dependency.contains("dependency_id: 1"));
+    let next = ok(temp.path(), &["next"]);
+    assert!(next.contains("next_phase_id: 1"));
+    assert!(next.contains("next_phase_key: beta"));
+
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "dependency",
+            "satisfy",
+            "1",
+            "--reason",
+            "beta contract done",
+            "--evidence",
+            "task:1",
+        ],
+    );
+    let next = ok(temp.path(), &["next"]);
+    assert!(next.contains("next_phase_id: 2"));
+
+    let inventory = ok(temp.path(), &["phase", "inventory", "2"]);
+    assert!(inventory.contains("task:2 [open decision=-] alpha task"));
+}
+
+#[test]
+fn phase_split_moves_assigned_tasks_to_child_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "aggregate implementation"]);
+    ok(
+        temp.path(),
+        &["task", "add", "phase task", "--work-unit", "1"],
+    );
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--key",
+            "slice",
+            "--title",
+            "Slice",
+            "--kind",
+            "feature",
+            "--order",
+            "1",
+        ],
+    );
+    ok(temp.path(), &["phase", "assign", "1", "--task", "1"]);
+    ok(temp.path(), &["task", "close", "1"]);
+
+    let blocked = ok(
+        temp.path(),
+        &[
+            "phase",
+            "split",
+            "1",
+            "--title",
+            "slice implementation",
+            "--reason",
+            "execute independently",
+            "--shared-record-policy",
+            "carry-shared",
+            "--dry-run",
+        ],
+    );
+    assert!(blocked.contains("closed_records_require_authority"));
+    let authority = cli_approval_authority_event(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "trace",
+            "decide",
+            "--phase",
+            "1",
+            "--record",
+            "task:1",
+            "--decision",
+            "carry",
+            "--reason",
+            "closed task remains audit evidence for the phase",
+            "--authority",
+            &authority,
+        ],
+    );
+
+    let split = ok(
+        temp.path(),
+        &[
+            "phase",
+            "split",
+            "1",
+            "--title",
+            "slice implementation",
+            "--reason",
+            "execute independently",
+            "--shared-record-policy",
+            "carry-shared",
+        ],
+    );
+    assert!(split.contains("phase split"));
+    assert!(split.contains("target_work_unit_id: 2"));
+    let tasks = ok(temp.path(), &["task", "list", "--work-unit", "2"]);
+    assert!(tasks.contains("phase task"));
+    let phase = ok(temp.path(), &["phase", "show", "1"]);
+    assert!(phase.contains("[split"));
+    assert!(phase.contains("phase_work_unit=2"));
+}
+
+#[test]
+fn phase_split_applies_shared_split_decisions() {
+    let temp = tempfile::tempdir().unwrap();
+    prepare_ready_design_work(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--design-version",
+            "1",
+            "--key",
+            "feature",
+            "--title",
+            "Feature",
+            "--kind",
+            "feature",
+            "--order",
+            "1",
+        ],
+    );
+    ok(temp.path(), &["phase", "assign", "1", "--task", "1"]);
+    ok(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--work-unit",
+            "1",
+            "--status",
+            "covered",
+            "--requirement-text",
+            "Preserve cleanup behavior",
+            "--runtime",
+            "shared work-unit coverage",
+            "--tests-or-gates",
+            "shared gate",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "record",
+            "create",
+            "--work-unit",
+            "1",
+            "--topic",
+            "shared phase record",
+            "--work-performed",
+            "shared aggregate record",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "implementation_review",
+            "--stage",
+            "close-ready",
+            "--design-version",
+            "1",
+            "--required",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review", "plan", "target", "add", "--plan", "3", "--type", "phase", "--phase", "1",
+        ],
+    );
+    let authority = cli_approval_authority_event(temp.path());
+    let invalid_decision = err(
+        temp.path(),
+        &[
+            "phase",
+            "trace",
+            "decide",
+            "--phase",
+            "1",
+            "--record",
+            "work_record:999",
+            "--decision",
+            "split",
+            "--reason",
+            "invalid stale decision",
+            "--authority",
+            &authority,
+        ],
+    );
+    assert!(invalid_decision.contains("work_record:999 is not part of phase 1 trace inventory"));
+    for record in ["coverage_item:1", "review_plan:3", "work_record:1"] {
+        ok(
+            temp.path(),
+            &[
+                "phase",
+                "trace",
+                "decide",
+                "--phase",
+                "1",
+                "--record",
+                record,
+                "--decision",
+                "split",
+                "--reason",
+                "phase needs independent audit row",
+                "--authority",
+                &authority,
+            ],
+        );
+    }
+
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "split",
+            "1",
+            "--title",
+            "feature implementation",
+            "--reason",
+            "execute feature independently",
+            "--shared-record-policy",
+            "carry-shared",
+        ],
+    );
+
+    let conn = conn(temp.path());
+    let split_coverage_count: i64 = conn
+        .query_row(
+            "select count(*) from coverage_items where work_unit_id = 2 and task_id is null",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let split_review_count: i64 = conn
+        .query_row(
+            "select count(*) from review_plans where work_unit_id = 2 and review_type = 'implementation_review'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let split_record_count: i64 = conn
+        .query_row(
+            "select count(*) from work_records where work_unit_id = 2 and topic = 'shared phase record'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(split_coverage_count, 1);
+    assert_eq!(split_review_count, 1);
+    assert_eq!(split_record_count, 1);
+}
+
+#[test]
+fn design_phase_rescope_dry_run_reports_shared_trace_decisions_and_phase_context() {
+    let temp = tempfile::tempdir().unwrap();
+    prepare_ready_design_work(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--design-version",
+            "1",
+            "--key",
+            "feature",
+            "--title",
+            "Feature",
+            "--kind",
+            "feature",
+            "--order",
+            "1",
+        ],
+    );
+    ok(temp.path(), &["phase", "assign", "1", "--task", "1"]);
+    ok(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--work-unit",
+            "1",
+            "--status",
+            "covered",
+            "--requirement-text",
+            "Preserve cleanup behavior",
+            "--runtime",
+            "shared work-unit coverage",
+            "--tests-or-gates",
+            "shared gate",
+        ],
+    );
+
+    let dry_run = ok(
+        temp.path(),
+        &[
+            "phase",
+            "rescope",
+            "--phase",
+            "1",
+            "--to-work-unit",
+            "1",
+            "--shared-record-policy",
+            "require-decisions",
+            "--dry-run",
+        ],
+    );
+    assert!(dry_run.contains("result: blocked"));
+    assert!(dry_run.contains("shared_trace_decision_required"));
+    assert!(dry_run.contains("phase trace decide --phase 1 --record coverage_item:1"));
+
+    let authority = cli_approval_authority_event(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "trace",
+            "decide",
+            "--phase",
+            "1",
+            "--record",
+            "coverage_item:1",
+            "--decision",
+            "carry",
+            "--reason",
+            "shared coverage applies to this phase",
+            "--authority",
+            &authority,
+        ],
+    );
+    let dry_run = ok(
+        temp.path(),
+        &[
+            "phase",
+            "rescope",
+            "--phase",
+            "1",
+            "--to-work-unit",
+            "1",
+            "--shared-record-policy",
+            "require-decisions",
+            "--dry-run",
+        ],
+    );
+    assert!(!dry_run.contains("coverage_item:1 requires split/carry/accept decision"));
+    assert!(dry_run.contains("rule_binding:"));
+    let dry_run = ok(
+        temp.path(),
+        &[
+            "phase",
+            "rescope",
+            "--phase",
+            "1",
+            "--to-work-unit",
+            "1",
+            "--shared-record-policy",
+            "carry-shared",
+            "--dry-run",
+        ],
+    );
+    assert!(dry_run.contains("result: pass"));
+
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "policy",
+            "add",
+            "--name",
+            "phase implementation reviews",
+            "--type",
+            "implementation_review",
+            "--max-fresh-agents",
+            "2",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            "1",
+            "--type",
+            "implementation_review",
+            "--stage",
+            "close-ready",
+            "--design-version",
+            "1",
+            "--policy",
+            "3",
+            "--required",
+        ],
+    );
+    let target = ok(
+        temp.path(),
+        &[
+            "review", "plan", "target", "add", "--plan", "3", "--type", "phase", "--phase", "1",
+        ],
+    );
+    assert!(target.contains("review_plan_target_id: 1"));
+    let context = ok(
+        temp.path(),
+        &[
+            "review-context",
+            "implementation-review",
+            "--design-version",
+            "1",
+            "--work-unit",
+            "1",
+            "--phase",
+            "1",
+        ],
+    );
+    assert!(
+        context
+            .contains("context_ref: review-context:implementation-review:design=1:work=1:phase=1")
+    );
+    assert!(context.contains("phase_key: feature"));
+    assert!(context.contains("Implement REQ-001"));
+
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "3",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:implementation-review:design=1:work=1",
+            "--clean",
+            "--agent-label",
+            "aggregate-reviewer",
+            "--external-agent-id",
+            "aggregate-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "aggregate-review-output",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "evidence",
+            "add",
+            "--task",
+            "1",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--type",
+            "file",
+            "--file",
+            "src/lib.rs",
+            "--note",
+            "phase implementation evidence",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "coverage",
+            "add",
+            "--design",
+            "1",
+            "--requirement",
+            "REQ-001",
+            "--task",
+            "1",
+            "--status",
+            "covered",
+            "--requirement-text",
+            "Preserve cleanup behavior",
+            "--runtime",
+            "phase runtime covered",
+            "--tests-or-gates",
+            "cargo test",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "gate",
+            "record",
+            "--gate",
+            "1",
+            "--result",
+            "pass",
+            "--command",
+            "cargo test",
+        ],
+    );
+    ok(temp.path(), &["checklist", "item", "close", "1"]);
+    ok(temp.path(), &["task", "close", "1"]);
+    let phase_blocked = ok(temp.path(), &["phase", "close-ready", "1", "--dry-run"]);
+    assert!(phase_blocked.contains("result: blocked"));
+    assert!(phase_blocked.contains("phase_reviews_clean: fail"));
+
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "3",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "review-context:implementation-review:design=1:work=1:phase=1",
+            "--clean",
+            "--agent-label",
+            "phase-reviewer",
+            "--external-agent-id",
+            "phase-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "phase-review-output",
+        ],
+    );
+    let phase_ready = ok(temp.path(), &["phase", "close-ready", "1", "--dry-run"]);
+    assert!(phase_ready.contains("result: pass"));
+}
+
+#[test]
+fn phase_close_ready_and_close_are_phase_scoped() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(temp.path(), &["work", "start", "aggregate implementation"]);
+    ok(
+        temp.path(),
+        &["task", "add", "first task", "--work-unit", "1"],
+    );
+    ok(
+        temp.path(),
+        &["task", "add", "second task", "--work-unit", "1"],
+    );
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--key",
+            "first",
+            "--title",
+            "First",
+            "--kind",
+            "milestone",
+            "--order",
+            "1",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "phase",
+            "create",
+            "--work-unit",
+            "1",
+            "--key",
+            "second",
+            "--title",
+            "Second",
+            "--kind",
+            "milestone",
+            "--order",
+            "2",
+        ],
+    );
+    ok(temp.path(), &["phase", "assign", "1", "--task", "1"]);
+    ok(temp.path(), &["phase", "assign", "2", "--task", "2"]);
+
+    let blocked = ok(temp.path(), &["phase", "close-ready", "1", "--dry-run"]);
+    assert!(blocked.contains("result: blocked"));
+    assert!(blocked.contains("phase_tasks_closed: fail"));
+    ok(temp.path(), &["task", "close", "1"]);
+    let ready = ok(temp.path(), &["phase", "close-ready", "1", "--dry-run"]);
+    assert!(ready.contains("result: pass"));
+    ok(
+        temp.path(),
+        &["phase", "close", "1", "--summary", "first phase complete"],
+    );
+    let authority = cli_approval_authority_event(temp.path());
+    let invalid_accept = err(
+        temp.path(),
+        &[
+            "phase",
+            "accept-out-of-scope",
+            "1",
+            "--reason",
+            "already closed",
+            "--authority",
+            &authority,
+        ],
+    );
+    assert!(invalid_accept.contains("phase must be open or blocked"));
+    let invalid_split = err(
+        temp.path(),
+        &[
+            "phase",
+            "split",
+            "1",
+            "--title",
+            "closed phase split",
+            "--reason",
+            "already closed",
+            "--shared-record-policy",
+            "carry-shared",
+        ],
+    );
+    assert!(invalid_split.contains("phase must be open or blocked"));
+    let invalid_rescope = err(
+        temp.path(),
+        &[
+            "phase",
+            "rescope",
+            "--phase",
+            "1",
+            "--to-work-unit",
+            "1",
+            "--shared-record-policy",
+            "carry-shared",
+        ],
+    );
+    assert!(invalid_rescope.contains("phase must be open or blocked"));
+    let phases = ok(temp.path(), &["phase", "list", "--work-unit", "1"]);
+    assert!(phases.contains("1 [closed"));
+    assert!(phases.contains("2 [open"));
+}
+
+#[test]
 fn next_prints_implementation_activation_for_design_work() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

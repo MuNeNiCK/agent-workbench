@@ -79,6 +79,25 @@ agent-workbench next
 agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>
 ```
 
+## Work Phases
+
+For large aggregate work units, group tasks before implementation instead of
+using `task list` as a scheduler.
+
+```sh
+agent-workbench phase create --work-unit <work-unit-id> --key <key> --title "<title>" --kind <kind> --order <n>
+agent-workbench phase assign <phase-id> --task <task-id>
+agent-workbench phase inventory <phase-id>
+agent-workbench phase rescope --phase <phase-id> --to-work-unit <work-unit-id> --shared-record-policy require-decisions --dry-run
+agent-workbench review plan target add --plan <review-plan-id> --type phase --phase <phase-id>
+agent-workbench review-context implementation-review --design-version <design-version-id> --work-unit <work-unit-id> --phase <phase-id>
+agent-workbench phase close-ready <phase-id> --dry-run
+```
+
+Use `phase dependency satisfy` or `phase dependency accept` when a dry-run
+reports cross-phase dependency blockers. Use `phase trace decide` when a
+dry-run reports shared trace records that must be split, carried, or accepted.
+
 ## While Implementing
 
 Before choosing commands, use fixed or preferred command profiles.

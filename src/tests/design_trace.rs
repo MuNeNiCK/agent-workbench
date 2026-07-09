@@ -933,6 +933,7 @@ fn review_context_filters_design_trace_by_work_unit() {
             kind: "design-implementation-diff",
             design_version_id: Some(import.design_version_id),
             work_unit_id: Some(work_one.work_unit_id),
+            phase_id: None,
         },
     )
     .unwrap();
@@ -954,6 +955,7 @@ fn review_context_filters_design_trace_by_work_unit() {
             kind: "design-task-decomposition",
             design_version_id: Some(import.design_version_id),
             work_unit_id: Some(work_one.work_unit_id),
+            phase_id: None,
         },
     )
     .unwrap();
@@ -1053,6 +1055,7 @@ fn review_context_includes_selected_validation_run_evidence() {
             kind: "design-implementation-diff",
             design_version_id: Some(import.design_version_id),
             work_unit_id: Some(work.work_unit_id),
+            phase_id: None,
         },
     )
     .unwrap();

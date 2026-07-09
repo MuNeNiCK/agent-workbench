@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -19,6 +20,7 @@ pub struct ReviewContextQuery<'a> {
     pub kind: &'a str,
     pub design_version_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub phase_id: Option<i64>,
 }
 
 pub struct ReviewContextDocument {
@@ -31,23 +33,45 @@ pub fn review_context_ref(
     design_version_id: Option<i64>,
     work_unit_id: Option<i64>,
 ) -> String {
+    review_context_ref_with_phase(kind, design_version_id, work_unit_id, None)
+}
+
+pub fn review_context_ref_with_phase(
+    kind: &str,
+    design_version_id: Option<i64>,
+    work_unit_id: Option<i64>,
+    phase_id: Option<i64>,
+) -> String {
     let design = design_version_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "-".to_string());
     let work = work_unit_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "-".to_string());
-    format!("review-context:{kind}:design={design}:work={work}")
+    match phase_id {
+        Some(phase_id) => {
+            format!("review-context:{kind}:design={design}:work={work}:phase={phase_id}")
+        }
+        None => format!("review-context:{kind}:design={design}:work={work}"),
+    }
 }
 
 pub fn render_review_context(
     root: &Path,
     query: ReviewContextQuery<'_>,
 ) -> Result<ReviewContextDocument> {
-    let context_ref = review_context_ref(query.kind, query.design_version_id, query.work_unit_id);
+    let context_ref = review_context_ref_with_phase(
+        query.kind,
+        query.design_version_id,
+        query.work_unit_id,
+        query.phase_id,
+    );
     let mut output = String::new();
     writeln!(output, "review_context: {}", query.kind)?;
     writeln!(output, "context_ref: {context_ref}")?;
+    if let Some(phase_id) = query.phase_id {
+        render_phase_header(root, phase_id, query.work_unit_id, &mut output)?;
+    }
 
     if let Some(design_version_id) = query.design_version_id {
         writeln!(output, "design_version_id: {design_version_id}")?;
@@ -56,14 +80,15 @@ pub fn render_review_context(
             query.kind,
             design_version_id,
             query.work_unit_id,
+            query.phase_id,
             &mut output,
         )?;
     }
     if let Some(work_unit_id) = query.work_unit_id {
         writeln!(output, "work_unit_id: {work_unit_id}")?;
-        render_work_context(root, work_unit_id, &mut output)?;
+        render_work_context(root, work_unit_id, query.phase_id, &mut output)?;
     }
-    render_stale_context(root, query.work_unit_id, &mut output)?;
+    render_stale_context(root, query.work_unit_id, query.phase_id, &mut output)?;
 
     Ok(ReviewContextDocument {
         context_ref,
@@ -181,13 +206,22 @@ fn render_design_context(
     kind: &str,
     design_version_id: i64,
     work_unit_id: Option<i64>,
+    phase_id: Option<i64>,
     output: &mut String,
 ) -> Result<()> {
-    let requirements = list_context_requirements(
-        root,
-        design_version_id,
-        work_unit_id.filter(|_| review_context_kind_is_work_scoped(kind)),
-    )?;
+    let phase_tasks = match phase_id {
+        Some(phase_id) => Some(phase_task_set(root, phase_id)?),
+        None => None,
+    };
+    let requirements = if let Some(phase_id) = phase_id {
+        list_phase_context_requirements(root, design_version_id, phase_id)?
+    } else {
+        list_context_requirements(
+            root,
+            design_version_id,
+            work_unit_id.filter(|_| review_context_kind_is_work_scoped(kind)),
+        )?
+    };
     writeln!(output, "requirements:")?;
     if requirements.is_empty() {
         writeln!(output, "- none")?;
@@ -205,13 +239,16 @@ fn render_design_context(
         )?;
     }
 
-    let derivations = list_task_derivations(
+    let mut derivations = list_task_derivations(
         root,
         TaskDerivationListQuery {
             design_version_id,
             work_unit_id,
         },
     )?;
+    if let Some(tasks) = &phase_tasks {
+        derivations.retain(|record| tasks.contains(&record.task_id));
+    }
     writeln!(output, "task_derivations:")?;
     if derivations.is_empty() {
         writeln!(output, "- none")?;
@@ -227,13 +264,20 @@ fn render_design_context(
         )?;
     }
 
-    let gates = list_validation_gate_context(
+    let mut gates = list_validation_gate_context(
         root,
         ValidationGateContextQuery {
             design_version_id,
             work_unit_id,
         },
     )?;
+    if let Some(tasks) = &phase_tasks {
+        gates.retain(|record| {
+            record
+                .task_id
+                .is_some_and(|task_id| tasks.contains(&task_id))
+        });
+    }
     writeln!(output, "selected_validation_gates:")?;
     if gates.is_empty() {
         writeln!(output, "- none")?;
@@ -274,7 +318,7 @@ fn render_design_context(
         )?;
     }
 
-    let evidence = list_implementation_evidence(
+    let mut evidence = list_implementation_evidence(
         root,
         ImplementationEvidenceListQuery {
             task_id: None,
@@ -282,6 +326,13 @@ fn render_design_context(
             work_unit_id,
         },
     )?;
+    if let Some(tasks) = &phase_tasks {
+        evidence.retain(|record| {
+            record
+                .task_id
+                .is_some_and(|task_id| tasks.contains(&task_id))
+        });
+    }
     writeln!(output, "implementation_evidence:")?;
     if evidence.is_empty() {
         writeln!(output, "- none")?;
@@ -303,7 +354,7 @@ fn render_design_context(
         )?;
     }
 
-    let coverage = list_coverage_items(
+    let mut coverage = list_coverage_items(
         root,
         CoverageItemListQuery {
             design_version_id,
@@ -311,6 +362,12 @@ fn render_design_context(
             work_unit_id,
         },
     )?;
+    if let Some(tasks) = &phase_tasks {
+        coverage.retain(|record| match record.task_id {
+            Some(task_id) => tasks.contains(&task_id),
+            None => true,
+        });
+    }
     writeln!(output, "coverage_items:")?;
     if coverage.is_empty() {
         writeln!(output, "- none")?;
@@ -360,14 +417,23 @@ fn review_context_kind_is_work_scoped(kind: &str) -> bool {
     matches!(kind, "design-implementation-diff" | "implementation-review")
 }
 
-fn render_work_context(root: &Path, work_unit_id: i64, output: &mut String) -> Result<()> {
-    let tasks = list_tasks(
+fn render_work_context(
+    root: &Path,
+    work_unit_id: i64,
+    phase_id: Option<i64>,
+    output: &mut String,
+) -> Result<()> {
+    let mut tasks = list_tasks(
         root,
         TaskListQuery {
             status: None,
             work_unit_id: Some(work_unit_id),
         },
     )?;
+    if let Some(phase_id) = phase_id {
+        let phase_tasks = phase_task_set(root, phase_id)?;
+        tasks.retain(|task| phase_tasks.contains(&task.id));
+    }
     writeln!(output, "tasks:")?;
     if tasks.is_empty() {
         writeln!(output, "- none")?;
@@ -382,8 +448,14 @@ fn render_work_context(root: &Path, work_unit_id: i64, output: &mut String) -> R
     Ok(())
 }
 
-fn render_stale_context(root: &Path, work_unit_id: Option<i64>, output: &mut String) -> Result<()> {
+fn render_stale_context(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    phase_id: Option<i64>,
+    output: &mut String,
+) -> Result<()> {
     let stale = match work_unit_id {
+        Some(_) if phase_id.is_some() => list_phase_stale_records(root, phase_id.unwrap())?,
         Some(work_unit_id) => list_work_stale_records(root, work_unit_id)?,
         None => list_stale_records(root)?,
     };
@@ -399,6 +471,117 @@ fn render_stale_context(root: &Path, work_unit_id: Option<i64>, output: &mut Str
         )?;
     }
     Ok(())
+}
+
+fn render_phase_header(
+    root: &Path,
+    phase_id: i64,
+    expected_work_unit_id: Option<i64>,
+    output: &mut String,
+) -> Result<()> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let (work_unit_id, key, title, status): (i64, String, String, String) = conn.query_row(
+        r#"
+            select work_unit_id, phase_key, title, status
+            from work_phases
+            where id = ?1 and project_id = ?2
+            "#,
+        rusqlite::params![phase_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    if let Some(expected_work_unit_id) = expected_work_unit_id
+        && expected_work_unit_id != work_unit_id
+    {
+        anyhow::bail!("phase does not belong to requested work unit");
+    }
+    writeln!(output, "phase_id: {phase_id}")?;
+    writeln!(output, "phase_key: {key}")?;
+    writeln!(output, "phase_title: {title}")?;
+    writeln!(output, "phase_status: {status}")?;
+    Ok(())
+}
+
+fn phase_task_set(root: &Path, phase_id: i64) -> Result<HashSet<i64>> {
+    let conn = open_existing_project(root)?;
+    let mut stmt = conn.prepare(
+        "select task_id from work_phase_task_memberships where phase_id = ?1 order by task_id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![phase_id], |row| row.get(0))?;
+    let mut tasks = HashSet::new();
+    for row in rows {
+        tasks.insert(row?);
+    }
+    Ok(tasks)
+}
+
+fn list_phase_context_requirements(
+    root: &Path,
+    design_version_id: i64,
+    phase_id: i64,
+) -> Result<Vec<DesignRequirementRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        with relevant_requirements as (
+            select distinct td.design_requirement_id as id
+            from task_derivations td
+            join work_phase_task_memberships m on m.task_id = td.task_id
+            where m.phase_id = ?3
+            union
+            select distinct vg.design_requirement_id as id
+            from validation_gates vg
+            join work_phase_task_memberships m on m.task_id = vg.task_id
+            where m.phase_id = ?3
+            union
+            select distinct e.design_requirement_id as id
+            from implementation_evidence e
+            join work_phase_task_memberships m on m.task_id = e.task_id
+            where m.phase_id = ?3 and e.design_requirement_id is not null
+            union
+            select distinct c.design_requirement_id as id
+            from coverage_items c
+            join work_phase_task_memberships m on m.task_id = c.task_id
+            where m.phase_id = ?3
+        )
+        select
+            r.id, r.design_version_id, r.source_design_file_id,
+            f.relative_path, r.source_section, r.requirement_key,
+            r.revision, r.requirement_text, r.priority,
+            r.required_surfaces, r.validation_expectation, r.status
+        from design_requirements r
+        join design_files f on f.id = r.source_design_file_id
+        join relevant_requirements rr on rr.id = r.id
+        where r.project_id = ?1
+          and r.design_version_id = ?2
+        order by r.requirement_key, r.id
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![project_id, design_version_id, phase_id],
+        |row| {
+            Ok(DesignRequirementRecord {
+                id: row.get(0)?,
+                design_version_id: row.get(1)?,
+                source_design_file_id: row.get(2)?,
+                source_path: row.get(3)?,
+                source_section: row.get(4)?,
+                requirement_key: row.get(5)?,
+                revision: row.get(6)?,
+                requirement_text: row.get(7)?,
+                priority: row.get(8)?,
+                required_surfaces: row.get(9)?,
+                validation_expectation: row.get(10)?,
+                status: row.get(11)?,
+            })
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
 }
 
 fn list_context_requirements(
@@ -475,6 +658,63 @@ fn list_context_requirements(
     for row in rows {
         records.push(row?);
     }
+    Ok(records)
+}
+
+fn list_phase_stale_records(root: &Path, phase_id: i64) -> Result<Vec<StaleRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut records = Vec::new();
+    collect_work_stale_rows(
+        &conn,
+        project_id,
+        phase_id,
+        "task_derivation",
+        r#"
+        select td.id, dr.requirement_key
+        from task_derivations td
+        join design_requirements dr on dr.id = td.design_requirement_id
+        join work_phase_task_memberships m on m.task_id = td.task_id
+        where m.phase_id = ?2
+          and td.project_id = ?1
+          and td.status = 'stale'
+        order by td.id
+        "#,
+        &mut records,
+    )?;
+    collect_work_stale_rows(
+        &conn,
+        project_id,
+        phase_id,
+        "validation_gate",
+        r#"
+        select vg.id, vg.gate_key
+        from validation_gates vg
+        join work_phase_task_memberships m on m.task_id = vg.task_id
+        where m.phase_id = ?2
+          and vg.project_id = ?1
+          and vg.status = 'stale'
+        order by vg.id
+        "#,
+        &mut records,
+    )?;
+    collect_work_stale_rows(
+        &conn,
+        project_id,
+        phase_id,
+        "coverage_item",
+        r#"
+        select c.id, dr.requirement_key
+        from coverage_items c
+        join design_requirements dr on dr.id = c.design_requirement_id
+        join work_phase_task_memberships m on m.task_id = c.task_id
+        where m.phase_id = ?2
+          and c.project_id = ?1
+          and c.status = 'stale'
+        order by c.id
+        "#,
+        &mut records,
+    )?;
     Ok(records)
 }
 

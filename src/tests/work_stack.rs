@@ -76,7 +76,10 @@ fn work_start_creates_active_work_unit() {
             work_unit: ActiveWorkUnit {
                 id: 1,
                 title: "write lifecycle test".to_string(),
-                design_version_id: None
+                design_version_id: None,
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );
@@ -141,7 +144,10 @@ fn work_activate_existing_open_unit_after_planning() {
             work_unit: ActiveWorkUnit {
                 id: 1,
                 title: "planned implementation".to_string(),
-                design_version_id: None
+                design_version_id: None,
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );
@@ -207,7 +213,10 @@ fn next_reports_design_version_for_open_inactive_planned_work() {
             work_unit: ActiveWorkUnit {
                 id: 1,
                 title: "planned design implementation".to_string(),
-                design_version_id: Some(import.design_version_id)
+                design_version_id: Some(import.design_version_id),
+                next_phase_id: None,
+                next_phase_key: None,
+                next_phase_title: None,
             }
         }
     );

@@ -41,7 +41,12 @@ agent-workbench review-context design-review --design-version <design-version-id
 agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>
 agent-workbench review-context design-implementation-diff --design-version <design-version-id> --work-unit <work-unit-id>
 agent-workbench review-context implementation-review --design-version <design-version-id> --work-unit <work-unit-id>
+agent-workbench review-context implementation-review --design-version <design-version-id> --work-unit <work-unit-id> --phase <phase-id>
 ```
+
+Use `--phase <phase-id>` only for grouped phases that remain inside the
+aggregate work unit. Split phase work units use the normal work-unit-scoped
+context for the child work unit.
 
 Run an actual independent review first. `review run add` records the result; it
 does not launch or perform the review.

@@ -81,6 +81,23 @@ When stale records remain intentionally, record the disposition with
 `stale accept` or, for closeable stale records such as selected validation
 gates, `stale close`.
 
+For large aggregate work units, create ordered work phases and assign tasks
+before implementation. `next` reports the next unblocked phase when phases
+exist. Cross-phase dependencies override simple phase order and must be
+satisfied or authority-accepted before split or rescope. Use phase dry-runs to
+inspect the trace bundle and blockers:
+
+```sh
+agent-workbench phase inventory <phase-id>
+agent-workbench phase rescope --phase <phase-id> --to-work-unit <work-unit-id> --shared-record-policy require-decisions --dry-run
+agent-workbench phase split <phase-id> --title "<title>" --reason "<reason>" --shared-record-policy require-decisions --dry-run
+```
+
+Grouped phases can be reviewed without splitting by adding a phase target and
+using phase-scoped review context. A phase closes with `phase close-ready` and
+`phase close`; the aggregate work unit still closes with the normal
+`gate close-ready` and `work close` flow.
+
 ## Review-driven close
 
 Before closing work, the agent should run close readiness.

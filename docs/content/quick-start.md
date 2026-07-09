@@ -103,6 +103,13 @@ Design-derived implementation uses explicit implementation intent, for example
 `agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`.
 Start-based implementation intent is rejected; activate the work unit produced
 by `decompose design`.
+For aggregate work that needs feature or milestone grouping, ask the agent to
+create work phases with `phase create`, assign tasks with `phase assign`, and
+inspect `phase inventory`. Before moving or splitting a phase, the agent should
+run `phase rescope --dry-run` or `phase split --dry-run` and resolve the
+printed dependency or trace-decision blockers. Phase reviews can use
+`review-context ... --phase <phase-id>`, and phase completion uses
+`phase close-ready` before `phase close`.
 Before close, the agent should close completed checklist items with
 `checklist item close` and then close the parent checklist with
 `checklist close`.

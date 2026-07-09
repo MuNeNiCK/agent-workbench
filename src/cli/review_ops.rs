@@ -171,6 +171,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                             design_requirement_id: args.design_requirement,
                             task_id: args.task,
                             work_unit_id: args.work_unit,
+                            phase_id: args.phase,
                             repository_snapshot_id: args.repository_snapshot,
                             file_path: args.file.as_deref(),
                             symbol: args.symbol.as_deref(),
@@ -669,6 +670,9 @@ fn review_target_detail(target: &agent_workbench::ReviewPlanTargetRecord) -> Str
     }
     if let Some(id) = target.work_unit_id {
         return format!("work_unit_id={id}");
+    }
+    if let Some(id) = target.phase_id {
+        return format!("phase_id={id}");
     }
     if let Some(id) = target.repository_snapshot_id {
         return format!("repository_snapshot_id={id}");

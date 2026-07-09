@@ -80,6 +80,51 @@ authority.
    dependency, wave, checklist, or requirement order. Do not invent a different
    task order from implementation intuition.
 
+## Work Phases
+
+Use work phases when an aggregate work unit needs feature, milestone, timebox,
+release-slice, or implementation-wave grouping.
+
+```sh
+agent-workbench phase create --work-unit <work-unit-id> --key <key> --title "<title>" --kind <kind> --order <n>
+agent-workbench phase assign <phase-id> --task <task-id>
+agent-workbench phase dependency add --from <phase-id> --to <phase-id> --type blocks|requires --reason "<reason>"
+agent-workbench phase inventory <phase-id>
+agent-workbench phase rescope --phase <phase-id> --to-work-unit <work-unit-id> --shared-record-policy require-decisions --dry-run
+agent-workbench phase split <phase-id> --title "<title>" --reason "<reason>" --shared-record-policy require-decisions --dry-run
+```
+
+If dry-run reports shared trace blockers, resolve them explicitly:
+
+```sh
+agent-workbench phase trace list <phase-id>
+agent-workbench phase trace decide --phase <phase-id> --record <type:id> --decision split|carry|accept --reason "<reason>" --authority <authority-event-id>
+```
+
+Cross-phase dependencies outrank simple phase order. Satisfy or accept them
+before split/rescope:
+
+```sh
+agent-workbench phase dependency satisfy <dependency-id> --reason "<reason>" --evidence <ref>
+agent-workbench phase dependency accept <dependency-id> --reason "<reason>" --authority <authority-event-id>
+```
+
+For grouped phase reviews inside the aggregate work unit, target the phase and
+use phase-scoped context:
+
+```sh
+agent-workbench review plan target add --plan <review-plan-id> --type phase --phase <phase-id>
+agent-workbench review-context implementation-review --design-version <design-version-id> --work-unit <work-unit-id> --phase <phase-id>
+```
+
+Close phases independently from the aggregate work unit:
+
+```sh
+agent-workbench phase close-ready <phase-id> --dry-run
+agent-workbench phase close <phase-id> --summary "<summary>"
+agent-workbench phase accept-out-of-scope <phase-id> --reason "<reason>" --authority <authority-event-id>
+```
+
 Agents must treat the ledger as private storage during this workflow. Use
 Agent Workbench CLI commands and `review-context`; do not run `sqlite3`, SQL
 queries, table-name inspection, or direct ledger joins.
