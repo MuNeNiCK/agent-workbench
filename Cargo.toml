@@ -1,12 +1,12 @@
 [package]
 name = "agent-workbench"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 yaml_serde = "0.10"

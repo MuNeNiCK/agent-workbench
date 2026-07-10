@@ -3,6 +3,7 @@ mod commands;
 mod coverage;
 mod db;
 mod design;
+mod doctor;
 mod kpt;
 mod phases;
 mod planning;
@@ -45,6 +46,12 @@ pub use design::{
     add_general_acceptance, approve_design_version, design_ready, import_design_package,
     init_design_package, list_design_decisions, list_design_requirements,
     list_validation_gate_templates,
+};
+pub use doctor::{
+    ValidationLinkAuditChange, ValidationLinkAuditRun, ValidationLinkChange,
+    ValidationLinkDiagnosis, ValidationLinkRepairOutcome, ValidationLinkRunDiagnosis,
+    diagnose_validation_links, list_validation_link_audit, repair_validation_links,
+    repair_validation_links_with_backup_notice,
 };
 pub use kpt::{
     KptItemCommandProfileConversion, KptItemCommandProfileConversionOutcome,

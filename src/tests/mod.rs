@@ -4,6 +4,7 @@ use rusqlite::params;
 use std::fs;
 
 mod design_trace;
+mod doctor;
 mod init_migrations;
 mod repository_ledger;
 mod review;

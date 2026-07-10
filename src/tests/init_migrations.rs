@@ -26,8 +26,8 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
         r#"
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 7;
-        insert or ignore into schema_migrations(version, applied_at) values (6, current_timestamp);
+        delete from schema_migrations where version = 8;
+        insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
     .unwrap();
@@ -515,8 +515,8 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
         r#"
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 7;
-        insert or ignore into schema_migrations(version, applied_at) values (6, current_timestamp);
+        delete from schema_migrations where version = 8;
+        insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
     .unwrap();

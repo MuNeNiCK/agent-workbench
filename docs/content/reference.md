@@ -26,6 +26,7 @@ the checkout's already-built `target/debug/agent-workbench` or
 | Group | Purpose |
 | --- | --- |
 | `init`, `status`, `next` | Project setup and current work query. |
+| `doctor validation-links` | Migration-independent diagnosis, transactional repair, and immutable repair audit for legacy validation links. |
 | `work` | Work-unit lifecycle and activation stack operations. |
 | `resume-check`, `gate resume-ready` | Recorded and read-only resume evaluation. |
 | `rules`, `correction`, `authority` | Project and work-scope operating rules. |
@@ -132,6 +133,13 @@ The ledger is storage, not the agent-facing API. Agents should use `status`,
 `next`, `review-context`, list commands, and readiness gates to decide what to
 do. If the CLI cannot answer a workflow question, that is a product gap to fix,
 not a reason for agents to inspect the ledger directly.
+
+The one supported ledger-compatibility exception is still a CLI workflow, not
+direct database access. When normal migration reports invalid validation-run
+links, use `doctor validation-links` (or explicit `--dry-run`), then `--repair`.
+Use `--audit` to list prior repair runs and their field-level changes. An
+unrepairable result requires resolving the reported gate or authority conflict;
+it is not permission to execute SQL.
 
 `status` and `next` can report a phase blocker. In that state the agent-facing
 next action is the printed blocker-resolution command, such as finding

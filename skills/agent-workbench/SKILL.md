@@ -50,6 +50,9 @@ Common command groups include:
 - `agent-workbench init`
 - `agent-workbench status`
 - `agent-workbench next`
+- `agent-workbench doctor validation-links`
+- `agent-workbench doctor validation-links --repair`
+- `agent-workbench doctor validation-links --audit`
 - `agent-workbench rules applicable --scope current`
 - `agent-workbench authority list`
 - `agent-workbench design init`
@@ -180,6 +183,8 @@ Load only the reference needed for the current operation:
 - `references/repository-validation.md` for validation, repository, Git, and
   work-record evidence commands.
 - `references/close-ready-troubleshooting.md` when `close-ready` is blocked.
+- `references/ledger-recovery.md` when normal commands report invalid
+  validation-run project links.
 
 ## References
 
@@ -220,6 +225,14 @@ from structured ledger state.
   normal agent workflow. Use Agent Workbench CLI commands and `review-context`.
   If a required state question has no CLI or review-context answer, report the
   missing product surface as a blocker instead of reading the database directly.
+- If normal commands fail with `validation_runs contains invalid project
+  links`, use `agent-workbench doctor validation-links` for read-only diagnosis.
+  Run `agent-workbench doctor validation-links --repair` only when the complete
+  plan is repairable. It creates and prints a consistent backup, repairs known
+  parent/dependent links transactionally, records immutable audit rows, and
+  commits only after migration and integrity validation pass. Use `--audit` to
+  list prior repairs. An unrepairable result is a blocker, not permission to
+  inspect or edit SQLite directly.
 - When repeated corrections, command drift, recurring findings, or recurring
   close/resume failures appear, propose or run `agent-workbench kpt start` and
   inspect items with `agent-workbench kpt item list`.

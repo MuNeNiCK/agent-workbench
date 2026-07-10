@@ -4,6 +4,7 @@ use std::env;
 
 mod args;
 mod design_flow;
+mod doctor;
 mod gate;
 mod memory;
 mod phases;
@@ -122,6 +123,7 @@ pub(crate) fn run() -> Result<()> {
                 print_next_phase(&work_unit);
             }
         },
+        Command::Doctor { command } => doctor::handle(&root, command)?,
         Command::Work { command } => work::handle(&root, command)?,
         Command::ResumeCheck(args) => work::handle_resume_check(&root, args)?,
         Command::Gate { command } => gate::handle(&root, command)?,

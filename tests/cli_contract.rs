@@ -4456,3 +4456,96 @@ fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
     assert!(context_help.contains("--closure"));
     assert!(context_help.contains("--attempt"));
 }
+
+#[test]
+fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let help = ok(temp.path(), &["doctor", "validation-links", "--help"]);
+    assert!(help.contains("--dry-run"));
+    assert!(help.contains("--repair"));
+    assert!(help.contains("--audit"));
+
+    ok(temp.path(), &["init"]);
+    let ledger_conn = conn(temp.path());
+    ledger_conn
+        .execute_batch(
+            r#"
+        insert into work_units(id, project_id, title, status, started_at)
+        values (1, 1, 'gate work', 'open', current_timestamp);
+        insert into work_units(id, project_id, title, status, started_at)
+        values (2, 1, 'legacy wrong work', 'open', current_timestamp);
+        insert into tasks(id, title, priority, source, work_unit_id, status)
+        values (1, 'gate task', 'high', 'design', 1, 'open');
+        insert into tasks(id, title, priority, source, work_unit_id, status)
+        values (2, 'legacy wrong task', 'high', 'design', 2, 'open');
+        insert into validation_gates(
+            id, project_id, gate_key, work_unit_id, task_id,
+            expected_result, status, created_at
+        ) values (1, 1, 'GATE-LEGACY', 1, 1, 'pass', 'active', current_timestamp);
+        drop trigger trg_validation_run_project_insert;
+        drop trigger trg_validation_run_project_update;
+        insert into validation_runs(
+            id, project_id, validation_gate_id, work_unit_id, task_id,
+            result, command, created_at
+        ) values (1, 1, 1, 2, 2, 'pass', 'cargo test', current_timestamp);
+        delete from schema_migrations where version = 8;
+        insert into schema_migrations(version, applied_at) values (6, current_timestamp);
+        "#,
+        )
+        .unwrap();
+    drop(ledger_conn);
+
+    let status_error = err(temp.path(), &["status"]);
+    assert!(status_error.contains("agent-workbench doctor validation-links"));
+    assert!(status_error.contains("agent-workbench doctor validation-links --repair"));
+
+    let before = conn(temp.path())
+        .query_row(
+            "select work_unit_id, task_id from validation_runs where id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    let dry_run = ok(temp.path(), &["doctor", "validation-links", "--dry-run"]);
+    assert!(dry_run.contains("dry_run: true"));
+    assert!(dry_run.contains("validation_links: invalid"));
+    assert!(dry_run.contains("validation_run_id: 1"));
+    assert!(dry_run.contains("run_repairable: true"));
+    assert!(dry_run.contains("work_unit_id 2 -> 1"));
+    assert!(dry_run.contains("doctor validation-links --repair"));
+    let after_dry_run = conn(temp.path())
+        .query_row(
+            "select work_unit_id, task_id from validation_runs where id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_dry_run, before);
+
+    let repair = ok(temp.path(), &["doctor", "validation-links", "--repair"]);
+    assert!(repair.contains("repair_status: committed"));
+    assert!(repair.contains("migration: pass"));
+    assert!(repair.contains("integrity_validation: pass"));
+    let backup = repair
+        .lines()
+        .find_map(|line| line.strip_prefix("backup: "))
+        .expect("repair output must print backup path");
+    assert!(
+        repair.find("backup: ").unwrap() < repair.find("repair_status: committed").unwrap(),
+        "backup path must be printed and flushed before repair mutation/commit status"
+    );
+    assert!(Path::new(backup).is_file());
+
+    assert!(ok(temp.path(), &["status"]).contains("schema_version: 8"));
+    ok(temp.path(), &["next"]);
+    ok(temp.path(), &["rules", "applicable"]);
+    ok(temp.path(), &["correction", "list"]);
+    ok(temp.path(), &["command", "list"]);
+
+    let audit = ok(temp.path(), &["doctor", "validation-links", "--audit"]);
+    assert!(audit.contains("validation_link_repair_runs: 1"));
+    assert!(audit.contains("validation_run=1 validation_run:1 work_unit_id 2 -> 1"));
+    let second = ok(temp.path(), &["doctor", "validation-links", "--repair"]);
+    assert!(second.contains("repair_status: no_changes"));
+    assert!(second.contains("validation_links: clean"));
+}

@@ -15,6 +15,7 @@ Important paths:
 | `.agent-workbench/designs/` | Design Package drafts and imported sources. |
 | `.agent-workbench/logs/` | Validation and command logs. |
 | `.agent-workbench/exports/` | Human-readable exports. |
+| `.agent-workbench/backups/` | Consistent pre-repair ledger backups created by official doctor commands. |
 
 The ledger is operational state. Decide per project whether `.agent-workbench/`
 should be kept local, archived, or committed.
@@ -52,6 +53,31 @@ installed skills without a source checkout use the pinned release path.
 Publishing a new version means creating a release that includes both the
 archive and checksum file. Published release assets are immutable; use a new
 tag instead of replacing an existing release.
+
+## Validation-link recovery
+
+If normal commands stop with `validation_runs contains invalid project links`,
+do not inspect or edit `ledger.sqlite`. Diagnosis deliberately bypasses normal
+migration so it remains available while `status`, `next`, rules, corrections,
+or command lists are blocked:
+
+```bash
+agent-workbench doctor validation-links --dry-run
+agent-workbench doctor validation-links --repair
+agent-workbench doctor validation-links --audit
+```
+
+The first command is read-only and prints every affected validation-run ID,
+reason, proposed field change, and whether the complete plan is repairable.
+Repair refuses the whole plan when a gate is missing, authority provenance
+would cross projects, or an unknown dependent relation has no deterministic
+rule. Otherwise it holds a writer lock, creates a consistent backup under
+`.agent-workbench/backups/`, repairs validation runs and known dependent
+evidence, appends immutable audit rows, runs normal migration and integrity
+validation in the same transaction, and commits only if every step passes.
+
+A second repair is a no-op. After a successful repair, rerun `status`; no
+special flag is needed for subsequent commands.
 
 ## Public documentation
 

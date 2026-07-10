@@ -12,6 +12,13 @@ closure contract, implement the fix while the finding stays open, then require
 an exact-context resume review and verification before a later fresh completion
 review.
 
+Legacy ledgers that fail migration with invalid validation-run links have an
+official recovery path. Run `agent-workbench doctor validation-links` for a
+read-only plan, then `agent-workbench doctor validation-links --repair`. Repair
+creates a project-local backup, records immutable field-level audit entries,
+and commits only after normal migration and integrity validation pass. Direct
+SQLite edits are neither required nor recommended.
+
 ## Install
 
 Requirements: Linux x86_64 with GitHub CLI `gh skill`, `curl`, `sed`, `tar`,

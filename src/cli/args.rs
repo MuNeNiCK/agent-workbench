@@ -22,6 +22,11 @@ pub(crate) enum Command {
     Status,
     /// Print the next suggested action.
     Next,
+    /// Diagnose and repair ledger compatibility problems.
+    Doctor {
+        #[command(subcommand)]
+        command: DoctorCommand,
+    },
     /// Manage work units and activation state.
     Work {
         #[command(subcommand)]
@@ -167,6 +172,25 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ExportCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DoctorCommand {
+    /// Diagnose or repair legacy validation-run links.
+    ValidationLinks(DoctorValidationLinksArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DoctorValidationLinksArgs {
+    /// Explicitly run the default read-only diagnosis.
+    #[arg(long, conflicts_with_all = ["repair", "audit"])]
+    pub(crate) dry_run: bool,
+    /// Create a backup and repair every deterministically repairable link.
+    #[arg(long, conflicts_with_all = ["audit", "dry_run"])]
+    pub(crate) repair: bool,
+    /// List immutable validation-link repair audit records.
+    #[arg(long, conflicts_with_all = ["repair", "dry_run"])]
+    pub(crate) audit: bool,
 }
 
 #[derive(Debug, Subcommand)]

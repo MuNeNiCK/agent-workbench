@@ -11,7 +11,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -633,7 +633,7 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
     Ok(false)
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
+pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     prepare_acceptance_records_for_schema(conn)?;
     prepare_review_runs_for_schema(conn)?;
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
@@ -1298,7 +1298,7 @@ fn validate_project_scoped_ledger_links(conn: &Connection) -> Result<()> {
                and vr.repository_snapshot_id != cu.repository_snapshot_id
            )
         "#,
-        "validation_runs contains invalid project links",
+        "validation_runs contains invalid project links; run `agent-workbench doctor validation-links`, then `agent-workbench doctor validation-links --repair`",
     )?;
     reject_invalid_rows(
         conn,
@@ -2838,6 +2838,50 @@ create table if not exists schema_migrations (
     version integer primary key,
     applied_at text not null
 );
+
+create table if not exists validation_link_repair_runs (
+    id integer primary key,
+    backup_path text not null unique,
+    repaired_validation_run_count integer not null,
+    change_count integer not null,
+    created_at text not null
+);
+
+create table if not exists validation_link_repair_changes (
+    id integer primary key,
+    repair_run_id integer not null references validation_link_repair_runs(id),
+    validation_run_id integer not null,
+    entity_type text not null,
+    entity_id integer not null,
+    field_name text not null,
+    before_value text,
+    after_value text,
+    created_at text not null
+);
+
+create trigger if not exists trg_validation_link_repair_runs_immutable_update
+before update on validation_link_repair_runs
+begin
+    select raise(abort, 'validation link repair audit is immutable');
+end;
+
+create trigger if not exists trg_validation_link_repair_runs_immutable_delete
+before delete on validation_link_repair_runs
+begin
+    select raise(abort, 'validation link repair audit is immutable');
+end;
+
+create trigger if not exists trg_validation_link_repair_changes_immutable_update
+before update on validation_link_repair_changes
+begin
+    select raise(abort, 'validation link repair audit is immutable');
+end;
+
+create trigger if not exists trg_validation_link_repair_changes_immutable_delete
+before delete on validation_link_repair_changes
+begin
+    select raise(abort, 'validation link repair audit is immutable');
+end;
 
 create table if not exists projects (
     id integer primary key,
