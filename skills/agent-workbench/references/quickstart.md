@@ -27,6 +27,13 @@ If `status` or `next` reports `phase_blocked: true` or `blocked phase`, follow
 the printed blocker-resolution command before asking the agent to implement or
 validate code.
 
+If it reports `finding_remediation: true` or `finding remediation`, inspect
+`finding_remediation_count`, implement only the printed closure contracts in
+their owning work unit, then run each printed `closure ready` command. After
+that boundary, use the exact finding-fix contexts, independent typed resume
+reviews, and matching `finding verify` results. Stale design state blocks this
+permission.
+
 If the project already has design material, convert it into the workbench design
 package shape under `.agent-workbench/designs/<design-id>` before importing it.
 Do not import arbitrary external prose directly as authority.

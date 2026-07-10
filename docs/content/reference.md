@@ -68,6 +68,19 @@ with trusted provenance. Use `--provenance external_agent --external-agent-id
 or `--provenance human_review --provenance-ref <review-output-ref>` for a human
 review. Self-recorded clean runs do not satisfy gate review evidence.
 
+Finding-fix resume runs target
+`review-context:finding-fix:finding=<id>:closure=<id>:attempt=<id>` and require
+`--finding-result verified|not_fixed|needs_evidence`. They carry exactly one
+finding. `verified` is clean; failure outcomes are non-clean. The later
+`finding verify --result` must match exactly.
+
+| Closure command | Purpose |
+| --- | --- |
+| `closure add` | Register a contract while keeping the finding open. |
+| `closure ready` | Record fix evidence and create an immutable attempt. |
+| `closure supersede` | Authority-replace a registered or incomplete contract. |
+| `finding accept-out-of-scope` | Authority-dispose without claiming verification. |
+
 ## Readiness gates
 
 | Gate | Purpose |

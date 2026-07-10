@@ -104,6 +104,7 @@ Evidence is the material proof behind work:
 - changed files
 - implementation evidence
 - review findings and closures
+- scoped remediation and immutable finding-verification attempts
 - work records
 
 The close-ready gate uses evidence to decide whether work can safely close.

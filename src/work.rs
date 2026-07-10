@@ -3316,6 +3316,18 @@ fn trace_resume_counts(conn: &Connection, work_unit_id: i64) -> Result<TraceResu
     })
 }
 
+pub(crate) fn has_stale_design_state_for_work(
+    conn: &Connection,
+    work_unit_id: i64,
+) -> Result<bool> {
+    let counts = trace_resume_counts(conn, work_unit_id)?;
+    Ok(counts.stale_design_records > 0
+        || counts.stale_task_derivations > 0
+        || counts.stale_checklists > 0
+        || counts.stale_selected_gates > 0
+        || counts.stale_coverage_items > 0)
+}
+
 fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceState> {
     Ok(CloseTraceState {
         active_requirement_count: count_active_requirements_for_work(conn, work_unit_id)?,

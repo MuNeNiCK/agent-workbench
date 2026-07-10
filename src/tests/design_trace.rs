@@ -1873,6 +1873,82 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
     assert!(stale.iter().any(|record| {
         record.record_type == "validation_gate" && record.id == gate.validation_gate_id
     }));
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: 1,
+            design_version_id: Some(first_import.design_version_id),
+            review_type: "design_implementation_diff",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("found implementation drift"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_implementation_drift",
+            severity: "high",
+            description: "fix after stale design",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "implementation follows current design",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/lib.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("update implementation"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("resume review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let status = project_status(temp.path()).unwrap();
+    assert_eq!(status.phase_blocker.unwrap().kind, "stale_design");
+    assert!(status.finding_remediations.is_empty());
+    assert!(matches!(
+        next_action(temp.path()).unwrap(),
+        NextAction::BlockedPhase {
+            blocker: PhaseBlocker { ref kind, .. }
+        } if kind == "stale_design"
+    ));
 }
 
 #[test]

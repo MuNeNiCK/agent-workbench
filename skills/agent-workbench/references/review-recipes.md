@@ -68,11 +68,35 @@ When a review finds a problem:
 ```sh
 agent-workbench finding add --run <review-run-id> --type <finding-type> --severity <severity> --description "<description>"
 agent-workbench finding classify <finding-id> --classification valid
-agent-workbench closure add --finding <finding-id> --invariant "<what must now hold>"
+agent-workbench closure add --finding <finding-id> --invariant "<what must now hold>" --surfaces "<affected surfaces>" --fix-plan "<fix>" --tests "<tests>" --verification "<resume review>"
+```
+
+For an eligible close-ready implementation finding, closure registration opens
+scoped remediation while the finding remains open:
+
+```sh
+# implement and test only the printed remediation scope
+agent-workbench closure ready <closure-id> --evidence "<fix evidence>" --tests "<test evidence>" --commit <sha>
+agent-workbench review-context finding-fix --finding <finding-id> --closure <closure-id> --attempt <attempt-id>
+agent-workbench review run add --plan <plan-id> --type resume --purpose finding_fix_verification --target <context-ref> --finding-result verified --carried-findings 1 --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <output-ref>
 agent-workbench finding verify --run <review-run-id> --finding <finding-id> --closure <closure-id> --result verified
 ```
 
-Record a new clean run only after valid findings have closures and verification.
+`closure ready` evidence belongs to the immutable numbered attempt and does
+not rewrite the registered closure contract. Use
+`review run list --plan <plan-id>` to recover the persisted `finding_result`;
+`next` then prints the concrete matching `finding verify` command.
+
+Use a non-clean resume run and matching `--finding-result not_fixed` or
+`needs_evidence` when verification fails. That returns the closure to
+remediation and requires a new `closure ready` attempt. Use
+`finding accept-out-of-scope <id> --reason <reason> --authority <id>` for an
+authority disposition; `out_of_scope` is not a verification result.
+
+Design/decomposition findings remain phase blockers after closure registration.
+Correct their source, run `closure ready`, then use the same exact-context
+resume/verify path. Record a later fresh clean run after all findings are
+verified or disposed; resume review is not final completion proof.
 
 ## Completion Review Prompt Contract
 

@@ -380,6 +380,14 @@ pub fn add_review_plan_target(
 }
 
 pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunOutcome> {
+    add_review_run_with_finding_result(root, input, None)
+}
+
+pub fn add_review_run_with_finding_result(
+    root: &Path,
+    input: NewReviewRun<'_>,
+    finding_fix_result: Option<&str>,
+) -> Result<ReviewRunOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
@@ -387,9 +395,10 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     let policy = load_review_policy(&tx, project_id, plan.review_policy_id)?;
     validate_run_type_purpose(input.run_type, input.run_purpose)?;
     validate_review_run_result(&input)?;
+    validate_finding_fix_run(&tx, project_id, &plan, &input, finding_fix_result)?;
     let target = resolve_run_target(&tx, project_id, &plan, input.target_ref)?;
     validate_gate_context_target(&plan, &input, &target)?;
-    enforce_run_allowed(&tx, &policy, &plan, input.run_type)?;
+    enforce_run_allowed(&tx, &policy, &plan, input.run_type, input.target_ref)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
         && !policy.allow_new_findings_in_resume
@@ -405,9 +414,9 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             work_unit_id, phase_id, repository_snapshot_id, file_path, symbol, target_ref,
             prompt_deviations, result_summary, new_findings_count,
             carried_findings_checked, clean_run, status, review_provenance,
-            review_provenance_ref, created_at
+            review_provenance_ref, finding_fix_result, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, current_timestamp)
         "#,
         params![
             project_id,
@@ -433,6 +442,7 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
             input.status,
             input.review_provenance,
             input.review_provenance_ref,
+            finding_fix_result,
         ],
     )?;
     let review_run_id = tx.last_insert_rowid();
@@ -477,6 +487,92 @@ pub fn add_review_run(root: &Path, input: NewReviewRun<'_>) -> Result<ReviewRunO
     })
 }
 
+fn validate_finding_fix_run(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    plan: &StoredReviewPlan,
+    input: &NewReviewRun<'_>,
+    finding_fix_result: Option<&str>,
+) -> Result<()> {
+    let is_finding_fix =
+        input.run_type == "resume" && input.run_purpose == "finding_fix_verification";
+    if !is_finding_fix {
+        if finding_fix_result.is_some() {
+            bail!("--finding-result is only valid for resume finding_fix_verification runs");
+        }
+        return Ok(());
+    }
+    let result = finding_fix_result.context(
+        "resume finding_fix_verification run requires --finding-result verified|not_fixed|needs_evidence",
+    )?;
+    if !matches!(result, "verified" | "not_fixed" | "needs_evidence") {
+        bail!("invalid finding-fix result");
+    }
+    if input.new_findings_count != 0 || input.carried_findings_checked != 1 {
+        bail!("finding-fix resume run requires zero new findings and exactly one carried finding");
+    }
+    if (result == "verified") != input.clean_run {
+        bail!("finding-fix result and clean flag are inconsistent");
+    }
+    if input.status != "completed" {
+        bail!("finding-fix resume run must be completed");
+    }
+    let trusted = match input.review_provenance {
+        "external_agent" => {
+            input
+                .external_agent_id
+                .is_some_and(|value| !value.trim().is_empty())
+                && input
+                    .review_provenance_ref
+                    .is_some_and(|value| !value.trim().is_empty())
+        }
+        "human_review" => input
+            .review_provenance_ref
+            .is_some_and(|value| !value.trim().is_empty()),
+        _ => false,
+    };
+    if !trusted {
+        bail!("finding-fix resume run requires trusted external-agent or human provenance");
+    }
+    let target = input
+        .target_ref
+        .context("finding-fix resume run requires exact context target")?;
+    let existing_outcome: Option<String> = conn.query_row(
+        "select finding_fix_result from review_runs where review_plan_id = ?1 and run_type = 'resume' and run_purpose = 'finding_fix_verification' and target_ref = ?2 order by id desc limit 1",
+        params![plan.id, target],
+        |row| row.get(0),
+    ).optional()?;
+    if existing_outcome
+        .as_deref()
+        .is_some_and(|value| value != result)
+    {
+        bail!(
+            "finding-fix attempt already has a conflicting resume outcome; all outcomes for one attempt must use the same typed result"
+        );
+    }
+    conn.query_row(
+        r#"
+        select 1
+        from closure_attempts a
+        join closures c on c.id = a.closure_id
+        join findings f on f.id = c.finding_id
+        join review_runs source on source.id = f.review_run_id
+        where a.project_id = ?1
+          and source.review_plan_id = ?2
+          and c.status = 'ready_for_verification'
+          and a.result is null
+          and ?3 = 'review-context:finding-fix:finding=' || f.id
+                    || ':closure=' || c.id || ':attempt=' || a.id
+          and coalesce((select max(id) from review_runs), 0) >= a.review_run_high_watermark
+        "#,
+        params![project_id, plan.id, target],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("finding-fix resume run target is not the current ready attempt")?;
+    Ok(())
+}
+
 pub fn list_review_runs(root: &Path, review_plan_id: Option<i64>) -> Result<Vec<ReviewRunRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
@@ -485,7 +581,7 @@ pub fn list_review_runs(root: &Path, review_plan_id: Option<i64>) -> Result<Vec<
         select
             id, review_plan_id, run_type, run_purpose, target_type, target_ref,
             new_findings_count, carried_findings_checked, clean_run, status,
-            review_provenance, review_provenance_ref
+            review_provenance, review_provenance_ref, finding_fix_result
         from review_runs
         where project_id = ?1 and (?2 is null or review_plan_id = ?2)
         order by id
@@ -505,6 +601,7 @@ pub fn list_review_runs(root: &Path, review_plan_id: Option<i64>) -> Result<Vec<
             status: row.get(9)?,
             review_provenance: row.get(10)?,
             review_provenance_ref: row.get(11)?,
+            finding_fix_result: row.get(12)?,
         })
     })?;
     collect_rows(rows)
@@ -581,9 +678,21 @@ pub fn classify_finding(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    let current_status: String = tx
+        .query_row(
+            "select status from findings where id = ?1 and project_id = ?2",
+            params![finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("finding not found")?;
+    if matches!(current_status.as_str(), "closed" | "accepted_out_of_scope") {
+        bail!("terminal finding cannot be reclassified without an explicit authority transition");
+    }
     let status = match classification {
         "invalid" => "closed",
-        "valid" | "design_conflict" | "needs_evidence" | "unclassified" => "open",
+        "valid" => "open",
+        "design_conflict" | "needs_evidence" | "unclassified" => "open",
         _ => bail!("invalid finding classification"),
     };
     let changed = tx.execute(
@@ -608,6 +717,7 @@ pub fn classify_finding(
 }
 
 pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome> {
+    require_text(Some(input.design_invariant), "closure requires --invariant")?;
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
@@ -631,15 +741,38 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
     if finding.status != "open" {
         bail!("finding is not open");
     }
+    let current_exists: bool = tx.query_row(
+        "select exists(select 1 from closures where finding_id = ?1 and status != 'superseded')",
+        params![finding.id],
+        |row| row.get(0),
+    )?;
+    if current_exists {
+        bail!(
+            "finding already has a current closure; use closure supersede when the contract must change"
+        );
+    }
+    let eligible = finding_is_remediation_eligible(&tx, project_id, finding.id)?;
+    if eligible {
+        require_text(
+            input.affected_surfaces,
+            "eligible closure requires --surfaces",
+        )?;
+        require_text(input.fix_plan, "eligible closure requires --fix-plan")?;
+        require_text(input.tests_or_gates, "eligible closure requires --tests")?;
+        require_text(
+            input.verification_plan,
+            "eligible closure requires --verification",
+        )?;
+    }
     tx.execute(
         r#"
         insert into closures(
             project_id, finding_id, design_invariant, design_citations,
             implementation_evidence, affected_surfaces, same_invariant_search,
             other_violations_found, fix_plan, tests_or_gates,
-            verification_plan, closed_by_commit, created_at
+            verification_plan, closed_by_commit, status, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'registered', current_timestamp)
         "#,
         params![
             project_id,
@@ -662,17 +795,289 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
     })
 }
 
+pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureReadyOutcome> {
+    require_text(
+        Some(input.implementation_evidence),
+        "closure ready requires --evidence",
+    )?;
+    require_text(Some(input.tests_or_gates), "closure ready requires --tests")?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let (finding_id, status): (i64, String) = tx
+        .query_row(
+            r#"
+            select c.finding_id, c.status
+            from closures c join findings f on f.id = c.finding_id
+            where c.id = ?1 and c.project_id = ?2
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![input.closure_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .context("open valid closure not found")?;
+    if status != "registered" {
+        bail!("closure ready requires a registered closure");
+    }
+    let high_watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    let attempt_number: i64 = tx.query_row(
+        "select coalesce(max(attempt_number), 0) + 1 from closure_attempts where closure_id = ?1",
+        params![input.closure_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        r#"
+        insert into closure_attempts(
+            project_id, closure_id, attempt_number, implementation_evidence,
+            tests_or_gates, closed_by_commit, review_run_high_watermark, created_at
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.closure_id,
+            attempt_number,
+            input.implementation_evidence,
+            input.tests_or_gates,
+            input.closed_by_commit,
+            high_watermark,
+        ],
+    )?;
+    let attempt_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closures set status = 'ready_for_verification' where id = ?1",
+        params![input.closure_id],
+    )?;
+    tx.commit()?;
+    Ok(ClosureReadyOutcome {
+        closure_id: input.closure_id,
+        finding_id,
+        attempt_id,
+        attempt_number,
+        context_ref: finding_fix_context_ref(finding_id, input.closure_id, attempt_id),
+    })
+}
+
+pub fn supersede_closure(
+    root: &Path,
+    input: ClosureSupersession<'_>,
+) -> Result<ClosureSupersessionOutcome> {
+    require_text(Some(input.reason), "closure supersede requires --reason")?;
+    require_text(
+        Some(input.new_closure.design_invariant),
+        "closure supersede requires --invariant",
+    )?;
+    require_text(
+        input.new_closure.affected_surfaces,
+        "closure supersede requires --surfaces",
+    )?;
+    require_text(
+        input.new_closure.fix_plan,
+        "closure supersede requires --fix-plan",
+    )?;
+    require_text(
+        input.new_closure.tests_or_gates,
+        "closure supersede requires --tests",
+    )?;
+    require_text(
+        input.new_closure.verification_plan,
+        "closure supersede requires --verification",
+    )?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
+    let finding_id: i64 = tx
+        .query_row(
+            r#"
+            select c.finding_id from closures c join findings f on f.id = c.finding_id
+            where c.id = ?1 and c.project_id = ?2
+              and c.status in ('registered', 'incomplete')
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![input.closure_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("current registered or incomplete closure not found")?;
+    tx.execute(
+        r#"
+        insert into closures(
+            project_id, finding_id, design_invariant, design_citations,
+            implementation_evidence, affected_surfaces, same_invariant_search,
+            other_violations_found, fix_plan, tests_or_gates,
+            verification_plan, closed_by_commit, status, created_at
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'registered', current_timestamp)
+        "#,
+        params![
+            project_id, finding_id, input.new_closure.design_invariant,
+            input.new_closure.design_citations, input.new_closure.implementation_evidence,
+            input.new_closure.affected_surfaces, input.new_closure.same_invariant_search,
+            input.new_closure.other_violations_found, input.new_closure.fix_plan,
+            input.new_closure.tests_or_gates, input.new_closure.verification_plan,
+            input.new_closure.closed_by_commit,
+        ],
+    )?;
+    let new_closure_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closures set status = 'superseded', superseded_by_closure_id = ?1, superseded_at = current_timestamp, superseded_by_authority_event_id = ?2, supersession_reason = ?3 where id = ?4",
+        params![new_closure_id, input.authority_event_id, input.reason, input.closure_id],
+    )?;
+    tx.commit()?;
+    Ok(ClosureSupersessionOutcome {
+        closure_id: new_closure_id,
+        superseded_closure_id: input.closure_id,
+        finding_id,
+    })
+}
+
+pub fn accept_finding_out_of_scope(
+    root: &Path,
+    input: FindingOutOfScope<'_>,
+) -> Result<FindingOutOfScopeOutcome> {
+    require_text(
+        Some(input.reason),
+        "out-of-scope disposition requires --reason",
+    )?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
+    let review_plan_id: i64 = tx
+        .query_row(
+            r#"
+            select r.review_plan_id from findings f join review_runs r on r.id = f.review_run_id
+            where f.id = ?1 and f.project_id = ?2 and f.status = 'open'
+            "#,
+            params![input.finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("open finding not found")?;
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, finding_id, acceptance_type, reason,
+            created_by, status, approved_by_authority_event_id,
+            approved_at, created_at
+        ) values (?1, 'finding', ?2, 'accepted_out_of_scope', ?3,
+                  'user', 'approved', ?4, current_timestamp, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.finding_id,
+            input.reason,
+            input.authority_event_id
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closure_attempts set result = 'superseded', resolved_at = current_timestamp where result is null and closure_id in (select id from closures where finding_id = ?1 and status = 'ready_for_verification')",
+        params![input.finding_id],
+    )?;
+    tx.execute(
+        "update closures set status = 'superseded', superseded_at = current_timestamp, superseded_by_authority_event_id = ?1 where finding_id = ?2 and status != 'superseded'",
+        params![input.authority_event_id, input.finding_id],
+    )?;
+    tx.execute(
+        "update findings set status = 'accepted_out_of_scope' where id = ?1",
+        params![input.finding_id],
+    )?;
+    let watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    tx.execute(
+        "update review_plans set fresh_review_after_run_id = ?1 where id = ?2",
+        params![watermark, review_plan_id],
+    )?;
+    tx.commit()?;
+    Ok(FindingOutOfScopeOutcome {
+        finding_id: input.finding_id,
+        acceptance_record_id,
+    })
+}
+
+pub fn finding_fix_context_ref(finding_id: i64, closure_id: i64, attempt_id: i64) -> String {
+    format!(
+        "review-context:finding-fix:finding={finding_id}:closure={closure_id}:attempt={attempt_id}"
+    )
+}
+
+fn ensure_active_acceptance_authority(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    authority_event_id: i64,
+) -> Result<()> {
+    let valid: bool = conn.query_row(
+        r#"
+        select exists(select 1 from authority_events
+                      where id = ?1 and project_id = ?2 and status = 'active'
+                        and event_type in ('user_instruction', 'policy', 'design_doc'))
+        "#,
+        params![authority_event_id, project_id],
+        |row| row.get(0),
+    )?;
+    if !valid {
+        bail!("operation requires an active user, policy, or design authority event");
+    }
+    Ok(())
+}
+
+fn finding_is_remediation_eligible(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    finding_id: i64,
+) -> Result<bool> {
+    conn.query_row(
+        r#"
+        select exists(
+            select 1
+            from findings f
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where f.id = ?1 and f.project_id = ?2
+              and p.required = 1 and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+        )
+        "#,
+        params![finding_id, project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn require_text(value: Option<&str>, message: &str) -> Result<()> {
+    if value.is_none_or(|value| value.trim().is_empty()) {
+        bail!(message.to_string());
+    }
+    Ok(())
+}
+
 pub fn add_finding_verification(
     root: &Path,
     input: NewFindingVerification<'_>,
 ) -> Result<FindingVerificationOutcome> {
+    if !matches!(input.result, "verified" | "not_fixed" | "needs_evidence") {
+        bail!(
+            "finding verification result must be verified|not_fixed|needs_evidence; use finding accept-out-of-scope for authority disposition"
+        );
+    }
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
     let verification_run = tx
         .query_row(
             r#"
-            select run_type, run_purpose
+            select run_type, run_purpose, finding_fix_result, clean_run,
+                   new_findings_count, carried_findings_checked, target_ref,
+                   review_provenance, review_provenance_ref,
+                   exists(select 1 from review_agent_invocations i
+                          where i.review_run_id = review_runs.id
+                            and coalesce(i.external_agent_id, '') != '')
             from review_runs
             where id = ?1 and project_id = ?2
             "#,
@@ -681,6 +1086,14 @@ pub fn add_finding_verification(
                 Ok(StoredReviewRunPurpose {
                     run_type: row.get(0)?,
                     run_purpose: row.get(1)?,
+                    finding_fix_result: row.get(2)?,
+                    clean_run: row.get::<_, i64>(3)? == 1,
+                    new_findings_count: row.get(4)?,
+                    carried_findings_checked: row.get(5)?,
+                    _target_ref: row.get(6)?,
+                    review_provenance: row.get(7)?,
+                    review_provenance_ref: row.get(8)?,
+                    has_external_agent: row.get::<_, i64>(9)? == 1,
                 })
             },
         )
@@ -691,10 +1104,36 @@ pub fn add_finding_verification(
     {
         bail!("finding verification requires a resume finding_fix_verification run");
     }
-    tx.query_row(
-        r#"
-        select 1
+    if verification_run.finding_fix_result.as_deref() != Some(input.result)
+        || verification_run.new_findings_count != 0
+        || verification_run.carried_findings_checked != 1
+        || (input.result == "verified") != verification_run.clean_run
+    {
+        bail!("finding verification result is inconsistent with the resume review outcome");
+    }
+    let trusted = match verification_run.review_provenance.as_str() {
+        "external_agent" => {
+            verification_run.has_external_agent
+                && verification_run
+                    .review_provenance_ref
+                    .as_deref()
+                    .is_some_and(|v| !v.trim().is_empty())
+        }
+        "human_review" => verification_run
+            .review_provenance_ref
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty()),
+        _ => false,
+    };
+    if !trusted {
+        bail!("finding verification requires trusted review provenance");
+    }
+    let attempt_id: i64 = tx
+        .query_row(
+            r#"
+        select a.id
         from closures c
+        join closure_attempts a on a.closure_id = c.id and a.result is null
         join findings f on f.id = c.finding_id
         join review_runs verifier on verifier.id = ?1 and verifier.project_id = ?5
         join review_runs source_run on source_run.id = f.review_run_id
@@ -704,31 +1143,36 @@ pub fn add_finding_verification(
           and f.project_id = ?5
           and f.id = ?3
           and source_run.review_plan_id = verifier.review_plan_id
-          and ?4 in ('verified', 'not_fixed', 'needs_evidence', 'out_of_scope')
+          and c.status = 'ready_for_verification'
+          and verifier.id > a.review_run_high_watermark
+          and verifier.target_ref = 'review-context:finding-fix:finding=' || f.id
+                    || ':closure=' || c.id || ':attempt=' || a.id
         "#,
-        params![
-            input.review_run_id,
-            input.closure_id,
-            input.finding_id,
-            input.result,
-            project_id,
-        ],
-        |_| Ok(()),
-    )
-    .optional()?
-    .context("finding verification target mismatch")?;
+            params![
+                input.review_run_id,
+                input.closure_id,
+                input.finding_id,
+                input.result,
+                project_id,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("finding verification target mismatch")?;
     tx.execute(
         r#"
         insert into finding_verifications(
-            project_id, review_run_id, finding_id, closure_id, result, notes, created_at
+            project_id, review_run_id, finding_id, closure_id, closure_attempt_id,
+            result, notes, created_at
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
         "#,
         params![
             project_id,
             input.review_run_id,
             input.finding_id,
             input.closure_id,
+            attempt_id,
             input.result,
             input.notes,
         ],
@@ -739,7 +1183,28 @@ pub fn add_finding_verification(
             "update findings set status = 'closed' where id = ?1 and project_id = ?2",
             params![input.finding_id, project_id],
         )?;
+        tx.execute(
+            "update closures set status = 'verified' where id = ?1",
+            params![input.closure_id],
+        )?;
+    } else {
+        tx.execute(
+            "update closures set status = 'registered' where id = ?1",
+            params![input.closure_id],
+        )?;
     }
+    tx.execute(
+        "update closure_attempts set result = ?1, resolved_at = current_timestamp where id = ?2",
+        params![input.result, attempt_id],
+    )?;
+    let fresh_watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    tx.execute(
+        "update review_plans set fresh_review_after_run_id = ?1 where id = (select review_plan_id from review_runs where id = ?2)",
+        params![fresh_watermark, input.review_run_id],
+    )?;
     refresh_plan_for_run(&tx, project_id, input.review_run_id)?;
     tx.commit()?;
     Ok(FindingVerificationOutcome {
@@ -865,6 +1330,7 @@ fn enforce_run_allowed(
     policy: &StoredReviewPolicy,
     plan: &StoredReviewPlan,
     run_type: &str,
+    target_ref: Option<&str>,
 ) -> Result<()> {
     if run_type == "fresh" && !policy.allow_fresh_review {
         bail!("fresh review is disabled by policy");
@@ -872,13 +1338,31 @@ fn enforce_run_allowed(
     if run_type == "resume" && !policy.allow_resume_review {
         bail!("resume review is disabled by policy");
     }
-    let limit = match run_type {
+    let mut limit = match run_type {
         "fresh" => policy.max_fresh_agents,
         "resume" => policy.max_resume_agents,
         "coverage" => policy.max_fresh_agents,
         _ => bail!("invalid review run type"),
     };
-    let used = count_invocations(conn, policy, plan, run_type, false)?;
+    let used = if run_type == "resume"
+        && target_ref.is_some_and(|target| target.starts_with("review-context:finding-fix:"))
+    {
+        limit = limit.max(1);
+        conn.query_row(
+            "select count(*) from review_runs where review_plan_id = ?1 and run_type = 'resume' and target_ref = ?2",
+            params![plan.id, target_ref],
+            |row| row.get(0),
+        )?
+    } else if run_type == "fresh" && plan.fresh_review_after_run_id > 0 {
+        limit = limit.max(1);
+        conn.query_row(
+            "select count(*) from review_runs where review_plan_id = ?1 and run_type = 'fresh' and id > ?2",
+            params![plan.id, plan.fresh_review_after_run_id],
+            |row| row.get(0),
+        )?
+    } else {
+        count_invocations(conn, policy, plan, run_type, false)?
+    };
     if used >= limit {
         match policy.on_max_agents_exceeded.as_str() {
             "mark_exhausted" => {
@@ -930,12 +1414,18 @@ fn consecutive_clean_runs(
         r
         where r.review_plan_id = ?1
           and r.run_type = ?2
+          and (?3 = 0 or r.id > ?3)
           and r.status = 'completed'
           and r.new_findings_count = 0
         order by id desc
         "#,
     )?;
-    let rows = stmt.query_map(params![plan.id, run_type], |row| {
+    let fresh_boundary = if run_type == "fresh" {
+        plan.fresh_review_after_run_id
+    } else {
+        0
+    };
+    let rows = stmt.query_map(params![plan.id, run_type, fresh_boundary], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -1208,7 +1698,7 @@ fn load_review_plan(
     conn.query_row(
         r#"
         select id, review_policy_id, review_scope_id, design_version_id, work_unit_id,
-               review_type, stage
+               review_type, stage, coalesce(fresh_review_after_run_id, 0)
         from review_plans
         where id = ?1 and project_id = ?2
         "#,
@@ -1222,6 +1712,7 @@ fn load_review_plan(
                 work_unit_id: row.get(4)?,
                 review_type: row.get(5)?,
                 stage: row.get(6)?,
+                fresh_review_after_run_id: row.get(7)?,
             })
         },
     )
@@ -1542,6 +2033,7 @@ struct StoredReviewPlan {
     work_unit_id: i64,
     review_type: String,
     stage: String,
+    fresh_review_after_run_id: i64,
 }
 
 struct StoredReviewPolicy {
@@ -1574,6 +2066,14 @@ struct StoredReviewRunPolicy {
 struct StoredReviewRunPurpose {
     run_type: String,
     run_purpose: String,
+    finding_fix_result: Option<String>,
+    clean_run: bool,
+    new_findings_count: i64,
+    carried_findings_checked: i64,
+    _target_ref: Option<String>,
+    review_provenance: String,
+    review_provenance_ref: Option<String>,
+    has_external_agent: bool,
 }
 
 struct ResolvedRunTarget {
@@ -1711,6 +2211,26 @@ pub struct NewClosure<'a> {
     pub closed_by_commit: Option<&'a str>,
 }
 
+pub struct ClosureReady<'a> {
+    pub closure_id: i64,
+    pub implementation_evidence: &'a str,
+    pub tests_or_gates: &'a str,
+    pub closed_by_commit: Option<&'a str>,
+}
+
+pub struct ClosureSupersession<'a> {
+    pub closure_id: i64,
+    pub new_closure: NewClosure<'a>,
+    pub reason: &'a str,
+    pub authority_event_id: i64,
+}
+
+pub struct FindingOutOfScope<'a> {
+    pub finding_id: i64,
+    pub reason: &'a str,
+    pub authority_event_id: i64,
+}
+
 pub struct NewFindingVerification<'a> {
     pub review_run_id: i64,
     pub finding_id: i64,
@@ -1768,6 +2288,28 @@ pub struct FindingClassificationOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClosureOutcome {
     pub closure_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClosureReadyOutcome {
+    pub closure_id: i64,
+    pub finding_id: i64,
+    pub attempt_id: i64,
+    pub attempt_number: i64,
+    pub context_ref: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClosureSupersessionOutcome {
+    pub closure_id: i64,
+    pub superseded_closure_id: i64,
+    pub finding_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FindingOutOfScopeOutcome {
+    pub finding_id: i64,
+    pub acceptance_record_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1848,6 +2390,7 @@ pub struct ReviewRunRecord {
     pub status: String,
     pub review_provenance: String,
     pub review_provenance_ref: Option<String>,
+    pub finding_fix_result: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -863,9 +863,7 @@ fn build_rescope_report(
         blockers.push(PhaseRescopeBlocker::new(
             "unresolved_cross_phase_dependencies",
             format!("{dependency_count} open cross-phase dependencies touch this phase"),
-            format!(
-                "agent-workbench phase dependency satisfy <dependency-id> --reason \"<reason>\" --evidence <ref>"
-            ),
+            "agent-workbench phase dependency satisfy <dependency-id> --reason \"<reason>\" --evidence <ref>".to_string(),
         ));
     }
     if shared_record_policy == "require-decisions" {

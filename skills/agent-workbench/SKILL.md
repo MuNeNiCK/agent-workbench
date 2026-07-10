@@ -121,7 +121,10 @@ Common command groups include:
 - `agent-workbench finding classify`
 - `agent-workbench finding list`
 - `agent-workbench finding verify`
+- `agent-workbench finding accept-out-of-scope`
 - `agent-workbench closure add`
+- `agent-workbench closure ready`
+- `agent-workbench closure supersede`
 - `agent-workbench review-context`
 - `agent-workbench evidence add`
 - `agent-workbench coverage add`
@@ -189,11 +192,23 @@ from structured ledger state.
 - Prefer structured project memory over broad Markdown history searches.
 - Use `agent-workbench status` and `agent-workbench next` before long-running
   work, executed through the wrapper path resolved relative to this skill.
+- If `status` or `next` reports `finding_remediation: true` or
+  `finding remediation`, inspect `finding_remediation_count`; implementation is
+  allowed only in the printed owning work unit and only to satisfy the printed
+  finding/closure contracts. Keep the findings open. After implementing and
+  testing each fix, run its exact printed `closure ready` command; do not launch
+  resume review before that boundary. Stale design-derived state always takes
+  precedence over this exception.
 - If `status` or `next` reports `phase_blocked: true` or `blocked phase`, do
   not start implementation, edit code, record implementation evidence, or run
   implementation validation as the next action. Follow the printed blocker
   command for finding classification, closure, verification, gate repair, or
   work unblock first.
+- After `closure ready`, generate `review-context finding-fix`, run an actual
+  independent resume review, and record it with the exact context target,
+  `--finding-result`, one carried finding, and trusted provenance. Then run
+  `finding verify` with the same typed result. A resume review never replaces
+  the later fresh unbiased completion review.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.
 - Before planning, editing, or reviewing, run `agent-workbench correction list`

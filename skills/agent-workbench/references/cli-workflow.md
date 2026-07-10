@@ -7,7 +7,12 @@ normal coding-agent work.
 
 1. Run `agent-workbench status`.
 2. Run `agent-workbench next`.
-3. If either command reports `phase_blocked: true` or `blocked phase`, perform
+3. If either command reports `finding_remediation: true` or
+   `finding remediation`, inspect `finding_remediation_count`, implement only
+   the printed finding contracts in their owning work unit, then run each
+   printed `closure ready` command. Stale design-derived state takes precedence.
+   If either
+   command reports `phase_blocked: true` or `blocked phase`, perform
    the printed blocker-resolution command before planning implementation. Do
    not edit code, start implementation work, or record implementation evidence
    until the blocker is resolved and `next` stops reporting the blocked phase.

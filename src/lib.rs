@@ -31,9 +31,9 @@ pub use coverage::{
     add_coverage_item, list_coverage_items,
 };
 pub use db::{
-    ActiveWorkUnit, InitOutcome, NextAction, PhaseBlocker, ProjectStatus, default_design_root,
-    default_export_root, default_ledger_path, default_log_root, init_project, next_action,
-    project_status,
+    ActiveWorkUnit, FindingRemediation, InitOutcome, NextAction, PhaseBlocker, ProjectStatus,
+    default_design_root, default_export_root, default_ledger_path, default_log_root, init_project,
+    next_action, project_status,
 };
 pub use design::{
     DesignDecisionListQuery, DesignDecisionRecord, DesignExceptionAcceptanceOutcome,
@@ -91,20 +91,23 @@ pub use repository::{
     list_repository_snapshots,
 };
 pub use review::{
-    ClosureOutcome, FindingClassificationOutcome, FindingOutcome, FindingRecord,
-    FindingVerificationOutcome, NewClosure, NewFinding, NewFindingVerification, NewReviewPlan,
-    NewReviewPlanTarget, NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome,
-    ReviewPlanRecord, ReviewPlanTargetOutcome, ReviewPlanTargetRecord, ReviewPlanWaiver,
-    ReviewPlanWaiverOutcome, ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome,
-    ReviewRunRecord, ReviewScopeOutcome, ReviewScopeRecord, add_closure, add_finding,
+    ClosureOutcome, ClosureReady, ClosureReadyOutcome, ClosureSupersession,
+    ClosureSupersessionOutcome, FindingClassificationOutcome, FindingOutOfScope,
+    FindingOutOfScopeOutcome, FindingOutcome, FindingRecord, FindingVerificationOutcome,
+    NewClosure, NewFinding, NewFindingVerification, NewReviewPlan, NewReviewPlanTarget,
+    NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome, ReviewPlanRecord,
+    ReviewPlanTargetOutcome, ReviewPlanTargetRecord, ReviewPlanWaiver, ReviewPlanWaiverOutcome,
+    ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome,
+    ReviewScopeRecord, accept_finding_out_of_scope, add_closure, add_finding,
     add_finding_verification, add_review_plan, add_review_plan_target, add_review_policy,
-    add_review_run, classify_finding, list_findings, list_review_plan_targets, list_review_plans,
-    list_review_policies, list_review_runs, list_review_scopes, start_review_scope,
+    add_review_run, add_review_run_with_finding_result, classify_finding, finding_fix_context_ref,
+    list_findings, list_review_plan_targets, list_review_plans, list_review_policies,
+    list_review_runs, list_review_scopes, ready_closure, start_review_scope, supersede_closure,
     waive_review_plan,
 };
 pub use review_context::{
-    ReviewContextDocument, ReviewContextQuery, render_review_context, review_context_ref,
-    review_context_ref_with_phase,
+    ReviewContextDocument, ReviewContextQuery, render_finding_fix_context, render_review_context,
+    review_context_ref, review_context_ref_with_phase,
 };
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,

@@ -85,6 +85,11 @@ If the response says the phase is blocked, ask the agent to resolve that blocker
 before implementation. A blocked phase means Agent Workbench has review,
 finding, gate, or work-state evidence that must be handled first.
 
+`finding remediation` is the narrow exception for a valid close-review fix.
+The finding remains open while the owning work unit implements its registered
+closure contract. `closure ready` ends that interval and requires an exact
+finding-fix resume review plus matching verification.
+
 ## Normal human flow
 
 Most users only need this loop:

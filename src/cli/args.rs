@@ -1551,7 +1551,7 @@ pub(crate) struct ReviewPlanTargetAddArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ReviewRunCommand {
-    Add(ReviewRunAddArgs),
+    Add(Box<ReviewRunAddArgs>),
     List(ReviewRunListArgs),
 }
 
@@ -1583,6 +1583,8 @@ pub(crate) struct ReviewRunAddArgs {
     pub(crate) provenance: String,
     #[arg(long)]
     pub(crate) provenance_ref: Option<String>,
+    #[arg(long)]
+    pub(crate) finding_result: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1597,6 +1599,17 @@ pub(crate) enum FindingCommand {
     Classify(FindingClassifyArgs),
     List(FindingListArgs),
     Verify(FindingVerifyArgs),
+    /// Accept an open finding out of scope using recorded authority.
+    AcceptOutOfScope(FindingAcceptOutOfScopeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct FindingAcceptOutOfScopeArgs {
+    pub(crate) finding_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
 }
 
 #[derive(Debug, Args)]
@@ -1645,6 +1658,40 @@ pub(crate) struct FindingVerifyArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ClosureCommand {
     Add(ClosureAddArgs),
+    Ready(ClosureReadyArgs),
+    Supersede(ClosureSupersedeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClosureReadyArgs {
+    pub(crate) closure_id: i64,
+    #[arg(long)]
+    pub(crate) evidence: String,
+    #[arg(long)]
+    pub(crate) tests: String,
+    #[arg(long)]
+    pub(crate) commit: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClosureSupersedeArgs {
+    pub(crate) closure_id: i64,
+    #[arg(long)]
+    pub(crate) invariant: String,
+    #[arg(long)]
+    pub(crate) surfaces: String,
+    #[arg(long)]
+    pub(crate) fix_plan: String,
+    #[arg(long)]
+    pub(crate) tests: String,
+    #[arg(long)]
+    pub(crate) verification: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
+    #[arg(long)]
+    pub(crate) citations: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1955,6 +2002,12 @@ pub(crate) struct ReviewContextArgs {
     pub(crate) work_unit: Option<i64>,
     #[arg(long)]
     pub(crate) phase: Option<i64>,
+    #[arg(long)]
+    pub(crate) finding: Option<i64>,
+    #[arg(long)]
+    pub(crate) closure: Option<i64>,
+    #[arg(long)]
+    pub(crate) attempt: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]

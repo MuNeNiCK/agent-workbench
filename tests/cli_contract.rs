@@ -809,7 +809,6 @@ fn acceptance_add_records_design_exception() {
             &authority,
         ],
     );
-
     assert!(output.contains("accepted design exception"));
     assert!(output.contains("target_type: design_requirement"));
     assert!(output.contains("design_requirement_id: 1"));
@@ -3700,7 +3699,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "--type",
             "implementation_review",
             "--fresh-clean",
-            "0",
+            "1",
             "--resume-clean",
             "1",
             "--max-fresh-agents",
@@ -3761,7 +3760,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "--target",
             "HEAD",
             "--new-findings",
-            "1",
+            "2",
             "--summary",
             "found issue",
         ],
@@ -3796,6 +3795,26 @@ fn review_flow_records_policy_runs_findings_and_verification() {
         temp.path(),
         &["finding", "classify", "1", "--classification", "valid"],
     );
+    let empty_invariant = err(
+        temp.path(),
+        &[
+            "closure",
+            "add",
+            "--finding",
+            "1",
+            "--invariant",
+            "",
+            "--surfaces",
+            "src/error.rs",
+            "--fix-plan",
+            "surface the missing error",
+            "--tests",
+            "cargo test",
+            "--verification",
+            "resume review",
+        ],
+    );
+    assert!(empty_invariant.contains("--invariant"));
     let closure = ok(
         temp.path(),
         &[
@@ -3805,6 +3824,80 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "1",
             "--invariant",
             "errors are surfaced",
+            "--surfaces",
+            "src/error.rs",
+            "--fix-plan",
+            "surface the missing error",
+            "--tests",
+            "cargo test",
+            "--verification",
+            "resume review",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "finding",
+            "add",
+            "--run",
+            "1",
+            "--type",
+            "implementation_finding",
+            "--severity",
+            "medium",
+            "--description",
+            "parallel remediation",
+        ],
+    );
+    ok(
+        temp.path(),
+        &["finding", "classify", "2", "--classification", "valid"],
+    );
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "add",
+            "--finding",
+            "2",
+            "--invariant",
+            "parallel fix is explicit",
+            "--surfaces",
+            "src/parallel.rs",
+            "--fix-plan",
+            "fix parallel issue",
+            "--tests",
+            "cargo test",
+            "--verification",
+            "resume review",
+        ],
+    );
+    let remediation_status = ok(temp.path(), &["status"]);
+    assert!(remediation_status.contains("finding_remediation_count: 2"));
+    let authority = cli_approval_authority_event(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "finding",
+            "accept-out-of-scope",
+            "2",
+            "--reason",
+            "parallel example disposed",
+            "--authority",
+            &authority,
+        ],
+    );
+    let terminal_reclassify = err(
+        temp.path(),
+        &["finding", "classify", "2", "--classification", "valid"],
+    );
+    assert!(terminal_reclassify.contains("terminal finding"));
+    let ready = ok(
+        temp.path(),
+        &[
+            "closure",
+            "ready",
+            "1",
             "--evidence",
             "abc123",
             "--tests",
@@ -3824,14 +3917,24 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "--purpose",
             "finding_fix_verification",
             "--target",
-            "HEAD",
+            "review-context:finding-fix:finding=1:closure=1:attempt=1",
+            "--finding-result",
+            "verified",
             "--clean",
             "--carried-findings",
             "1",
             "--summary",
             "verified",
+            "--provenance",
+            "external_agent",
+            "--external-agent-id",
+            "reviewer-1",
+            "--provenance-ref",
+            "review-output:1",
         ],
     );
+    let listed_resume = ok(temp.path(), &["review", "run", "list", "--plan", "1"]);
+    let verification_next = ok(temp.path(), &["next"]);
     let verification = ok(
         temp.path(),
         &[
@@ -3845,6 +3948,25 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "1",
             "--result",
             "verified",
+        ],
+    );
+    let final_fresh = ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            "1",
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            "HEAD",
+            "--clean",
+            "--summary",
+            "final clean review",
         ],
     );
     let plans = ok(temp.path(), &["review", "plan", "list"]);
@@ -3861,8 +3983,15 @@ fn review_flow_records_policy_runs_findings_and_verification() {
     assert!(kpt.contains("generated_item_count: 1"));
     assert!(classified.contains("classified finding"));
     assert!(closure.contains("closure_id: 1"));
+    assert!(ready.contains("attempt_id: 1"));
     assert!(resume_run.contains("review_run_id: 2"));
+    assert!(listed_resume.contains("finding_result=verified"));
+    assert!(
+        verification_next
+            .contains("finding verify --run 2 --finding 1 --closure 1 --result verified")
+    );
     assert!(verification.contains("finding_verification_id: 1"));
+    assert!(final_fresh.contains("review_run_id: 3"));
     assert!(plans.contains("1 [implementation_review:clean required=true]"));
     assert!(findings.contains("1 [run=1 implementation_finding:high closed]"));
 }
@@ -4307,4 +4436,23 @@ fn work_resume_rejects_allowed_check_without_required_items() {
     let stderr = err(temp.path(), &["work", "resume", "--check", "1"]);
 
     assert!(stderr.contains("missing required item resume_target_suspended"));
+}
+
+#[test]
+fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let closure_help = ok(temp.path(), &["closure", "--help"]);
+    assert!(closure_help.contains("ready"));
+    assert!(closure_help.contains("supersede"));
+
+    let finding_help = ok(temp.path(), &["finding", "--help"]);
+    assert!(finding_help.contains("accept-out-of-scope"));
+
+    let run_help = ok(temp.path(), &["review", "run", "add", "--help"]);
+    assert!(run_help.contains("--finding-result"));
+
+    let context_help = ok(temp.path(), &["review-context", "--help"]);
+    assert!(context_help.contains("--finding"));
+    assert!(context_help.contains("--closure"));
+    assert!(context_help.contains("--attempt"));
 }

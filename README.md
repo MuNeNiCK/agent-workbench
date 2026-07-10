@@ -7,6 +7,11 @@ It gives agents a project-local SQLite ledger for work units, design packages,
 tasks, traceability, validation gates, repository evidence, reusable commands,
 review loops, KPT checks, and work records.
 
+Valid close-review findings support a scoped remediation interval: register the
+closure contract, implement the fix while the finding stays open, then require
+an exact-context resume review and verification before a later fresh completion
+review.
+
 ## Install
 
 Requirements: Linux x86_64 with GitHub CLI `gh skill`, `curl`, `sed`, `tar`,

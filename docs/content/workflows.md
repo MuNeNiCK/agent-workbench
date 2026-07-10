@@ -32,6 +32,25 @@ finding, review, gate, or work-unit blocker before implementation. It should
 not edit code or record implementation evidence while that phase blocker is
 present.
 
+An eligible valid finding from a required close-ready implementation review has
+one explicit exception. After a complete closure contract is registered,
+`status` prints `finding_remediation: true`, a
+`finding_remediation_count`, and every eligible contract; `next` prints the
+same deterministic list. The findings stay open while their owning work unit
+implements only those scoped fixes. `closure ready` records fix evidence, ends
+remediation for that contract, and restores a verification blocker. Stale
+design-derived state suppresses all remediation permission until resolved.
+
+Generate the printed `review-context finding-fix`, run an independent resume
+review, and record its typed `--finding-result` with one carried finding and
+trusted provenance. `finding verify --result` must match that outcome. Failed
+verification returns to remediation with a new attempt. Verified or
+authority-disposed findings still require a later fresh unbiased clean review.
+`closure ready` stores evidence, tests, and commit on the immutable numbered
+attempt without rewriting the registered closure contract. After an
+interruption, `review run list` exposes `finding_result`, and `next` prints the
+concrete matching `finding verify` command.
+
 ## Handling interruptions
 
 If the agent finds a blocking issue, it should not silently switch tasks.

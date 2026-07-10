@@ -21,7 +21,11 @@ items.
 | required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
 | required close review has stale or missing context evidence | read the `review plan blockers:` detail; it lists `review_plan:<id>`, stale target counts, and the exact `context_ref` required for `review run add --target <context_ref>` |
 | required review plan was created for the wrong scope or is intentionally not required | record authority, then `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>` |
-| review finding is open | classify, fix, add closure invariant, verify, then record a new clean run |
+| valid close-ready review finding has no closure | add a complete closure contract with surfaces, fix plan, tests, and verification plan |
+| finding is in scoped remediation | implement the printed closure contract, test it, then run `closure ready` |
+| closure is ready for verification | generate the exact finding-fix context, run an independent resume review with typed result and trusted provenance, then run matching `finding verify` |
+| migrated closure is incomplete | record authority and use the exact printed `closure supersede` repair command |
+| findings are verified or disposed | record a later fresh unbiased clean review; earlier clean runs and resume runs do not satisfy final completion |
 | repository state is missing | add repositories and snapshots for every relevant working tree |
 | repository changed during work | add close comparison and classify the changed state |
 | work record evidence is missing | create a work record and link commands, commits, or files |

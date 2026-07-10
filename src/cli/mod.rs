@@ -49,6 +49,18 @@ pub(crate) fn run() -> Result<()> {
                     print_phase_blocker(&blocker);
                 } else {
                     println!("phase_blocked: false");
+                    if !status.finding_remediations.is_empty() {
+                        println!("finding_remediation: true");
+                        println!(
+                            "finding_remediation_count: {}",
+                            status.finding_remediations.len()
+                        );
+                        for remediation in &status.finding_remediations {
+                            print_finding_remediation(remediation);
+                        }
+                    } else {
+                        println!("finding_remediation: false");
+                    }
                 }
             }
         }
@@ -61,6 +73,13 @@ pub(crate) fn run() -> Result<()> {
             NextAction::BlockedPhase { blocker } => {
                 println!("blocked phase");
                 print_phase_blocker(&blocker);
+            }
+            NextAction::FindingRemediation { remediations } => {
+                println!("finding remediation");
+                println!("finding_remediation_count: {}", remediations.len());
+                for remediation in &remediations {
+                    print_finding_remediation(remediation);
+                }
             }
             NextAction::NoOpenWorkUnit => {
                 println!("no open work unit");
@@ -135,6 +154,17 @@ pub(crate) fn run() -> Result<()> {
         Command::Export { command } => design_flow::handle_export(&root, command)?,
     }
     Ok(())
+}
+
+fn print_finding_remediation(remediation: &agent_workbench::FindingRemediation) {
+    println!("work_unit_id: {}", remediation.work_unit_id);
+    println!("review_plan_id: {}", remediation.review_plan_id);
+    println!("finding_id: {}", remediation.finding_id);
+    println!("closure_id: {}", remediation.closure_id);
+    println!("description: {}", remediation.description);
+    println!("affected_surfaces: {}", remediation.affected_surfaces);
+    println!("fix_plan: {}", remediation.fix_plan);
+    println!("next: {}", remediation.next_action);
 }
 
 fn print_next_phase(work_unit: &agent_workbench::ActiveWorkUnit) {

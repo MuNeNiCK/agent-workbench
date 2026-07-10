@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::work::has_stale_design_state_for_work;
+
 pub const LEDGER_DIR: &str = ".agent-workbench";
 pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -62,6 +64,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             active_activations: 0,
             schema_version: None,
             phase_blocker: None,
+            finding_remediations: Vec::new(),
         });
     }
 
@@ -82,6 +85,11 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
         )
         .optional()?;
     let phase_blocker = current_phase_blocker(&conn)?;
+    let finding_remediations = if phase_blocker.is_none() {
+        current_finding_remediations(&conn)?
+    } else {
+        Vec::new()
+    };
 
     Ok(ProjectStatus {
         initialized: true,
@@ -91,6 +99,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
         active_activations,
         schema_version,
         phase_blocker,
+        finding_remediations,
     })
 }
 
@@ -101,8 +110,13 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     }
 
     let conn = open_ledger(&ledger_path)?;
+    migrate_if_needed(&conn)?;
     if let Some(blocker) = current_phase_blocker(&conn)? {
         return Ok(NextAction::BlockedPhase { blocker });
+    }
+    let remediations = current_finding_remediations(&conn)?;
+    if !remediations.is_empty() {
+        return Ok(NextAction::FindingRemediation { remediations });
     }
 
     let active = conn
@@ -220,6 +234,48 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     })
 }
 
+fn current_finding_remediations(conn: &Connection) -> Result<Vec<FindingRemediation>> {
+    let project_id = project_id(conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select p.id, p.work_unit_id, f.id, c.id, f.description,
+               coalesce(c.affected_surfaces, '-'), coalesce(c.fix_plan, '-')
+        from review_plans p
+        join review_runs r on r.review_plan_id = p.id
+        join findings f on f.review_run_id = r.id
+        join closures c on c.finding_id = f.id and c.status = 'registered'
+        join work_unit_activations a on a.work_unit_id = p.work_unit_id and a.status = 'active'
+        where p.project_id = ?1 and p.required = 1 and p.stage = 'close-ready'
+          and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and f.status = 'open' and f.classification = 'valid'
+          and not exists (
+              select 1 from acceptance_records ar
+              where ar.finding_id = f.id and ar.target_type = 'finding'
+                and ar.status = 'approved'
+                and ar.acceptance_type in ('accepted_out_of_scope', 'explicit_exception', 'classified_failure')
+          )
+        order by f.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id],
+        |row| {
+            let closure_id = row.get(3)?;
+            Ok(FindingRemediation {
+                review_plan_id: row.get(0)?,
+                work_unit_id: row.get(1)?,
+                finding_id: row.get(2)?,
+                closure_id,
+                description: row.get(4)?,
+                affected_surfaces: row.get(5)?,
+                fix_plan: row.get(6)?,
+                next_action: format!("implement the scoped fix, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""),
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 fn attach_next_phase(conn: &Connection, mut work_unit: ActiveWorkUnit) -> Result<ActiveWorkUnit> {
     let next_phase = conn
         .query_row(
@@ -257,6 +313,33 @@ fn attach_next_phase(conn: &Connection, mut work_unit: ActiveWorkUnit) -> Result
 
 fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
     let project_id = project_id(conn)?;
+    let active_work_unit_id = conn
+        .query_row(
+            "select work_unit_id from work_unit_activations where project_id = ?1 and status = 'active' order by id desc limit 1",
+            params![project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(work_unit_id) = active_work_unit_id
+        && has_stale_design_state_for_work(conn, work_unit_id)?
+    {
+        return Ok(Some(PhaseBlocker {
+            kind: "stale_design".to_string(),
+            review_plan_id: None,
+            work_unit_id: Some(work_unit_id),
+            review_type: None,
+            stage: None,
+            review_run_id: None,
+            finding_id: None,
+            severity: Some("critical".to_string()),
+            classification: None,
+            description: "stale design-derived state blocks implementation and scoped remediation"
+                .to_string(),
+            next_action:
+                "agent-workbench stale list; resolve each stale record before implementation"
+                    .to_string(),
+        }));
+    }
     let review_blocker = conn
         .query_row(
             r#"
@@ -275,19 +358,46 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                     from closures c
                     where c.finding_id = f.id
                       and c.project_id = f.project_id
+                      and c.status != 'superseded'
                     order by c.id desc
                     limit 1
                 ),
                 (
+                    select a.id
+                    from closure_attempts a
+                    join closures c on c.id = a.closure_id
+                    where c.finding_id = f.id and a.result is null
+                    order by a.id desc limit 1
+                ),
+                (
                     select rr.id
                     from review_runs rr
+                    join closure_attempts a
+                      on rr.target_ref = 'review-context:finding-fix:finding=' || f.id
+                         || ':closure=' || a.closure_id || ':attempt=' || a.id
                     where rr.review_plan_id = p.id
                       and rr.project_id = p.project_id
                       and rr.run_type = 'resume'
                       and rr.run_purpose = 'finding_fix_verification'
+                      and rr.id > a.review_run_high_watermark
                     order by rr.id desc
                     limit 1
-                )
+                ),
+                (
+                    select rr.finding_fix_result
+                    from review_runs rr
+                    join closure_attempts a
+                      on rr.target_ref = 'review-context:finding-fix:finding=' || f.id
+                         || ':closure=' || a.closure_id || ':attempt=' || a.id
+                    where rr.review_plan_id = p.id
+                      and rr.project_id = p.project_id
+                      and rr.run_type = 'resume'
+                      and rr.run_purpose = 'finding_fix_verification'
+                      and rr.id > a.review_run_high_watermark
+                    order by rr.id desc
+                    limit 1
+                ),
+                (select c.status from closures c where c.finding_id = f.id and c.status != 'superseded' order by c.id desc limit 1)
             from review_plans p
             join review_runs r on r.review_plan_id = p.id
             join findings f on f.review_run_id = r.id
@@ -297,6 +407,17 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
               and f.project_id = ?1
               and f.status = 'open'
               and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+              and not (
+                  f.classification = 'valid'
+                  and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and exists (
+                      select 1 from closures c
+                      join work_unit_activations a on a.work_unit_id = p.work_unit_id
+                      where c.finding_id = f.id and c.status = 'registered'
+                        and a.status = 'active'
+                  )
+              )
               and not exists (
                 select 1
                 from acceptance_records ar
@@ -324,7 +445,10 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                 let classification: String = row.get(7)?;
                 let review_plan_id = row.get(0)?;
                 let closure_id = row.get(9)?;
-                let verification_run_id = row.get(10)?;
+                let attempt_id = row.get(10)?;
+                let verification_run_id: Option<i64> = row.get(11)?;
+                let verification_result = row.get::<_, Option<String>>(12)?;
+                let closure_status = row.get::<_, Option<String>>(13)?;
                 Ok(PhaseBlocker {
                     kind: "required_review_finding".to_string(),
                     review_plan_id: Some(review_plan_id),
@@ -340,7 +464,10 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                         finding_id,
                         review_plan_id,
                         closure_id,
-                        verification_run_id,
+                        closure_status.as_deref(),
+                        attempt_id,
+                        verification_run_id
+                            .map(|run_id| (run_id, verification_result.as_deref())),
                         &classification,
                     ),
                 })
@@ -389,24 +516,48 @@ fn finding_next_action(
     finding_id: i64,
     review_plan_id: i64,
     closure_id: Option<i64>,
-    verification_run_id: Option<i64>,
+    closure_status: Option<&str>,
+    attempt_id: Option<i64>,
+    verification: Option<(i64, Option<&str>)>,
     classification: &str,
 ) -> String {
     match classification {
         "unclassified" => format!(
             "agent-workbench finding classify {finding_id} --classification valid|invalid|design_conflict|needs_evidence"
         ),
-        "valid" | "design_conflict" | "needs_evidence" => match (closure_id, verification_run_id) {
-            (Some(closure_id), Some(run_id)) => format!(
-                "agent-workbench finding verify --run {run_id} --finding {finding_id} --closure {closure_id} --result verified|not_fixed|needs_evidence|out_of_scope"
-            ),
-            (Some(closure_id), None) => format!(
-                "agent-workbench review run add --plan {review_plan_id} --type resume --purpose finding_fix_verification --target finding:{finding_id}; then agent-workbench finding verify --run <run-id> --finding {finding_id} --closure {closure_id} --result verified|not_fixed|needs_evidence|out_of_scope"
-            ),
-            (None, _) => format!(
-                "agent-workbench closure add --finding {finding_id} --invariant \"<invariant>\""
-            ),
-        },
+        "valid" | "design_conflict" | "needs_evidence" => {
+            match (closure_id, closure_status, attempt_id, verification) {
+                (
+                    Some(closure_id),
+                    Some("ready_for_verification"),
+                    Some(_),
+                    Some((run_id, finding_result)),
+                ) => {
+                    let result = finding_result.unwrap_or("<missing-finding-result>");
+                    format!(
+                        "agent-workbench finding verify --run {run_id} --finding {finding_id} --closure {closure_id} --result {result}"
+                    )
+                }
+                (Some(closure_id), Some("ready_for_verification"), Some(attempt_id), None) => {
+                    let context = format!(
+                        "review-context:finding-fix:finding={finding_id}:closure={closure_id}:attempt={attempt_id}"
+                    );
+                    format!(
+                        "agent-workbench review-context finding-fix --finding {finding_id} --closure {closure_id} --attempt {attempt_id}; then agent-workbench review run add --plan {review_plan_id} --type resume --purpose finding_fix_verification --target {context} --finding-result verified|not_fixed|needs_evidence --carried-findings 1 --provenance external_agent --external-agent-id <id> --provenance-ref <ref>"
+                    )
+                }
+                (Some(closure_id), Some("registered"), _, _) => format!(
+                    "correct the finding source, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""
+                ),
+                (Some(closure_id), Some("incomplete"), _, _) => format!(
+                    "agent-workbench closure supersede {closure_id} --invariant \"<invariant>\" --surfaces \"<surfaces>\" --fix-plan \"<plan>\" --tests \"<tests>\" --verification \"<plan>\" --reason \"<reason>\" --authority <authority-event-id>"
+                ),
+                (None, _, _, _) => format!(
+                    "agent-workbench closure add --finding {finding_id} --invariant \"<invariant>\""
+                ),
+                _ => format!("resolve closure state for finding {finding_id}"),
+            }
+        }
         _ => format!("resolve finding {finding_id}"),
     }
 }
@@ -473,6 +624,11 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
     {
         return Ok(true);
     }
+    if table_exists(conn, "closures")?
+        && !table_has_column(conn, "closures", "supersession_reason")?
+    {
+        return Ok(true);
+    }
 
     Ok(false)
 }
@@ -494,6 +650,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     refresh_review_integrity_triggers(conn)?;
     refresh_ledger_integrity_triggers(conn)?;
     ensure_phase_schema(conn)?;
+    ensure_closure_lifecycle_schema(conn)?;
     migrate_review_runs_phase_targets(conn)?;
     ensure_phase_review_target_reference_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
@@ -529,6 +686,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         "text not null default 'self_recorded'",
     )?;
     ensure_column(conn, "review_runs", "review_provenance_ref", "text")?;
+    ensure_column(conn, "review_runs", "finding_fix_result", "text")?;
+    ensure_column(
+        conn,
+        "finding_verifications",
+        "closure_attempt_id",
+        "integer",
+    )?;
+    ensure_column(
+        conn,
+        "review_plans",
+        "fresh_review_after_run_id",
+        "integer not null default 0",
+    )?;
     backfill_authorities(conn)?;
     let had_work_record_commit_auto_linked =
         table_has_column(conn, "work_record_commits", "auto_linked")?;
@@ -640,6 +810,186 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "closures")? {
+        return Ok(());
+    }
+    ensure_column(
+        conn,
+        "closures",
+        "status",
+        "text not null default 'registered'",
+    )?;
+    ensure_column(conn, "closures", "superseded_by_closure_id", "integer")?;
+    ensure_column(conn, "closures", "superseded_at", "text")?;
+    ensure_column(conn, "closures", "supersession_reason", "text")?;
+    ensure_column(
+        conn,
+        "closures",
+        "superseded_by_authority_event_id",
+        "integer",
+    )?;
+    ensure_column(conn, "review_runs", "finding_fix_result", "text")?;
+    ensure_column(
+        conn,
+        "finding_verifications",
+        "closure_attempt_id",
+        "integer",
+    )?;
+    ensure_column(
+        conn,
+        "review_plans",
+        "fresh_review_after_run_id",
+        "integer not null default 0",
+    )?;
+    conn.execute_batch(
+        r#"
+        create table if not exists closure_attempts (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            closure_id integer not null references closures(id) on delete cascade,
+            attempt_number integer not null,
+            implementation_evidence text not null,
+            tests_or_gates text not null,
+            closed_by_commit text,
+            review_run_high_watermark integer not null default 0,
+            result text check (result in ('verified', 'not_fixed', 'needs_evidence', 'superseded')),
+            created_at text not null,
+            resolved_at text,
+            unique(closure_id, attempt_number)
+        );
+        "#,
+    )?;
+
+    // Preserve verified legacy history first. For other findings, only the
+    // greatest-id closure remains current.
+    conn.execute_batch(
+        r#"
+        update closures set status = 'superseded'
+        where exists (
+            select 1 from finding_verifications fv
+            where fv.finding_id = closures.finding_id and fv.result = 'verified'
+        );
+
+        update closures set status = 'verified'
+        where id = (
+            select fv.closure_id from finding_verifications fv
+            where fv.finding_id = closures.finding_id and fv.result = 'verified'
+            order by fv.id desc limit 1
+        );
+
+        update closures set status = 'superseded'
+        where not exists (
+            select 1 from finding_verifications fv
+            where fv.finding_id = closures.finding_id and fv.result = 'verified'
+        )
+        and id != (select max(c2.id) from closures c2 where c2.finding_id = closures.finding_id);
+
+        update findings set status = 'accepted_out_of_scope'
+        where exists (
+            select 1 from acceptance_records ar
+            where ar.finding_id = findings.id
+              and ar.target_type = 'finding'
+              and ar.acceptance_type = 'accepted_out_of_scope'
+              and ar.status = 'approved'
+        );
+
+        update closure_attempts set result = 'superseded', resolved_at = coalesce(resolved_at, current_timestamp)
+        where result is null and closure_id in (
+            select c.id from closures c
+            join findings f on f.id = c.finding_id
+            where f.status = 'accepted_out_of_scope'
+        );
+
+        update closures set status = 'superseded'
+        where finding_id in (
+            select id from findings where status = 'accepted_out_of_scope'
+        );
+
+        update findings set status = 'open'
+        where classification = 'valid'
+          and status = 'closed'
+          and not exists (
+              select 1 from finding_verifications fv
+              where fv.finding_id = findings.id and fv.result = 'verified'
+          )
+          and not exists (
+              select 1 from acceptance_records ar
+              where ar.finding_id = findings.id
+                and ar.target_type = 'finding'
+                and ar.acceptance_type = 'accepted_out_of_scope'
+                and ar.status = 'approved'
+          );
+
+        update closures
+        set status = case
+            when exists (
+                select 1
+                from findings f
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                where f.id = closures.finding_id
+                  and p.required = 1
+                  and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+            )
+            and (
+                coalesce(trim(affected_surfaces), '') = ''
+                or coalesce(trim(fix_plan), '') = ''
+                or coalesce(trim(tests_or_gates), '') = ''
+                or coalesce(trim(verification_plan), '') = ''
+            ) then 'incomplete'
+            else 'registered'
+        end
+        where id = (select max(c2.id) from closures c2 where c2.finding_id = closures.finding_id)
+          and exists (
+              select 1 from findings f
+              where f.id = closures.finding_id
+                and f.status = 'open' and f.classification = 'valid'
+          )
+          and not exists (
+              select 1 from closure_attempts a
+              where a.closure_id = closures.id and a.result is null
+          )
+          and not exists (
+              select 1 from finding_verifications fv
+              where fv.finding_id = closures.finding_id and fv.result = 'verified'
+          );
+
+        update findings set status = 'closed'
+        where exists (
+            select 1 from finding_verifications fv
+            where fv.finding_id = findings.id and fv.result = 'verified'
+        );
+
+        update findings set status = 'accepted_out_of_scope'
+        where exists (
+            select 1 from acceptance_records ar
+            where ar.finding_id = findings.id
+              and ar.target_type = 'finding'
+              and ar.acceptance_type = 'accepted_out_of_scope'
+              and ar.status = 'approved'
+        );
+
+        update findings set status = 'open'
+        where classification = 'valid'
+          and status = 'closed'
+          and not exists (
+              select 1 from finding_verifications fv
+              where fv.finding_id = findings.id and fv.result = 'verified'
+          )
+          and not exists (
+              select 1 from acceptance_records ar
+              where ar.finding_id = findings.id
+                and ar.target_type = 'finding'
+                and ar.acceptance_type = 'accepted_out_of_scope'
+                and ar.status = 'approved'
+          );
+        "#,
+    )?;
     Ok(())
 }
 
@@ -2420,16 +2770,42 @@ pub struct ProjectStatus {
     pub active_activations: i64,
     pub schema_version: Option<i64>,
     pub phase_blocker: Option<PhaseBlocker>,
+    pub finding_remediations: Vec<FindingRemediation>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum NextAction {
-    NotInitialized { ledger_path: PathBuf },
-    BlockedPhase { blocker: PhaseBlocker },
+    NotInitialized {
+        ledger_path: PathBuf,
+    },
+    BlockedPhase {
+        blocker: PhaseBlocker,
+    },
+    FindingRemediation {
+        remediations: Vec<FindingRemediation>,
+    },
     NoOpenWorkUnit,
-    ResumeSuspended { work_unit: ActiveWorkUnit },
-    ActivateOpen { work_unit: ActiveWorkUnit },
-    ContinueActive { work_unit: ActiveWorkUnit },
+    ResumeSuspended {
+        work_unit: ActiveWorkUnit,
+    },
+    ActivateOpen {
+        work_unit: ActiveWorkUnit,
+    },
+    ContinueActive {
+        work_unit: ActiveWorkUnit,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingRemediation {
+    pub review_plan_id: i64,
+    pub work_unit_id: i64,
+    pub finding_id: i64,
+    pub closure_id: i64,
+    pub description: String,
+    pub affected_surfaces: String,
+    pub fix_plan: String,
+    pub next_action: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

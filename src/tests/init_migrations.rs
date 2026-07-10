@@ -18,6 +18,576 @@ fn init_creates_ledger_and_project() {
 }
 
 #[test]
+fn next_action_migrates_schema_before_querying_lifecycle_state() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop table closure_attempts;
+        alter table closures drop column status;
+        delete from schema_migrations where version = 7;
+        insert or ignore into schema_migrations(version, applied_at) values (6, current_timestamp);
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    let action = next_action(temp.path()).unwrap();
+    assert_eq!(action, NextAction::NoOpenWorkUnit);
+    assert_eq!(
+        project_status(temp.path()).unwrap().schema_version,
+        Some(SCHEMA_VERSION)
+    );
+}
+
+#[test]
+fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "migration idempotence", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "migration-review",
+            review_type: "implementation_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 1,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 0,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: None,
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "migration finding",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "fixed",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/db.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("fix migration"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("resume"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: closure.closure_id,
+            implementation_evidence: "patched",
+            tests_or_gates: "tests pass",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let disposed_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "medium",
+            description: "legacy disposed finding",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), disposed_finding.finding_id, "valid").unwrap();
+    let disposed_closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: disposed_finding.finding_id,
+            design_invariant: "disposition is terminal",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("accept outside scope"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("authority disposition"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let disposed_attempt = ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: disposed_closure.closure_id,
+            implementation_evidence: "scope reviewed",
+            tests_or_gates: "scope gate",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    accept_finding_out_of_scope(
+        temp.path(),
+        FindingOutOfScope {
+            finding_id: disposed_finding.finding_id,
+            reason: "legacy approved disposition",
+            authority_event_id: approval_authority_event(temp.path()),
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update findings set status = 'open' where id = ?1",
+        params![disposed_finding.finding_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update closures set status = 'registered' where id = ?1",
+        params![disposed_closure.closure_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update closure_attempts set result = null, resolved_at = null where id = ?1",
+        params![disposed_attempt.attempt_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    init_project(temp.path()).unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let status: String = conn
+        .query_row(
+            "select status from closures where id = ?1",
+            params![closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let pending: i64 = conn
+        .query_row(
+            "select count(*) from closure_attempts where closure_id = ?1 and result is null",
+            params![closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "ready_for_verification");
+    assert_eq!(pending, 1);
+    let disposed_state: (String, String, String) = conn
+        .query_row(
+            r#"
+            select f.status, c.status, a.result
+            from findings f
+            join closures c on c.finding_id = f.id
+            join closure_attempts a on a.closure_id = c.id
+            where f.id = ?1 and c.id = ?2 and a.id = ?3
+            "#,
+            params![
+                disposed_finding.finding_id,
+                disposed_closure.closure_id,
+                disposed_attempt.attempt_id
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        disposed_state,
+        (
+            "accepted_out_of_scope".to_string(),
+            "superseded".to_string(),
+            "superseded".to_string()
+        )
+    );
+}
+
+#[test]
+fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthorized_history() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "v6 closure matrix", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "v6-matrix",
+            review_type: "implementation_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 1,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 0,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let source = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("legacy findings"),
+            new_findings_count: 3,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let add_eligible_finding = |description| {
+        let finding = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: source.review_run_id,
+                finding_type: "implementation_finding",
+                severity: "high",
+                description,
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+        let closure = add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: finding.finding_id,
+                design_invariant: "legacy invariant",
+                design_citations: None,
+                implementation_evidence: None,
+                affected_surfaces: Some("src/review.rs"),
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: Some("legacy fix"),
+                tests_or_gates: Some("cargo test"),
+                verification_plan: Some("legacy resume"),
+                closed_by_commit: None,
+            },
+        )
+        .unwrap();
+        (finding, closure)
+    };
+    let (multiple_finding, older_closure) = add_eligible_finding("multiple legacy closures");
+    let (out_of_scope_history, history_closure) =
+        add_eligible_finding("unauthorized out-of-scope history");
+    let (verified_history, verified_older_closure) =
+        add_eligible_finding("multiple verified legacy closures");
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into closures(project_id, finding_id, design_invariant, status, created_at) values (1, ?1, 'latest incomplete closure', 'registered', current_timestamp)",
+        params![multiple_finding.finding_id],
+    )
+    .unwrap();
+    let incomplete_closure_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into closures(
+            project_id, finding_id, design_invariant, affected_surfaces,
+            fix_plan, tests_or_gates, verification_plan, status, created_at
+        ) values (1, ?1, 'newer verified closure', 'src/review.rs',
+                  'newer fix', 'cargo test', 'resume', 'registered', current_timestamp)
+        "#,
+        params![verified_history.finding_id],
+    )
+    .unwrap();
+    let verified_newer_closure_id = conn.last_insert_rowid();
+    for closure_id in [verified_older_closure.closure_id, verified_newer_closure_id] {
+        conn.execute(
+            r#"
+            insert into review_runs(
+                project_id, review_plan_id, run_type, run_purpose, target_type,
+                work_unit_id, target_ref, new_findings_count, carried_findings_checked,
+                clean_run, status, review_provenance, created_at
+            ) values (1, ?1, 'resume', 'finding_fix_verification', 'work_unit', ?2,
+                      'finding:legacy-verified', 0, 1, 1, 'completed',
+                      'self_recorded', current_timestamp)
+            "#,
+            params![plan.review_plan_id, work.work_unit_id],
+        )
+        .unwrap();
+        let verifier_id = conn.last_insert_rowid();
+        conn.execute(
+            r#"
+            insert into finding_verifications(
+                project_id, review_run_id, finding_id, closure_id, result, created_at
+            ) values (1, ?1, ?2, ?3, 'verified', current_timestamp)
+            "#,
+            params![verifier_id, verified_history.finding_id, closure_id],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "update findings set status = 'closed' where id = ?1",
+        params![verified_history.finding_id],
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        insert into review_runs(
+            project_id, review_plan_id, run_type, run_purpose, target_type,
+            work_unit_id, target_ref, new_findings_count, carried_findings_checked,
+            clean_run, status, review_provenance, created_at
+        ) values (1, ?1, 'resume', 'finding_fix_verification', 'work_unit', ?2,
+                  'finding:legacy-out-of-scope', 0, 1, 0, 'completed',
+                  'self_recorded', current_timestamp)
+        "#,
+        params![plan.review_plan_id, work.work_unit_id],
+    )
+    .unwrap();
+    let legacy_resume_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into finding_verifications(
+            project_id, review_run_id, finding_id, closure_id, result, created_at
+        ) values (1, ?1, ?2, ?3, 'out_of_scope', current_timestamp)
+        "#,
+        params![
+            legacy_resume_id,
+            out_of_scope_history.finding_id,
+            history_closure.closure_id
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "update findings set status = 'closed' where id = ?1",
+        params![out_of_scope_history.finding_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let design_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let design_run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: design_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("legacy design finding"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let noneligible_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: design_run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "noneligible legacy closure",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), noneligible_finding.finding_id, "valid").unwrap();
+    let noneligible_closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: noneligible_finding.finding_id,
+            design_invariant: "design finding stays blocking",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: None,
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: None,
+            tests_or_gates: None,
+            verification_plan: None,
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update closures set affected_surfaces = null, fix_plan = null, tests_or_gates = null, verification_plan = null where id = ?1",
+        params![history_closure.closure_id],
+    )
+    .unwrap();
+    conn.execute_batch(
+        r#"
+        drop table closure_attempts;
+        alter table closures drop column status;
+        delete from schema_migrations where version = 7;
+        insert or ignore into schema_migrations(version, applied_at) values (6, current_timestamp);
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    init_project(temp.path()).unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let older_status: String = conn
+        .query_row(
+            "select status from closures where id = ?1",
+            params![older_closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let incomplete_status: String = conn
+        .query_row(
+            "select status from closures where id = ?1",
+            params![incomplete_closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let history_state: (String, String) = conn
+        .query_row(
+            "select f.status, c.status from findings f join closures c on c.finding_id = f.id where f.id = ?1 and c.id = ?2",
+            params![out_of_scope_history.finding_id, history_closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let noneligible_status: String = conn
+        .query_row(
+            "select status from closures where id = ?1",
+            params![noneligible_closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let verified_states: (String, String, String) = conn
+        .query_row(
+            r#"
+            select f.status, older.status, newer.status
+            from findings f
+            join closures older on older.id = ?2
+            join closures newer on newer.id = ?3
+            where f.id = ?1
+            "#,
+            params![
+                verified_history.finding_id,
+                verified_older_closure.closure_id,
+                verified_newer_closure_id
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(older_status, "superseded");
+    assert_eq!(incomplete_status, "incomplete");
+    assert_eq!(
+        history_state,
+        ("open".to_string(), "incomplete".to_string())
+    );
+    assert_eq!(noneligible_status, "registered");
+    assert_eq!(
+        verified_states,
+        (
+            "closed".to_string(),
+            "superseded".to_string(),
+            "verified".to_string()
+        )
+    );
+}
+
+#[test]
 fn init_migrates_existing_acceptance_records_shape() {
     let temp = tempfile::tempdir().unwrap();
     let ledger_dir = temp.path().join(".agent-workbench");

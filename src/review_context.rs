@@ -28,6 +28,57 @@ pub struct ReviewContextDocument {
     pub text: String,
 }
 
+pub fn render_finding_fix_context(
+    root: &Path,
+    finding_id: i64,
+    closure_id: i64,
+    attempt_id: i64,
+) -> Result<ReviewContextDocument> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let context_ref = crate::review::finding_fix_context_ref(finding_id, closure_id, attempt_id);
+    let text = conn
+        .query_row(
+            r#"
+            select p.id, p.review_type, p.stage, f.description, f.severity,
+                   c.design_invariant, c.affected_surfaces, c.fix_plan,
+                   c.verification_plan, c.tests_or_gates, a.attempt_number,
+                   a.implementation_evidence, a.tests_or_gates,
+                   a.closed_by_commit, a.review_run_high_watermark
+            from closure_attempts a
+            join closures c on c.id = a.closure_id
+            join findings f on f.id = c.finding_id
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where f.id = ?1 and c.id = ?2 and a.id = ?3
+              and f.project_id = ?4 and c.project_id = ?4 and a.project_id = ?4
+            "#,
+            rusqlite::params![finding_id, closure_id, attempt_id, project_id],
+            |row| {
+                Ok(format!(
+                    "review_context: finding-fix\ncontext_ref: {context_ref}\nfinding_id: {finding_id}\nclosure_id: {closure_id}\nattempt_id: {attempt_id}\nreview_plan_id: {}\nreview_type: {}\nstage: {}\nseverity: {}\ndescription: {}\ninvariant: {}\naffected_surfaces: {}\nfix_plan: {}\nverification_plan: {}\ncontract_tests_or_gates: {}\nattempt_number: {}\nimplementation_evidence: {}\nattempt_tests_or_gates: {}\ncommit: {}\nreview_run_high_watermark: {}\n",
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "-".to_string()),
+                    row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "-".to_string()),
+                    row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "-".to_string()),
+                    row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "-".to_string()),
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "-".to_string()),
+                    row.get::<_, i64>(14)?,
+                ))
+            },
+        )
+        .map_err(anyhow::Error::from)?;
+    Ok(ReviewContextDocument { context_ref, text })
+}
+
 pub fn review_context_ref(
     kind: &str,
     design_version_id: Option<i64>,

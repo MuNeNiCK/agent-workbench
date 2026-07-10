@@ -184,7 +184,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
         },
         ReviewCommand::Run { command } => match command {
             ReviewRunCommand::Add(args) => {
-                let outcome = add_review_run(
+                let outcome = add_review_run_with_finding_result(
                     root,
                     NewReviewRun {
                         review_plan_id: args.plan,
@@ -202,6 +202,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                         review_provenance: &args.provenance,
                         review_provenance_ref: args.provenance_ref.as_deref(),
                     },
+                    args.finding_result.as_deref(),
                 )?;
                 println!("added review run");
                 println!("review_run_id: {}", outcome.review_run_id);
@@ -219,8 +220,9 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                 }
                 for record in records {
                     let target = record.target_ref.as_deref().unwrap_or("-");
+                    let finding_result = record.finding_fix_result.as_deref().unwrap_or("-");
                     println!(
-                        "{} [plan={} {}:{} clean={} provenance={}] target={}",
+                        "{} [plan={} {}:{} clean={} provenance={} finding_result={}] target={}",
                         record.id,
                         record
                             .review_plan_id
@@ -230,6 +232,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                         record.status,
                         record.clean_run,
                         record.review_provenance,
+                        finding_result,
                         target
                     );
                 }
@@ -331,6 +334,19 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                 outcome.finding_verification_id
             );
         }
+        FindingCommand::AcceptOutOfScope(args) => {
+            let outcome = accept_finding_out_of_scope(
+                root,
+                FindingOutOfScope {
+                    finding_id: args.finding_id,
+                    reason: &args.reason,
+                    authority_event_id: args.authority,
+                },
+            )?;
+            println!("accepted finding out of scope");
+            println!("finding_id: {}", outcome.finding_id);
+            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
+        }
     }
     Ok(())
 }
@@ -356,6 +372,50 @@ pub(crate) fn handle_closure(root: &Path, command: ClosureCommand) -> Result<()>
             )?;
             println!("added closure");
             println!("closure_id: {}", outcome.closure_id);
+        }
+        ClosureCommand::Ready(args) => {
+            let outcome = ready_closure(
+                root,
+                ClosureReady {
+                    closure_id: args.closure_id,
+                    implementation_evidence: &args.evidence,
+                    tests_or_gates: &args.tests,
+                    closed_by_commit: args.commit.as_deref(),
+                },
+            )?;
+            println!("closure ready for verification");
+            println!("closure_id: {}", outcome.closure_id);
+            println!("finding_id: {}", outcome.finding_id);
+            println!("attempt_id: {}", outcome.attempt_id);
+            println!("attempt_number: {}", outcome.attempt_number);
+            println!("context_ref: {}", outcome.context_ref);
+        }
+        ClosureCommand::Supersede(args) => {
+            let outcome = supersede_closure(
+                root,
+                ClosureSupersession {
+                    closure_id: args.closure_id,
+                    new_closure: NewClosure {
+                        finding_id: 0,
+                        design_invariant: &args.invariant,
+                        design_citations: args.citations.as_deref(),
+                        implementation_evidence: None,
+                        affected_surfaces: Some(&args.surfaces),
+                        same_invariant_search: None,
+                        other_violations_found: None,
+                        fix_plan: Some(&args.fix_plan),
+                        tests_or_gates: Some(&args.tests),
+                        verification_plan: Some(&args.verification),
+                        closed_by_commit: None,
+                    },
+                    reason: &args.reason,
+                    authority_event_id: args.authority,
+                },
+            )?;
+            println!("superseded closure");
+            println!("superseded_closure_id: {}", outcome.superseded_closure_id);
+            println!("closure_id: {}", outcome.closure_id);
+            println!("finding_id: {}", outcome.finding_id);
         }
     }
     Ok(())

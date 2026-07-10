@@ -12,7 +12,7 @@ use agent_workbench::{
     StaleRecordDisposition, TaskDerivationListQuery, accept_stale_record, close_checklist,
     close_checklist_item, close_stale_record, decompose_design, list_checklist_items,
     list_checklists, list_design_requirements, list_stale_records, list_task_derivations,
-    render_review_context,
+    render_finding_fix_context, render_review_context,
 };
 
 pub(crate) fn handle_decompose(root: &Path, command: DecomposeCommand) -> Result<()> {
@@ -207,6 +207,20 @@ pub(crate) fn handle_export(root: &Path, command: ExportCommand) -> Result<()> {
 }
 
 pub(crate) fn print_review_context(root: &std::path::Path, args: &ReviewContextArgs) -> Result<()> {
+    if args.kind == "finding-fix" {
+        let finding = args
+            .finding
+            .ok_or_else(|| anyhow::anyhow!("finding-fix context requires --finding"))?;
+        let closure = args
+            .closure
+            .ok_or_else(|| anyhow::anyhow!("finding-fix context requires --closure"))?;
+        let attempt = args
+            .attempt
+            .ok_or_else(|| anyhow::anyhow!("finding-fix context requires --attempt"))?;
+        let document = render_finding_fix_context(root, finding, closure, attempt)?;
+        print!("{}", document.text);
+        return Ok(());
+    }
     let document = render_review_context(
         root,
         ReviewContextQuery {
