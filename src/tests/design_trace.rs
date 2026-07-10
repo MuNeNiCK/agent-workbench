@@ -485,6 +485,12 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
         },
     )
     .unwrap();
+    assert!(
+        accept_task_out_of_scope(temp.path(), task.task_id, "must use verified carry-forward")
+            .unwrap_err()
+            .to_string()
+            .contains("verified baseline proof")
+    );
     let blocked_without_gate = implementation_ready(
         temp.path(),
         ImplementationReadyCheck {
@@ -1921,24 +1927,13 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
         },
     )
     .unwrap();
-    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
-    add_closure(
-        temp.path(),
-        NewClosure {
-            finding_id: finding.finding_id,
-            design_invariant: "implementation follows current design",
-            design_citations: None,
-            implementation_evidence: None,
-            affected_surfaces: Some("src/lib.rs"),
-            same_invariant_search: None,
-            other_violations_found: None,
-            fix_plan: Some("update implementation"),
-            tests_or_gates: Some("cargo test"),
-            verification_plan: Some("resume review"),
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
+    let blocked_classification = classify_finding(temp.path(), finding.finding_id, "valid");
+    assert!(
+        blocked_classification
+            .unwrap_err()
+            .to_string()
+            .contains("stale accept")
+    );
 
     let status = project_status(temp.path()).unwrap();
     assert_eq!(status.phase_blocker.unwrap().kind, "stale_design");
@@ -1952,10 +1947,211 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
 }
 
 #[test]
+fn mediated_design_decomposition_records_complete_owned_alias_graph() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repair design decomposition", None).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let imported = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: imported.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let ready_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(imported.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: ready_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!(
+                "review-context:design-review:design={}:work={}",
+                imported.design_version_id, work.work_unit_id
+            )),
+            prompt_deviations: None,
+            result_summary: Some("design is ready for mediated decomposition"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("design-reviewer"),
+            external_agent_id: Some("design-reviewer-1"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:design-ready"),
+        },
+    )
+    .unwrap();
+    let correction_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(imported.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let correction_run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: correction_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("decomposition is missing"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: correction_run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "create the complete decomposition graph",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let surface = format!(
+        "transition:design-decompose:{}/{},transition:phase-create:{}/{}/@implementation/implementation/1/implementation,transition:phase-assign:@implementation/@task/REQ-001",
+        imported.design_version_id,
+        work.work_unit_id,
+        work.work_unit_id,
+        imported.design_version_id
+    );
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "all active requirements have an owned trace graph",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&surface),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("decompose the approved design"),
+            tests_or_gates: Some("GATE-001"),
+            verification_plan: Some("resume design review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        decompose_design(
+            temp.path(),
+            DesignDecomposition {
+                design_version_id: imported.design_version_id,
+                work_unit_id: work.work_unit_id,
+                checklist_title: None,
+                reason: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("closure correction-begin")
+    );
+    begin_correction(temp.path(), closure.closure_id).unwrap();
+    assert!(
+        decompose_design(
+            temp.path(),
+            DesignDecomposition {
+                design_version_id: imported.design_version_id,
+                work_unit_id: work.work_unit_id,
+                checklist_title: None,
+                reason: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("closure transition apply")
+    );
+    apply_correction_transition(temp.path(), closure.closure_id, 1, None, None).unwrap();
+    apply_correction_transition(temp.path(), closure.closure_id, 2, None, None).unwrap();
+    apply_correction_transition(temp.path(), closure.closure_id, 3, None, None).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let aliases: Vec<String> = {
+        let mut stmt = conn
+            .prepare("select alias from correction_transition_aliases order by alias")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert!(aliases.contains(&"@checklist".to_string()));
+    assert!(aliases.contains(&"@task/REQ-001".to_string()));
+    assert!(aliases.contains(&"@derivation/REQ-001".to_string()));
+    assert!(aliases.contains(&"@checklist-item/REQ-001".to_string()));
+    assert!(aliases.contains(&"@coverage/REQ-001".to_string()));
+    assert!(aliases.contains(&"@gate/REQ-001/GATE-001".to_string()));
+}
+
+#[test]
 fn stale_close_disposes_selected_validation_gate() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
-    start_work(temp.path(), "implement storage lifecycle", None).unwrap();
+    let work = start_work(temp.path(), "implement storage lifecycle", None).unwrap();
     let task = add_task(
         temp.path(),
         NewTask {
@@ -2002,7 +2198,7 @@ fn stale_close_disposes_selected_validation_gate() {
         },
     )
     .unwrap();
-    derive_task_from_requirement(
+    let derivation = derive_task_from_requirement(
         temp.path(),
         NewTaskDerivation {
             design_version_id: first_import.design_version_id,
@@ -2028,6 +2224,212 @@ fn stale_close_disposes_selected_validation_gate() {
         },
     )
     .unwrap();
+    let make_phase = |key: &str, order: i64| {
+        create_phase(
+            temp.path(),
+            NewWorkPhase {
+                work_unit_id: work.work_unit_id,
+                design_version_id: Some(first_import.design_version_id),
+                key,
+                title: key,
+                kind: "implementation",
+                order,
+                reason: None,
+            },
+        )
+        .unwrap()
+    };
+    let prerequisite_a = make_phase("prerequisite-a", 10);
+    let prerequisite_b = make_phase("prerequisite-b", 11);
+    let prerequisite_c = make_phase("prerequisite-c", 12);
+    let prerequisite_d = make_phase("prerequisite-d", 13);
+    let satisfy_dependency = add_phase_dependency(
+        temp.path(),
+        NewPhaseDependency {
+            from_phase_id: prerequisite_a.phase_id,
+            to_phase_id: prerequisite_b.phase_id,
+            dependency_type: "blocks",
+            reason: "satisfy through correction",
+        },
+    )
+    .unwrap();
+    let accept_dependency = add_phase_dependency(
+        temp.path(),
+        NewPhaseDependency {
+            from_phase_id: prerequisite_c.phase_id,
+            to_phase_id: prerequisite_d.phase_id,
+            dependency_type: "requires",
+            reason: "accept through correction",
+        },
+    )
+    .unwrap();
+    suspend_work(
+        temp.path(),
+        "verify global stale selection without an active work unit",
+        "apply the declared stale transition",
+    )
+    .unwrap();
+    let correction_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(first_import.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let correction_run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: correction_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("gate will require mediated stale disposal"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let correction_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: correction_run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "dispose the stale gate through the correction contract",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), correction_finding.finding_id, "valid").unwrap();
+    let stale_surface = format!(
+        "transition:phase-dependency-satisfy:{},transition:phase-dependency-accept:{},transition:phase-create:{}/{}/@foundation/implementation/1/foundation,transition:phase-create:{}/{}/@verification/validation/2/verification,transition:phase-assign:@foundation/{},transition:phase-dependency-add:@foundation/@verification/blocks,transition:stale-close:validation_gate/{}",
+        satisfy_dependency.dependency_id,
+        accept_dependency.dependency_id,
+        work.work_unit_id,
+        first_import.design_version_id,
+        work.work_unit_id,
+        first_import.design_version_id,
+        task.task_id,
+        gate.validation_gate_id
+    );
+    let reversed_stale_surfaces = format!(
+        "transition:stale-close:validation_gate/{},transition:stale-accept:checklist/{}",
+        gate.validation_gate_id, derivation.checklist_id
+    );
+    assert!(
+        add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: correction_finding.finding_id,
+                design_invariant: "stale transitions follow the global tuple",
+                design_citations: None,
+                implementation_evidence: None,
+                affected_surfaces: Some(&reversed_stale_surfaces),
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: Some("apply stale transitions"),
+                tests_or_gates: Some("stale inventory"),
+                verification_plan: Some("resume design review"),
+                closed_by_commit: None,
+            },
+        )
+        .is_err()
+    );
+    let correction_closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: correction_finding.finding_id,
+            design_invariant: "stale gate is disposed through an audited transition",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&stale_surface),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("apply the declared stale transition"),
+            tests_or_gates: Some("stale inventory"),
+            verification_plan: Some("resume design review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    begin_correction(temp.path(), correction_closure.closure_id).unwrap();
+    assert!(
+        apply_correction_transition(temp.path(), correction_closure.closure_id, 1, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("requires --evidence")
+    );
+    apply_correction_transition(
+        temp.path(),
+        correction_closure.closure_id,
+        1,
+        None,
+        Some("validation-run:dependency-satisfied"),
+    )
+    .unwrap();
+    assert!(
+        apply_correction_transition(temp.path(), correction_closure.closure_id, 2, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("requires --authority")
+    );
+    let dependency_authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "accept exact phase dependency",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap()
+    .authority_event_id;
+    apply_correction_transition(
+        temp.path(),
+        correction_closure.closure_id,
+        2,
+        Some(dependency_authority),
+        None,
+    )
+    .unwrap();
+    for token in 3..=6 {
+        apply_correction_transition(
+            temp.path(),
+            correction_closure.closure_id,
+            token,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let changed_audits: i64 = conn
+        .query_row(
+            "select count(*) from correction_transition_applications where correction_session_id=(select id from correction_sessions where closure_id=?1) and before_state != after_state",
+            params![correction_closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(changed_audits, 6);
+    drop(conn);
     fs::write(
         init.package_path.join("validation").join("gates.md"),
         validation_gate_doc("GATE-001").replace(
@@ -2059,20 +2461,38 @@ fn stale_close_disposes_selected_validation_gate() {
         },
     )
     .unwrap();
-
-    let outcome = close_stale_record(
-        temp.path(),
-        StaleRecordDisposition {
-            record_type: "validation_gate",
-            record_id: gate.validation_gate_id,
-            reason: "superseded gate template is no longer in scope",
-        },
-    )
-    .unwrap();
-
-    assert_eq!(outcome.record_type, "validation_gate");
-    assert_eq!(outcome.record_id, gate.validation_gate_id);
-    assert_eq!(outcome.status, "closed");
+    assert!(
+        add_task(
+            temp.path(),
+            NewTask {
+                title: "must not cross stale selection",
+                priority: "high",
+                source: "manual",
+                work_unit_id: Some(work.work_unit_id),
+                details: None,
+                completion_condition: Some("stale is resolved first"),
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("selected lifecycle action")
+    );
+    let bootstrap = project_status(temp.path()).unwrap().phase_blocker.unwrap();
+    assert_eq!(bootstrap.work_unit_id, None);
+    assert!(bootstrap.next_action.contains(&format!(
+        "closure transition apply {} --token 7",
+        correction_closure.closure_id
+    )));
+    let transition =
+        apply_correction_transition(temp.path(), correction_closure.closure_id, 7, None, None)
+            .unwrap();
+    assert!(!transition.idempotent);
+    assert!(
+        apply_correction_transition(temp.path(), correction_closure.closure_id, 7, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("selected transition")
+    );
     let stale = list_stale_records(temp.path()).unwrap();
     assert!(!stale.iter().any(|record| {
         record.record_type == "validation_gate" && record.id == gate.validation_gate_id
@@ -2087,13 +2507,650 @@ fn stale_close_disposes_selected_validation_gate() {
         .unwrap();
     let acceptance_type: String = conn
         .query_row(
-            "select acceptance_type from acceptance_records where id = ?1",
-            rusqlite::params![outcome.acceptance_record_id],
+            "select acceptance_type from acceptance_records where target_type = 'stale_record' and stale_record_type = 'validation_gate' and stale_record_id = ?1 order by id desc limit 1",
+            rusqlite::params![gate.validation_gate_id],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(gate_status, "closed");
     assert_eq!(acceptance_type, "stale_accepted");
+}
+
+#[test]
+fn mediated_task_carry_forward_requires_verified_baseline_and_is_atomic() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "carry unchanged baseline", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "carry cleanup requirement",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("cleanup remains validated"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-lifecycle",
+            title: "Storage Lifecycle",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        format!(
+            "{}{}",
+            validation_gate_doc("GATE-001"),
+            validation_gate_doc("GATE-002")
+        ),
+    )
+    .unwrap();
+    let baseline = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: baseline.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let baseline_derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: baseline.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("verified baseline"),
+            checklist_title: Some("Baseline checklist"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let baseline_gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: baseline.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    let baseline_gate_2 = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: baseline.design_version_id,
+            gate_key: "GATE-002",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: baseline_gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("authoritative baseline pass"),
+        },
+    )
+    .unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: baseline_gate_2.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("second authoritative baseline pass"),
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("01-introduction-goals.md"),
+        "# Introduction And Goals\n\nUnrelated wording changed.\n",
+    )
+    .unwrap();
+    let current = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: current.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let ready_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(current.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: ready_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!(
+                "review-context:design-review:design={}:work={}",
+                current.design_version_id, work.work_unit_id
+            )),
+            prompt_deviations: None,
+            result_summary: Some("unchanged current design is ready for decomposition"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("design-reviewer"),
+            external_agent_id: Some("design-reviewer-carry"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:design-ready-carry"),
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='stale' where id=?1",
+        params![baseline_derivation.task_derivation_id],
+    )
+    .unwrap();
+    drop(conn);
+    accept_stale_record(
+        temp.path(),
+        StaleRecordDisposition {
+            record_type: "task_derivation",
+            record_id: baseline_derivation.task_derivation_id,
+            reason: "current unchanged derivation supersedes baseline linkage",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(current.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("unchanged baseline should be carried explicitly"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "record verified baseline carry-forward",
+            design_requirement_id: None,
+            task_id: Some(task.task_id),
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let surface = format!(
+        "transition:design-decompose:{}/{},transition:task-accept-out-of-scope:@task/REQ-001",
+        current.design_version_id, work.work_unit_id
+    );
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "unchanged verified baseline is carried with authority",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&surface),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("apply the verified carry-forward bundle"),
+            tests_or_gates: Some("baseline GATE-001 pass"),
+            verification_plan: Some("resume design review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    begin_correction(temp.path(), closure.closure_id).unwrap();
+    apply_correction_transition(temp.path(), closure.closure_id, 1, None, None).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let current_gate: i64 = conn
+        .query_row(
+            "select record_id from correction_transition_aliases where alias='@gate/REQ-001/GATE-001'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let current_gate_2: i64 = conn
+        .query_row(
+            "select record_id from correction_transition_aliases where alias='@gate/REQ-001/GATE-002'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let carried_task: i64 = conn
+        .query_row(
+            "select record_id from correction_transition_aliases where alias='@task/REQ-001'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(carried_task, task.task_id);
+    drop(conn);
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "carry unchanged verified requirement",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    for scope in [
+        "requirement:REQ-001".to_string(),
+        format!("work-unit:{}", work.work_unit_id),
+    ] {
+        let scoped = add_authority_event(
+            temp.path(),
+            NewAuthorityEvent {
+                event_type: "user_instruction",
+                source: Some("test-user"),
+                summary: "validate exact carry authority scope",
+                scope: Some(&scope),
+                precedence: 100,
+            },
+        )
+        .unwrap();
+        let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            scoped.authority_event_id,
+        )
+        .unwrap();
+    }
+    let wrong_authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "wrong carry authority scope",
+            scope: Some("requirement:REQ-999"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert!(
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            wrong_authority.authority_event_id,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("exact requirement or work unit")
+    );
+    let current_requirement: (i64, String, Option<String>) = conn
+        .query_row(
+            "select r.id, r.requirement_hash, r.required_surfaces from design_requirements r where r.design_version_id=?1 and r.requirement_key='REQ-001'",
+            params![current.design_version_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    conn.execute(
+        "update design_requirements set requirement_hash='changed' where id=?1",
+        params![current_requirement.0],
+    )
+    .unwrap();
+    assert!(
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            authority.authority_event_id,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("normalized hash")
+    );
+    conn.execute(
+        "update design_requirements set requirement_hash=?1, required_surfaces='cli' where id=?2",
+        params![current_requirement.1, current_requirement.0],
+    )
+    .unwrap();
+    assert!(
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            authority.authority_event_id,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("required surfaces")
+    );
+    conn.execute(
+        "update design_requirements set required_surfaces=?1 where id=?2",
+        params![current_requirement.2, current_requirement.0],
+    )
+    .unwrap();
+    let current_gate_template: (i64, String) = conn
+        .query_row(
+            "select id, gate_hash from validation_gate_templates where design_version_id=?1 and gate_key='GATE-002'",
+            params![current.design_version_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    conn.execute(
+        "update validation_gate_templates set gate_hash='changed' where id=?1",
+        params![current_gate_template.0],
+    )
+    .unwrap();
+    assert!(
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            authority.authority_event_id,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("gate set changed")
+    );
+    conn.execute(
+        "update validation_gate_templates set gate_hash=?1 where id=?2",
+        params![current_gate_template.1, current_gate_template.0],
+    )
+    .unwrap();
+    drop(conn);
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: baseline_gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "fail",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("latest baseline run must win over the earlier pass"),
+        },
+    )
+    .unwrap();
+    assert!(
+        apply_correction_transition(
+            temp.path(),
+            closure.closure_id,
+            2,
+            Some(authority.authority_event_id),
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("latest authoritative passing run")
+    );
+    assert_eq!(
+        list_tasks(
+            temp.path(),
+            TaskListQuery {
+                status: None,
+                work_unit_id: None,
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == task.task_id)
+        .unwrap()
+        .status,
+        "open"
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let partially_changed: i64 = conn
+        .query_row(
+            "select (select count(*) from checklist_items where task_id=?1 and status!='open') + (select count(*) from validation_gates where task_id=?1 and design_requirement_id=(select design_requirement_id from task_derivations where task_id=?1 and status='active') and status!='active') + (select count(*) from coverage_items where task_id=?1 and status='accepted_out_of_scope')",
+            params![task.task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(partially_changed, 0);
+    drop(conn);
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: baseline_gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("latest authoritative baseline pass restores eligibility"),
+        },
+    )
+    .unwrap();
+    apply_correction_transition(
+        temp.path(),
+        closure.closure_id,
+        2,
+        Some(authority.authority_event_id),
+        None,
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let state: (String, String, i64, i64) = conn
+        .query_row(
+            "select t.status, ci.status, (select count(*) from validation_gates where id in (?2,?3) and status='closed'), (select count(*) from coverage_items c join acceptance_records ar on ar.coverage_item_id=c.id and ar.status='approved' where c.task_id=t.id) from tasks t join checklist_items ci on ci.task_id=t.id and ci.checklist_id=(select max(id) from checklists where work_unit_id=?1) where t.id=?4",
+            params![work.work_unit_id, current_gate, current_gate_2, task.task_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state,
+        (
+            "accepted_out_of_scope".to_string(),
+            "accepted_out_of_scope".to_string(),
+            2,
+            1,
+        )
+    );
+    let baseline_state: (String, String) = conn
+        .query_row(
+            "select (select status from validation_gates where id=?1), (select status from validation_gates where id=?2)",
+            params![baseline_gate.validation_gate_id, baseline_gate_2.validation_gate_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(baseline_state, ("active".to_string(), "active".to_string()));
+}
+
+#[test]
+fn mediated_task_carry_forward_rejects_ambiguous_and_protected_derivations() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "reject ambiguous carry", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "shared task must stay in scope",
+            priority: "critical",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("both requirements remain implemented"),
+        },
+    )
+    .unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "protected-carry",
+            title: "Protected Carry",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        format!(
+            "{}\n{}",
+            requirement_doc("REQ-001", "Unchanged baseline candidate", "high"),
+            requirement_doc("REQ-020", "Protected source correction", "critical")
+        ),
+    )
+    .unwrap();
+    let imported = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: imported.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    for requirement_key in ["REQ-001", "REQ-020"] {
+        derive_task_from_requirement(
+            temp.path(),
+            NewTaskDerivation {
+                design_version_id: imported.design_version_id,
+                requirement_key,
+                task_id: task.task_id,
+                derivation_reason: Some("supported shared-task derivation"),
+                checklist_title: Some("Shared protected checklist"),
+                item_title: None,
+                completion_condition: None,
+            },
+        )
+        .unwrap();
+    }
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "attempt ambiguous carry",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert!(
+        crate::planning::ensure_verified_baseline_carry_forward(
+            &conn,
+            crate::db::project_id(&conn).unwrap(),
+            task.task_id,
+            Some(work.work_unit_id),
+            authority.authority_event_id,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("exactly one active design derivation")
+    );
+    let status: String = conn
+        .query_row(
+            "select status from tasks where id=?1",
+            params![task.task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "open");
 }
 
 #[test]

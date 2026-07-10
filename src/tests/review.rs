@@ -960,12 +960,12 @@ fn open_required_review_finding_blocks_next_action() {
             design_invariant: "design concern remains blocking",
             design_citations: None,
             implementation_evidence: None,
-            affected_surfaces: None,
+            affected_surfaces: Some("docs:create:docs/design-fix.md"),
             same_invariant_search: None,
             other_violations_found: None,
-            fix_plan: None,
-            tests_or_gates: None,
-            verification_plan: None,
+            fix_plan: Some("create the corrected design note"),
+            tests_or_gates: Some("design tests"),
+            verification_plan: Some("resume review"),
             closed_by_commit: None,
         },
     )
@@ -973,6 +973,86 @@ fn open_required_review_finding_blocks_next_action() {
     let status = project_status(temp.path()).unwrap();
     assert!(status.phase_blocker.is_some());
     assert!(status.finding_remediations.is_empty());
+    std::fs::create_dir_all(temp.path().join("docs")).unwrap();
+    std::fs::write(temp.path().join("docs/design-fix.md"), "premature edit").unwrap();
+    assert!(
+        begin_correction(temp.path(), noneligible_closure.closure_id)
+            .unwrap_err()
+            .to_string()
+            .contains("changed after closure registration")
+    );
+    std::fs::remove_file(temp.path().join("docs/design-fix.md")).unwrap();
+    begin_correction(temp.path(), noneligible_closure.closure_id).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert!(
+        conn.execute(
+            "insert into correction_tokens(project_id,closure_id,token_ordinal,token_kind,operation,target,status,created_at) values ((select id from projects limit 1),?1,99,'transition','arbitrary-command','x','pending',current_timestamp)",
+            params![noneligible_closure.closure_id],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_tokens(project_id,closure_id,token_ordinal,token_kind,operation,target,status,created_at) values ((select id from projects limit 1),?1,100,'transition','phase-create','x/x/x/x/x/x','pending',current_timestamp)",
+            params![noneligible_closure.closure_id],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "update correction_tokens set status='applied',applied_at=current_timestamp where closure_id=?1 and token_ordinal=1",
+            params![noneligible_closure.closure_id],
+        )
+        .is_err()
+    );
+    drop(conn);
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update review_plans set status='exhausted' where id=?1",
+        params![plan.review_plan_id],
+    )
+    .unwrap();
+    drop(conn);
+    let decision_blocker = project_status(temp.path()).unwrap().phase_blocker.unwrap();
+    assert!(
+        decision_blocker
+            .next_action
+            .contains(&format!("review plan waive {}", plan.review_plan_id))
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update review_plans set status='open' where id=?1",
+        params![plan.review_plan_id],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(
+        suspend_work(temp.path(), "must not bypass source correction", "resume")
+            .unwrap_err()
+            .to_string()
+            .contains("source_correction")
+    );
+    assert!(
+        create_phase(
+            temp.path(),
+            NewWorkPhase {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                key: "bypass",
+                title: "bypass",
+                kind: "test",
+                order: 1,
+                reason: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("closure transition apply")
+    );
+    std::fs::write(temp.path().join("docs/design-fix.md"), "corrected design").unwrap();
+    let correcting = project_status(temp.path()).unwrap();
+    assert!(correcting.phase_blocker.is_none());
+    assert_eq!(correcting.source_corrections.len(), 1);
     let attempt = ready_closure(
         temp.path(),
         ClosureReady {
@@ -1632,86 +1712,6 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
     ] {
         assert!(result.is_err());
     }
-    let disposed_finding = add_finding(
-        temp.path(),
-        NewFinding {
-            review_run_id: fresh.review_run_id,
-            finding_type: "implementation_finding",
-            severity: "medium",
-            description: "explicitly excluded implementation surface",
-            design_requirement_id: None,
-            task_id: None,
-        },
-    )
-    .unwrap();
-    classify_finding(temp.path(), disposed_finding.finding_id, "valid").unwrap();
-    let disposed_closure = add_closure(
-        temp.path(),
-        NewClosure {
-            finding_id: disposed_finding.finding_id,
-            design_invariant: "surface is outside release scope",
-            design_citations: None,
-            implementation_evidence: None,
-            affected_surfaces: Some("src/optional.rs"),
-            same_invariant_search: None,
-            other_violations_found: None,
-            fix_plan: Some("exclude with explicit authority"),
-            tests_or_gates: Some("cargo test"),
-            verification_plan: Some("authority disposition"),
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-    let disposed_attempt = ready_closure(
-        temp.path(),
-        ClosureReady {
-            closure_id: disposed_closure.closure_id,
-            implementation_evidence: "scope checked",
-            tests_or_gates: "scope test passes",
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-    accept_finding_out_of_scope(
-        temp.path(),
-        FindingOutOfScope {
-            finding_id: disposed_finding.finding_id,
-            reason: "user-approved exclusion",
-            authority_event_id: approval_authority_event(temp.path()),
-        },
-    )
-    .unwrap();
-    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let disposition_state: (String, String, String, i64) = conn
-        .query_row(
-            r#"
-            select f.status, c.status, a.result,
-                   (select count(*) from acceptance_records ar
-                    where ar.finding_id = f.id and ar.status = 'approved')
-            from findings f
-            join closures c on c.finding_id = f.id
-            join closure_attempts a on a.id = ?1
-            where f.id = ?2 and c.id = ?3
-            "#,
-            params![
-                disposed_attempt.attempt_id,
-                disposed_finding.finding_id,
-                disposed_closure.closure_id
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        disposition_state,
-        (
-            "accepted_out_of_scope".to_string(),
-            "superseded".to_string(),
-            "superseded".to_string(),
-            1,
-        )
-    );
-    drop(conn);
-    assert!(classify_finding(temp.path(), disposed_finding.finding_id, "valid").is_err());
     let closure = add_closure(
         temp.path(),
         NewClosure {
@@ -1729,138 +1729,120 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
         },
     )
     .unwrap();
-    let parallel_finding = add_finding(
-        temp.path(),
-        NewFinding {
-            review_run_id: fresh.review_run_id,
-            finding_type: "implementation_finding",
-            severity: "medium",
-            description: "parallel scoped remediation",
-            design_requirement_id: None,
-            task_id: None,
-        },
-    )
-    .unwrap();
-    classify_finding(temp.path(), parallel_finding.finding_id, "valid").unwrap();
-    let parallel_closure = add_closure(
-        temp.path(),
-        NewClosure {
-            finding_id: parallel_finding.finding_id,
-            design_invariant: "parallel remediation is discoverable",
-            design_citations: None,
-            implementation_evidence: None,
-            affected_surfaces: Some("src/parallel.rs"),
-            same_invariant_search: None,
-            other_violations_found: None,
-            fix_plan: Some("implement parallel fix"),
-            tests_or_gates: Some("cargo test"),
-            verification_plan: Some("resume review"),
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        project_status(temp.path())
-            .unwrap()
-            .finding_remediations
-            .len(),
-        2
-    );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
-        "update closures set status = 'incomplete', fix_plan = null where id = ?1",
-        params![parallel_closure.closure_id],
+        "update work_unit_activations set status = 'completed', completed_at = current_timestamp where id = ?1",
+        params![work.activation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update work_units set status = 'closed', closed_at = current_timestamp where id = ?1",
+        params![work.work_unit_id],
     )
     .unwrap();
     drop(conn);
-    let replacement = || NewClosure {
-        finding_id: parallel_finding.finding_id,
-        design_invariant: "parallel remediation contract is repaired",
-        design_citations: None,
-        implementation_evidence: None,
-        affected_surfaces: Some("src/parallel.rs"),
-        same_invariant_search: None,
-        other_violations_found: None,
-        fix_plan: Some("implement repaired parallel fix"),
-        tests_or_gates: Some("cargo test"),
-        verification_plan: Some("resume review"),
-        closed_by_commit: None,
-    };
-    let unauthorized_supersession = supersede_closure(
+    let recovery_authority = approval_authority_event(temp.path());
+    let reopened = reopen_work(
         temp.path(),
-        ClosureSupersession {
-            closure_id: parallel_closure.closure_id,
-            new_closure: replacement(),
-            reason: "repair incomplete contract",
-            authority_event_id: 999,
+        WorkReopen {
+            work_unit_id: work.work_unit_id,
+            reason: "verified finding invalidates the old closure",
+            reason_type: "closure_invalid",
+            authority_event_id: Some(recovery_authority),
+            acceptance_record_id: None,
         },
+    )
+    .unwrap();
+    assert!(
+        ready_closure(
+            temp.path(),
+            ClosureReady {
+                closure_id: closure.closure_id,
+                implementation_evidence: "must bind first",
+                tests_or_gates: "not yet",
+                closed_by_commit: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("work remediate")
     );
-    assert!(unauthorized_supersession.is_err());
-    let supersession_authority = approval_authority_event(temp.path());
-    let superseded = supersede_closure(
+    remediate_work(temp.path(), finding.finding_id).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let recovery_state: (String, i64) = conn
+        .query_row(
+            r#"
+            select d.status, count(epoch.id)
+            from finding_remediation_recovery_epochs epoch
+            join work_unit_dependencies d on d.id = epoch.dependency_id
+            where epoch.work_unit_activation_id = ?1
+            "#,
+            params![reopened.activation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(recovery_state, ("resolved".to_string(), 1));
+    drop(conn);
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id,title,status,started_at) values ((select id from projects limit 1),'dependency helper','open',current_timestamp)",
+        [],
+    )
+    .unwrap();
+    let dependency_work_id = conn.last_insert_rowid();
+    conn.execute(
+        "insert into work_unit_dependencies(work_unit_id,depends_on_work_unit_id,dependency_type,reason,status,created_at) values (?1,?2,'blocks','exercise dependency scheduling','open',current_timestamp)",
+        params![work.work_unit_id, dependency_work_id],
+    )
+    .unwrap();
+    let dependency_id = conn.last_insert_rowid();
+    drop(conn);
+    let dependency_blocker = project_status(temp.path()).unwrap().phase_blocker.unwrap();
+    assert!(
+        dependency_blocker
+            .next_action
+            .contains(&format!("work activate {dependency_work_id}"))
+    );
+    let dependency_activation = activate_work(
         temp.path(),
-        ClosureSupersession {
-            closure_id: parallel_closure.closure_id,
-            new_closure: replacement(),
-            reason: "repair incomplete contract",
-            authority_event_id: supersession_authority,
+        WorkActivate {
+            work_unit_id: dependency_work_id,
+            design_version_id: None,
+            implementation: false,
+            reason: Some("resolve selected remediation dependency"),
         },
     )
     .unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let supersession_state: (String, String, String, i64) = conn
+    let owner_activation_status: String = conn
         .query_row(
-            "select old.status, new.status, old.supersession_reason, old.superseded_by_authority_event_id from closures old join closures new on new.id = old.superseded_by_closure_id where old.id = ?1",
-            params![parallel_closure.closure_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            "select status from work_unit_activations where id=?1",
+            params![reopened.activation_id],
+            |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        supersession_state,
-        (
-            "superseded".to_string(),
-            "registered".to_string(),
-            "repair incomplete contract".to_string(),
-            supersession_authority,
-        )
-    );
+    assert_eq!(owner_activation_status, "suspended");
+    conn.execute(
+        "update work_unit_activations set status='abandoned',completed_at=current_timestamp where id=?1",
+        params![dependency_activation.activation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update work_units set status='abandoned',closed_at=current_timestamp where id=?1",
+        params![dependency_work_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update work_unit_activations set status='active',suspended_by_activation_id=null where id=?1",
+        params![reopened.activation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update work_unit_dependencies set status='resolved',resolved_at=current_timestamp where id=?1",
+        params![dependency_id],
+    )
+    .unwrap();
     drop(conn);
-    ready_closure(
-        temp.path(),
-        ClosureReady {
-            closure_id: superseded.closure_id,
-            implementation_evidence: "parallel fix complete",
-            tests_or_gates: "parallel tests pass",
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-    let ready_supersession = supersede_closure(
-        temp.path(),
-        ClosureSupersession {
-            closure_id: superseded.closure_id,
-            new_closure: replacement(),
-            reason: "must not replace ready closure",
-            authority_event_id: supersession_authority,
-        },
-    );
-    assert!(ready_supersession.is_err());
-    accept_finding_out_of_scope(
-        temp.path(),
-        FindingOutOfScope {
-            finding_id: parallel_finding.finding_id,
-            reason: "parallel example complete",
-            authority_event_id: approval_authority_event(temp.path()),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        project_status(temp.path())
-            .unwrap()
-            .finding_remediations
-            .len(),
-        1
-    );
     let blocking_plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
@@ -2291,6 +2273,7 @@ fn zero_resume_quota_still_allows_exactly_one_required_attempt_review() {
         },
     )
     .unwrap();
+    remediate_work(temp.path(), finding.finding_id).unwrap();
     let attempt = ready_closure(
         temp.path(),
         ClosureReady {

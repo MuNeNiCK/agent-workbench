@@ -33,8 +33,8 @@ pub use coverage::{
 };
 pub use db::{
     ActiveWorkUnit, FindingRemediation, InitOutcome, NextAction, PhaseBlocker, ProjectStatus,
-    default_design_root, default_export_root, default_ledger_path, default_log_root, init_project,
-    next_action, project_status,
+    SourceCorrection, default_design_root, default_export_root, default_ledger_path,
+    default_log_root, init_project, next_action, project_status,
 };
 pub use design::{
     DesignDecisionListQuery, DesignDecisionRecord, DesignExceptionAcceptanceOutcome,
@@ -99,18 +99,19 @@ pub use repository::{
 };
 pub use review::{
     ClosureOutcome, ClosureReady, ClosureReadyOutcome, ClosureSupersession,
-    ClosureSupersessionOutcome, FindingClassificationOutcome, FindingOutOfScope,
-    FindingOutOfScopeOutcome, FindingOutcome, FindingRecord, FindingVerificationOutcome,
-    NewClosure, NewFinding, NewFindingVerification, NewReviewPlan, NewReviewPlanTarget,
-    NewReviewPolicy, NewReviewRun, NewReviewScope, ReviewPlanOutcome, ReviewPlanRecord,
-    ReviewPlanTargetOutcome, ReviewPlanTargetRecord, ReviewPlanWaiver, ReviewPlanWaiverOutcome,
-    ReviewPolicyOutcome, ReviewPolicyRecord, ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome,
-    ReviewScopeRecord, accept_finding_out_of_scope, add_closure, add_finding,
-    add_finding_verification, add_review_plan, add_review_plan_target, add_review_policy,
-    add_review_run, add_review_run_with_finding_result, classify_finding, finding_fix_context_ref,
-    list_findings, list_review_plan_targets, list_review_plans, list_review_policies,
-    list_review_runs, list_review_scopes, ready_closure, start_review_scope, supersede_closure,
-    waive_review_plan,
+    ClosureSupersessionOutcome, CorrectionBeginOutcome, CorrectionTransitionOutcome,
+    FindingClassificationOutcome, FindingOutOfScope, FindingOutOfScopeOutcome, FindingOutcome,
+    FindingRecord, FindingVerificationOutcome, NewClosure, NewFinding, NewFindingVerification,
+    NewReviewPlan, NewReviewPlanTarget, NewReviewPolicy, NewReviewRun, NewReviewScope,
+    ReviewPlanOutcome, ReviewPlanRecord, ReviewPlanTargetOutcome, ReviewPlanTargetRecord,
+    ReviewPlanWaiver, ReviewPlanWaiverOutcome, ReviewPolicyOutcome, ReviewPolicyRecord,
+    ReviewRunOutcome, ReviewRunRecord, ReviewScopeOutcome, ReviewScopeRecord,
+    accept_finding_out_of_scope, add_closure, add_finding, add_finding_verification,
+    add_review_plan, add_review_plan_target, add_review_policy, add_review_run,
+    add_review_run_with_finding_result, apply_correction_transition, begin_correction,
+    classify_finding, finding_fix_context_ref, list_findings, list_review_plan_targets,
+    list_review_plans, list_review_policies, list_review_runs, list_review_scopes, ready_closure,
+    start_review_scope, supersede_closure, waive_review_plan,
 };
 pub use review_context::{
     ReviewContextDocument, ReviewContextQuery, render_finding_fix_context, render_review_context,
@@ -140,11 +141,12 @@ pub use traceability::{
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,
     NewWorkFork, ResumeCheckOutcome, ResumeOutcome, ResumeReadyItem, ResumeReadyOutcome,
-    SuspendOutcome, WorkActivate, WorkForkOutcome, WorkForkSource, WorkOutcome, WorkReopen,
-    WorkStart, WorkStatusOutcome, abandon_work, activate_work, block_work, close_active_work,
-    close_ready, create_follow_up_work, fork_work, interrupt_work, reopen_work, resume_check,
-    resume_check_basic, resume_ready, resume_ready_basic, resume_work, start_work,
-    start_work_with_options, suspend_work, unblock_work,
+    SuspendOutcome, WorkActivate, WorkForkOutcome, WorkForkSource, WorkOutcome, WorkRemediate,
+    WorkRemediateOutcome, WorkReopen, WorkStart, WorkStatusOutcome, abandon_work, activate_work,
+    block_work, close_active_work, close_ready, create_follow_up_work, fork_work, interrupt_work,
+    remediate_work, reopen_work, resume_check, resume_check_basic, resume_ready,
+    resume_ready_basic, resume_work, start_work, start_work_with_options, suspend_work,
+    unblock_work,
 };
 
 #[cfg(test)]

@@ -126,6 +126,9 @@ Common command groups include:
 - `agent-workbench finding verify`
 - `agent-workbench finding accept-out-of-scope`
 - `agent-workbench closure add`
+- `agent-workbench closure correction-begin`
+- `agent-workbench closure transition apply`
+- `agent-workbench closure ready`
 - `agent-workbench closure ready`
 - `agent-workbench closure supersede`
 - `agent-workbench review-context`
@@ -146,6 +149,7 @@ Common command groups include:
 - `agent-workbench git file add`
 - `agent-workbench work start`
 - `agent-workbench work activate`
+- `agent-workbench work remediate --finding <finding-id>`
 - `agent-workbench work suspend`
 - `agent-workbench work interrupt`
 - `agent-workbench work resume`
@@ -209,6 +213,21 @@ from structured ledger state.
   implementation validation as the next action. Follow the printed blocker
   command for finding classification, closure, verification, gate repair, or
   work unblock first.
+- A printed `work remediate --finding <id>` is the sole activation path for an
+  eligible registered implementation finding, including an inactive owner.
+  Run that exact command before editing. It creates or reuses only the audited
+  scoped activation selected by the resolver; do not substitute `work activate`,
+  `work reopen`, or direct ledger changes.
+- In `finding_remediation`, edit only the listed closure contracts. `work
+  suspend`, `work block`, and `work abandon` are the only work lifecycle
+  alternates; they apply only to the active bound owner. Finish a selected
+  finding with `closure ready`, then run the exact finding-fix resume review and
+  matching `finding verify` before relying on a later fresh review.
+- In `source_correction`, edit only the printed typed Markdown surfaces after
+  `closure correction-begin`. Apply declared `transition:` tokens in ordinal
+  order with `closure transition apply`; do not run the underlying task,
+  decomposition, phase, dependency, or stale mutation directly. Run `closure
+  ready` only after every file postcondition and transition token is complete.
 - After `closure ready`, generate `review-context finding-fix`, run an actual
   independent resume review, and record it with the exact context target,
   `--finding-result`, one carried finding, and trusted provenance. Then run

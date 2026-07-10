@@ -2048,7 +2048,6 @@ fn implementation_intent_with_unready_design_has_no_work_side_effects() {
             "draft",
         ],
     );
-
     let blocked = err(
         temp.path(),
         &[
@@ -2707,6 +2706,7 @@ fn decompose_design_requires_clean_design_ready_plan() {
             "draft",
         ],
     );
+    ok(temp.path(), &["design", "approve", "1"]);
 
     let blocked = err(
         temp.path(),
@@ -3872,10 +3872,22 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "resume review",
         ],
     );
+    conn(temp.path())
+        .execute(
+            "update work_unit_activations set status = 'completed', completed_at = current_timestamp where status = 'active'",
+            [],
+        )
+        .unwrap();
+    let unbound_status = ok(temp.path(), &["status"]);
+    assert!(unbound_status.contains("active_activations: 0"));
+    assert!(unbound_status.contains("phase_blocked: true"));
+    assert!(unbound_status.contains("work remediate --finding 1"));
+    let bound = ok(temp.path(), &["work", "remediate", "--finding", "1"]);
+    assert!(bound.contains("binding_count: 2"));
     let remediation_status = ok(temp.path(), &["status"]);
     assert!(remediation_status.contains("finding_remediation_count: 2"));
     let authority = cli_approval_authority_event(temp.path());
-    ok(
+    let wrong_disposition = err(
         temp.path(),
         &[
             "finding",
@@ -3887,11 +3899,7 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             &authority,
         ],
     );
-    let terminal_reclassify = err(
-        temp.path(),
-        &["finding", "classify", "2", "--classification", "valid"],
-    );
-    assert!(terminal_reclassify.contains("terminal finding"));
+    assert!(wrong_disposition.contains("active scoped finding Some(1) is selected"));
     let ready = ok(
         temp.path(),
         &[
@@ -3950,6 +3958,23 @@ fn review_flow_records_policy_runs_findings_and_verification() {
             "verified",
         ],
     );
+    ok(
+        temp.path(),
+        &[
+            "finding",
+            "accept-out-of-scope",
+            "2",
+            "--reason",
+            "parallel example disposed",
+            "--authority",
+            &authority,
+        ],
+    );
+    let terminal_reclassify = err(
+        temp.path(),
+        &["finding", "classify", "2", "--classification", "valid"],
+    );
+    assert!(terminal_reclassify.contains("terminal finding"));
     let final_fresh = ok(
         temp.path(),
         &[
@@ -4488,7 +4513,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
             id, project_id, validation_gate_id, work_unit_id, task_id,
             result, command, created_at
         ) values (1, 1, 1, 2, 2, 'pass', 'cargo test', current_timestamp);
-        delete from schema_migrations where version = 8;
+        delete from schema_migrations where version = 9;
         insert into schema_migrations(version, applied_at) values (6, current_timestamp);
         "#,
         )
@@ -4536,7 +4561,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
     );
     assert!(Path::new(backup).is_file());
 
-    assert!(ok(temp.path(), &["status"]).contains("schema_version: 8"));
+    assert!(ok(temp.path(), &["status"]).contains("schema_version: 9"));
     ok(temp.path(), &["next"]);
     ok(temp.path(), &["rules", "applicable"]);
     ok(temp.path(), &["correction", "list"]);

@@ -4,14 +4,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::work::has_stale_design_state_for_work;
-
 pub const LEDGER_DIR: &str = ".agent-workbench";
 pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -65,6 +63,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             schema_version: None,
             phase_blocker: None,
             finding_remediations: Vec::new(),
+            source_corrections: Vec::new(),
         });
     }
 
@@ -90,6 +89,11 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
     } else {
         Vec::new()
     };
+    let source_corrections = if phase_blocker.is_none() {
+        current_source_corrections(&conn)?
+    } else {
+        Vec::new()
+    };
 
     Ok(ProjectStatus {
         initialized: true,
@@ -100,6 +104,7 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
         schema_version,
         phase_blocker,
         finding_remediations,
+        source_corrections,
     })
 }
 
@@ -117,6 +122,10 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     let remediations = current_finding_remediations(&conn)?;
     if !remediations.is_empty() {
         return Ok(NextAction::FindingRemediation { remediations });
+    }
+    let corrections = current_source_corrections(&conn)?;
+    if !corrections.is_empty() {
+        return Ok(NextAction::SourceCorrection { corrections });
     }
 
     let active = conn
@@ -239,15 +248,26 @@ fn current_finding_remediations(conn: &Connection) -> Result<Vec<FindingRemediat
     let mut stmt = conn.prepare(
         r#"
         select p.id, p.work_unit_id, f.id, c.id, f.description,
-               coalesce(c.affected_surfaces, '-'), coalesce(c.fix_plan, '-')
+               coalesce(c.affected_surfaces, '-'), coalesce(c.fix_plan, '-'),
+               c.design_invariant, c.tests_or_gates, c.verification_plan
         from review_plans p
         join review_runs r on r.review_plan_id = p.id
         join findings f on f.review_run_id = r.id
         join closures c on c.finding_id = f.id and c.status = 'registered'
         join work_unit_activations a on a.work_unit_id = p.work_unit_id and a.status = 'active'
+        join work_units w on w.id = p.work_unit_id and w.status = 'open'
+        join finding_remediation_bindings b
+          on b.finding_id = f.id and b.closure_id = c.id
+         and b.work_unit_id = p.work_unit_id and b.work_unit_activation_id = a.id
         where p.project_id = ?1 and p.required = 1 and p.stage = 'close-ready'
           and p.review_type in ('implementation_review', 'design_implementation_diff')
           and f.status = 'open' and f.classification = 'valid'
+          and not exists (
+              select 1 from work_unit_dependencies d
+              where d.work_unit_id = p.work_unit_id and d.status = 'open'
+                and d.dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+                and exists(select 1 from work_units dependency_target where dependency_target.id=d.depends_on_work_unit_id and dependency_target.status in ('open','blocked'))
+          )
           and not exists (
               select 1 from acceptance_records ar
               where ar.finding_id = f.id and ar.target_type = 'finding'
@@ -268,10 +288,76 @@ fn current_finding_remediations(conn: &Connection) -> Result<Vec<FindingRemediat
                 description: row.get(4)?,
                 affected_surfaces: row.get(5)?,
                 fix_plan: row.get(6)?,
+                design_invariant: row.get(7)?,
+                tests_or_gates: row.get(8)?,
+                verification_plan: row.get(9)?,
                 next_action: format!("implement the scoped fix, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""),
             })
         },
     )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn current_source_corrections(conn: &Connection) -> Result<Vec<SourceCorrection>> {
+    let project_id = project_id(conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select p.id, p.work_unit_id, f.id, c.id, s.id, f.description,
+               c.affected_surfaces, c.fix_plan, c.design_invariant,
+               c.tests_or_gates, c.verification_plan,
+               (select min(token_ordinal) from correction_tokens t
+                where t.closure_id = c.id and t.token_kind = 'transition' and t.status = 'pending'),
+               (select operation from correction_tokens t
+                where t.closure_id = c.id and t.token_kind = 'transition' and t.status = 'pending'
+                order by token_ordinal limit 1)
+        from correction_sessions s
+        join closures c on c.id = s.closure_id and c.status = 'registered'
+        join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        where s.project_id = ?1 and s.status = 'active'
+          and not (p.required = 1 and p.stage = 'close-ready'
+                   and p.review_type in ('implementation_review', 'design_implementation_diff'))
+        order by f.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id], |row| {
+        let closure_id = row.get::<_, i64>(3)?;
+        let pending_token = row.get::<_, Option<i64>>(11)?;
+        let pending_operation = row.get::<_, Option<String>>(12)?;
+        let next_action = if let (Some(token), Some(operation)) = (pending_token, pending_operation)
+        {
+            let runtime = match operation.as_str() {
+                "task-accept-out-of-scope" | "phase-dependency-accept" => {
+                    " --authority <authority-event-id>"
+                }
+                "phase-dependency-satisfy" => " --evidence <evidence-ref>",
+                _ => "",
+            };
+            format!(
+                "agent-workbench closure transition apply {closure_id} --token {token}{runtime}"
+            )
+        } else {
+            format!(
+                "apply only the typed file correction contract, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""
+            )
+        };
+        Ok(SourceCorrection {
+            review_plan_id: row.get(0)?,
+            work_unit_id: row.get(1)?,
+            finding_id: row.get(2)?,
+            closure_id,
+            correction_session_id: row.get(4)?,
+            description: row.get(5)?,
+            affected_surfaces: row.get(6)?,
+            fix_plan: row.get(7)?,
+            design_invariant: row.get(8)?,
+            tests_or_gates: row.get(9)?,
+            verification_plan: row.get(10)?,
+            next_action,
+        })
+    })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -311,7 +397,7 @@ fn attach_next_phase(conn: &Connection, mut work_unit: ActiveWorkUnit) -> Result
     Ok(work_unit)
 }
 
-fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
+pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
     let project_id = project_id(conn)?;
     let active_work_unit_id = conn
         .query_row(
@@ -320,13 +406,40 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
-    if let Some(work_unit_id) = active_work_unit_id
-        && has_stale_design_state_for_work(conn, work_unit_id)?
-    {
+    let selected_stale = crate::traceability::selected_stale_record_in(conn, project_id)?;
+    if selected_stale.is_some() {
+        let stale_transition = if let Some((kind, record_id)) = selected_stale.as_ref() {
+            conn.query_row(
+                r#"
+                select token.closure_id, token.token_ordinal
+                from correction_tokens token
+                join closures c on c.id = token.closure_id and c.status = 'registered'
+                join findings f on f.id = c.finding_id and f.status = 'open' and f.classification = 'valid'
+                where token.status = 'pending' and token.token_kind = 'transition'
+                  and token.operation in ('stale-accept', 'stale-close')
+                  and token.target = ?1
+                order by token.closure_id, token.token_ordinal limit 1
+                "#,
+                params![format!("{kind}/{record_id}")],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+        } else {
+            None
+        };
+        let next_action = stale_transition.map_or_else(
+            || {
+                let (kind, record_id) = selected_stale.as_ref().unwrap();
+                format!("agent-workbench stale accept {kind} {record_id} --reason \"<reason>\"")
+            },
+            |(closure_id, token)| {
+                format!("agent-workbench closure transition apply {closure_id} --token {token}")
+            },
+        );
         return Ok(Some(PhaseBlocker {
             kind: "stale_design".to_string(),
             review_plan_id: None,
-            work_unit_id: Some(work_unit_id),
+            work_unit_id: active_work_unit_id,
             review_type: None,
             stage: None,
             review_run_id: None,
@@ -335,12 +448,53 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
             classification: None,
             description: "stale design-derived state blocks implementation and scoped remediation"
                 .to_string(),
-            next_action:
-                "agent-workbench stale list; resolve each stale record before implementation"
-                    .to_string(),
+            next_action,
         }));
     }
-    let review_blocker = conn
+    let active_remediation: Option<(i64, i64, i64, String, String, i64)> = conn
+        .query_row(
+            r#"
+            select f.id, c.id, p.work_unit_id, w.status, p.status,
+                   (select count(*) from work_unit_dependencies d
+                    where d.work_unit_id = p.work_unit_id and d.status = 'open'
+                      and d.dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+                      and exists(select 1 from work_units dependency_target where dependency_target.id=d.depends_on_work_unit_id and dependency_target.status in ('open','blocked')))
+            from finding_remediation_bindings b
+            join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
+            join closures c on c.id = b.closure_id and c.status = 'registered'
+            join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            join work_units w on w.id = p.work_unit_id
+            where b.project_id = ?1
+            order by b.id limit 1
+            "#,
+            params![project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let active_source_correction: bool = conn.query_row(
+        r#"
+        select exists(
+            select 1 from correction_sessions s
+            join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+            join closures c on c.id = s.closure_id and c.status = 'registered'
+            where s.project_id = ?1 and s.status = 'active'
+        )
+        "#,
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let mut review_blocker = conn
         .query_row(
             r#"
             select
@@ -397,12 +551,20 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                     order by rr.id desc
                     limit 1
                 ),
-                (select c.status from closures c where c.finding_id = f.id and c.status != 'superseded' order by c.id desc limit 1)
+                (select c.status from closures c where c.finding_id = f.id and c.status != 'superseded' order by c.id desc limit 1),
+                (select status from work_units where id = p.work_unit_id),
+                p.status,
+                p.required,
+                exists(
+                    select 1 from acceptance_records plan_acceptance
+                    where plan_acceptance.target_type = 'review_plan'
+                      and plan_acceptance.review_plan_id = p.id
+                      and plan_acceptance.status = 'approved'
+                )
             from review_plans p
             join review_runs r on r.review_plan_id = p.id
             join findings f on f.review_run_id = r.id
-            where p.required = 1
-              and p.project_id = ?1
+            where p.project_id = ?1
               and r.project_id = ?1
               and f.project_id = ?1
               and f.status = 'open'
@@ -413,9 +575,79 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                   and p.review_type in ('implementation_review', 'design_implementation_diff')
                   and exists (
                       select 1 from closures c
-                      join work_unit_activations a on a.work_unit_id = p.work_unit_id
+                      join finding_remediation_bindings b
+                        on b.finding_id = f.id and b.closure_id = c.id
+                       and b.work_unit_id = p.work_unit_id
+                      join work_unit_activations a
+                        on a.id = b.work_unit_activation_id
+                       and a.work_unit_id = p.work_unit_id
+                      join work_units w on w.id = p.work_unit_id and w.status = 'open'
                       where c.finding_id = f.id and c.status = 'registered'
                         and a.status = 'active'
+                        and p.status not in ('exhausted', 'needs_user_decision')
+                        and not exists (
+                          select 1 from acceptance_records plan_acceptance
+                          where plan_acceptance.target_type = 'review_plan'
+                            and plan_acceptance.review_plan_id = p.id
+                            and plan_acceptance.status = 'approved'
+                        )
+                        and not exists (
+                          select 1 from work_unit_dependencies d
+                          where d.work_unit_id = p.work_unit_id and d.status = 'open'
+                            and d.dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+                            and exists(select 1 from work_units dependency_target where dependency_target.id=d.depends_on_work_unit_id and dependency_target.status in ('open','blocked'))
+                        )
+                  )
+              )
+              and not (
+                  f.classification = 'valid'
+                  and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and exists (
+                      select 1
+                      from closures current_c
+                      where current_c.finding_id = f.id and current_c.status = 'registered'
+                  )
+                  and exists (
+                      select 1
+                      from finding_remediation_bindings selected_b
+                      join work_unit_activations selected_a
+                        on selected_a.id = selected_b.work_unit_activation_id
+                       and selected_a.status = 'active'
+                      where selected_b.project_id = ?1
+                        and selected_b.work_unit_id != p.work_unit_id
+                  )
+              )
+              and not (
+                  f.classification = 'valid'
+                  and exists (
+                      select 1 from closures current_c
+                      where current_c.finding_id = f.id and current_c.status = 'registered'
+                  )
+                  and exists (
+                      select 1 from correction_sessions selected_s
+                      where selected_s.project_id = ?1 and selected_s.status = 'active'
+                        and selected_s.finding_id != f.id
+                  )
+              )
+              and not (
+                  not (
+                    p.required = 1 and p.stage = 'close-ready'
+                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  )
+                  and p.required = 1
+                  and p.status not in ('exhausted', 'needs_user_decision')
+                  and not exists (
+                    select 1 from acceptance_records plan_acceptance
+                    where plan_acceptance.target_type = 'review_plan'
+                      and plan_acceptance.review_plan_id = p.id
+                      and plan_acceptance.status = 'approved'
+                  )
+                  and exists (
+                    select 1
+                    from closures c
+                    join correction_sessions s on s.closure_id = c.id and s.status = 'active'
+                    where c.finding_id = f.id and c.status = 'registered'
                   )
               )
               and not exists (
@@ -429,6 +661,29 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                   )
               )
             order by
+                case
+                    when f.classification != 'valid' then 1
+                    when p.status in ('exhausted', 'needs_user_decision') then 2
+                    when p.required = 0 or exists (
+                        select 1 from acceptance_records plan_acceptance
+                        where plan_acceptance.target_type = 'review_plan'
+                          and plan_acceptance.review_plan_id = p.id
+                          and plan_acceptance.status = 'approved'
+                    ) then 3
+                    when not exists (
+                        select 1 from closures c where c.finding_id = f.id and c.status != 'superseded'
+                    ) then 4
+                    when exists (
+                        select 1 from closures c where c.finding_id = f.id and c.status = 'incomplete'
+                    ) then 5
+                    when exists (
+                        select 1 from closures c where c.finding_id = f.id and c.status = 'ready_for_verification'
+                    ) then 6
+                    when not (p.required = 1 and p.stage = 'close-ready'
+                              and p.review_type in ('implementation_review', 'design_implementation_diff'))
+                         then 7
+                    else 8
+                end,
                 case p.stage
                     when 'design-ready' then 1
                     when 'implementation-ready' then 2
@@ -436,7 +691,40 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                     when 'resume-ready' then 4
                     else 5
                 end,
-                f.id
+                case when
+                    f.classification = 'valid'
+                    and p.stage = 'close-ready'
+                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    and exists (
+                        select 1 from finding_remediation_bindings prior
+                        join work_unit_activations prior_a on prior_a.id = prior.work_unit_activation_id
+                        where prior.work_unit_id = p.work_unit_id and prior_a.status = 'suspended'
+                          and prior.id = (
+                              select max(last.id) from finding_remediation_bindings last
+                              where last.work_unit_id = p.work_unit_id
+                          )
+                    ) then 1 else 0 end,
+                case when
+                    f.classification = 'valid'
+                    and p.stage = 'close-ready'
+                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    and exists (
+                        select 1 from finding_remediation_bindings prior
+                        join work_unit_activations prior_a on prior_a.id = prior.work_unit_activation_id
+                        where prior.work_unit_id = p.work_unit_id and prior_a.status = 'suspended'
+                          and prior.id = (
+                              select max(last.id) from finding_remediation_bindings last
+                              where last.work_unit_id = p.work_unit_id
+                          )
+                    ) then coalesce((
+                        select max(last.id) from finding_remediation_bindings last
+                        where last.work_unit_id = p.work_unit_id
+                    ), 0) else 0 end,
+                f.id,
+                p.work_unit_id,
+                coalesce((select max(c.id) from closures c where c.finding_id = f.id), 0),
+                p.id,
+                r.id
             limit 1
             "#,
             params![project_id],
@@ -449,33 +737,123 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
                 let verification_run_id: Option<i64> = row.get(11)?;
                 let verification_result = row.get::<_, Option<String>>(12)?;
                 let closure_status = row.get::<_, Option<String>>(13)?;
+                let work_status = row.get::<_, String>(14)?;
+                let plan_status = row.get::<_, String>(15)?;
+                let plan_required = row.get::<_, bool>(16)?;
+                let plan_accepted = row.get::<_, bool>(17)?;
+                let review_type = row.get::<_, String>(2)?;
+                let stage = row.get::<_, String>(3)?;
+                let implementation_eligible = stage == "close-ready"
+                    && matches!(
+                        review_type.as_str(),
+                        "implementation_review" | "design_implementation_diff"
+                    );
                 Ok(PhaseBlocker {
                     kind: "required_review_finding".to_string(),
                     review_plan_id: Some(review_plan_id),
                     work_unit_id: Some(row.get(1)?),
-                    review_type: Some(row.get(2)?),
-                    stage: Some(row.get(3)?),
+                    review_type: Some(review_type),
+                    stage: Some(stage),
                     review_run_id: Some(row.get(4)?),
                     finding_id: Some(finding_id),
                     severity: Some(row.get(6)?),
                     classification: Some(classification.clone()),
                     description: row.get(8)?,
-                    next_action: finding_next_action(
+                    next_action: finding_next_action(FindingActionState {
                         finding_id,
                         review_plan_id,
                         closure_id,
-                        closure_status.as_deref(),
+                        closure_status: closure_status.as_deref(),
                         attempt_id,
-                        verification_run_id
+                        verification: verification_run_id
                             .map(|run_id| (run_id, verification_result.as_deref())),
-                        &classification,
-                    ),
+                        classification: &classification,
+                        implementation_eligible,
+                        work_unit_id: row.get(1)?,
+                        work_status: &work_status,
+                        plan_status: &plan_status,
+                        plan_required,
+                        plan_accepted,
+                    }),
                 })
             },
         )
         .optional()?;
+    if let Some(blocker) = review_blocker.as_mut()
+        && blocker
+            .next_action
+            .starts_with("agent-workbench work remediate")
+        && let (Some(work_unit_id), Some(finding_id)) = (blocker.work_unit_id, blocker.finding_id)
+        && let Some(action) = remediation_dependency_action(conn, work_unit_id, finding_id)?
+    {
+        blocker.kind = "finding_remediation_recovery".to_string();
+        blocker.description =
+            "remediation owner is dormant behind an ordinary work dependency".to_string();
+        blocker.next_action = action;
+    }
+    if let (
+        Some(blocker),
+        Some((finding_id, closure_id, work_unit_id, work_status, _, dependencies)),
+    ) = (review_blocker.as_mut(), active_remediation.as_ref())
+        && blocker.finding_id == Some(*finding_id)
+        && (*dependencies > 0 || work_status != "open")
+    {
+        blocker.kind = "finding_remediation_recovery".to_string();
+        blocker.description =
+            format!("active remediation for closure {closure_id} is dormant behind an owner guard");
+        blocker.next_action = if work_status == "blocked" {
+            format!("agent-workbench work unblock {work_unit_id} --reason \"<reason>\"")
+        } else if work_status != "open" {
+            format!(
+                "agent-workbench authority event add --type user_instruction --summary \"recover remediation owner {work_unit_id}\" --scope \"work-unit:{work_unit_id}\"; then agent-workbench work reopen {work_unit_id} --reason \"recover finding {finding_id}\" --reason-type closure_invalid --authority <authority-event-id>; then agent-workbench work remediate --finding {finding_id}"
+            )
+        } else {
+            remediation_dependency_action(conn, *work_unit_id, *finding_id)?
+                .unwrap_or_else(|| format!("agent-workbench work remediate --finding {finding_id}"))
+        };
+    }
     if review_blocker.is_some() {
         return Ok(review_blocker);
+    }
+    if let Some((finding_id, closure_id, work_unit_id, work_status, plan_status, dependencies)) =
+        active_remediation
+    {
+        let next_action = if matches!(plan_status.as_str(), "exhausted" | "needs_user_decision") {
+            format!(
+                "record authority and waive the exhausted review plan before continuing finding {finding_id}"
+            )
+        } else if work_status == "blocked" {
+            format!(
+                "agent-workbench work unblock {work_unit_id} --reason \"<reason>\"; then continue finding {finding_id}"
+            )
+        } else if work_status != "open" {
+            format!(
+                "agent-workbench authority event add --type user_instruction --summary \"recover remediation owner {work_unit_id}\" --scope \"work-unit:{work_unit_id}\"; then agent-workbench work reopen {work_unit_id} --reason \"recover finding {finding_id}\" --reason-type closure_invalid --authority <authority-event-id>; then agent-workbench work remediate --finding {finding_id}"
+            )
+        } else if dependencies > 0 {
+            remediation_dependency_action(conn, work_unit_id, finding_id)?
+                .unwrap_or_else(|| format!("agent-workbench work remediate --finding {finding_id}"))
+        } else {
+            return Ok(None);
+        };
+        return Ok(Some(PhaseBlocker {
+            kind: "finding_remediation_recovery".to_string(),
+            review_plan_id: None,
+            work_unit_id: Some(work_unit_id),
+            review_type: Some("implementation_review".to_string()),
+            stage: Some("close-ready".to_string()),
+            review_run_id: None,
+            finding_id: Some(finding_id),
+            severity: Some("high".to_string()),
+            classification: Some("valid".to_string()),
+            description: format!(
+                "active remediation for closure {closure_id} requires lifecycle recovery"
+            ),
+            next_action,
+        }));
+    }
+    if active_source_correction {
+        return Ok(None);
     }
 
     conn.query_row(
@@ -512,54 +890,176 @@ fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
     .map_err(Into::into)
 }
 
-fn finding_next_action(
+pub(crate) fn ensure_unscoped_mutation_allowed(conn: &Connection, operation: &str) -> Result<()> {
+    if let Some(blocker) = current_phase_blocker(conn)? {
+        bail!(
+            "{operation} is blocked by the selected lifecycle action; next: {}",
+            blocker.next_action
+        );
+    }
+    let active_source_correction: bool = conn.query_row(
+        "select exists(select 1 from correction_sessions where status='active')",
+        [],
+        |row| row.get(0),
+    )?;
+    if active_source_correction {
+        bail!("{operation} must be applied through closure transition apply");
+    }
+    Ok(())
+}
+
+struct FindingActionState<'a> {
     finding_id: i64,
     review_plan_id: i64,
     closure_id: Option<i64>,
-    closure_status: Option<&str>,
+    closure_status: Option<&'a str>,
     attempt_id: Option<i64>,
-    verification: Option<(i64, Option<&str>)>,
-    classification: &str,
-) -> String {
-    match classification {
-        "unclassified" => format!(
+    verification: Option<(i64, Option<&'a str>)>,
+    classification: &'a str,
+    implementation_eligible: bool,
+    work_unit_id: i64,
+    work_status: &'a str,
+    plan_status: &'a str,
+    plan_required: bool,
+    plan_accepted: bool,
+}
+
+fn finding_next_action(state: FindingActionState<'_>) -> String {
+    let FindingActionState {
+        finding_id,
+        review_plan_id,
+        closure_id,
+        closure_status,
+        attempt_id,
+        verification,
+        classification,
+        implementation_eligible,
+        work_unit_id,
+        work_status,
+        plan_status,
+        plan_required,
+        plan_accepted,
+    } = state;
+    if classification != "valid" {
+        return format!(
             "agent-workbench finding classify {finding_id} --classification valid|invalid|design_conflict|needs_evidence"
-        ),
-        "valid" | "design_conflict" | "needs_evidence" => {
-            match (closure_id, closure_status, attempt_id, verification) {
-                (
-                    Some(closure_id),
-                    Some("ready_for_verification"),
-                    Some(_),
-                    Some((run_id, finding_result)),
-                ) => {
-                    let result = finding_result.unwrap_or("<missing-finding-result>");
-                    format!(
-                        "agent-workbench finding verify --run {run_id} --finding {finding_id} --closure {closure_id} --result {result}"
-                    )
-                }
-                (Some(closure_id), Some("ready_for_verification"), Some(attempt_id), None) => {
-                    let context = format!(
-                        "review-context:finding-fix:finding={finding_id}:closure={closure_id}:attempt={attempt_id}"
-                    );
-                    format!(
-                        "agent-workbench review-context finding-fix --finding {finding_id} --closure {closure_id} --attempt {attempt_id}; then agent-workbench review run add --plan {review_plan_id} --type resume --purpose finding_fix_verification --target {context} --finding-result verified|not_fixed|needs_evidence --carried-findings 1 --provenance external_agent --external-agent-id <id> --provenance-ref <ref>"
-                    )
-                }
-                (Some(closure_id), Some("registered"), _, _) => format!(
-                    "correct the finding source, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""
-                ),
-                (Some(closure_id), Some("incomplete"), _, _) => format!(
-                    "agent-workbench closure supersede {closure_id} --invariant \"<invariant>\" --surfaces \"<surfaces>\" --fix-plan \"<plan>\" --tests \"<tests>\" --verification \"<plan>\" --reason \"<reason>\" --authority <authority-event-id>"
-                ),
-                (None, _, _, _) => format!(
-                    "agent-workbench closure add --finding {finding_id} --invariant \"<invariant>\""
-                ),
-                _ => format!("resolve closure state for finding {finding_id}"),
+        );
+    }
+    if matches!(plan_status, "exhausted" | "needs_user_decision") {
+        return format!(
+            "agent-workbench authority event add --type user_instruction --summary \"review plan decision\" --scope \"review-plan:{review_plan_id}\"; then agent-workbench review plan waive {review_plan_id} --reason \"<reason>\" --authority <authority-event-id>"
+        );
+    }
+    if !plan_required || plan_accepted {
+        return format!(
+            "agent-workbench authority event add --type user_instruction --summary \"dispose finding on non-required review plan\" --scope \"finding:{finding_id}\"; then agent-workbench finding accept-out-of-scope {finding_id} --reason \"<reason>\" --authority <authority-event-id>"
+        );
+    }
+    match classification {
+        "valid" => match (closure_id, closure_status, attempt_id, verification) {
+            (
+                Some(closure_id),
+                Some("ready_for_verification"),
+                Some(_),
+                Some((run_id, finding_result)),
+            ) => {
+                let result = finding_result.unwrap_or("<missing-finding-result>");
+                format!(
+                    "agent-workbench finding verify --run {run_id} --finding {finding_id} --closure {closure_id} --result {result}"
+                )
             }
-        }
+            (Some(closure_id), Some("ready_for_verification"), Some(attempt_id), None) => {
+                let context = format!(
+                    "review-context:finding-fix:finding={finding_id}:closure={closure_id}:attempt={attempt_id}"
+                );
+                format!(
+                    "agent-workbench review-context finding-fix --finding {finding_id} --closure {closure_id} --attempt {attempt_id}; then agent-workbench review run add --plan {review_plan_id} --type resume --purpose finding_fix_verification --target {context} --finding-result verified|not_fixed|needs_evidence --carried-findings 1 --provenance external_agent --external-agent-id <id> --provenance-ref <ref>"
+                )
+            }
+            (Some(_), Some("registered"), _, _)
+                if implementation_eligible && work_status == "blocked" =>
+            {
+                format!(
+                    "agent-workbench work unblock {work_unit_id} --reason \"<reason>\"; then agent-workbench work remediate --finding {finding_id}"
+                )
+            }
+            (Some(_), Some("registered"), _, _)
+                if implementation_eligible && matches!(work_status, "closed" | "abandoned") =>
+            {
+                format!(
+                    "agent-workbench authority event add --type user_instruction --summary \"reopen remediation owner {work_unit_id} for finding {finding_id}\" --scope \"work-unit:{work_unit_id}\"; then agent-workbench work reopen {work_unit_id} --reason \"remediate finding {finding_id}\" --reason-type closure_invalid --authority <authority-event-id>; then agent-workbench work remediate --finding {finding_id}"
+                )
+            }
+            (Some(_), Some("registered"), _, _) if implementation_eligible => {
+                format!("agent-workbench work remediate --finding {finding_id}")
+            }
+            (Some(closure_id), Some("registered"), _, _) => {
+                format!("agent-workbench closure correction-begin {closure_id}")
+            }
+            (Some(closure_id), Some("incomplete"), _, _) => format!(
+                "agent-workbench closure supersede {closure_id} --invariant \"<invariant>\" --surfaces \"<surfaces>\" --fix-plan \"<plan>\" --tests \"<tests>\" --verification \"<plan>\" --reason \"<reason>\" --authority <authority-event-id>"
+            ),
+            (None, _, _, _) => format!(
+                "agent-workbench closure add --finding {finding_id} --invariant \"<invariant>\" --surfaces \"<typed-surfaces>\" --fix-plan \"<fix-plan>\" --tests \"<tests-or-gates>\" --verification \"<verification-plan>\""
+            ),
+            _ => format!("resolve closure state for finding {finding_id}"),
+        },
         _ => format!("resolve finding {finding_id}"),
     }
+}
+
+fn remediation_dependency_action(
+    conn: &Connection,
+    work_unit_id: i64,
+    finding_id: i64,
+) -> Result<Option<String>> {
+    let dependency: Option<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+    )> = conn.query_row(
+        r#"
+        select d.id, d.depends_on_work_unit_id, w.status,
+               (select a.status from work_unit_activations a
+                where a.work_unit_id=d.depends_on_work_unit_id
+                  and a.status in ('active','suspended')
+                order by case a.status when 'active' then 0 else 1 end, a.id desc limit 1)
+        from work_unit_dependencies d
+        join work_units w on w.id=d.depends_on_work_unit_id
+        where d.work_unit_id=?1 and d.status='open'
+          and d.dependency_type in ('blocks','invalidates_assumption','invalidates_closure')
+          and w.status in ('open','blocked')
+          and not exists (
+            select 1 from finding_remediation_recovery_epochs epoch
+            join work_unit_activations epoch_activation
+              on epoch_activation.id=epoch.work_unit_activation_id and epoch_activation.status='active'
+            where epoch.dependency_id=d.id and epoch.work_unit_id=d.work_unit_id
+          )
+        order by d.id limit 1
+        "#,
+        params![work_unit_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional()?;
+    let Some((dependency_id, depends_on, dependent_status, activation_status)) = dependency else {
+        return Ok(None);
+    };
+    if dependent_status == "blocked" {
+        return Ok(Some(format!(
+            "agent-workbench work unblock {depends_on} --reason \"resolve dependency {dependency_id} for remediation owner {work_unit_id}\""
+        )));
+    }
+    if activation_status.as_deref() == Some("active") {
+        return Ok(Some(format!(
+            "agent-workbench gate close-ready; then agent-workbench work close --summary \"resolve dependency {dependency_id} for remediation owner {work_unit_id}\""
+        )));
+    }
+    if dependent_status == "open" {
+        return Ok(Some(format!(
+            "agent-workbench work activate {depends_on} --reason \"resolve dependency {dependency_id} before remediation finding {finding_id}\""
+        )));
+    }
+    Ok(None)
 }
 
 pub(crate) fn open_ledger(path: &Path) -> Result<Connection> {
@@ -601,6 +1101,85 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
     if schema_version < SCHEMA_VERSION {
         return Ok(true);
     }
+    if !table_exists(conn, "closure_attempts")?
+        || !table_exists(conn, "finding_remediation_bindings")?
+        || !table_exists(conn, "finding_remediation_recovery_epochs")?
+        || !table_exists(conn, "correction_sessions")?
+        || !table_exists(conn, "correction_tokens")?
+        || !table_exists(conn, "correction_transition_aliases")?
+    {
+        return Ok(true);
+    }
+    let correction_status_triggers: bool = conn.query_row(
+        r#"
+        select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_session_status_update')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_status_update')
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if !correction_status_triggers {
+        return Ok(true);
+    }
+    let correction_semantic_triggers: bool = conn.query_row(
+        r#"
+        select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert' and sql like '%phase_dependency_max%')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_application_links_insert' and sql like '%work_phase_task_memberships%')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_alias_links_insert' and sql like '%@accepted-task/%')
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if !correction_semantic_triggers {
+        return Ok(true);
+    }
+    if !table_has_column(conn, "acceptance_records", "coverage_item_id")? {
+        return Ok(true);
+    }
+    let incomplete_task_bundles: i64 = conn.query_row(
+        r#"
+        select exists(
+            select 1 from tasks t
+            where 0 and t.status = 'accepted_out_of_scope'
+              and (
+                exists (select 1 from checklist_items ci where ci.task_id = t.id and ci.status in ('open', 'blocked'))
+                or exists (select 1 from validation_gates vg where vg.task_id = t.id and vg.status in ('active', 'stale'))
+                or exists (
+                    select 1 from checklist_items ci where ci.task_id = t.id
+                      and not exists (select 1 from acceptance_records ar
+                                      where ar.target_type='checklist_item'
+                                        and ar.checklist_item_id=ci.id and ar.status='approved')
+                )
+                or exists (
+                    select 1 from validation_gates vg where vg.task_id = t.id
+                      and not exists (select 1 from acceptance_records ar
+                                      where ar.target_type='validation_gate'
+                                        and ar.validation_gate_id=vg.id and ar.status='approved')
+                )
+                or exists (
+                    select 1 from task_derivations td
+                    where td.task_id = t.id and not exists (
+                        select 1 from coverage_items c
+                        where c.task_id = t.id and c.design_requirement_id = td.design_requirement_id
+                          and c.status = 'accepted_out_of_scope'
+                          and exists (
+                              select 1 from acceptance_records ar
+                              where ar.target_type = 'coverage_item'
+                                and ar.coverage_item_id = c.id
+                                and ar.acceptance_type = 'accepted_out_of_scope'
+                                and ar.status = 'approved'
+                          )
+                    )
+                )
+              )
+        )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if incomplete_task_bundles > 0 {
+        return Ok(true);
+    }
 
     let broken_acceptance_refs: i64 = conn.query_row(
         r#"
@@ -634,11 +1213,59 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
 }
 
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_remediation_binding_insert;
+        drop trigger if exists trg_remediation_binding_immutable_update;
+        drop trigger if exists trg_remediation_binding_immutable_delete;
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_update;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_delete;
+        drop trigger if exists trg_correction_session_links_insert;
+        drop trigger if exists trg_correction_session_links_update;
+        drop trigger if exists trg_correction_session_status_update;
+        drop trigger if exists trg_correction_session_immutable_delete;
+        drop trigger if exists trg_correction_token_links_insert;
+        drop trigger if exists trg_correction_token_links_update;
+        drop trigger if exists trg_correction_token_status_update;
+        drop trigger if exists trg_correction_token_immutable_delete;
+        drop trigger if exists trg_correction_application_links_insert;
+        drop trigger if exists trg_correction_application_links_update;
+        drop trigger if exists trg_correction_application_immutable_delete;
+        drop trigger if exists trg_correction_alias_links_insert;
+        drop trigger if exists trg_correction_alias_immutable_update;
+        drop trigger if exists trg_correction_alias_immutable_delete;
+        "#,
+    )?;
     prepare_acceptance_records_for_schema(conn)?;
     prepare_review_runs_for_schema(conn)?;
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
     drop_phase_review_target_reference_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_remediation_binding_insert;
+        drop trigger if exists trg_remediation_binding_immutable_update;
+        drop trigger if exists trg_remediation_binding_immutable_delete;
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_update;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_delete;
+        drop trigger if exists trg_correction_session_links_insert;
+        drop trigger if exists trg_correction_session_links_update;
+        drop trigger if exists trg_correction_session_status_update;
+        drop trigger if exists trg_correction_session_immutable_delete;
+        drop trigger if exists trg_correction_token_links_insert;
+        drop trigger if exists trg_correction_token_links_update;
+        drop trigger if exists trg_correction_token_status_update;
+        drop trigger if exists trg_correction_token_immutable_delete;
+        drop trigger if exists trg_correction_application_links_insert;
+        drop trigger if exists trg_correction_application_links_update;
+        drop trigger if exists trg_correction_application_immutable_delete;
+        drop trigger if exists trg_correction_alias_links_insert;
+        drop trigger if exists trg_correction_alias_immutable_update;
+        drop trigger if exists trg_correction_alias_immutable_delete;
+        "#,
+    )?;
     migrate_acceptance_records(conn)?;
     repair_acceptance_record_references(conn)?;
     migrate_repository_snapshot_comparisons(conn)?;
@@ -650,8 +1277,8 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     refresh_review_integrity_triggers(conn)?;
     refresh_ledger_integrity_triggers(conn)?;
     ensure_phase_schema(conn)?;
-    ensure_closure_lifecycle_schema(conn)?;
     migrate_review_runs_phase_targets(conn)?;
+    ensure_closure_lifecycle_schema(conn)?;
     ensure_phase_review_target_reference_triggers(conn)?;
     conn.execute_batch(SCHEMA)?;
     ensure_phase_review_target_reference_triggers(conn)?;
@@ -813,6 +1440,178 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
+fn backfill_task_acceptance_bundles(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "tasks")? || !table_exists(conn, "checklist_items")? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        r#"
+        select t.id, t.work_unit_id, ar.approved_by_authority_event_id
+        from tasks t
+        join task_derivations td on td.task_id=t.id and td.status='active'
+        join acceptance_records ar on ar.id=(
+          select max(latest.id) from acceptance_records latest
+          where latest.task_id=t.id and latest.target_type='task'
+            and latest.status='approved' and latest.acceptance_type='accepted_out_of_scope'
+        )
+        where t.status='accepted_out_of_scope'
+        group by t.id, t.work_unit_id, ar.approved_by_authority_event_id
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    let derived_acceptances = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    if !derived_acceptances.is_empty() {
+        let project_id = project_id(conn)?;
+        for (task_id, work_unit_id, authority_event_id) in derived_acceptances {
+            let authority_event_id = authority_event_id.context(
+                "design-derived task acceptance migration lacks approved authority provenance",
+            )?;
+            if let Some(work_unit_id) = work_unit_id {
+                conn.execute(
+                    "update authority_events set scope=?1 where id=?2 and project_id=?3 and scope=?4",
+                    params![
+                        format!("work-unit:{work_unit_id}"),
+                        authority_event_id,
+                        project_id,
+                        work_unit_id.to_string()
+                    ],
+                )?;
+            }
+            crate::planning::ensure_verified_baseline_carry_forward(
+                conn,
+                project_id,
+                task_id,
+                work_unit_id,
+                authority_event_id,
+            )?;
+        }
+    }
+    conn.execute_batch(
+        r#"
+        update checklist_items
+        set status = 'accepted_out_of_scope'
+        where status in ('open', 'blocked')
+          and task_id in (select id from tasks where status = 'accepted_out_of_scope');
+
+        update validation_gates
+        set status = 'closed'
+        where status in ('active', 'stale')
+          and task_id in (select id from tasks where status = 'accepted_out_of_scope');
+
+        insert into acceptance_records(
+            project_id, target_type, checklist_item_id, acceptance_type, reason,
+            scope, created_by, status, approved_by_authority_event_id,
+            approved_at, created_at, review_impact
+        )
+        select ci.project_id, 'checklist_item', ci.id, 'accepted_out_of_scope',
+               ar.reason, ar.scope, ar.created_by, 'approved',
+               ar.approved_by_authority_event_id, coalesce(ar.approved_at, current_timestamp),
+               current_timestamp, 'checklist item repaired from task acceptance authority'
+        from checklist_items ci
+        join acceptance_records ar on ar.task_id = ci.task_id
+          and ar.target_type = 'task' and ar.status = 'approved'
+          and ar.acceptance_type = 'accepted_out_of_scope'
+        where ci.status = 'accepted_out_of_scope'
+          and ar.id = (select max(latest.id) from acceptance_records latest
+                       where latest.task_id = ci.task_id and latest.target_type = 'task'
+                         and latest.status = 'approved')
+          and not exists (select 1 from acceptance_records existing
+                          where existing.target_type = 'checklist_item'
+                            and existing.checklist_item_id = ci.id and existing.status = 'approved');
+
+        insert into acceptance_records(
+            project_id, target_type, validation_gate_id, acceptance_type, reason,
+            scope, created_by, status, approved_by_authority_event_id,
+            approved_at, created_at, review_impact
+        )
+        select vg.project_id, 'validation_gate', vg.id, 'accepted_out_of_scope',
+               ar.reason, ar.scope, ar.created_by, 'approved',
+               ar.approved_by_authority_event_id, coalesce(ar.approved_at, current_timestamp),
+               current_timestamp, 'validation gate repaired from task acceptance authority'
+        from validation_gates vg
+        join acceptance_records ar on ar.task_id = vg.task_id
+          and ar.target_type = 'task' and ar.status = 'approved'
+          and ar.acceptance_type = 'accepted_out_of_scope'
+        where vg.status = 'closed'
+          and ar.id = (select max(latest.id) from acceptance_records latest
+                       where latest.task_id = vg.task_id and latest.target_type = 'task'
+                         and latest.status = 'approved')
+          and not exists (select 1 from acceptance_records existing
+                          where existing.target_type = 'validation_gate'
+                            and existing.validation_gate_id = vg.id and existing.status = 'approved');
+
+        insert into coverage_items(
+            project_id, work_unit_id, design_requirement_id, task_id,
+            requirement, lifecycle_boundary_evidence, tests_or_gates,
+            status, created_at
+        )
+        select
+            w.project_id, t.work_unit_id, td.design_requirement_id, t.id,
+            'authority-backed task disposition migration',
+            'task acceptance bundle repaired atomically from its approved authority record',
+            'validation not claimed; requirement accepted_out_of_scope by authority',
+            'accepted_out_of_scope', current_timestamp
+        from tasks t
+        join work_units w on w.id = t.work_unit_id
+        join task_derivations td on td.task_id = t.id
+        where t.status = 'accepted_out_of_scope'
+          and not exists (
+            select 1 from coverage_items c
+            where c.task_id = t.id and c.design_requirement_id = td.design_requirement_id
+          );
+
+        update coverage_items
+        set status = 'accepted_out_of_scope'
+        where task_id in (select id from tasks where status = 'accepted_out_of_scope');
+
+        insert into acceptance_records(
+            project_id, target_type, coverage_item_id, acceptance_type, reason,
+            scope, created_by, status, approved_by_authority_event_id,
+            approved_at, created_at, review_impact
+        )
+        select
+            c.project_id, 'coverage_item', c.id, 'accepted_out_of_scope',
+            ar.reason, ar.scope, ar.created_by, 'approved',
+            ar.approved_by_authority_event_id, coalesce(ar.approved_at, current_timestamp),
+            current_timestamp, 'coverage carried by migration with task acceptance authority'
+        from coverage_items c
+        join acceptance_records ar
+          on ar.task_id = c.task_id and ar.target_type = 'task'
+         and ar.status = 'approved' and ar.acceptance_type = 'accepted_out_of_scope'
+        where c.status = 'accepted_out_of_scope'
+          and ar.id = (
+              select max(latest.id) from acceptance_records latest
+              where latest.task_id = c.task_id and latest.target_type = 'task'
+                and latest.status = 'approved'
+                and latest.acceptance_type = 'accepted_out_of_scope'
+          )
+          and not exists (
+              select 1 from acceptance_records existing
+              where existing.target_type = 'coverage_item'
+                and existing.coverage_item_id = c.id and existing.status = 'approved'
+          );
+
+        update checklists
+        set status = 'closed'
+        where status = 'active'
+          and not exists (
+            select 1 from checklist_items ci
+            where ci.checklist_id = checklists.id
+              and ci.status in ('open', 'blocked')
+          );
+        "#,
+    )?;
+    Ok(())
+}
+
 fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "closures")? {
         return Ok(());
@@ -847,6 +1646,30 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
     )?;
     conn.execute_batch(
         r#"
+        drop trigger if exists trg_remediation_binding_insert;
+        drop trigger if exists trg_remediation_binding_immutable_update;
+        drop trigger if exists trg_remediation_binding_immutable_delete;
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_update;
+        drop trigger if exists trg_remediation_recovery_epoch_immutable_delete;
+        drop trigger if exists trg_correction_session_links_insert;
+        drop trigger if exists trg_correction_session_links_update;
+        drop trigger if exists trg_correction_session_status_update;
+        drop trigger if exists trg_correction_session_immutable_delete;
+        drop trigger if exists trg_correction_token_links_insert;
+        drop trigger if exists trg_correction_token_links_update;
+        drop trigger if exists trg_correction_token_status_update;
+        drop trigger if exists trg_correction_token_immutable_delete;
+        drop trigger if exists trg_correction_application_links_insert;
+        drop trigger if exists trg_correction_application_links_update;
+        drop trigger if exists trg_correction_application_immutable_delete;
+        drop trigger if exists trg_correction_alias_links_insert;
+        drop trigger if exists trg_correction_alias_immutable_update;
+        drop trigger if exists trg_correction_alias_immutable_delete;
+        "#,
+    )?;
+    conn.execute_batch(
+        r#"
         create table if not exists closure_attempts (
             id integer primary key,
             project_id integer not null references projects(id) on delete cascade,
@@ -861,7 +1684,589 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             resolved_at text,
             unique(closure_id, attempt_number)
         );
+
+        create table if not exists finding_remediation_bindings (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            finding_id integer not null references findings(id) on delete cascade,
+            closure_id integer not null references closures(id) on delete cascade,
+            work_unit_id integer not null references work_units(id) on delete cascade,
+            work_unit_activation_id integer not null references work_unit_activations(id) on delete cascade,
+            created_at text not null,
+            unique(finding_id, closure_id, work_unit_activation_id)
+        );
+
+        create table if not exists finding_remediation_recovery_epochs (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            finding_id integer not null references findings(id) on delete cascade,
+            closure_id integer not null references closures(id) on delete cascade,
+            work_unit_id integer not null references work_units(id) on delete cascade,
+            work_unit_activation_id integer not null references work_unit_activations(id) on delete cascade,
+            dependency_id integer not null references work_unit_dependencies(id) on delete cascade,
+            reopened_event_id integer not null references work_unit_events(id) on delete cascade,
+            authority_event_id integer not null references authority_events(id),
+            created_at text not null,
+            unique(finding_id, closure_id, work_unit_activation_id, dependency_id)
+        );
+
+        create table if not exists correction_sessions (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            finding_id integer not null references findings(id) on delete cascade,
+            closure_id integer not null references closures(id) on delete cascade,
+            status text not null check (status in ('active', 'superseded', 'completed')),
+            created_at text not null,
+            completed_at text,
+            unique(closure_id, status)
+        );
+
+        create table if not exists correction_tokens (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            closure_id integer not null references closures(id) on delete cascade,
+            token_ordinal integer not null,
+            token_kind text not null check (token_kind in ('file', 'transition')),
+            operation text not null,
+            target text not null,
+            pre_state text,
+            pre_hash text,
+            status text not null default 'pending' check (status in ('pending', 'applied', 'superseded')),
+            created_at text not null,
+            applied_at text,
+            unique(closure_id, token_ordinal)
+        );
+
+        create table if not exists correction_transition_applications (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            correction_session_id integer not null references correction_sessions(id) on delete cascade,
+            correction_token_id integer not null references correction_tokens(id) on delete cascade,
+            authority_event_id integer references authority_events(id),
+            evidence_ref text,
+            before_state text not null,
+            after_state text not null,
+            result_ref text not null,
+            created_at text not null,
+            unique(correction_token_id)
+        );
+
+        create table if not exists correction_transition_aliases (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            correction_session_id integer not null references correction_sessions(id) on delete cascade,
+            correction_application_id integer not null references correction_transition_applications(id) on delete cascade,
+            alias text not null,
+            record_type text not null,
+            record_id integer not null,
+            created_at text not null,
+            unique(correction_session_id, alias)
+        );
+
+        create trigger if not exists trg_remediation_binding_insert
+        before insert on finding_remediation_bindings
+        for each row when
+            new.project_id != (select project_id from findings where id = new.finding_id)
+            or new.project_id != (select project_id from closures where id = new.closure_id)
+            or new.project_id != (select project_id from work_units where id = new.work_unit_id)
+            or new.project_id != (select project_id from work_unit_activations where id = new.work_unit_activation_id)
+            or new.finding_id != (select finding_id from closures where id = new.closure_id)
+            or new.work_unit_id != (select work_unit_id from work_unit_activations where id = new.work_unit_activation_id)
+            or new.work_unit_id != (
+                select p.work_unit_id
+                from findings f
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                where f.id = new.finding_id
+            )
+            or not exists (
+                select 1
+                from findings f
+                join closures c on c.id = new.closure_id and c.finding_id = f.id
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                join work_units w on w.id = p.work_unit_id
+                join work_unit_activations a on a.id = new.work_unit_activation_id
+                where f.id = new.finding_id
+                  and f.status = 'open' and f.classification = 'valid'
+                  and c.status = 'registered'
+                  and p.required = 1 and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and p.status not in ('exhausted', 'needs_user_decision')
+                  and w.id = new.work_unit_id and w.status = 'open'
+                  and a.work_unit_id = new.work_unit_id and a.status = 'active'
+                  and not exists (
+                      select 1 from acceptance_records ar
+                      where ar.target_type = 'finding' and ar.finding_id = f.id
+                        and ar.status = 'approved'
+                  )
+            )
+        begin
+            select raise(abort, 'invalid finding remediation binding links');
+        end;
+
+        create trigger if not exists trg_remediation_binding_immutable_update
+        before update on finding_remediation_bindings
+        begin select raise(abort, 'finding remediation bindings are immutable'); end;
+
+        create trigger if not exists trg_remediation_binding_immutable_delete
+        before delete on finding_remediation_bindings
+        begin select raise(abort, 'finding remediation bindings are immutable'); end;
+
+        create trigger if not exists trg_remediation_recovery_epoch_insert
+        before insert on finding_remediation_recovery_epochs
+        for each row when
+            new.project_id != (select project_id from findings where id = new.finding_id)
+            or new.project_id != (select project_id from closures where id = new.closure_id)
+            or new.finding_id != (select finding_id from closures where id = new.closure_id)
+            or new.work_unit_id != (select work_unit_id from work_unit_activations where id = new.work_unit_activation_id)
+            or new.work_unit_id != (select work_unit_id from work_unit_dependencies where id = new.dependency_id)
+            or new.work_unit_id != (select depends_on_work_unit_id from work_unit_dependencies where id = new.dependency_id)
+            or new.work_unit_activation_id != (select work_unit_activation_id from work_unit_events where id = new.reopened_event_id)
+            or 'reopened' != (select event_type from work_unit_events where id = new.reopened_event_id)
+            or new.project_id != (select project_id from authority_events where id = new.authority_event_id)
+            or not exists (
+                select 1
+                from findings f
+                join closures c on c.id = new.closure_id and c.finding_id = f.id
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                join work_units w on w.id = new.work_unit_id
+                join work_unit_activations a on a.id = new.work_unit_activation_id
+                join work_unit_dependencies d on d.id = new.dependency_id
+                join work_unit_events e on e.id = new.reopened_event_id
+                join authority_events authority on authority.id = new.authority_event_id
+                where f.id = new.finding_id
+                  and f.status = 'open' and f.classification = 'valid'
+                  and c.status = 'registered'
+                  and p.work_unit_id = new.work_unit_id
+                  and p.required = 1 and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and w.status = 'open' and a.status = 'active'
+                  and d.work_unit_id = new.work_unit_id
+                  and d.depends_on_work_unit_id = new.work_unit_id
+                  and d.dependency_type = 'invalidates_closure' and d.status = 'open'
+                  and e.work_unit_id = new.work_unit_id and e.event_type = 'reopened'
+                  and authority.status = 'active'
+                  and authority.event_type in ('user_instruction', 'policy', 'design_doc')
+            )
+        begin
+            select raise(abort, 'invalid finding remediation recovery epoch links');
+        end;
+
+        create trigger if not exists trg_remediation_recovery_epoch_immutable_update
+        before update on finding_remediation_recovery_epochs
+        begin select raise(abort, 'finding remediation recovery epochs are immutable'); end;
+
+        create trigger if not exists trg_remediation_recovery_epoch_immutable_delete
+        before delete on finding_remediation_recovery_epochs
+        begin select raise(abort, 'finding remediation recovery epochs are immutable'); end;
+
+        create trigger if not exists trg_correction_session_links_insert
+        before insert on correction_sessions
+        for each row when
+            new.project_id != (select project_id from findings where id = new.finding_id)
+            or new.project_id != (select project_id from closures where id = new.closure_id)
+            or new.finding_id != (select finding_id from closures where id = new.closure_id)
+            or exists (
+                select 1 from correction_sessions active
+                where active.project_id=new.project_id and active.status='active'
+            )
+            or not exists (
+                select 1 from closures c join findings f on f.id=c.finding_id
+                join review_runs r on r.id=f.review_run_id
+                join review_plans p on p.id=r.review_plan_id
+                where c.id=new.closure_id and c.status='registered'
+                  and f.id=new.finding_id and f.status='open' and f.classification='valid'
+                  and not (p.required=1 and p.stage='close-ready'
+                           and p.review_type in ('implementation_review','design_implementation_diff'))
+                  and trim(coalesce(c.affected_surfaces,''))!=''
+                  and trim(coalesce(c.fix_plan,''))!=''
+                  and trim(coalesce(c.tests_or_gates,''))!=''
+                  and trim(coalesce(c.verification_plan,''))!=''
+            )
+        begin select raise(abort, 'invalid correction session links'); end;
+
+        create trigger if not exists trg_correction_session_links_update
+        before update of project_id, finding_id, closure_id on correction_sessions
+        begin select raise(abort, 'correction session links are immutable'); end;
+
+        create trigger if not exists trg_correction_session_status_update
+        before update of status, completed_at on correction_sessions
+        for each row when not (
+            (old.status='active' and new.status='completed' and new.completed_at is not null
+             and exists(select 1 from closures c where c.id=old.closure_id and c.status='ready_for_verification')
+             and exists(select 1 from closure_attempts attempt where attempt.closure_id=old.closure_id and attempt.result is null)
+             and not exists(select 1 from correction_tokens token where token.closure_id=old.closure_id and token.token_kind='transition' and token.status!='applied'))
+            or
+            (old.status='active' and new.status='superseded' and new.completed_at is not null
+             and exists(select 1 from closures c where c.id=old.closure_id and c.status='superseded'))
+            or
+            (old.status='completed' and new.status='active' and new.completed_at is null
+             and exists (
+               select 1 from closures c join findings f on f.id=c.finding_id
+               where c.id=old.closure_id and c.status='registered'
+                 and f.status='open' and f.classification='valid'
+             )
+             and exists (
+               select 1 from closure_attempts attempt
+               where attempt.closure_id=old.closure_id
+                 and attempt.result in ('not_fixed','needs_evidence')
+                 and attempt.id=(select max(latest.id) from closure_attempts latest where latest.closure_id=old.closure_id)
+             )
+             and not exists (
+               select 1 from correction_sessions other
+               where other.project_id=old.project_id and other.status='active' and other.id!=old.id
+             ))
+        )
+        begin select raise(abort, 'invalid correction session status transition'); end;
+
+        create trigger if not exists trg_correction_session_immutable_delete
+        before delete on correction_sessions
+        begin select raise(abort, 'correction sessions are immutable'); end;
+
+        create trigger if not exists trg_correction_token_links_insert
+        before insert on correction_tokens
+        for each row when
+            new.project_id != (select project_id from closures where id = new.closure_id)
+            or new.token_ordinal <= 0
+            or not (
+                (new.token_kind='file' and new.operation in ('edit','create','delete'))
+                or (new.token_kind='transition' and new.operation in (
+                    'design-decompose','task-accept-out-of-scope','phase-create',
+                    'phase-assign','phase-dependency-add','phase-dependency-satisfy',
+                    'phase-dependency-accept','stale-accept','stale-close'
+                ))
+            )
+            or (new.token_kind='transition' and not (
+                (new.operation='design-decompose'
+                 and length(new.target)-length(replace(new.target,'/',''))=1
+                 and new.target not glob '*[^0-9/]*'
+                 and cast(substr(new.target,1,instr(new.target,'/')-1) as integer)>0
+                 and cast(substr(new.target,instr(new.target,'/')+1) as integer)>0)
+                or (new.operation='task-accept-out-of-scope' and (
+                    (new.target not glob '*[^0-9]*' and cast(new.target as integer)>0)
+                    or (new.target glob '@task/*' and length(new.target)>6
+                        and length(new.target)-length(replace(new.target,'/',''))=1
+                        and substr(new.target,7) not glob '*[^A-Za-z0-9_-]*')
+                ))
+                or (new.operation='phase-create'
+                    and length(new.target)-length(replace(new.target,'/',''))=5
+                    and new.target not like '%//%'
+                    and new.target not glob '*[^a-z0-9_@/-]*'
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]')
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') glob '@[a-z0-9_-]*'
+                    and substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),2) not glob '*[^a-z0-9_-]*'
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[3]') glob '[a-z0-9_-]*'
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[3]') not glob '*[^a-z0-9_-]*'
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[4]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[4]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[4]')
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[5]') glob '[a-z0-9_-]*'
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[5]') not glob '*[^a-z0-9_-]*')
+                or (new.operation='phase-assign'
+                    and length(new.target)-length(replace(new.target,'/','')) in (1,2)
+                    and new.target not like '/%' and new.target not like '%/'
+                    and new.target not glob '*[^A-Za-z0-9_@/-]*'
+                    and (json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') glob '@[a-z0-9_-]*'
+                         or (cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                             and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')))
+                    and (json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') not glob '@*'
+                         or substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]'),2) not glob '*[^a-z0-9_-]*')
+                    and ((length(new.target)-length(replace(new.target,'/',''))=1
+                          and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
+                          and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]'))
+                         or (length(new.target)-length(replace(new.target,'/',''))=2
+                          and json_extract('["'||replace(new.target,'/','","')||'"]','$[1]')='@task'
+                          and json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') glob '[A-Za-z0-9_-]*')))
+                or (new.operation='phase-dependency-add'
+                    and length(new.target)-length(replace(new.target,'/',''))=2
+                    and (new.target like '%/blocks' or new.target like '%/requires')
+                    and new.target not like '/%' and new.target not like '%//%'
+                    and new.target not glob '*[^a-z0-9_@/-]*'
+                    and (json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') glob '@[a-z0-9_-]*'
+                         or (cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                             and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')))
+                    and (json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') glob '@[a-z0-9_-]*'
+                         or (cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
+                             and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]'))))
+                or (new.operation in ('phase-dependency-satisfy','phase-dependency-accept')
+                    and new.target not glob '*[^0-9]*' and cast(new.target as integer)>0)
+                or (new.operation in ('stale-accept','stale-close')
+                    and length(new.target)-length(replace(new.target,'/',''))=1
+                    and new.target glob '*/[0-9]*'
+                    and substr(new.target,1,instr(new.target,'/')-1) in (
+                      'task_derivation','checklist','validation_gate','coverage_item','review_plan'
+                    )
+                    and substr(new.target,instr(new.target,'/')+1) not glob '*[^0-9]*'
+                    and cast(substr(new.target,instr(new.target,'/')+1) as integer)>0)
+            ))
+            or (new.operation='design-decompose' and new.pre_state != 'checklist_max:'||(select coalesce(max(id),0) from checklists))
+            or (new.operation='phase-create' and new.pre_state != 'phase_max:'||(select coalesce(max(id),0) from work_phases))
+            or (new.operation='phase-dependency-add' and new.pre_state != 'phase_dependency_max:'||(select coalesce(max(id),0) from work_phase_dependencies))
+            or not exists (
+                select 1 from closures c join findings f on f.id=c.finding_id
+                join review_runs r on r.id=f.review_run_id
+                join review_plans p on p.id=r.review_plan_id
+                where c.id=new.closure_id and c.status='registered'
+                  and f.status='open' and f.classification='valid'
+                  and not (p.required=1 and p.stage='close-ready'
+                           and p.review_type in ('implementation_review','design_implementation_diff'))
+            )
+        begin select raise(abort, 'invalid correction token links'); end;
+
+        create trigger if not exists trg_correction_token_links_update
+        before update of project_id, closure_id, token_ordinal, token_kind, operation, target, pre_state, pre_hash on correction_tokens
+        begin select raise(abort, 'correction token contract is immutable'); end;
+
+        create trigger if not exists trg_correction_token_status_update
+        before update of status, applied_at on correction_tokens
+        for each row when
+            old.status != 'pending'
+            or new.status != 'applied'
+            or (new.status='applied' and (
+                new.applied_at is null
+                or not exists (
+                    select 1 from correction_transition_applications application
+                    where application.correction_token_id=old.id
+                )
+            ))
+        begin select raise(abort, 'invalid correction token status transition'); end;
+
+        create trigger if not exists trg_correction_token_immutable_delete
+        before delete on correction_tokens
+        begin select raise(abort, 'correction tokens are immutable'); end;
+
+        create trigger if not exists trg_correction_application_links_insert
+        before insert on correction_transition_applications
+        for each row when
+            new.project_id != (select project_id from correction_sessions where id = new.correction_session_id)
+            or new.project_id != (select project_id from correction_tokens where id = new.correction_token_id)
+            or (select closure_id from correction_sessions where id = new.correction_session_id)
+               != (select closure_id from correction_tokens where id = new.correction_token_id)
+            or (new.authority_event_id is not null and new.project_id != (
+                select project_id from authority_events where id = new.authority_event_id
+            ))
+            or 'active' != (select status from correction_sessions where id=new.correction_session_id)
+            or 'pending' != (select status from correction_tokens where id=new.correction_token_id)
+            or (
+                (select operation from correction_tokens where id=new.correction_token_id)
+                  in ('task-accept-out-of-scope','phase-dependency-accept')
+                and (new.authority_event_id is null or new.evidence_ref is not null)
+            )
+            or (
+                (select operation from correction_tokens where id=new.correction_token_id)
+                  = 'phase-dependency-satisfy'
+                and (new.authority_event_id is not null or trim(coalesce(new.evidence_ref,''))='')
+            )
+            or (
+                (select operation from correction_tokens where id=new.correction_token_id)
+                  not in ('task-accept-out-of-scope','phase-dependency-accept','phase-dependency-satisfy')
+                and (new.authority_event_id is not null or new.evidence_ref is not null)
+            )
+            or not (
+              ((select operation from correction_tokens where id=new.correction_token_id)='phase-create'
+               and exists(select 1 from work_phases p join correction_tokens token on token.id=new.correction_token_id
+                 where 'phase:'||p.id=new.result_ref and p.project_id=new.project_id
+                   and p.id>cast(substr(token.pre_state,instr(token.pre_state,':')+1) as integer)
+                   and cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') as integer)=p.work_unit_id
+                   and cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') as integer)=p.design_version_id
+                   and json_extract('["'||replace(token.target,'/','","')||'"]','$[3]')=p.kind
+                   and cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[4]') as integer)=p.phase_order
+                   and json_extract('["'||replace(token.target,'/','","')||'"]','$[5]')=p.phase_key))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='phase-assign'
+               and exists(select 1 from work_phase_task_memberships m join correction_tokens token on token.id=new.correction_token_id
+                 where 'phase:'||m.phase_id||':task:'||m.task_id=new.result_ref and m.project_id=new.project_id
+                   and (
+                     json_extract('["'||replace(token.target,'/','","')||'"]','$[0]')=cast(m.phase_id as text)
+                     or exists(select 1 from correction_transition_aliases alias join correction_transition_applications earlier on earlier.id=alias.correction_application_id join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                       where alias.correction_session_id=new.correction_session_id and alias.alias=json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') and alias.record_type='phase' and alias.record_id=m.phase_id and earlier_token.token_ordinal<token.token_ordinal)
+                   )
+                   and (
+                     substr(token.target,instr(token.target,'/')+1)=cast(m.task_id as text)
+                     or exists(select 1 from correction_transition_aliases alias join correction_transition_applications earlier on earlier.id=alias.correction_application_id join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                       where alias.correction_session_id=new.correction_session_id and alias.alias=substr(token.target,instr(token.target,'/')+1) and alias.record_type='task' and alias.record_id=m.task_id and earlier_token.token_ordinal<token.token_ordinal)
+                   )))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='phase-dependency-add'
+               and exists(select 1 from work_phase_dependencies d join correction_tokens token on token.id=new.correction_token_id
+                 where 'phase-dependency:'||d.id=new.result_ref and d.project_id=new.project_id
+                   and d.id>cast(substr(token.pre_state,instr(token.pre_state,':')+1) as integer)
+                   and json_extract('["'||replace(token.target,'/','","')||'"]','$[2]')=d.dependency_type
+                   and (
+                     json_extract('["'||replace(token.target,'/','","')||'"]','$[0]')=cast(d.from_phase_id as text)
+                     or exists(select 1 from correction_transition_aliases alias join correction_transition_applications earlier on earlier.id=alias.correction_application_id join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                       where alias.correction_session_id=new.correction_session_id and alias.alias=json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') and alias.record_type='phase' and alias.record_id=d.from_phase_id and earlier_token.token_ordinal<token.token_ordinal)
+                   )
+                   and (
+                     json_extract('["'||replace(token.target,'/','","')||'"]','$[1]')=cast(d.to_phase_id as text)
+                     or exists(select 1 from correction_transition_aliases alias join correction_transition_applications earlier on earlier.id=alias.correction_application_id join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                       where alias.correction_session_id=new.correction_session_id and alias.alias=json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') and alias.record_type='phase' and alias.record_id=d.to_phase_id and earlier_token.token_ordinal<token.token_ordinal)
+                   )))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='phase-dependency-satisfy'
+               and exists(select 1 from work_phase_dependencies d join correction_tokens token on token.id=new.correction_token_id where d.id=cast(token.target as integer) and 'phase-dependency:'||d.id||':satisfied'=new.result_ref and d.project_id=new.project_id and d.status='satisfied' and d.evidence_ref=new.evidence_ref))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='phase-dependency-accept'
+               and exists(select 1 from work_phase_dependencies d join correction_tokens token on token.id=new.correction_token_id where d.id=cast(token.target as integer) and 'phase-dependency:'||d.id||':accepted'=new.result_ref and d.project_id=new.project_id and d.status='accepted' and d.authority_event_id=new.authority_event_id))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='task-accept-out-of-scope'
+               and exists(select 1 from acceptance_records ar join tasks t on t.id=ar.task_id join work_units w on w.id=t.work_unit_id join correction_tokens token on token.id=new.correction_token_id
+                 where new.result_ref='task:'||t.id||':acceptance:'||ar.id and w.project_id=new.project_id
+                   and t.status='accepted_out_of_scope' and ar.status='approved'
+                   and ar.approved_by_authority_event_id=new.authority_event_id
+                   and (token.target=cast(t.id as text) or exists(
+                     select 1 from correction_transition_aliases alias
+                     join correction_transition_applications earlier on earlier.id=alias.correction_application_id
+                     join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                     where alias.correction_session_id=new.correction_session_id
+                       and alias.alias=token.target and alias.record_type='task' and alias.record_id=t.id
+                       and earlier_token.token_ordinal<token.token_ordinal
+                   ))))
+              or ((select operation from correction_tokens where id=new.correction_token_id) in ('stale-accept','stale-close')
+               and exists(select 1 from acceptance_records ar join correction_tokens token on token.id=new.correction_token_id
+                 where ar.project_id=new.project_id and ar.target_type='stale_record' and ar.status='approved'
+                   and token.target=ar.stale_record_type||'/'||ar.stale_record_id
+                   and new.result_ref like 'stale:'||ar.stale_record_type||':'||ar.stale_record_id||':%'))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='design-decompose'
+               and exists(select 1 from checklists c join correction_tokens token on token.id=new.correction_token_id
+                 where new.result_ref='checklist:'||c.id and c.project_id=new.project_id
+                   and c.id>cast(substr(token.pre_state,instr(token.pre_state,':')+1) as integer)
+                   and token.target=cast(c.design_version_id as text)||'/'||cast(c.work_unit_id as text)))
+            )
+        begin select raise(abort, 'invalid correction transition application links'); end;
+
+        create trigger if not exists trg_correction_application_links_update
+        before update on correction_transition_applications
+        begin select raise(abort, 'correction transition applications are immutable'); end;
+
+        create trigger if not exists trg_correction_application_immutable_delete
+        before delete on correction_transition_applications
+        begin select raise(abort, 'correction transition applications are immutable'); end;
+
+        create trigger if not exists trg_correction_alias_links_insert
+        before insert on correction_transition_aliases
+        for each row when
+            new.project_id != (select project_id from correction_sessions where id = new.correction_session_id)
+            or new.project_id != (select project_id from correction_transition_applications where id = new.correction_application_id)
+            or new.correction_session_id != (
+                select correction_session_id from correction_transition_applications
+                where id = new.correction_application_id
+            )
+            or not (
+                (new.record_type = 'checklist' and exists(select 1 from checklists where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'task' and exists(select 1 from tasks t join work_units w on w.id=t.work_unit_id where t.id = new.record_id and w.project_id=new.project_id))
+                or (new.record_type = 'task_derivation' and exists(select 1 from task_derivations where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'checklist_item' and exists(select 1 from checklist_items where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'coverage_item' and exists(select 1 from coverage_items where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'validation_gate' and exists(select 1 from validation_gates where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'phase' and exists(select 1 from work_phases where id = new.record_id and project_id=new.project_id))
+                or (new.record_type = 'phase_dependency' and exists(select 1 from work_phase_dependencies d join work_phases p on p.id=d.from_phase_id where d.id = new.record_id and p.project_id=new.project_id))
+            )
+            or not (
+              (
+                (select token.operation from correction_transition_applications application
+                 join correction_tokens token on token.id=application.correction_token_id
+                 where application.id=new.correction_application_id)='design-decompose'
+                and (
+                  (new.record_type='checklist' and
+                   new.alias='@checklist' and
+                   (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||new.record_id)
+                  or (new.record_type='checklist_item' and exists(
+                    select 1 from checklist_items ci join design_requirements r on r.id=ci.design_requirement_id
+                    where ci.id=new.record_id and
+                      new.alias='@checklist-item/'||r.requirement_key and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                  or (new.record_type='task' and exists(
+                    select 1 from checklist_items ci join design_requirements r on r.id=ci.design_requirement_id where ci.task_id=new.record_id and
+                      new.alias='@task/'||r.requirement_key and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                  or (new.record_type='task_derivation' and exists(
+                    select 1 from task_derivations td join checklist_items ci on ci.id=td.checklist_item_id join design_requirements r on r.id=ci.design_requirement_id
+                    where td.id=new.record_id and
+                      new.alias='@derivation/'||r.requirement_key and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                  or (new.record_type='coverage_item' and exists(
+                    select 1 from coverage_items c join checklist_items ci on ci.task_id=c.task_id join design_requirements r on r.id=ci.design_requirement_id
+                    where c.id=new.record_id and c.design_requirement_id=ci.design_requirement_id and
+                      new.alias='@coverage/'||r.requirement_key and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                  or (new.record_type='validation_gate' and exists(
+                    select 1 from validation_gates vg join checklist_items ci on ci.task_id=vg.task_id join design_requirements r on r.id=ci.design_requirement_id
+                    where vg.id=new.record_id and vg.design_requirement_id=ci.design_requirement_id and
+                      new.alias='@gate/'||r.requirement_key||'/'||vg.gate_key and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                )
+              )
+              or
+              (
+                (select token.operation from correction_transition_applications application
+                 join correction_tokens token on token.id=application.correction_token_id
+                 where application.id=new.correction_application_id)='task-accept-out-of-scope'
+                and (
+                  (new.record_type='task' and
+                   new.alias='@accepted-task/'||new.record_id and
+                   (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||new.record_id||':acceptance:%')
+                  or (new.record_type='checklist_item' and exists(
+                    select 1 from checklist_items ci where ci.id=new.record_id and
+                      new.alias='@accepted-checklist_item/'||new.record_id and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||ci.task_id||':acceptance:%'))
+                  or (new.record_type='validation_gate' and exists(
+                    select 1 from validation_gates vg where vg.id=new.record_id and
+                      new.alias='@accepted-validation_gate/'||new.record_id and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||vg.task_id||':acceptance:%'))
+                  or (new.record_type='coverage_item' and exists(
+                    select 1 from coverage_items c where c.id=new.record_id and
+                      new.alias='@accepted-coverage_item/'||new.record_id and
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||c.task_id||':acceptance:%'))
+                )
+              )
+              or
+              (
+                (select token.operation from correction_transition_applications application
+                 join correction_tokens token on token.id=application.correction_token_id
+                 where application.id=new.correction_application_id)='phase-create'
+                and new.record_type='phase'
+                and new.alias=json_extract('["'||replace((select token.target from correction_transition_applications application join correction_tokens token on token.id=application.correction_token_id where application.id=new.correction_application_id),'/','","')||'"]','$[2]')
+                and (select result_ref from correction_transition_applications where id=new.correction_application_id)='phase:'||new.record_id
+              )
+              or
+              (
+                (select token.operation from correction_transition_applications application
+                 join correction_tokens token on token.id=application.correction_token_id
+                 where application.id=new.correction_application_id)='phase-dependency-add'
+                and new.record_type='phase_dependency'
+                and new.alias='@dependency/'||new.record_id
+                and (select result_ref from correction_transition_applications where id=new.correction_application_id)='phase-dependency:'||new.record_id
+              )
+            )
+        begin select raise(abort, 'invalid correction transition alias links'); end;
+
+        create trigger if not exists trg_correction_alias_immutable_update
+        before update on correction_transition_aliases
+        begin select raise(abort, 'correction transition aliases are immutable'); end;
+
+        create trigger if not exists trg_correction_alias_immutable_delete
+        before delete on correction_transition_aliases
+        begin select raise(abort, 'correction transition aliases are immutable'); end;
         "#,
+    )?;
+
+    ensure_column(
+        conn,
+        "finding_remediation_recovery_epochs",
+        "authority_event_id",
+        "integer references authority_events(id)",
+    )?;
+    ensure_column(
+        conn,
+        "correction_transition_applications",
+        "before_state",
+        "text not null default 'legacy-unrecorded'",
+    )?;
+    ensure_column(
+        conn,
+        "correction_transition_applications",
+        "after_state",
+        "text not null default 'legacy-unrecorded'",
     )?;
 
     // Preserve verified legacy history first. For other findings, only the
@@ -926,17 +2331,7 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
 
         update closures
         set status = case
-            when exists (
-                select 1
-                from findings f
-                join review_runs r on r.id = f.review_run_id
-                join review_plans p on p.id = r.review_plan_id
-                where f.id = closures.finding_id
-                  and p.required = 1
-                  and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
-            )
-            and (
+            when (
                 coalesce(trim(affected_surfaces), '') = ''
                 or coalesce(trim(fix_plan), '') = ''
                 or coalesce(trim(tests_or_gates), '') = ''
@@ -1891,6 +3286,43 @@ fn migrate_kpt_items(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    let invalid_source_correction_ids = {
+        let mut stmt = conn.prepare(
+            r#"
+            select c.id, c.affected_surfaces
+            from closures c
+            join findings f on f.id = c.finding_id
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where c.status = 'registered'
+              and f.status = 'open' and f.classification = 'valid'
+              and not (
+                p.required = 1 and p.stage = 'close-ready'
+                and p.review_type in ('implementation_review', 'design_implementation_diff')
+              )
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.filter_map(|row| match row {
+            Ok((_id, Some(surfaces)))
+                if crate::review::validate_correction_surfaces(&surfaces).is_ok() =>
+            {
+                None
+            }
+            Ok((id, _)) => Some(Ok(id)),
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for closure_id in invalid_source_correction_ids {
+        conn.execute(
+            "update closures set status = 'incomplete' where id = ?1 and status = 'registered'",
+            params![closure_id],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -2771,6 +4203,7 @@ pub struct ProjectStatus {
     pub schema_version: Option<i64>,
     pub phase_blocker: Option<PhaseBlocker>,
     pub finding_remediations: Vec<FindingRemediation>,
+    pub source_corrections: Vec<SourceCorrection>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2783,6 +4216,9 @@ pub enum NextAction {
     },
     FindingRemediation {
         remediations: Vec<FindingRemediation>,
+    },
+    SourceCorrection {
+        corrections: Vec<SourceCorrection>,
     },
     NoOpenWorkUnit,
     ResumeSuspended {
@@ -2805,6 +4241,25 @@ pub struct FindingRemediation {
     pub description: String,
     pub affected_surfaces: String,
     pub fix_plan: String,
+    pub design_invariant: String,
+    pub tests_or_gates: String,
+    pub verification_plan: String,
+    pub next_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCorrection {
+    pub review_plan_id: i64,
+    pub work_unit_id: i64,
+    pub finding_id: i64,
+    pub closure_id: i64,
+    pub correction_session_id: i64,
+    pub description: String,
+    pub affected_surfaces: String,
+    pub fix_plan: String,
+    pub design_invariant: String,
+    pub tests_or_gates: String,
+    pub verification_plan: String,
     pub next_action: String,
 }
 

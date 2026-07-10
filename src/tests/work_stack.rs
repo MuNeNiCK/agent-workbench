@@ -1153,6 +1153,11 @@ fn close_ready_names_derivations_missing_selected_gates() {
         requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
     )
     .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
     let import = import_design_package(
         temp.path(),
         DesignPackageImport {
@@ -1206,6 +1211,39 @@ fn close_ready_names_derivations_missing_selected_gates() {
         item.details
             .contains(&format!("design:{}", import.design_version_id)),
         "{item:#?}"
+    );
+
+    conn.execute(
+        "update tasks set status = 'accepted_out_of_scope' where id = ?1",
+        params![task.task_id],
+    )
+    .unwrap();
+    drop(conn);
+    select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    let accepted = close_ready(temp.path()).unwrap();
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| item.name == "validation_runs_recorded" && item.result == "pass")
+    );
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| item.name == "review_plans_clean" && item.result == "pass")
     );
 }
 

@@ -75,6 +75,7 @@ For an eligible close-ready implementation finding, closure registration opens
 scoped remediation while the finding remains open:
 
 ```sh
+agent-workbench work remediate --finding <finding-id>
 # implement and test only the printed remediation scope
 agent-workbench closure ready <closure-id> --evidence "<fix evidence>" --tests "<test evidence>" --commit <sha>
 agent-workbench review-context finding-fix --finding <finding-id> --closure <closure-id> --attempt <attempt-id>
@@ -93,10 +94,20 @@ remediation and requires a new `closure ready` attempt. Use
 `finding accept-out-of-scope <id> --reason <reason> --authority <id>` for an
 authority disposition; `out_of_scope` is not a verification result.
 
-Design/decomposition findings remain phase blockers after closure registration.
-Correct their source, run `closure ready`, then use the same exact-context
-resume/verify path. Record a later fresh clean run after all findings are
-verified or disposed; resume review is not final completion proof.
+Design/decomposition findings use a typed source-correction session and never
+grant implementation permission:
+
+```sh
+agent-workbench closure correction-begin <closure-id>
+# edit only the declared design:/plan:/docs:/workflow: Markdown surfaces
+agent-workbench closure transition apply <closure-id> --token <ordinal>
+agent-workbench closure ready <closure-id> --evidence "<evidence>" --tests "<tests>"
+```
+
+Apply only declared transition tokens and never substitute their underlying
+task, phase, decomposition, dependency, or stale command. Then use the same
+exact-context resume/verify path. Record a later fresh clean run after all
+findings are verified or disposed; resume review is not final completion proof.
 
 ## Completion Review Prompt Contract
 

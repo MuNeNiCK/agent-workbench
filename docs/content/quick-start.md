@@ -90,6 +90,11 @@ The finding remains open while the owning work unit implements its registered
 closure contract. `closure ready` ends that interval and requires an exact
 finding-fix resume review plus matching verification.
 
+When the owner has no active activation, run the exact `work remediate
+--finding <id>` command printed by `status` or `next`. Do not substitute a
+generic activation. For source-only design or documentation corrections, run
+the printed `closure correction-begin` and stay inside its typed contract.
+
 ## Normal human flow
 
 Most users only need this loop:

@@ -373,6 +373,31 @@ pub(crate) fn handle_closure(root: &Path, command: ClosureCommand) -> Result<()>
             println!("added closure");
             println!("closure_id: {}", outcome.closure_id);
         }
+        ClosureCommand::CorrectionBegin(args) => {
+            let outcome = begin_correction(root, args.closure_id)?;
+            println!("began correction session");
+            println!("closure_id: {}", outcome.closure_id);
+            println!("correction_session_id: {}", outcome.session_id);
+            println!("token_count: {}", outcome.token_count);
+            println!("idempotent: {}", outcome.idempotent);
+        }
+        ClosureCommand::Transition { command } => match command {
+            ClosureTransitionCommand::Apply(args) => {
+                let outcome = apply_correction_transition(
+                    root,
+                    args.closure_id,
+                    args.token,
+                    args.authority,
+                    args.evidence.as_deref(),
+                )?;
+                println!("applied correction transition");
+                println!("closure_id: {}", outcome.closure_id);
+                println!("token_ordinal: {}", outcome.token_ordinal);
+                println!("application_id: {}", outcome.application_id);
+                println!("result_ref: {}", outcome.result_ref);
+                println!("idempotent: {}", outcome.idempotent);
+            }
+        },
         ClosureCommand::Ready(args) => {
             let outcome = ready_closure(
                 root,

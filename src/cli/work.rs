@@ -5,8 +5,9 @@ use anyhow::Result;
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
     NewWorkFork, WorkActivate, WorkForkSource, WorkReopen, WorkStart, abandon_work, activate_work,
-    block_work, close_active_work, create_follow_up_work, fork_work, interrupt_work, reopen_work,
-    resume_check, resume_work, start_work_with_options, suspend_work, unblock_work,
+    block_work, close_active_work, create_follow_up_work, fork_work, interrupt_work,
+    remediate_work, reopen_work, resume_check, resume_work, start_work_with_options, suspend_work,
+    unblock_work,
 };
 
 pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
@@ -50,6 +51,14 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
             println!("activated work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
             println!("activation_id: {}", outcome.activation_id);
+        }
+        WorkCommand::Remediate(args) => {
+            let outcome = remediate_work(root, args.finding)?;
+            println!("entered finding remediation");
+            println!("work_unit_id: {}", outcome.work_unit_id);
+            println!("activation_id: {}", outcome.activation_id);
+            println!("binding_count: {}", outcome.binding_count);
+            println!("idempotent: {}", outcome.idempotent);
         }
         WorkCommand::Block(args) => {
             let outcome = block_work(root, args.work_unit_id, &args.reason)?;

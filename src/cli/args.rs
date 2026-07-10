@@ -199,6 +199,8 @@ pub(crate) enum WorkCommand {
     Start(WorkStartArgs),
     /// Activate an existing open work unit.
     Activate(WorkActivateArgs),
+    /// Enter the audited remediation activation for a valid registered finding.
+    Remediate(WorkRemediateArgs),
     /// Mark an open work unit as blocked.
     Block(WorkBlockArgs),
     /// Mark a blocked work unit as open.
@@ -219,6 +221,12 @@ pub(crate) enum WorkCommand {
     Reopen(WorkReopenArgs),
     /// Create follow-up work linked to a closed or abandoned work unit.
     FollowUp(WorkFollowUpArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct WorkRemediateArgs {
+    #[arg(long)]
+    pub(crate) finding: i64,
 }
 
 #[derive(Debug, Args)]
@@ -1682,8 +1690,34 @@ pub(crate) struct FindingVerifyArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ClosureCommand {
     Add(ClosureAddArgs),
+    CorrectionBegin(ClosureCorrectionBeginArgs),
+    Transition {
+        #[command(subcommand)]
+        command: ClosureTransitionCommand,
+    },
     Ready(ClosureReadyArgs),
     Supersede(ClosureSupersedeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ClosureTransitionCommand {
+    Apply(ClosureTransitionApplyArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClosureTransitionApplyArgs {
+    pub(crate) closure_id: i64,
+    #[arg(long)]
+    pub(crate) token: i64,
+    #[arg(long)]
+    pub(crate) authority: Option<i64>,
+    #[arg(long)]
+    pub(crate) evidence: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClosureCorrectionBeginArgs {
+    pub(crate) closure_id: i64,
 }
 
 #[derive(Debug, Args)]

@@ -1,10 +1,13 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
+use sha2::{Digest, Sha256};
 
-use crate::db::{open_existing_project, project_id};
-use crate::design::{NewGeneralAcceptance, add_general_acceptance};
+use crate::db::{current_phase_blocker, open_existing_project, project_id};
+use crate::design::{NewGeneralAcceptance, add_general_acceptance_in};
 use crate::review_context::{review_context_ref, review_context_ref_with_phase};
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
@@ -296,9 +299,45 @@ pub fn waive_review_plan(
     if input.review_plan_id <= 0 {
         bail!("review plan id must be positive");
     }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let blocker = current_phase_blocker(&tx)?;
+    let selected = if let Some(blocker) = blocker.as_ref() {
+        blocker.review_plan_id == Some(input.review_plan_id)
+            && blocker
+                .next_action
+                .contains(&format!("review plan waive {}", input.review_plan_id))
+    } else {
+        let selected_plan: Option<i64> = tx
+            .query_row(
+                r#"
+                select p.id from review_plans p
+                join work_unit_activations active on active.work_unit_id=p.work_unit_id and active.status='active'
+                where p.project_id=?1 and p.required=1 and p.status!='clean'
+                  and not exists (select 1 from acceptance_records ar where ar.target_type='review_plan' and ar.review_plan_id=p.id and ar.status='approved')
+                  and not exists (select 1 from correction_sessions s where s.project_id=p.project_id and s.status='active')
+                  and not exists (select 1 from finding_remediation_bindings b join work_unit_activations a on a.id=b.work_unit_activation_id and a.status='active' where b.project_id=p.project_id)
+                order by case p.stage when 'design-ready' then 0 when 'implementation-ready' then 1 when 'close-ready' then 2 else 3 end, p.id
+                limit 1
+                "#,
+                params![project_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        selected_plan == Some(input.review_plan_id)
+    };
+    if !selected {
+        let next = blocker
+            .as_ref()
+            .map(|blocker| blocker.next_action.as_str())
+            .unwrap_or("complete the resolver-selected lifecycle action");
+        bail!("review plan waive is not selected; next: {next}");
+    }
     let target = format!("review-plan:{}", input.review_plan_id);
-    let outcome = add_general_acceptance(
-        root,
+    let outcome = add_general_acceptance_in(
+        &tx,
+        project_id,
         NewGeneralAcceptance {
             target: &target,
             acceptance_type: "explicit_exception",
@@ -306,6 +345,7 @@ pub fn waive_review_plan(
             approval_authority_event_id: input.approval_authority_event_id,
         },
     )?;
+    tx.commit()?;
     Ok(ReviewPlanWaiverOutcome {
         review_plan_id: input.review_plan_id,
         acceptance_record_id: outcome.acceptance_record_id,
@@ -686,8 +726,31 @@ pub fn classify_finding(
         )
         .optional()?
         .context("finding not found")?;
+    ensure_review_finding_target(&tx, finding_id, "finding classify")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench finding classify {finding_id}");
+        if !blocker.next_action.starts_with(&expected) {
+            bail!(
+                "finding classify is not selected; next: {}",
+                blocker.next_action
+            );
+        }
+    }
     if matches!(current_status.as_str(), "closed" | "accepted_out_of_scope") {
         bail!("terminal finding cannot be reclassified without an explicit authority transition");
+    }
+    let current_classification: String = tx.query_row(
+        "select classification from findings where id = ?1 and project_id = ?2",
+        params![finding_id, project_id],
+        |row| row.get(0),
+    )?;
+    if current_classification == classification {
+        return Ok(FindingClassificationOutcome { finding_id });
+    }
+    if current_classification == "valid" && classification != "valid" {
+        bail!(
+            "a valid finding cannot be reclassified to bypass closure, remediation, and verification"
+        );
     }
     let status = match classification {
         "invalid" => "closed",
@@ -735,6 +798,13 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
         )
         .optional()?
         .context("finding not found")?;
+    ensure_review_finding_target(&tx, finding.id, "closure add")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench closure add --finding {}", finding.id);
+        if !blocker.next_action.starts_with(&expected) {
+            bail!("closure add is not selected; next: {}", blocker.next_action);
+        }
+    }
     if finding.classification != "valid" {
         bail!("closure requires a valid finding");
     }
@@ -763,6 +833,24 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
             input.verification_plan,
             "eligible closure requires --verification",
         )?;
+    } else {
+        require_text(
+            input.affected_surfaces,
+            "source correction closure requires --surfaces",
+        )?;
+        require_text(
+            input.fix_plan,
+            "source correction closure requires --fix-plan",
+        )?;
+        require_text(
+            input.tests_or_gates,
+            "source correction closure requires --tests",
+        )?;
+        require_text(
+            input.verification_plan,
+            "source correction closure requires --verification",
+        )?;
+        parse_correction_tokens(input.affected_surfaces.unwrap())?;
     }
     tx.execute(
         r#"
@@ -789,10 +877,1453 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
             input.closed_by_commit,
         ],
     )?;
+    let closure_id = tx.last_insert_rowid();
+    if !eligible {
+        let design_root = correction_design_root(&tx, finding.id)?;
+        record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            closure_id,
+            input.affected_surfaces.unwrap(),
+            design_root.as_deref(),
+        )?;
+    }
     tx.commit()?;
-    Ok(ClosureOutcome {
-        closure_id: conn.last_insert_rowid(),
+    Ok(ClosureOutcome { closure_id })
+}
+
+pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let selected_active_closure: Option<i64> = tx
+        .query_row(
+            "select closure_id from correction_sessions where project_id = ?1 and status = 'active' order by id limit 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if selected_active_closure.is_some_and(|selected| selected != closure_id) {
+        bail!(
+            "another source correction session is selected; finish closure {} first",
+            selected_active_closure.unwrap()
+        );
+    }
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench closure correction-begin {closure_id}");
+        if blocker.next_action != expected {
+            bail!(
+                "closure correction-begin is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let (finding_id, surfaces, eligible, design_root): (i64, String, bool, Option<String>) = tx
+        .query_row(
+            r#"
+            select c.finding_id, c.affected_surfaces,
+                   p.required = 1 and p.stage = 'close-ready'
+                     and p.review_type in ('implementation_review', 'design_implementation_diff'),
+                   dp.root_path
+            from closures c
+            join findings f on f.id = c.finding_id
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            left join design_versions dv on dv.id = p.design_version_id
+            left join design_packages dp on dp.id = dv.design_package_id
+            where c.id = ?1 and c.project_id = ?2 and c.status = 'registered'
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![closure_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?
+        .context("registered correction closure not found")?;
+    if eligible {
+        bail!("implementation findings use agent-workbench work remediate");
+    }
+    if let Some(session_id) = tx
+        .query_row(
+            "select id from correction_sessions where closure_id = ?1 and status = 'active'",
+            params![closure_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        let token_count = tx.query_row(
+            "select count(*) from correction_tokens where closure_id = ?1",
+            params![closure_id],
+            |row| row.get(0),
+        )?;
+        return Ok(CorrectionBeginOutcome {
+            closure_id,
+            session_id,
+            token_count,
+            idempotent: true,
+        });
+    }
+    let mut token_count: i64 = tx.query_row(
+        "select count(*) from correction_tokens where closure_id = ?1",
+        params![closure_id],
+        |row| row.get(0),
+    )?;
+    if token_count == 0 {
+        token_count = record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            closure_id,
+            &surfaces,
+            design_root.as_deref(),
+        )?;
+    } else {
+        ensure_correction_prestate_unchanged(&tx, root, closure_id, design_root.as_deref())?;
+    }
+    validate_correction_transition_preflight(&tx, project_id, closure_id, finding_id)?;
+    tx.execute(
+        r#"
+        insert into correction_sessions(project_id, finding_id, closure_id, status, created_at)
+        values (?1, ?2, ?3, 'active', current_timestamp)
+        "#,
+        params![project_id, finding_id, closure_id],
+    )?;
+    let session_id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(CorrectionBeginOutcome {
+        closure_id,
+        session_id,
+        token_count,
+        idempotent: false,
     })
+}
+
+pub fn apply_correction_transition(
+    root: &Path,
+    closure_id: i64,
+    token_ordinal: i64,
+    authority_event_id: Option<i64>,
+    evidence: Option<&str>,
+) -> Result<CorrectionTransitionOutcome> {
+    let evidence = evidence.map(str::trim);
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let (token_id, operation, target, status, finding_id): (i64, String, String, String, i64) = tx
+        .query_row(
+            r#"
+            select t.id, t.operation, t.target, t.status, c.finding_id
+            from correction_tokens t
+            join closures c on c.id = t.closure_id
+            where t.closure_id = ?1 and t.token_ordinal = ?2
+              and t.token_kind = 'transition' and t.project_id = ?3
+              and c.status = 'registered'
+            "#,
+            params![closure_id, token_ordinal, project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .context("registered correction transition token not found")?;
+    let declared_stale = matches!(operation.as_str(), "stale-accept" | "stale-close");
+    let selected_stale = crate::traceability::selected_stale_record_in(&tx, project_id)?;
+    let matches_selected_stale = selected_stale
+        .as_ref()
+        .is_some_and(|(kind, id)| target == format!("{kind}/{id}"));
+    if let Some((kind, id)) = selected_stale.as_ref()
+        && (!declared_stale || !matches_selected_stale)
+    {
+        bail!("stale {kind}:{id} is the selected transition");
+    }
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let exact_stale_apply = format!(
+            "agent-workbench closure transition apply {closure_id} --token {token_ordinal}"
+        );
+        if !(blocker.kind == "stale_design"
+            && declared_stale
+            && matches_selected_stale
+            && blocker.next_action == exact_stale_apply)
+        {
+            bail!(
+                "closure transition apply is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let mut session_id = tx
+        .query_row(
+            "select id from correction_sessions where closure_id = ?1 and status = 'active'",
+            params![closure_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if session_id.is_none() {
+        if !declared_stale || !matches_selected_stale {
+            bail!(
+                "correction transition requires closure correction-begin unless it is the selected stale bootstrap token"
+            );
+        }
+        let another_active: bool = tx.query_row(
+            "select exists(select 1 from correction_sessions where project_id = ?1 and status = 'active')",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        if another_active {
+            bail!("another source correction session is selected");
+        }
+        if finding_is_remediation_eligible(&tx, project_id, finding_id)? {
+            bail!("implementation findings cannot bootstrap source correction");
+        }
+        let design_root = correction_design_root(&tx, finding_id)?;
+        ensure_correction_prestate_unchanged(&tx, root, closure_id, design_root.as_deref())?;
+        validate_correction_transition_preflight(&tx, project_id, closure_id, finding_id)?;
+        tx.execute(
+            "insert into correction_sessions(project_id, finding_id, closure_id, status, created_at) values (?1, ?2, ?3, 'active', current_timestamp)",
+            params![project_id, finding_id, closure_id],
+        )?;
+        session_id = Some(tx.last_insert_rowid());
+    }
+    let session_id = session_id.unwrap();
+    if status == "applied" {
+        let (application_id, stored_authority, stored_evidence, result_ref): (
+            i64,
+            Option<i64>,
+            Option<String>,
+            String,
+        ) = tx.query_row(
+            "select id, authority_event_id, evidence_ref, result_ref from correction_transition_applications where correction_token_id = ?1",
+            params![token_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if stored_authority != authority_event_id
+            || stored_evidence.as_deref() != evidence.map(str::trim)
+        {
+            bail!("transition token was already applied with different authority or evidence");
+        }
+        return Ok(CorrectionTransitionOutcome {
+            closure_id,
+            token_ordinal,
+            application_id,
+            result_ref,
+            idempotent: true,
+        });
+    }
+    let selected_transition: i64 = if declared_stale && matches_selected_stale {
+        token_ordinal
+    } else {
+        tx.query_row(
+            r#"
+        select min(token_ordinal) from correction_tokens
+        where closure_id = ?1 and token_kind = 'transition' and status = 'pending'
+        "#,
+            params![closure_id],
+            |row| row.get(0),
+        )?
+    };
+    if token_ordinal != selected_transition {
+        bail!(
+            "correction transitions must be applied in declared order; selected token is {selected_transition}"
+        );
+    }
+    match operation.as_str() {
+        "task-accept-out-of-scope" | "phase-dependency-accept" if authority_event_id.is_none() => {
+            bail!("{operation} requires --authority")
+        }
+        "phase-dependency-satisfy" if evidence.is_none_or(|value| value.trim().is_empty()) => {
+            bail!("phase-dependency-satisfy requires --evidence")
+        }
+        "task-accept-out-of-scope" | "phase-dependency-accept" if evidence.is_some() => {
+            bail!("{operation} forbids --evidence")
+        }
+        "phase-dependency-satisfy" if authority_event_id.is_some() => {
+            bail!("phase-dependency-satisfy forbids --authority")
+        }
+        "task-accept-out-of-scope" | "phase-dependency-accept" | "phase-dependency-satisfy" => {}
+        _ if authority_event_id.is_some() || evidence.is_some() => {
+            bail!("{operation} does not accept runtime authority or evidence")
+        }
+        _ => {}
+    }
+
+    let (work_unit_id, design_version_id): (i64, Option<i64>) = tx.query_row(
+        r#"
+        select p.work_unit_id, p.design_version_id
+        from closures c
+        join findings f on f.id = c.finding_id
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        where c.id = ?1
+        "#,
+        params![closure_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let reason = format!("correction closure {closure_id} token {token_ordinal}");
+    let before_state = transition_state_snapshot(&tx, work_unit_id)?;
+    let result_ref = match operation.as_str() {
+        "design-decompose" => {
+            let (design, work) = parse_pair(&target)?;
+            if work != work_unit_id {
+                bail!("design-decompose target work unit does not own the correction")
+            }
+            if design_version_id != Some(design) {
+                bail!("design-decompose target design is outside the correction review plan")
+            }
+            let outcome = crate::traceability::decompose_design_in(
+                &tx,
+                project_id,
+                crate::traceability::DesignDecomposition {
+                    design_version_id: design,
+                    work_unit_id: work,
+                    checklist_title: Some("mediated correction decomposition"),
+                    reason: Some(&reason),
+                },
+            )?;
+            ensure_mediated_decomposition_coverage(&tx, project_id, work, design)?;
+            format!("checklist:{}", outcome.checklist_id)
+        }
+        "task-accept-out-of-scope" => {
+            let (task_id, design_requirement_id) = resolve_task_ref(
+                &tx,
+                session_id,
+                token_ordinal,
+                work_unit_id,
+                design_version_id,
+                &target,
+            )?;
+            let outcome = crate::planning::accept_task_out_of_scope_in(
+                &tx,
+                project_id,
+                task_id,
+                design_requirement_id,
+                &reason,
+                authority_event_id.unwrap(),
+            )?;
+            format!(
+                "task:{}:acceptance:{}",
+                task_id, outcome.acceptance_record_id
+            )
+        }
+        "phase-create" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 6 {
+                bail!("phase-create target requires work/design/alias/kind/order/key")
+            }
+            let work = parts[0].parse::<i64>()?;
+            let design = parts[1].parse::<i64>()?;
+            if work != work_unit_id {
+                bail!("phase-create target work unit does not own the correction")
+            }
+            if design_version_id != Some(design) {
+                bail!("phase-create target design is outside the correction review plan")
+            }
+            let outcome = crate::phases::create_phase_in(
+                &tx,
+                project_id,
+                crate::phases::NewWorkPhase {
+                    work_unit_id: work,
+                    design_version_id: Some(design),
+                    key: parts[5],
+                    title: parts[5],
+                    kind: parts[3],
+                    order: parts[4].parse()?,
+                    reason: Some(&reason),
+                },
+            )?;
+            format!("phase:{}", outcome.phase_id)
+        }
+        "phase-assign" => {
+            let (phase_ref, task_ref) = target
+                .split_once('/')
+                .context("phase-assign target requires phase/task")?;
+            let phase_id =
+                resolve_phase_ref(&tx, session_id, token_ordinal, work_unit_id, phase_ref)?;
+            let (task_id, _) = resolve_task_ref(
+                &tx,
+                session_id,
+                token_ordinal,
+                work_unit_id,
+                design_version_id,
+                task_ref,
+            )?;
+            crate::phases::assign_task_to_phase_in(&tx, project_id, phase_id, task_id)?;
+            format!("phase:{phase_id}:task:{task_id}")
+        }
+        "phase-dependency-add" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 3 {
+                bail!("phase-dependency-add target requires from/to/type")
+            }
+            let from = resolve_phase_ref(&tx, session_id, token_ordinal, work_unit_id, parts[0])?;
+            let to = resolve_phase_ref(&tx, session_id, token_ordinal, work_unit_id, parts[1])?;
+            let outcome = crate::phases::add_phase_dependency_in(
+                &tx,
+                project_id,
+                crate::phases::NewPhaseDependency {
+                    from_phase_id: from,
+                    to_phase_id: to,
+                    dependency_type: parts[2],
+                    reason: &reason,
+                },
+            )?;
+            format!("phase-dependency:{}", outcome.dependency_id)
+        }
+        "phase-dependency-satisfy" => {
+            let dependency_id = target.parse::<i64>()?;
+            ensure_phase_dependency_owner(&tx, dependency_id, work_unit_id)?;
+            crate::phases::update_dependency_status_in(
+                &tx,
+                project_id,
+                dependency_id,
+                "satisfied",
+                &reason,
+                Some(evidence.unwrap()),
+                None,
+            )?;
+            format!("phase-dependency:{dependency_id}:satisfied")
+        }
+        "phase-dependency-accept" => {
+            let dependency_id = target.parse::<i64>()?;
+            ensure_phase_dependency_owner(&tx, dependency_id, work_unit_id)?;
+            ensure_phase_dependency_authority_scope(
+                &tx,
+                project_id,
+                authority_event_id.unwrap(),
+                dependency_id,
+                work_unit_id,
+            )?;
+            crate::phases::update_dependency_status_in(
+                &tx,
+                project_id,
+                dependency_id,
+                "accepted",
+                &reason,
+                None,
+                Some(authority_event_id.unwrap()),
+            )?;
+            format!("phase-dependency:{dependency_id}:accepted")
+        }
+        "stale-accept" | "stale-close" => {
+            let (record_type, record_id) = target
+                .split_once('/')
+                .context("stale target requires type/id")?;
+            let input = crate::traceability::StaleRecordDisposition {
+                record_type,
+                record_id: record_id.parse()?,
+                reason: &reason,
+            };
+            let outcome = crate::traceability::update_stale_record_disposition_in(
+                &tx,
+                project_id,
+                input,
+                operation == "stale-close",
+            )?;
+            format!(
+                "stale:{}:{}:{}",
+                outcome.record_type, outcome.record_id, outcome.status
+            )
+        }
+        _ => bail!("unsupported correction transition {operation}"),
+    };
+    let after_state = transition_state_snapshot(&tx, work_unit_id)?;
+
+    tx.execute(
+        r#"
+        insert into correction_transition_applications(
+            project_id, correction_session_id, correction_token_id,
+            authority_event_id, evidence_ref, before_state, after_state,
+            result_ref, created_at
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, current_timestamp)
+        "#,
+        params![
+            project_id,
+            session_id,
+            token_id,
+            authority_event_id,
+            evidence,
+            before_state,
+            after_state,
+            result_ref
+        ],
+    )?;
+    let application_id = tx.last_insert_rowid();
+    record_correction_transition_aliases(
+        &tx,
+        project_id,
+        session_id,
+        application_id,
+        &operation,
+        &target,
+        &result_ref,
+    )?;
+    tx.execute(
+        "update correction_tokens set status = 'applied', applied_at = current_timestamp where id = ?1 and status = 'pending'",
+        params![token_id],
+    )?;
+    tx.commit()?;
+    Ok(CorrectionTransitionOutcome {
+        closure_id,
+        token_ordinal,
+        application_id,
+        result_ref,
+        idempotent: false,
+    })
+}
+
+fn transition_state_snapshot(conn: &rusqlite::Connection, work_unit_id: i64) -> Result<String> {
+    let state: (String, String, String, String, String, String, String, String, String, String) = conn.query_row(
+        r#"
+        select
+          coalesce((select group_concat(v,'|') from (select id||':'||status v from tasks where work_unit_id=?1 order by id)),''),
+          coalesce((select group_concat(v,'|') from (select m.id||':'||m.phase_id||':'||m.task_id v from work_phase_task_memberships m join work_phases p on p.id=m.phase_id where p.work_unit_id=?1 order by m.id)),''),
+          coalesce((select group_concat(v,'|') from (select id||':'||status v from checklists where work_unit_id=?1 order by id)),''),
+          coalesce((select group_concat(v,'|') from (select td.id||':'||td.status v from task_derivations td join tasks t on t.id=td.task_id where t.work_unit_id=?1 order by td.id)),''),
+          coalesce((select group_concat(v,'|') from (select ci.id||':'||ci.status v from checklist_items ci join tasks t on t.id=ci.task_id where t.work_unit_id=?1 order by ci.id)),''),
+          coalesce((select group_concat(v,'|') from (select id||':'||status v from validation_gates where work_unit_id=?1 order by id)),''),
+          coalesce((select group_concat(v,'|') from (select id||':'||status v from coverage_items where work_unit_id=?1 order by id)),''),
+          coalesce((select group_concat(v,'|') from (select id||':'||status v from work_phases where work_unit_id=?1 order by id)),''),
+          coalesce((select group_concat(v,'|') from (select d.id||':'||d.status||':'||coalesce(d.evidence_ref,'')||':'||coalesce(d.authority_event_id,0) v from work_phase_dependencies d join work_phases p on p.id=d.from_phase_id where p.work_unit_id=?1 order by d.id)),''),
+          coalesce((select group_concat(v,'|') from (select ar.id||':'||ar.target_type||':'||coalesce(ar.task_id,ar.checklist_item_id,ar.validation_gate_id,ar.coverage_item_id,ar.stale_record_id,0)||':'||ar.status||':'||coalesce(ar.approved_by_authority_event_id,0) v from acceptance_records ar left join tasks t on t.id=ar.task_id left join checklist_items ci on ci.id=ar.checklist_item_id left join validation_gates vg on vg.id=ar.validation_gate_id left join coverage_items c on c.id=ar.coverage_item_id where coalesce(t.work_unit_id,vg.work_unit_id,c.work_unit_id,(select work_unit_id from checklists where id=ci.checklist_id),?1)=?1 order by ar.id)),'')
+        "#,
+        params![work_unit_id],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)),
+    )?;
+    Ok(format!(
+        "tasks=[{}];memberships=[{}];checklists=[{}];derivations=[{}];items=[{}];gates=[{}];coverage=[{}];phases=[{}];phase_dependencies=[{}];acceptances=[{}]",
+        state.0, state.1, state.2, state.3, state.4, state.5, state.6, state.7, state.8, state.9
+    ))
+}
+
+fn ensure_mediated_decomposition_coverage(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    work_unit_id: i64,
+    design_version_id: i64,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        insert into coverage_items(
+            project_id, work_unit_id, design_requirement_id, task_id,
+            requirement, lifecycle_boundary_evidence, tests_or_gates,
+            missing_or_unverified, status, created_at
+        )
+        select
+            ?1, ?2, r.id, t.id, r.requirement_text,
+            'generated by mediated decomposition; implementation evidence pending',
+            'selected validation gates pending',
+            'implementation and validation evidence required',
+            'needs_evidence', current_timestamp
+        from task_derivations td
+        join tasks t on t.id = td.task_id
+        join design_requirements r on r.id = td.design_requirement_id
+        where t.work_unit_id = ?2 and r.design_version_id = ?3
+          and not exists (
+              select 1 from coverage_items c
+              where c.task_id = t.id and c.design_requirement_id = r.id
+          )
+        "#,
+        params![project_id, work_unit_id, design_version_id],
+    )?;
+    Ok(())
+}
+
+fn record_correction_transition_aliases(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    session_id: i64,
+    application_id: i64,
+    operation: &str,
+    target: &str,
+    result_ref: &str,
+) -> Result<()> {
+    let mut aliases = Vec::<(String, String, i64)>::new();
+    match operation {
+        "design-decompose" => {
+            let checklist_id = result_ref
+                .strip_prefix("checklist:")
+                .context("invalid decomposition application result")?
+                .parse::<i64>()?;
+            aliases.push((
+                "@checklist".to_string(),
+                "checklist".to_string(),
+                checklist_id,
+            ));
+            let mut stmt = conn.prepare(
+                r#"
+                select r.requirement_key, ci.id, ci.task_id, td.id, c.id
+                from checklist_items ci
+                join design_requirements r on r.id = ci.design_requirement_id
+                join task_derivations td on td.checklist_item_id = ci.id
+                join coverage_items c on c.task_id = ci.task_id and c.design_requirement_id = r.id
+                where ci.checklist_id = ?1
+                order by r.requirement_key
+                "#,
+            )?;
+            let rows = stmt.query_map(params![checklist_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (key, item_id, task_id, derivation_id, coverage_id) = row?;
+                aliases.push((format!("@task/{key}"), "task".to_string(), task_id));
+                aliases.push((
+                    format!("@derivation/{key}"),
+                    "task_derivation".to_string(),
+                    derivation_id,
+                ));
+                aliases.push((
+                    format!("@checklist-item/{key}"),
+                    "checklist_item".to_string(),
+                    item_id,
+                ));
+                aliases.push((
+                    format!("@coverage/{key}"),
+                    "coverage_item".to_string(),
+                    coverage_id,
+                ));
+                let mut gates = conn.prepare(
+                    r#"
+                    select vg.id, vg.gate_key
+                    from validation_gates vg
+                    join checklist_items ci
+                      on ci.task_id = vg.task_id
+                     and ci.design_requirement_id = vg.design_requirement_id
+                    where ci.id = ?1
+                    order by vg.id
+                    "#,
+                )?;
+                let gate_rows = gates.query_map(params![item_id], |gate| {
+                    Ok((gate.get::<_, i64>(0)?, gate.get::<_, String>(1)?))
+                })?;
+                for gate in gate_rows {
+                    let (gate_id, gate_key) = gate?;
+                    aliases.push((
+                        format!("@gate/{key}/{gate_key}"),
+                        "validation_gate".to_string(),
+                        gate_id,
+                    ));
+                }
+            }
+        }
+        "phase-create" => {
+            let phase_id = result_ref
+                .strip_prefix("phase:")
+                .context("invalid phase application result")?
+                .parse::<i64>()?;
+            let alias = target
+                .split('/')
+                .nth(2)
+                .context("phase-create target has no alias")?;
+            aliases.push((alias.to_string(), "phase".to_string(), phase_id));
+        }
+        "task-accept-out-of-scope" => {
+            let parts = result_ref.split(':').collect::<Vec<_>>();
+            let task_id = parts
+                .get(1)
+                .context("invalid task acceptance application result")?
+                .parse::<i64>()?;
+            aliases.push((
+                format!("@accepted-task/{task_id}"),
+                "task".to_string(),
+                task_id,
+            ));
+            let mut stmt = conn.prepare(
+                r#"
+                select 'checklist_item', ci.id from checklist_items ci where ci.task_id=?1
+                union all select 'validation_gate', vg.id from validation_gates vg where vg.task_id=?1
+                union all select 'coverage_item', c.id from coverage_items c where c.task_id=?1
+                "#,
+            )?;
+            let rows = stmt.query_map(params![task_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (record_type, record_id) = row?;
+                aliases.push((
+                    format!("@accepted-{record_type}/{record_id}"),
+                    record_type,
+                    record_id,
+                ));
+            }
+        }
+        "phase-dependency-add" => {
+            let dependency_id = result_ref
+                .strip_prefix("phase-dependency:")
+                .context("invalid dependency application result")?
+                .parse::<i64>()?;
+            aliases.push((
+                format!("@dependency/{dependency_id}"),
+                "phase_dependency".to_string(),
+                dependency_id,
+            ));
+        }
+        _ => {}
+    }
+    for (alias, record_type, record_id) in aliases {
+        conn.execute(
+            r#"
+            insert into correction_transition_aliases(
+                project_id, correction_session_id, correction_application_id,
+                alias, record_type, record_id, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+            "#,
+            params![
+                project_id,
+                session_id,
+                application_id,
+                alias,
+                record_type,
+                record_id
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_pair(target: &str) -> Result<(i64, i64)> {
+    let (left, right) = target.split_once('/').context("target requires two ids")?;
+    Ok((left.parse()?, right.parse()?))
+}
+
+fn resolve_task_ref(
+    conn: &rusqlite::Connection,
+    session_id: i64,
+    token_ordinal: i64,
+    work_unit_id: i64,
+    design_version_id: Option<i64>,
+    value: &str,
+) -> Result<(i64, i64)> {
+    let numeric_id = value.parse::<i64>().ok();
+    let key = value.strip_prefix("@task/");
+    if numeric_id.is_none() && key.is_none() {
+        bail!("invalid task reference");
+    }
+    if let Some(task_id) = numeric_id {
+        return conn
+            .query_row(
+                r#"
+                select t.id, r.id from tasks t
+                join task_derivations td on td.task_id = t.id and td.status = 'active'
+                join design_requirements r on r.id = td.design_requirement_id
+                where t.id = ?1 and t.work_unit_id = ?2 and r.design_version_id = ?3
+                "#,
+                params![task_id, work_unit_id, design_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("task id is outside the correction owner or current design");
+    }
+    conn.query_row(
+        r#"
+        select alias.record_id, r.id
+        from correction_transition_aliases alias
+        join correction_transition_applications app on app.id = alias.correction_application_id
+        join correction_tokens token on token.id = app.correction_token_id
+        join tasks t on t.id = alias.record_id
+        join task_derivations td on td.task_id = t.id and td.status = 'active'
+        join design_requirements r on r.id = td.design_requirement_id
+        where app.correction_session_id = ?1 and token.token_ordinal < ?2
+          and alias.record_type = 'task'
+          and (?3 is null or alias.record_id = ?3)
+          and (?4 is null or alias.alias = '@task/' || ?4)
+          and t.work_unit_id = ?5 and r.design_version_id = ?6
+          and (?4 is null or r.requirement_key = ?4)
+        order by alias.id desc, r.id limit 1
+        "#,
+        params![
+            session_id,
+            token_ordinal,
+            numeric_id,
+            key,
+            work_unit_id,
+            design_version_id
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()?
+    .context("task reference was not created or adopted by an earlier correction token")
+}
+
+fn resolve_phase_ref(
+    conn: &rusqlite::Connection,
+    session_id: i64,
+    token_ordinal: i64,
+    work_unit_id: i64,
+    value: &str,
+) -> Result<i64> {
+    let numeric_id = value.parse::<i64>().ok();
+    let key = value.starts_with('@').then_some(value);
+    if numeric_id.is_none() && key.is_none() {
+        bail!("invalid phase reference");
+    }
+    if let Some(phase_id) = numeric_id {
+        return conn
+            .query_row(
+                "select id from work_phases where id=?1 and work_unit_id=?2 and status in ('open','blocked')",
+                params![phase_id, work_unit_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("numeric phase reference is outside the open correction owner");
+    }
+    conn.query_row(
+        r#"
+        select alias.record_id
+        from correction_transition_aliases alias
+        join correction_transition_applications app on app.id = alias.correction_application_id
+        join correction_tokens token on token.id = app.correction_token_id
+        where app.correction_session_id = ?1 and token.token_ordinal < ?2
+          and alias.record_type = 'phase'
+          and alias.alias = ?3
+          and exists (
+              select 1 from work_phases p
+              where p.id = alias.record_id and p.work_unit_id = ?4
+          )
+        order by alias.id desc limit 1
+        "#,
+        params![session_id, token_ordinal, key, work_unit_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .context("phase reference was not created by an earlier correction token")
+}
+
+fn ensure_phase_dependency_owner(
+    conn: &rusqlite::Connection,
+    dependency_id: i64,
+    work_unit_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        r#"
+        select 1
+        from work_phase_dependencies d
+        join work_phases source on source.id = d.from_phase_id
+        join work_phases target on target.id = d.to_phase_id
+        where d.id = ?1 and d.status = 'open'
+          and source.work_unit_id = ?2 and target.work_unit_id = ?2
+        "#,
+        params![dependency_id, work_unit_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("open phase dependency is outside the correction work unit")
+}
+
+fn ensure_phase_dependency_authority_scope(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    authority_event_id: i64,
+    dependency_id: i64,
+    work_unit_id: i64,
+) -> Result<()> {
+    let scope: String = conn
+        .query_row(
+            "select scope from authority_events where id = ?1 and project_id = ?2 and status = 'active'",
+            params![authority_event_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("active same-project authority event not found")?;
+    if !matches!(scope.as_str(), "project")
+        && scope != format!("phase-dependency:{dependency_id}")
+        && scope != format!("work-unit:{work_unit_id}")
+    {
+        bail!("authority scope does not cover the exact phase dependency or owning work unit");
+    }
+    Ok(())
+}
+
+fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionToken>> {
+    let mut parsed = Vec::new();
+    let mut phase_aliases = Vec::<String>::new();
+    let mut has_decomposition = false;
+    let mut transition_effects = HashSet::<String>::new();
+    for raw in surfaces.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            bail!("correction surfaces contain an empty token");
+        }
+        if let Some(rest) = token.strip_prefix("transition:") {
+            let (verb, target) = rest
+                .split_once(':')
+                .context("transition token requires transition:<verb>:<target>")?;
+            if !matches!(
+                verb,
+                "design-decompose"
+                    | "task-accept-out-of-scope"
+                    | "phase-create"
+                    | "phase-assign"
+                    | "phase-dependency-add"
+                    | "phase-dependency-satisfy"
+                    | "phase-dependency-accept"
+                    | "stale-accept"
+                    | "stale-close"
+            ) || target.trim().is_empty()
+            {
+                bail!("unsupported correction transition token: {token}");
+            }
+            validate_correction_transition_target(verb, target, has_decomposition, &phase_aliases)?;
+            let effect_key = if verb == "phase-create" {
+                let parts = target.split('/').collect::<Vec<_>>();
+                format!(
+                    "phase-create:{}/{}/{}/{}/{}",
+                    parts[0], parts[1], parts[3], parts[4], parts[5]
+                )
+            } else {
+                format!("{verb}:{target}")
+            };
+            if !transition_effects.insert(effect_key) {
+                bail!("duplicate correction transition effect is not allowed");
+            }
+            if verb == "design-decompose" {
+                has_decomposition = true;
+            }
+            if verb == "phase-create" {
+                phase_aliases.push(target.split('/').nth(2).unwrap().to_string());
+            }
+            parsed.push(CorrectionToken {
+                kind: "transition".to_string(),
+                operation: verb.to_string(),
+                target: target.to_string(),
+            });
+            continue;
+        }
+        let mut parts = token.splitn(3, ':');
+        let kind = parts.next().unwrap_or_default();
+        let operation = parts.next().unwrap_or_default();
+        let target = parts.next().unwrap_or_default();
+        if !matches!(kind, "design" | "plan" | "docs" | "workflow")
+            || !matches!(operation, "edit" | "create" | "delete")
+            || target.is_empty()
+            || !target.ends_with(".md")
+            || target.starts_with('/')
+            || target.contains('\\')
+            || target
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            || !target
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+        {
+            bail!("invalid typed correction surface: {token}");
+        }
+        match kind {
+            "plan" if !target.starts_with("plans/") => bail!("plan surface must be below plans/"),
+            "docs" if target != "README.md" && !target.starts_with("docs/") => {
+                bail!("docs surface must be README.md or below docs/")
+            }
+            "workflow"
+                if !target.starts_with(".agents/skills/agent-workbench/")
+                    && !target.starts_with("skills/agent-workbench/") =>
+            {
+                bail!("workflow surface must be inside the Agent Workbench skill")
+            }
+            _ => {}
+        }
+        parsed.push(CorrectionToken {
+            kind: "file".to_string(),
+            operation: operation.to_string(),
+            target: format!("{kind}:{target}"),
+        });
+    }
+    Ok(parsed)
+}
+
+fn validate_correction_transition_target(
+    verb: &str,
+    target: &str,
+    has_decomposition: bool,
+    phase_aliases: &[String],
+) -> Result<()> {
+    let positive = |value: &str| -> Result<i64> {
+        let parsed = value.parse::<i64>()?;
+        if parsed <= 0 || value != parsed.to_string() {
+            bail!("transition ids and order must be positive")
+        }
+        Ok(parsed)
+    };
+    let valid_phase_ref = |value: &str| {
+        phase_aliases.iter().any(|alias| alias == value)
+            || value.parse::<i64>().is_ok_and(|id| id > 0)
+    };
+    match verb {
+        "design-decompose" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 2 {
+                bail!("design-decompose target requires design/work")
+            }
+            positive(parts[0])?;
+            positive(parts[1])?;
+        }
+        "task-accept-out-of-scope" => {
+            if target.starts_with("@task/") {
+                let key = target.trim_start_matches("@task/");
+                if !has_decomposition
+                    || key.is_empty()
+                    || !key
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                {
+                    bail!("task alias requires an earlier design-decompose token")
+                }
+            } else {
+                positive(target)?;
+            }
+        }
+        "phase-create" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 6 {
+                bail!("phase-create target requires work/design/alias/kind/order/key")
+            }
+            positive(parts[0])?;
+            positive(parts[1])?;
+            positive(parts[4])?;
+            let alias_key = parts[2].strip_prefix('@').unwrap_or_default();
+            if alias_key.is_empty()
+                || !alias_key.chars().all(|ch| {
+                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_')
+                })
+                || parts[3].trim().is_empty()
+                || parts[5].is_empty()
+                || !parts[5].chars().all(|ch| {
+                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_')
+                })
+            {
+                bail!("phase-create alias, kind, or key is invalid")
+            }
+            if phase_aliases.iter().any(|alias| alias == parts[2]) {
+                bail!("phase-create alias is duplicated")
+            }
+        }
+        "phase-assign" => {
+            let (phase, task) = target
+                .split_once('/')
+                .context("phase-assign target requires phase/task")?;
+            if !valid_phase_ref(phase) {
+                bail!("phase assignment requires an earlier same-closure phase alias")
+            }
+            if task.starts_with("@task/") {
+                let key = task.trim_start_matches("@task/");
+                if !has_decomposition
+                    || key.is_empty()
+                    || !key
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                {
+                    bail!("task alias requires an earlier design-decompose token")
+                }
+            } else {
+                positive(task)?;
+            }
+        }
+        "phase-dependency-add" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 3
+                || !valid_phase_ref(parts[0])
+                || !valid_phase_ref(parts[1])
+                || !matches!(parts[2], "blocks" | "requires")
+            {
+                bail!("phase dependency requires earlier phase aliases and blocks|requires")
+            }
+        }
+        "phase-dependency-satisfy" | "phase-dependency-accept" => {
+            positive(target)?;
+        }
+        "stale-accept" | "stale-close" => {
+            let (kind, id) = target
+                .split_once('/')
+                .context("stale target requires type/id")?;
+            if !matches!(
+                kind,
+                "task_derivation"
+                    | "checklist"
+                    | "validation_gate"
+                    | "coverage_item"
+                    | "review_plan"
+            ) {
+                bail!("invalid stale record type")
+            }
+            positive(id)?;
+        }
+        _ => bail!("unsupported correction transition {verb}"),
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_correction_surfaces(surfaces: &str) -> Result<()> {
+    let tokens = parse_correction_tokens(surfaces)?;
+    if tokens.is_empty() {
+        bail!("correction contract has no typed surfaces");
+    }
+    Ok(())
+}
+
+fn correction_design_root(conn: &rusqlite::Connection, finding_id: i64) -> Result<Option<String>> {
+    conn.query_row(
+        r#"
+        select dp.root_path
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        left join design_versions dv on dv.id = p.design_version_id
+        left join design_packages dp on dp.id = dv.design_package_id
+        where f.id = ?1
+        "#,
+        params![finding_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|value| value.flatten())
+    .map_err(Into::into)
+}
+
+fn stale_contract_tuple(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    kind: &str,
+    record_id: i64,
+) -> Result<(i64, i64, i64, i64)> {
+    let (rank, design_id, work_id) = match kind {
+        "task_derivation" => conn.query_row(
+            r#"select 0, r.design_version_id, coalesce(t.work_unit_id,0)
+               from task_derivations td join design_requirements r on r.id=td.design_requirement_id
+               join tasks t on t.id=td.task_id where td.id=?1 and td.project_id=?2"#,
+            params![record_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        "checklist" => conn.query_row(
+            "select 1, design_version_id, work_unit_id from checklists where id=?1 and project_id=?2",
+            params![record_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        "validation_gate" => conn.query_row(
+            r#"select 2, coalesce(r.design_version_id,0), coalesce(vg.work_unit_id,t.work_unit_id,0)
+               from validation_gates vg left join design_requirements r on r.id=vg.design_requirement_id
+               left join tasks t on t.id=vg.task_id where vg.id=?1 and vg.project_id=?2"#,
+            params![record_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        "coverage_item" => conn.query_row(
+            r#"select 3, r.design_version_id, coalesce(c.work_unit_id,t.work_unit_id,0)
+               from coverage_items c join design_requirements r on r.id=c.design_requirement_id
+               left join tasks t on t.id=c.task_id where c.id=?1 and c.project_id=?2"#,
+            params![record_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        "review_plan" => conn.query_row(
+            "select 4, coalesce(design_version_id,0), work_unit_id from review_plans where id=?1 and project_id=?2",
+            params![record_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        _ => bail!("invalid stale record type"),
+    }
+    .optional()?
+    .context("declared stale record does not exist in this project")?;
+    Ok((rank, design_id, work_id, record_id))
+}
+
+fn validate_declared_stale_order(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    tokens: &[CorrectionToken],
+) -> Result<()> {
+    let mut previous = None;
+    for token in tokens.iter().filter(|token| {
+        token.kind == "transition"
+            && matches!(token.operation.as_str(), "stale-accept" | "stale-close")
+    }) {
+        let (kind, record_id) = token
+            .target
+            .split_once('/')
+            .context("stale target requires type/id")?;
+        let tuple = stale_contract_tuple(conn, project_id, kind, record_id.parse()?)?;
+        if previous.is_some_and(|prior| tuple <= prior) {
+            bail!("declared stale transition tokens must be in ascending global tuple order");
+        }
+        previous = Some(tuple);
+    }
+    Ok(())
+}
+
+fn validate_correction_transition_preflight(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    closure_id: i64,
+    finding_id: i64,
+) -> Result<()> {
+    let (work_unit_id, design_version_id): (i64, Option<i64>) = conn.query_row(
+        r#"select p.work_unit_id, p.design_version_id
+           from findings f join review_runs r on r.id=f.review_run_id
+           join review_plans p on p.id=r.review_plan_id where f.id=?1"#,
+        params![finding_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut stmt = conn.prepare(
+        "select operation, target from correction_tokens where closure_id=?1 and token_kind='transition' order by token_ordinal",
+    )?;
+    let rows = stmt.query_map(params![closure_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let transitions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for (operation, target) in transitions {
+        match operation.as_str() {
+            "design-decompose" => {
+                let (design, work) = parse_pair(&target)?;
+                if work != work_unit_id || design_version_id != Some(design) {
+                    bail!("design-decompose target is outside the correction owner or design");
+                }
+                crate::traceability::validate_design_decomposition_in(
+                    conn, project_id, design, work,
+                )?;
+            }
+            "task-accept-out-of-scope" if !target.starts_with("@task/") => {
+                let task_id = target.parse::<i64>()?;
+                conn.query_row(
+                    r#"select 1 from tasks t
+                       where t.id=?1 and t.work_unit_id=?2 and t.status in ('open','blocked')
+                         and (?3 is null or exists(
+                           select 1 from task_derivations td join design_requirements r on r.id=td.design_requirement_id
+                           where td.task_id=t.id and td.status='active' and r.design_version_id=?3
+                         ))"#,
+                    params![task_id, work_unit_id, design_version_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .context("task transition target is outside the open correction owner/design")?;
+            }
+            "phase-create" => {
+                let parts = target.split('/').collect::<Vec<_>>();
+                if parts.len() != 6 {
+                    bail!("phase-create target requires work/design/alias/kind/order/key");
+                }
+                let work = parts[0].parse::<i64>()?;
+                let design = parts[1].parse::<i64>()?;
+                if work != work_unit_id || design_version_id != Some(design) {
+                    bail!("phase-create target is outside the correction owner or design");
+                }
+            }
+            "phase-assign" => {
+                let (phase, task) = target
+                    .split_once('/')
+                    .context("phase-assign target requires phase/task")?;
+                if !phase.starts_with('@') {
+                    resolve_phase_ref(conn, 0, 0, work_unit_id, phase)?;
+                }
+                if !task.starts_with("@task/") {
+                    let task_id = task.parse::<i64>()?;
+                    conn.query_row(
+                        "select 1 from tasks where id=?1 and work_unit_id=?2 and status in ('open','blocked')",
+                        params![task_id, work_unit_id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .context("phase assignment task is outside the correction owner")?;
+                }
+            }
+            "phase-dependency-add" => {
+                let parts = target.split('/').collect::<Vec<_>>();
+                if parts.len() != 3 {
+                    bail!("phase-dependency-add target requires from/to/type");
+                }
+                for phase in &parts[..2] {
+                    if !phase.starts_with('@') {
+                        resolve_phase_ref(conn, 0, 0, work_unit_id, phase)?;
+                    }
+                }
+            }
+            "phase-dependency-satisfy" | "phase-dependency-accept" => {
+                ensure_phase_dependency_owner(conn, target.parse()?, work_unit_id)?;
+            }
+            "stale-accept" | "stale-close" => {
+                let (kind, id) = target
+                    .split_once('/')
+                    .context("stale target requires type/id")?;
+                stale_contract_tuple(conn, project_id, kind, id.parse()?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn record_correction_tokens(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    project_id: i64,
+    closure_id: i64,
+    surfaces: &str,
+    design_root: Option<&str>,
+) -> Result<i64> {
+    let tokens = parse_correction_tokens(surfaces)?;
+    if tokens.is_empty() {
+        bail!("correction contract has no typed surfaces");
+    }
+    validate_declared_stale_order(conn, project_id, &tokens)?;
+    for (index, token) in tokens.iter().enumerate() {
+        let (pre_state, pre_hash) = match token.kind.as_str() {
+            "file" => {
+                let path = correction_file_path(root, design_root, token)?;
+                let exists = path.is_file();
+                match token.operation.as_str() {
+                    "edit" | "delete" if !exists => bail!(
+                        "{} requires an existing regular file: {}",
+                        token.operation,
+                        path.display()
+                    ),
+                    "create" if exists => {
+                        bail!("create requires an absent target: {}", path.display())
+                    }
+                    _ => {}
+                }
+                (
+                    Some(if exists { "file" } else { "absent" }.to_string()),
+                    exists.then(|| file_sha256(&path)).transpose()?,
+                )
+            }
+            "transition" => (transition_pre_state(conn, &token.operation)?, None),
+            _ => unreachable!(),
+        };
+        conn.execute(
+            r#"
+            insert into correction_tokens(
+                project_id, closure_id, token_ordinal, token_kind, operation,
+                target, pre_state, pre_hash, status, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', current_timestamp)
+            "#,
+            params![
+                project_id,
+                closure_id,
+                index as i64 + 1,
+                token.kind,
+                token.operation,
+                token.target,
+                pre_state,
+                pre_hash
+            ],
+        )?;
+    }
+    Ok(tokens.len() as i64)
+}
+
+fn transition_pre_state(conn: &rusqlite::Connection, operation: &str) -> Result<Option<String>> {
+    let table = match operation {
+        "design-decompose" => Some(("checklist_max", "checklists")),
+        "phase-create" => Some(("phase_max", "work_phases")),
+        "phase-dependency-add" => Some(("phase_dependency_max", "work_phase_dependencies")),
+        _ => None,
+    };
+    table
+        .map(|(label, table)| {
+            let max_id: i64 = conn.query_row(
+                &format!("select coalesce(max(id),0) from {table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(format!("{label}:{max_id}"))
+        })
+        .transpose()
+}
+
+fn ensure_correction_prestate_unchanged(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    closure_id: i64,
+    design_root: Option<&str>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "select token_kind, operation, target, pre_state, pre_hash from correction_tokens where closure_id = ?1 order by token_ordinal",
+    )?;
+    let rows = stmt.query_map(params![closure_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    let stored = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for (token_kind, operation, target, pre_state, pre_hash) in stored {
+        if token_kind == "transition" {
+            let current = transition_pre_state(conn, &operation)?;
+            if current != pre_state {
+                bail!(
+                    "correction transition pre-state changed after closure registration; supersede the closure before correction-begin: {operation}:{target}"
+                );
+            }
+            continue;
+        }
+        let token = CorrectionToken {
+            kind: token_kind,
+            operation,
+            target,
+        };
+        let path = correction_file_path(root, design_root, &token)?;
+        let state = if path.is_file() { "file" } else { "absent" };
+        let hash = path.is_file().then(|| file_sha256(&path)).transpose()?;
+        if pre_state.as_deref() != Some(state) || pre_hash != hash {
+            bail!(
+                "correction source changed after closure registration; supersede the closure before correction-begin: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn correction_file_path(
+    root: &Path,
+    design_root: Option<&str>,
+    token: &CorrectionToken,
+) -> Result<PathBuf> {
+    let (kind, target) = token
+        .target
+        .split_once(':')
+        .context("invalid stored file token")?;
+    let base = match kind {
+        "design" | "plan" => root.join(design_root.context(
+            "design and plan correction surfaces require an exact imported design package",
+        )?),
+        "docs" | "workflow" => root.to_path_buf(),
+        _ => bail!("invalid stored correction file kind"),
+    };
+    let canonical_base = base
+        .canonicalize()
+        .with_context(|| format!("correction surface root does not exist: {}", base.display()))?;
+    let path = base.join(target);
+    let containment = if path.exists() {
+        path.canonicalize()?
+    } else {
+        let mut parent = path.parent().context("correction target has no parent")?;
+        while !parent.exists() {
+            parent = parent
+                .parent()
+                .context("correction target has no existing parent")?;
+        }
+        parent.canonicalize()?
+    };
+    if !containment.starts_with(&canonical_base) {
+        bail!("correction surface escapes its allowed root");
+    }
+    Ok(path)
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureReadyOutcome> {
@@ -804,6 +2335,18 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let selected_ready = blocker
+            .next_action
+            .starts_with("agent-workbench closure ready")
+            && blocker.next_action.contains(&input.closure_id.to_string());
+        if !selected_ready {
+            bail!(
+                "closure ready is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
     let (finding_id, status): (i64, String) = tx
         .query_row(
             r#"
@@ -819,6 +2362,156 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
         .context("open valid closure not found")?;
     if status != "registered" {
         bail!("closure ready requires a registered closure");
+    }
+    let eligible_owner: Option<i64> = tx
+        .query_row(
+            r#"
+            select p.work_unit_id
+            from findings f
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where f.id = ?1 and p.project_id = ?2 and p.required = 1
+              and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            "#,
+            params![finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let mut correction_session_id = None;
+    if let Some(work_unit_id) = eligible_owner {
+        let selected_finding_id: i64 = tx.query_row(
+            r#"
+            select min(b.finding_id)
+            from finding_remediation_bindings b
+            join findings selected_f on selected_f.id = b.finding_id
+              and selected_f.status = 'open' and selected_f.classification = 'valid'
+            join closures selected_c on selected_c.id = b.closure_id
+              and selected_c.status = 'registered'
+            join work_unit_activations selected_a on selected_a.id = b.work_unit_activation_id
+              and selected_a.status = 'active'
+            where b.work_unit_id = ?1 and b.project_id = ?2
+            "#,
+            params![work_unit_id, project_id],
+            |row| row.get(0),
+        )?;
+        if selected_finding_id != finding_id {
+            bail!(
+                "closure ready targets finding {finding_id}, but finding {selected_finding_id} is selected"
+            );
+        }
+        let bound: i64 = tx.query_row(
+            r#"
+            select count(*)
+            from finding_remediation_bindings b
+            join work_unit_activations a on a.id = b.work_unit_activation_id
+            join work_units w on w.id = b.work_unit_id
+            where b.finding_id = ?1 and b.closure_id = ?2
+              and b.work_unit_id = ?3 and b.project_id = ?4
+              and a.status = 'active' and a.work_unit_id = b.work_unit_id
+              and w.status = 'open'
+            "#,
+            params![finding_id, input.closure_id, work_unit_id, project_id],
+            |row| row.get(0),
+        )?;
+        if bound == 0 {
+            bail!(
+                "closure ready requires active audited remediation; run agent-workbench work remediate --finding {finding_id}"
+            );
+        }
+    } else {
+        let session_id: i64 = tx
+            .query_row(
+                "select id from correction_sessions where closure_id = ?1 and status = 'active' order by id desc limit 1",
+                params![input.closure_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .with_context(|| {
+                format!(
+                    "closure ready requires an active correction session; run agent-workbench closure correction-begin {}",
+                    input.closure_id
+                )
+            })?;
+        correction_session_id = Some(session_id);
+        let pending_transitions: i64 = tx.query_row(
+            "select count(*) from correction_tokens where closure_id = ?1 and token_kind = 'transition' and status != 'applied'",
+            params![input.closure_id],
+            |row| row.get(0),
+        )?;
+        if pending_transitions > 0 {
+            let token: i64 = tx.query_row(
+                "select min(token_ordinal) from correction_tokens where closure_id = ?1 and token_kind = 'transition' and status = 'pending'",
+                params![input.closure_id],
+                |row| row.get(0),
+            )?;
+            bail!(
+                "closure ready requires the selected transition: agent-workbench closure transition apply {} --token {}",
+                input.closure_id,
+                token
+            );
+        }
+        let design_root: Option<String> = tx
+            .query_row(
+                r#"
+                select dp.root_path
+                from closures c
+                join findings f on f.id = c.finding_id
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                left join design_versions dv on dv.id = p.design_version_id
+                left join design_packages dp on dp.id = dv.design_package_id
+                where c.id = ?1
+                "#,
+                params![input.closure_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let mut stmt = tx.prepare(
+            "select operation, target, pre_hash from correction_tokens where closure_id = ?1 and token_kind = 'file' order by token_ordinal",
+        )?;
+        let rows = stmt.query_map(params![input.closure_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let file_tokens = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        for (operation, target, pre_hash) in file_tokens {
+            let token = CorrectionToken {
+                kind: "file".to_string(),
+                operation: operation.clone(),
+                target,
+            };
+            let path = correction_file_path(root, design_root.as_deref(), &token)?;
+            match operation.as_str() {
+                "create" if !path.is_file() => {
+                    bail!(
+                        "created correction surface is still absent: {}",
+                        path.display()
+                    )
+                }
+                "delete" if path.exists() => {
+                    bail!(
+                        "deleted correction surface still exists: {}",
+                        path.display()
+                    )
+                }
+                "edit" if !path.is_file() => {
+                    bail!(
+                        "edited correction surface is not a regular file: {}",
+                        path.display()
+                    )
+                }
+                "edit" if Some(file_sha256(&path)?) == pre_hash => {
+                    bail!("edited correction surface is unchanged: {}", path.display())
+                }
+                _ => {}
+            }
+        }
     }
     let high_watermark: i64 =
         tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
@@ -851,6 +2544,12 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
         "update closures set status = 'ready_for_verification' where id = ?1",
         params![input.closure_id],
     )?;
+    if let Some(session_id) = correction_session_id {
+        tx.execute(
+            "update correction_sessions set status = 'completed', completed_at = current_timestamp where id = ?1",
+            params![session_id],
+        )?;
+    }
     tx.commit()?;
     Ok(ClosureReadyOutcome {
         closure_id: input.closure_id,
@@ -903,6 +2602,28 @@ pub fn supersede_closure(
         )
         .optional()?
         .context("current registered or incomplete closure not found")?;
+    ensure_review_finding_target(&tx, finding_id, "closure supersede")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let selected_contract_action = blocker
+            .next_action
+            .starts_with("agent-workbench closure supersede")
+            || blocker
+                .next_action
+                .starts_with("agent-workbench work remediate")
+            || blocker
+                .next_action
+                .starts_with("agent-workbench closure correction-begin");
+        if !selected_contract_action {
+            bail!(
+                "closure supersede is not selected; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let eligible = finding_is_remediation_eligible(&tx, project_id, finding_id)?;
+    if !eligible {
+        parse_correction_tokens(input.new_closure.affected_surfaces.unwrap())?;
+    }
     tx.execute(
         r#"
         insert into closures(
@@ -922,9 +2643,24 @@ pub fn supersede_closure(
         ],
     )?;
     let new_closure_id = tx.last_insert_rowid();
+    if !eligible {
+        let design_root = correction_design_root(&tx, finding_id)?;
+        record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            new_closure_id,
+            input.new_closure.affected_surfaces.unwrap(),
+            design_root.as_deref(),
+        )?;
+    }
     tx.execute(
         "update closures set status = 'superseded', superseded_by_closure_id = ?1, superseded_at = current_timestamp, superseded_by_authority_event_id = ?2, supersession_reason = ?3 where id = ?4",
         params![new_closure_id, input.authority_event_id, input.reason, input.closure_id],
+    )?;
+    tx.execute(
+        "update correction_sessions set status = 'superseded', completed_at = current_timestamp where closure_id = ?1 and status = 'active'",
+        params![input.closure_id],
     )?;
     tx.commit()?;
     Ok(ClosureSupersessionOutcome {
@@ -945,6 +2681,7 @@ pub fn accept_finding_out_of_scope(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_review_finding_target(&tx, input.finding_id, "finding accept-out-of-scope")?;
     ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
     let review_plan_id: i64 = tx
         .query_row(
@@ -983,9 +2720,57 @@ pub fn accept_finding_out_of_scope(
         params![input.authority_event_id, input.finding_id],
     )?;
     tx.execute(
+        "update correction_sessions set status = 'superseded', completed_at = current_timestamp where finding_id = ?1 and status = 'active'",
+        params![input.finding_id],
+    )?;
+    tx.execute(
         "update findings set status = 'accepted_out_of_scope' where id = ?1",
         params![input.finding_id],
     )?;
+    let owner_work_unit_id: i64 = tx.query_row(
+        r#"
+        select p.work_unit_id from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        where f.id = ?1
+        "#,
+        params![input.finding_id],
+        |row| row.get(0),
+    )?;
+    let surviving_candidates: i64 = tx.query_row(
+        r#"
+        select count(*)
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        join closures c on c.finding_id = f.id and c.status = 'registered'
+        where p.work_unit_id = ?1 and f.status = 'open' and f.classification = 'valid'
+          and p.required = 1 and p.stage = 'close-ready'
+          and p.review_type in ('implementation_review', 'design_implementation_diff')
+        "#,
+        params![owner_work_unit_id],
+        |row| row.get(0),
+    )?;
+    if surviving_candidates == 0 {
+        tx.execute(
+            r#"
+            update work_unit_dependencies
+            set status = 'resolved', resolved_at = current_timestamp,
+                resolved_by_work_unit_event_id = (
+                    select epoch.reopened_event_id
+                    from finding_remediation_recovery_epochs epoch
+                    where epoch.dependency_id = work_unit_dependencies.id
+                    order by epoch.id desc limit 1
+                )
+            where status = 'open' and id in (
+                select epoch.dependency_id
+                from finding_remediation_recovery_epochs epoch
+                where epoch.work_unit_id = ?1
+            )
+            "#,
+            params![owner_work_unit_id],
+        )?;
+    }
     let watermark: i64 =
         tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
             row.get(0)
@@ -1023,6 +2808,50 @@ fn ensure_active_acceptance_authority(
     )?;
     if !valid {
         bail!("operation requires an active user, policy, or design authority event");
+    }
+    Ok(())
+}
+
+fn ensure_review_finding_target(
+    conn: &rusqlite::Connection,
+    finding_id: i64,
+    operation: &str,
+) -> Result<()> {
+    if let Some(blocker) = current_phase_blocker(conn)? {
+        let same_selected_finding =
+            blocker.kind == "required_review_finding" && blocker.finding_id == Some(finding_id);
+        if !same_selected_finding {
+            bail!(
+                "{operation} is not allowed under the selected resolver action; next: {}",
+                blocker.next_action
+            );
+        }
+        return Ok(());
+    }
+    let selected_active_finding: Option<i64> = conn.query_row(
+        r#"
+        with active_scopes(finding_id) as (
+          select b.finding_id
+          from finding_remediation_bindings b
+          join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
+          join closures c on c.id = b.closure_id and c.status = 'registered'
+          join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+          union
+          select s.finding_id
+          from correction_sessions s
+          join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+          join closures c on c.id = s.closure_id and c.status = 'registered'
+          where s.status = 'active'
+        )
+        select min(finding_id) from active_scopes
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if selected_active_finding.is_some_and(|selected| selected != finding_id) {
+        bail!(
+            "{operation} targets finding {finding_id}, but active scoped finding {selected_active_finding:?} is selected"
+        );
     }
     Ok(())
 }
@@ -1178,6 +3007,10 @@ pub fn add_finding_verification(
         ],
     )?;
     let finding_verification_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closure_attempts set result = ?1, resolved_at = current_timestamp where id = ?2",
+        params![input.result, attempt_id],
+    )?;
     if input.result == "verified" {
         tx.execute(
             "update findings set status = 'closed' where id = ?1 and project_id = ?2",
@@ -1192,11 +3025,11 @@ pub fn add_finding_verification(
             "update closures set status = 'registered' where id = ?1",
             params![input.closure_id],
         )?;
+        tx.execute(
+            "update correction_sessions set status = 'active', completed_at = null where id = (select max(id) from correction_sessions where closure_id = ?1 and status = 'completed')",
+            params![input.closure_id],
+        )?;
     }
-    tx.execute(
-        "update closure_attempts set result = ?1, resolved_at = current_timestamp where id = ?2",
-        params![input.result, attempt_id],
-    )?;
     let fresh_watermark: i64 =
         tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
             row.get(0)
@@ -2056,6 +3889,12 @@ struct StoredFinding {
     status: String,
 }
 
+struct CorrectionToken {
+    kind: String,
+    operation: String,
+    target: String,
+}
+
 struct StoredReviewRunPolicy {
     run_type: String,
     review_policy_id: i64,
@@ -2288,6 +4127,23 @@ pub struct FindingClassificationOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClosureOutcome {
     pub closure_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CorrectionBeginOutcome {
+    pub closure_id: i64,
+    pub session_id: i64,
+    pub token_count: i64,
+    pub idempotent: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CorrectionTransitionOutcome {
+    pub closure_id: i64,
+    pub token_ordinal: i64,
+    pub application_id: i64,
+    pub result_ref: String,
+    pub idempotent: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]

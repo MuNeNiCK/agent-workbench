@@ -23,6 +23,8 @@ items.
 | required review plan was created for the wrong scope or is intentionally not required | record authority, then `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>` |
 | valid close-ready review finding has no closure | add a complete closure contract with surfaces, fix plan, tests, and verification plan |
 | finding is in scoped remediation | implement the printed closure contract, test it, then run `closure ready` |
+| eligible finding owner is inactive | run the exact printed `agent-workbench work remediate --finding <id>`; do not use generic activation |
+| finding requires source correction | run `closure correction-begin`, change only typed Markdown surfaces, apply declared transition tokens in order, then run `closure ready` |
 | closure is ready for verification | generate the exact finding-fix context, run an independent resume review with typed result and trusted provenance, then run matching `finding verify` |
 | migrated closure is incomplete | record authority and use the exact printed `closure supersede` repair command |
 | findings are verified or disposed | record a later fresh unbiased clean review; earlier clean runs and resume runs do not satisfy final completion |

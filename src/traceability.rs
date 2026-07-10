@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::db::{open_existing_project, project_id};
+use crate::db::{ensure_unscoped_mutation_allowed, open_existing_project, project_id};
 use crate::review_context::required_plans_missing_context_count;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
@@ -14,6 +14,7 @@ pub fn derive_task_from_requirement(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "task derivation")?;
     let requirement = tx
         .query_row(
             r#"
@@ -132,23 +133,25 @@ pub fn decompose_design(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    tx.query_row(
-        "select 1 from work_units where id = ?1 and project_id = ?2",
-        params![input.work_unit_id, project_id],
-        |_| Ok(()),
-    )
-    .optional()?
-    .context("work unit not found")?;
-    tx.query_row(
-        "select 1 from design_versions where id = ?1 and project_id = ?2",
-        params![input.design_version_id, project_id],
-        |_| Ok(()),
-    )
-    .optional()?
-    .context("design version not found")?;
-    ensure_design_ready_for_decomposition(&tx, project_id, input.design_version_id)?;
+    ensure_no_active_source_correction(&tx, "design decompose")?;
+    let outcome = decompose_design_in(&tx, project_id, input)?;
+    tx.commit()?;
+    Ok(outcome)
+}
 
-    let mut stmt = tx.prepare(
+pub(crate) fn decompose_design_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: DesignDecomposition<'_>,
+) -> Result<DesignDecompositionOutcome> {
+    validate_design_decomposition_in(
+        conn,
+        project_id,
+        input.design_version_id,
+        input.work_unit_id,
+    )?;
+
+    let mut stmt = conn.prepare(
         r#"
         select dr.id, dr.requirement_key, dr.requirement_text, dr.priority
         from design_requirements dr
@@ -182,7 +185,7 @@ pub fn decompose_design(
         .checklist_title
         .unwrap_or("Design implementation checklist");
     let checklist_id = get_or_create_checklist(
-        &tx,
+        conn,
         project_id,
         input.work_unit_id,
         input.design_version_id,
@@ -201,31 +204,41 @@ pub fn decompose_design(
             "Requirement {} is implemented and validated",
             requirement.key
         );
-        tx.execute(
-            r#"
-            insert into tasks(
-                work_unit_id, title, priority, status, source,
-                details, completion_condition
-            )
-            values (?1, ?2, ?3, 'open', 'design', ?4, ?5)
-            "#,
-            params![
-                input.work_unit_id,
-                task_title,
-                requirement.priority,
-                requirement.text,
-                completion_condition,
-            ],
-        )?;
-        let task_id = tx.last_insert_rowid();
-        created_tasks += 1;
+        let task_id = match reusable_unchanged_baseline_task(
+            conn,
+            project_id,
+            input.work_unit_id,
+            requirement.id,
+        )? {
+            Some(task_id) => task_id,
+            None => {
+                conn.execute(
+                    r#"
+                    insert into tasks(
+                        work_unit_id, title, priority, status, source,
+                        details, completion_condition
+                    )
+                    values (?1, ?2, ?3, 'open', 'design', ?4, ?5)
+                    "#,
+                    params![
+                        input.work_unit_id,
+                        task_title,
+                        requirement.priority,
+                        requirement.text,
+                        completion_condition,
+                    ],
+                )?;
+                created_tasks += 1;
+                conn.last_insert_rowid()
+            }
+        };
 
-        let item_order: i64 = tx.query_row(
+        let item_order: i64 = conn.query_row(
             "select coalesce(max(item_order), 0) + 1 from checklist_items where checklist_id = ?1",
             params![checklist_id],
             |row| row.get(0),
         )?;
-        tx.execute(
+        conn.execute(
             r#"
             insert into checklist_items(
                 project_id, checklist_id, design_requirement_id, task_id,
@@ -243,8 +256,8 @@ pub fn decompose_design(
                 completion_condition,
             ],
         )?;
-        let checklist_item_id = tx.last_insert_rowid();
-        tx.execute(
+        let checklist_item_id = conn.last_insert_rowid();
+        conn.execute(
             r#"
             insert into task_derivations(
                 project_id, design_requirement_id, task_id, checklist_item_id,
@@ -262,13 +275,13 @@ pub fn decompose_design(
         )?;
         created_derivations += 1;
         let gate_templates = validation_gate_templates_for_requirement(
-            &tx,
+            conn,
             project_id,
             input.design_version_id,
             requirement.id,
         )?;
         for template in gate_templates {
-            tx.execute(
+            conn.execute(
                 r#"
                 insert into validation_gates(
                     project_id, gate_key, template_id, work_unit_id, task_id,
@@ -288,10 +301,10 @@ pub fn decompose_design(
                     template.expected_result,
                 ],
             )?;
-            let validation_gate_id = tx.last_insert_rowid();
+            let validation_gate_id = conn.last_insert_rowid();
             let work_scope = input.work_unit_id.to_string();
             insert_rule_binding(
-                &tx,
+                conn,
                 RuleBindingInput {
                     project_id,
                     rule_source_type: "validation_gate",
@@ -311,8 +324,6 @@ pub fn decompose_design(
             created_validation_gates += 1;
         }
     }
-    tx.commit()?;
-
     Ok(DesignDecompositionOutcome {
         design_version_id: input.design_version_id,
         work_unit_id: input.work_unit_id,
@@ -321,6 +332,55 @@ pub fn decompose_design(
         created_derivations,
         created_validation_gates,
     })
+}
+
+fn reusable_unchanged_baseline_task(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    work_unit_id: i64,
+    current_requirement_id: i64,
+) -> Result<Option<i64>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select distinct t.id
+        from design_requirements current_r
+        join design_versions current_v on current_v.id = current_r.design_version_id
+        join design_versions baseline_v
+          on baseline_v.design_package_id = current_v.design_package_id
+         and baseline_v.version_number = (
+             select max(candidate.version_number)
+             from design_versions candidate
+             where candidate.design_package_id = current_v.design_package_id
+               and candidate.version_number < current_v.version_number
+               and candidate.status in ('approved', 'superseded')
+               and candidate.approved_by_authority_event_id is not null
+               and candidate.approved_at is not null
+         )
+        join design_requirements baseline_r
+          on baseline_r.design_version_id = baseline_v.id
+         and baseline_r.requirement_key = current_r.requirement_key
+         and baseline_r.revision = current_r.revision
+         and baseline_r.requirement_hash = current_r.requirement_hash
+         and baseline_r.required_surfaces is current_r.required_surfaces
+        join task_derivations td
+          on td.design_requirement_id = baseline_r.id
+         and td.status in ('stale', 'closed')
+        join tasks t on t.id = td.task_id
+        where current_r.id = ?1 and current_r.project_id = ?2
+          and t.work_unit_id = ?3 and t.status in ('open', 'blocked')
+        order by t.id
+        "#,
+    )?;
+    let task_ids = stmt
+        .query_map(
+            params![current_requirement_id, project_id, work_unit_id],
+            |row| row.get::<_, i64>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if task_ids.len() > 1 {
+        bail!("unchanged baseline decomposition has ambiguous reusable tasks");
+    }
+    Ok(task_ids.into_iter().next())
 }
 
 fn validation_gate_templates_for_requirement(
@@ -440,7 +500,9 @@ pub fn list_checklist_items(
 }
 
 pub fn close_checklist_item(root: &Path, checklist_item_id: i64) -> Result<ChecklistItemOutcome> {
-    let conn = open_existing_project(root)?;
+    let mut db = open_existing_project(root)?;
+    let conn = db.transaction()?;
+    ensure_no_active_source_correction(&conn, "checklist item close")?;
     let project_id = project_id(&conn)?;
     let changed = conn.execute(
         r#"
@@ -455,12 +517,15 @@ pub fn close_checklist_item(root: &Path, checklist_item_id: i64) -> Result<Check
     if changed == 0 {
         bail!("checklist item not found or not closeable");
     }
+    conn.commit()?;
 
     Ok(ChecklistItemOutcome { checklist_item_id })
 }
 
 pub fn close_checklist(root: &Path, checklist_id: i64) -> Result<ChecklistOutcome> {
-    let conn = open_existing_project(root)?;
+    let mut db = open_existing_project(root)?;
+    let conn = db.transaction()?;
+    ensure_no_active_source_correction(&conn, "checklist close")?;
     let project_id = project_id(&conn)?;
     let status = conn
         .query_row(
@@ -499,6 +564,7 @@ pub fn close_checklist(root: &Path, checklist_id: i64) -> Result<ChecklistOutcom
         params![checklist_id, project_id],
     )?;
 
+    conn.commit()?;
     Ok(ChecklistOutcome { checklist_id })
 }
 
@@ -639,16 +705,96 @@ fn update_stale_record_disposition(
     input: StaleRecordDisposition<'_>,
     close: bool,
 ) -> Result<StaleRecordDispositionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let selected = selected_stale_record_in(&tx, project_id)?
+        .context("no unresolved stale record is selected")?;
+    if selected != (input.record_type.to_string(), input.record_id) {
+        bail!(
+            "stale disposition must follow the global tuple; selected {}:{}",
+            selected.0,
+            selected.1
+        );
+    }
+    let owned_by_active_session: bool = tx.query_row(
+        r#"
+        select exists(
+            select 1 from correction_tokens token
+            join correction_sessions session on session.closure_id = token.closure_id
+            where session.status = 'active' and token.status = 'pending'
+              and token.token_kind = 'transition'
+              and token.operation in ('stale-accept', 'stale-close')
+              and token.target = ?1
+        )
+        "#,
+        params![format!("{}/{}", input.record_type, input.record_id)],
+        |row| row.get(0),
+    )?;
+    if owned_by_active_session {
+        bail!("selected stale record is owned by closure transition apply");
+    }
+    let outcome = update_stale_record_disposition_in(&tx, project_id, input, close)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn selected_stale_record_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+) -> Result<Option<(String, i64)>> {
+    conn.query_row(
+        r#"
+        select kind, record_id from (
+          select 0 kind_rank, 'task_derivation' kind, td.id record_id,
+                 r.design_version_id design_id, coalesce(t.work_unit_id, 0) work_id
+          from task_derivations td
+          join design_requirements r on r.id = td.design_requirement_id
+          join tasks t on t.id = td.task_id
+          where td.project_id = ?1 and td.status = 'stale'
+            and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='task_derivation' and ar.stale_record_id=td.id and ar.status='approved')
+          union all
+          select 1, 'checklist', c.id, c.design_version_id, c.work_unit_id
+          from checklists c where c.project_id=?1 and c.status='stale'
+            and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='checklist' and ar.stale_record_id=c.id and ar.status='approved')
+          union all
+          select 2, 'validation_gate', vg.id, coalesce(r.design_version_id,0), coalesce(vg.work_unit_id,t.work_unit_id,0)
+          from validation_gates vg left join design_requirements r on r.id=vg.design_requirement_id left join tasks t on t.id=vg.task_id
+          where vg.project_id=?1 and vg.status='stale'
+            and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='validation_gate' and ar.stale_record_id=vg.id and ar.status='approved')
+          union all
+          select 3, 'coverage_item', c.id, r.design_version_id, coalesce(c.work_unit_id,t.work_unit_id,0)
+          from coverage_items c join design_requirements r on r.id=c.design_requirement_id left join tasks t on t.id=c.task_id
+          where c.project_id=?1 and c.status='stale'
+            and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='coverage_item' and ar.stale_record_id=c.id and ar.status='approved')
+          union all
+          select 4, 'review_plan', rp.id, coalesce(rp.design_version_id,0), rp.work_unit_id
+          from review_plans rp left join design_versions v on v.id=rp.design_version_id left join design_packages p on p.id=v.design_package_id
+          where rp.project_id=?1 and rp.status='blocked' and p.current_design_version_id != rp.design_version_id
+            and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='review_plan' and ar.stale_record_id=rp.id and ar.status='approved')
+        ) ordered
+        order by kind_rank, design_id, work_id, record_id limit 1
+        "#,
+        params![project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub(crate) fn update_stale_record_disposition_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: StaleRecordDisposition<'_>,
+    close: bool,
+) -> Result<StaleRecordDispositionOutcome> {
     validate_stale_record_type(input.record_type)?;
     if close {
         validate_closeable_stale_record_type(input.record_type)?;
     }
-    let mut conn = open_existing_project(root)?;
-    let tx = conn.transaction()?;
-    let project_id = project_id(&tx)?;
-    let label = ensure_stale_record(&tx, project_id, input.record_type, input.record_id)?;
+    let label = ensure_stale_record(conn, project_id, input.record_type, input.record_id)?;
 
-    tx.execute(
+    conn.execute(
         r#"
         insert into authority_events(
             project_id, event_type, source, text_or_summary, scope, precedence,
@@ -667,9 +813,9 @@ fn update_stale_record_disposition(
             ),
         ],
     )?;
-    let authority_event_id = tx.last_insert_rowid();
+    let authority_event_id = conn.last_insert_rowid();
 
-    tx.execute(
+    conn.execute(
         r#"
         insert into acceptance_records(
             project_id, target_type, stale_record_type, stale_record_id,
@@ -691,16 +837,15 @@ fn update_stale_record_disposition(
             authority_event_id,
         ],
     )?;
-    let acceptance_record_id = tx.last_insert_rowid();
+    let acceptance_record_id = conn.last_insert_rowid();
 
     let status = if close {
-        close_stale_record_row(&tx, project_id, input.record_type, input.record_id)?;
+        close_stale_record_row(conn, project_id, input.record_type, input.record_id)?;
         "closed"
     } else {
         "stale_accepted"
     };
 
-    tx.commit()?;
     Ok(StaleRecordDispositionOutcome {
         record_type: input.record_type.to_string(),
         record_id: input.record_id,
@@ -709,6 +854,10 @@ fn update_stale_record_disposition(
         acceptance_record_id,
         authority_event_id,
     })
+}
+
+fn ensure_no_active_source_correction(conn: &rusqlite::Connection, operation: &str) -> Result<()> {
+    ensure_unscoped_mutation_allowed(conn, operation)
 }
 
 fn validate_stale_record_type(record_type: &str) -> Result<()> {
@@ -886,6 +1035,56 @@ fn collect_stale_rows(
     Ok(())
 }
 
+pub(crate) fn validate_design_decomposition_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    work_unit_id: i64,
+) -> Result<()> {
+    conn.query_row(
+        "select 1 from work_units where id = ?1 and project_id = ?2 and status = 'open'",
+        params![work_unit_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("open work unit not found")?;
+    conn.query_row(
+        r#"
+        select 1
+        from design_versions v
+        join design_packages p on p.id = v.design_package_id
+        where v.id = ?1 and v.project_id = ?2 and v.status = 'approved'
+          and p.current_design_version_id = v.id
+        "#,
+        params![design_version_id, project_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("design version is not the current approved design")?;
+    ensure_design_ready_for_decomposition(conn, project_id, design_version_id)?;
+    let (_requirements, derived, wrong_owner): (i64, i64, i64) = conn.query_row(
+        r#"
+        select
+          (select count(*) from design_requirements r
+           where r.design_version_id=?1 and r.status='active'),
+          (select count(*) from task_derivations td
+           join design_requirements r on r.id=td.design_requirement_id
+           where r.design_version_id=?1 and r.status='active' and td.status='active'),
+          (select count(*) from task_derivations td
+           join design_requirements r on r.id=td.design_requirement_id
+           join tasks t on t.id=td.task_id
+           where r.design_version_id=?1 and r.status='active' and td.status='active'
+             and t.work_unit_id != ?2)
+        "#,
+        params![design_version_id, work_unit_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if wrong_owner > 0 || derived > 0 {
+        bail!("design decomposition has partial or conflicting current derivations");
+    }
+    Ok(())
+}
+
 fn ensure_design_ready_for_decomposition(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -1017,6 +1216,7 @@ fn insert_implementation_evidence(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "implementation evidence add")?;
     let task_id = match input.task_id {
         Some(id) => {
             tx.query_row(
@@ -1306,6 +1506,7 @@ pub fn select_validation_gate(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "validation gate select")?;
     let template = tx
         .query_row(
             r#"

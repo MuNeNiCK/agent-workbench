@@ -41,6 +41,18 @@ implements only those scoped fixes. `closure ready` records fix evidence, ends
 remediation for that contract, and restores a verification blocker. Stale
 design-derived state suppresses all remediation permission until resolved.
 
+An inactive owner is not a dead end. The resolver prints `work remediate
+--finding <id>`; the command creates a new audited child activation and binds
+the current same-owner finding set. It never reactivates an old suspended row.
+Blocked owners require `work unblock`; closed or abandoned owners require an
+authority-backed `work reopen` followed by the still-mandatory remediation bind.
+
+Non-implementation findings use `closure correction-begin`. Their closure
+surfaces must be typed `design:`, `plan:`, `docs:`, `workflow:`, or a supported
+`transition:` token. Registration captures file pre-state, begin rejects an
+edit race, transition application is atomic with its audit row, and ready
+requires all declared postconditions.
+
 Generate the printed `review-context finding-fix`, run an independent resume
 review, and record its typed `--finding-result` with one carried finding and
 trusted provenance. `finding verify --result` must match that outcome. Failed

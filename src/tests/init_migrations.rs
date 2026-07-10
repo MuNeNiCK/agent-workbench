@@ -24,9 +24,14 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute_batch(
         r#"
+        drop trigger if exists trg_remediation_binding_insert;
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        drop trigger if exists trg_correction_session_links_insert;
+        drop trigger if exists trg_correction_session_status_update;
+        drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 8;
+        delete from schema_migrations where version = 9;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
@@ -132,17 +137,6 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
         },
     )
     .unwrap();
-    ready_closure(
-        temp.path(),
-        ClosureReady {
-            closure_id: closure.closure_id,
-            implementation_evidence: "patched",
-            tests_or_gates: "tests pass",
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-
     let disposed_finding = add_finding(
         temp.path(),
         NewFinding {
@@ -173,26 +167,45 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
         },
     )
     .unwrap();
-    let disposed_attempt = ready_closure(
+    remediate_work(temp.path(), finding.finding_id).unwrap();
+    ready_closure(
         temp.path(),
         ClosureReady {
-            closure_id: disposed_closure.closure_id,
-            implementation_evidence: "scope reviewed",
-            tests_or_gates: "scope gate",
+            closure_id: closure.closure_id,
+            implementation_evidence: "patched",
+            tests_or_gates: "tests pass",
             closed_by_commit: None,
         },
     )
     .unwrap();
-    accept_finding_out_of_scope(
-        temp.path(),
-        FindingOutOfScope {
-            finding_id: disposed_finding.finding_id,
-            reason: "legacy approved disposition",
-            authority_event_id: approval_authority_event(temp.path()),
-        },
+    let authority_event_id = approval_authority_event(temp.path());
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, finding_id, acceptance_type, reason, scope,
+            created_by, status, approved_by_authority_event_id, approved_at,
+            created_at, review_impact
+        ) values (
+            1, 'finding', ?1, 'accepted_out_of_scope', 'legacy approved disposition',
+            'migration fixture', 'user', 'approved', ?2, current_timestamp,
+            current_timestamp, 'legacy migration fixture'
+        )
+        "#,
+        params![disposed_finding.finding_id, authority_event_id],
     )
     .unwrap();
-    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"
+        insert into closure_attempts(
+            project_id, closure_id, attempt_number, implementation_evidence,
+            tests_or_gates, review_run_high_watermark, created_at
+        ) values (1, ?1, 1, 'legacy scope review', 'legacy scope gate', 0, current_timestamp)
+        "#,
+        params![disposed_closure.closure_id],
+    )
+    .unwrap();
+    let disposed_attempt_id = conn.last_insert_rowid();
     conn.execute(
         "update findings set status = 'open' where id = ?1",
         params![disposed_finding.finding_id],
@@ -205,7 +218,7 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
     .unwrap();
     conn.execute(
         "update closure_attempts set result = null, resolved_at = null where id = ?1",
-        params![disposed_attempt.attempt_id],
+        params![disposed_attempt_id],
     )
     .unwrap();
     drop(conn);
@@ -241,7 +254,7 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
             params![
                 disposed_finding.finding_id,
                 disposed_closure.closure_id,
-                disposed_attempt.attempt_id
+                disposed_attempt_id
             ],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -494,12 +507,12 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
             design_invariant: "design finding stays blocking",
             design_citations: None,
             implementation_evidence: None,
-            affected_surfaces: None,
+            affected_surfaces: Some("docs:create:docs/legacy.md"),
             same_invariant_search: None,
             other_violations_found: None,
-            fix_plan: None,
-            tests_or_gates: None,
-            verification_plan: None,
+            fix_plan: Some("correct the documented design source"),
+            tests_or_gates: Some("review the corrected source"),
+            verification_plan: Some("resume the design review"),
             closed_by_commit: None,
         },
     )
@@ -513,9 +526,14 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
     .unwrap();
     conn.execute_batch(
         r#"
+        drop trigger if exists trg_remediation_binding_insert;
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        drop trigger if exists trg_correction_session_links_insert;
+        drop trigger if exists trg_correction_session_status_update;
+        drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 8;
+        delete from schema_migrations where version = 9;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )

@@ -3,16 +3,27 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::db::{open_existing_project, project_id};
+use crate::db::{ensure_unscoped_mutation_allowed, open_existing_project, project_id};
 use crate::review_context::review_context_ref_with_phase;
 
 pub fn create_phase(root: &Path, input: NewWorkPhase<'_>) -> Result<WorkPhaseOutcome> {
-    validate_phase_key(input.key)?;
-    validate_phase_kind(input.kind)?;
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    tx.query_row(
+    ensure_no_active_source_correction(&tx, "phase create")?;
+    let outcome = create_phase_in(&tx, project_id, input)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn create_phase_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: NewWorkPhase<'_>,
+) -> Result<WorkPhaseOutcome> {
+    validate_phase_key(input.key)?;
+    validate_phase_kind(input.kind)?;
+    conn.query_row(
         "select 1 from work_units where id = ?1 and project_id = ?2 and status in ('open', 'blocked')",
         params![input.work_unit_id, project_id],
         |_| Ok(()),
@@ -20,7 +31,7 @@ pub fn create_phase(root: &Path, input: NewWorkPhase<'_>) -> Result<WorkPhaseOut
     .optional()?
     .context("open work unit not found")?;
     if let Some(design_version_id) = input.design_version_id {
-        tx.query_row(
+        conn.query_row(
             "select 1 from design_versions where id = ?1 and project_id = ?2",
             params![design_version_id, project_id],
             |_| Ok(()),
@@ -28,7 +39,7 @@ pub fn create_phase(root: &Path, input: NewWorkPhase<'_>) -> Result<WorkPhaseOut
         .optional()?
         .context("design version not found")?;
     }
-    tx.execute(
+    conn.execute(
         r#"
         insert into work_phases(
             project_id, work_unit_id, design_version_id, phase_key, title,
@@ -47,9 +58,9 @@ pub fn create_phase(root: &Path, input: NewWorkPhase<'_>) -> Result<WorkPhaseOut
             input.reason,
         ],
     )?;
-    let phase_id = tx.last_insert_rowid();
+    let phase_id = conn.last_insert_rowid();
     insert_phase_event(
-        &tx,
+        conn,
         project_id,
         phase_id,
         "created",
@@ -60,7 +71,6 @@ pub fn create_phase(root: &Path, input: NewWorkPhase<'_>) -> Result<WorkPhaseOut
         None,
         Some("open"),
     )?;
-    tx.commit()?;
     Ok(WorkPhaseOutcome { phase_id })
 }
 
@@ -109,8 +119,20 @@ pub fn assign_task_to_phase(root: &Path, phase_id: i64, task_id: i64) -> Result<
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let phase = load_phase(&tx, project_id, phase_id)?;
-    let task_work_unit_id: Option<i64> = tx
+    ensure_no_active_source_correction(&tx, "phase assign")?;
+    let outcome = assign_task_to_phase_in(&tx, project_id, phase_id, task_id)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn assign_task_to_phase_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    phase_id: i64,
+    task_id: i64,
+) -> Result<PhaseTaskOutcome> {
+    let phase = load_phase(conn, project_id, phase_id)?;
+    let task_work_unit_id: Option<i64> = conn
         .query_row(
             "select work_unit_id from tasks where id = ?1",
             params![task_id],
@@ -122,7 +144,7 @@ pub fn assign_task_to_phase(root: &Path, phase_id: i64, task_id: i64) -> Result<
     if task_work_unit_id != Some(phase.work_unit_id) && task_work_unit_id != allowed_child {
         bail!("phase assignment task must belong to the phase aggregate or phase work unit");
     }
-    tx.execute(
+    conn.execute(
         r#"
         insert into work_phase_task_memberships(project_id, phase_id, task_id, assigned_at)
         values (?1, ?2, ?3, current_timestamp)
@@ -134,7 +156,7 @@ pub fn assign_task_to_phase(root: &Path, phase_id: i64, task_id: i64) -> Result<
         params![project_id, phase_id, task_id],
     )?;
     insert_phase_event(
-        &tx,
+        conn,
         project_id,
         phase_id,
         "assigned",
@@ -145,7 +167,6 @@ pub fn assign_task_to_phase(root: &Path, phase_id: i64, task_id: i64) -> Result<
         None,
         None,
     )?;
-    tx.commit()?;
     Ok(PhaseTaskOutcome { phase_id, task_id })
 }
 
@@ -153,16 +174,27 @@ pub fn add_phase_dependency(
     root: &Path,
     input: NewPhaseDependency<'_>,
 ) -> Result<PhaseDependencyOutcome> {
-    validate_dependency_type(input.dependency_type)?;
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let from = load_phase(&tx, project_id, input.from_phase_id)?;
-    let to = load_phase(&tx, project_id, input.to_phase_id)?;
+    ensure_no_active_source_correction(&tx, "phase dependency add")?;
+    let outcome = add_phase_dependency_in(&tx, project_id, input)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn add_phase_dependency_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: NewPhaseDependency<'_>,
+) -> Result<PhaseDependencyOutcome> {
+    validate_dependency_type(input.dependency_type)?;
+    let from = load_phase(conn, project_id, input.from_phase_id)?;
+    let to = load_phase(conn, project_id, input.to_phase_id)?;
     if from.work_unit_id != to.work_unit_id {
         bail!("phase dependencies must stay inside one aggregate work unit");
     }
-    tx.execute(
+    conn.execute(
         r#"
         insert into work_phase_dependencies(
             project_id, from_phase_id, to_phase_id, dependency_type,
@@ -178,9 +210,9 @@ pub fn add_phase_dependency(
             input.reason,
         ],
     )?;
-    let dependency_id = tx.last_insert_rowid();
+    let dependency_id = conn.last_insert_rowid();
     insert_phase_event(
-        &tx,
+        conn,
         project_id,
         input.to_phase_id,
         "dependency_added",
@@ -191,7 +223,6 @@ pub fn add_phase_dependency(
         None,
         None,
     )?;
-    tx.commit()?;
     Ok(PhaseDependencyOutcome { dependency_id })
 }
 
@@ -428,6 +459,7 @@ pub fn phase_rescope(root: &Path, input: PhaseRescope<'_>) -> Result<PhaseRescop
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "phase rescope")?;
     let phase = load_phase(&tx, project_id, input.phase_id)?;
     ensure_phase_can_move(&phase)?;
     let target_work_unit_id = input
@@ -486,6 +518,7 @@ pub fn phase_split(root: &Path, input: PhaseSplit<'_>) -> Result<PhaseRescopeOut
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "phase split")?;
     let phase = load_phase(&tx, project_id, input.phase_id)?;
     ensure_phase_can_move(&phase)?;
     let report = build_rescope_report(
@@ -644,9 +677,21 @@ pub fn close_phase(root: &Path, phase_id: i64, summary: &str) -> Result<PhaseClo
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "phase close")?;
     let phase = load_phase(&tx, project_id, phase_id)?;
     if phase.status == "closed" {
         bail!("phase is already closed");
+    }
+    if phase.status != "accepted_out_of_scope"
+        && (count_phase_tasks_with_status(&tx, phase_id, "open", "blocked")? > 0
+            || count_open_phase_checklist_items(&tx, phase_id)? > 0
+            || count_phase_validation_gate_blockers(&tx, phase_id)? > 0
+            || count_phase_missing_evidence(&tx, phase_id)? > 0
+            || count_phase_missing_coverage(&tx, phase_id)? > 0
+            || count_incomplete_phase_reviews(&tx, phase_id)? > 0
+            || count_open_phase_inbound_dependencies(&tx, phase_id)? > 0)
+    {
+        bail!("cannot close phase; phase close-ready changed before commit");
     }
     tx.execute(
         "update work_phases set status = 'closed', closed_at = current_timestamp, close_summary = ?1 where id = ?2",
@@ -685,6 +730,7 @@ pub fn accept_phase_out_of_scope(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "phase accept-out-of-scope")?;
     let phase = load_phase(&tx, project_id, phase_id)?;
     ensure_authority_event(&tx, project_id, authority_event_id)?;
     let changed = tx.execute(
@@ -759,10 +805,33 @@ fn update_dependency_status(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_no_active_source_correction(&tx, "phase dependency transition")?;
+    let outcome = update_dependency_status_in(
+        &tx,
+        project_id,
+        dependency_id,
+        status,
+        reason,
+        evidence_ref,
+        authority_event_id,
+    )?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn update_dependency_status_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    dependency_id: i64,
+    status: &str,
+    reason: &str,
+    evidence_ref: Option<&str>,
+    authority_event_id: Option<i64>,
+) -> Result<PhaseDependencyOutcome> {
     if let Some(authority_event_id) = authority_event_id {
-        ensure_authority_event(&tx, project_id, authority_event_id)?;
+        ensure_authority_event(conn, project_id, authority_event_id)?;
     }
-    let phase_id: i64 = tx
+    let phase_id: i64 = conn
         .query_row(
             r#"
             select to_phase_id
@@ -774,7 +843,7 @@ fn update_dependency_status(
         )
         .optional()?
         .context("open phase dependency not found")?;
-    tx.execute(
+    conn.execute(
         r#"
         update work_phase_dependencies
         set status = ?1, reason = ?2, evidence_ref = ?3,
@@ -791,7 +860,7 @@ fn update_dependency_status(
         ],
     )?;
     insert_phase_event(
-        &tx,
+        conn,
         project_id,
         phase_id,
         if status == "accepted" {
@@ -806,8 +875,11 @@ fn update_dependency_status(
         None,
         None,
     )?;
-    tx.commit()?;
     Ok(PhaseDependencyOutcome { dependency_id })
+}
+
+fn ensure_no_active_source_correction(conn: &rusqlite::Connection, operation: &str) -> Result<()> {
+    ensure_unscoped_mutation_allowed(conn, operation)
 }
 
 fn build_rescope_report(

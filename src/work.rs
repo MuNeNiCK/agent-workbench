@@ -4,8 +4,8 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::{
-    NewEvent, StoredActivation, active_activation, insert_event, max_id, open_existing_project,
-    project_id, suspend_snapshot, suspended_activation,
+    NewEvent, StoredActivation, active_activation, current_phase_blocker, insert_event, max_id,
+    open_existing_project, project_id, suspend_snapshot, suspended_activation,
 };
 use crate::review_context::review_plan_has_clean_context_run;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
@@ -21,6 +21,283 @@ pub fn start_work(root: &Path, title: &str, responsibility: Option<&str>) -> Res
             implementation: false,
         },
     )
+}
+
+pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let active_source_correction: bool = tx.query_row(
+        "select exists(select 1 from correction_sessions where project_id = ?1 and status = 'active')",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    if active_source_correction {
+        bail!("finish the selected source correction before implementation remediation");
+    }
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench work remediate --finding {finding_id}");
+        if blocker.next_action != expected {
+            bail!(
+                "work remediate is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let (work_unit_id, closure_id, work_status): (i64, i64, String) = tx
+        .query_row(
+            r#"
+            select p.work_unit_id, c.id, w.status
+            from findings f
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            join work_units w on w.id = p.work_unit_id
+            join closures c on c.finding_id = f.id and c.status = 'registered'
+            where f.id = ?1 and f.project_id = ?2
+              and f.status = 'open' and f.classification = 'valid'
+              and p.required = 1 and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and not exists (
+                select 1 from acceptance_records ar
+                where ar.finding_id = f.id and ar.target_type = 'finding'
+                  and ar.status = 'approved'
+              )
+            order by c.id desc limit 1
+            "#,
+            params![finding_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .context("eligible registered remediation finding not found")?;
+
+    if has_stale_design_state_for_work(&tx, work_unit_id)? {
+        bail!("stale design blocks remediation; run agent-workbench stale list");
+    }
+    match work_status.as_str() {
+        "open" => {}
+        "blocked" => bail!(
+            "selected remediation owner is blocked; run agent-workbench work unblock {work_unit_id} --reason \"<reason>\""
+        ),
+        "closed" | "abandoned" => bail!(
+            "selected remediation owner is terminal; record authority, run agent-workbench work reopen {work_unit_id}, then rerun work remediate"
+        ),
+        _ => bail!("selected remediation owner has unsupported status {work_status}"),
+    }
+
+    let active_bound_owner = tx
+        .query_row(
+            r#"
+            select b.work_unit_id, b.work_unit_activation_id
+            from finding_remediation_bindings b
+            join closures c on c.id = b.closure_id and c.status = 'registered'
+            join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
+            join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+            where b.project_id = ?1
+            order by b.id limit 1
+            "#,
+            params![project_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    if let Some((bound_work_unit_id, bound_activation_id)) = active_bound_owner {
+        if bound_work_unit_id != work_unit_id {
+            bail!("another remediation owner is active; continue its scoped remediation first");
+        }
+        let already_bound: i64 = tx.query_row(
+            "select count(*) from finding_remediation_bindings where finding_id = ?1 and closure_id = ?2 and work_unit_activation_id = ?3",
+            params![finding_id, closure_id, bound_activation_id],
+            |row| row.get(0),
+        )?;
+        if already_bound > 0 {
+            let unbound_same_owner: i64 = tx.query_row(
+                r#"
+                select count(*)
+                from findings f
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                join closures c on c.finding_id = f.id and c.status = 'registered'
+                where p.work_unit_id = ?1 and f.project_id = ?2
+                  and f.status = 'open' and f.classification = 'valid'
+                  and p.required = 1 and p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and not exists (
+                    select 1 from finding_remediation_bindings b
+                    where b.finding_id = f.id and b.closure_id = c.id
+                      and b.work_unit_activation_id = ?3
+                  )
+                "#,
+                params![work_unit_id, project_id, bound_activation_id],
+                |row| row.get(0),
+            )?;
+            if unbound_same_owner == 0 {
+                return Ok(WorkRemediateOutcome {
+                    work_unit_id,
+                    activation_id: bound_activation_id,
+                    binding_count: 0,
+                    idempotent: true,
+                });
+            }
+        }
+    }
+
+    if active_bound_owner.is_none() {
+        let selected: i64 = tx.query_row(
+            r#"
+        select f.id
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        join closures c on c.finding_id = f.id and c.status = 'registered'
+        where f.project_id = ?1 and f.status = 'open' and f.classification = 'valid'
+          and p.required = 1 and p.stage = 'close-ready'
+          and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and not exists (select 1 from acceptance_records ar where ar.finding_id = f.id and ar.status = 'approved')
+        order by
+          case when exists (
+            select 1 from finding_remediation_bindings prior
+            join work_unit_activations pa on pa.id = prior.work_unit_activation_id
+            where prior.work_unit_id = p.work_unit_id and pa.status = 'suspended'
+              and prior.id = (select max(last.id) from finding_remediation_bindings last where last.work_unit_id = p.work_unit_id)
+          ) then 1 else 0 end,
+          case when exists (
+            select 1 from finding_remediation_bindings prior
+            join work_unit_activations pa on pa.id = prior.work_unit_activation_id
+            where prior.work_unit_id = p.work_unit_id and pa.status = 'suspended'
+              and prior.id = (select max(last.id) from finding_remediation_bindings last where last.work_unit_id = p.work_unit_id)
+          ) then coalesce((select max(last.id) from finding_remediation_bindings last where last.work_unit_id = p.work_unit_id), 0) else 0 end,
+          f.id, p.work_unit_id
+        limit 1
+            "#,
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        if selected != finding_id {
+            bail!(
+                "another remediation finding has precedence; run agent-workbench work remediate --finding {selected}"
+            );
+        }
+    }
+
+    let active = active_activation(&tx)?;
+    let activation_id = match active {
+        Some(active) if active.work_unit_id == work_unit_id => active.activation_id,
+        _ => {
+            let parent = prepare_parent_frame(
+                &tx,
+                &format!("remediate finding {finding_id}"),
+                &format!("resume after remediation work unit {work_unit_id}"),
+            )?;
+            tx.execute(
+                r#"
+                insert into work_unit_activations(
+                    project_id, work_unit_id, parent_activation_id, stack_depth,
+                    status, activation_reason, opened_at
+                ) values (?1, ?2, ?3, ?4, 'active', 'follow_up', current_timestamp)
+                "#,
+                params![
+                    project_id,
+                    work_unit_id,
+                    parent.as_ref().map(|a| a.activation_id),
+                    parent.as_ref().map(|a| a.stack_depth + 1).unwrap_or(0)
+                ],
+            )?;
+            let activation_id = tx.last_insert_rowid();
+            if let Some(parent) = parent {
+                tx.execute(
+                    "update work_unit_activations set suspended_by_activation_id = ?1 where id = ?2",
+                    params![activation_id, parent.activation_id],
+                )?;
+            }
+            activation_id
+        }
+    };
+
+    let recovery_epoch: Option<(i64, i64)> = tx
+        .query_row(
+            r#"
+            select dependency_id, reopened_event_id
+            from finding_remediation_recovery_epochs
+            where work_unit_id = ?1 and work_unit_activation_id = ?2
+              and dependency_id in (
+                  select id from work_unit_dependencies where status = 'open'
+              )
+            order by id desc limit 1
+            "#,
+            params![work_unit_id, activation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let blocking_dependencies: i64 = tx.query_row(
+        r#"
+        select count(*) from work_unit_dependencies d
+        where d.work_unit_id = ?1 and d.status = 'open'
+          and d.dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+          and exists(select 1 from work_units dependency_target where dependency_target.id=d.depends_on_work_unit_id and dependency_target.status in ('open','blocked'))
+          and d.id != coalesce(?2, -1)
+        "#,
+        params![work_unit_id, recovery_epoch.map(|epoch| epoch.0)],
+        |row| row.get(0),
+    )?;
+    if blocking_dependencies > 0 {
+        bail!("selected remediation owner has an open blocking dependency");
+    }
+
+    let mut stmt = tx.prepare(
+        r#"
+        select f.id, c.id
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        join closures c on c.finding_id = f.id and c.status = 'registered'
+        where p.work_unit_id = ?1 and f.project_id = ?2
+          and f.status = 'open' and f.classification = 'valid'
+          and p.required = 1 and p.stage = 'close-ready'
+          and p.review_type in ('implementation_review', 'design_implementation_diff')
+        order by f.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![work_unit_id, project_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let bindings = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut binding_count = 0;
+    for (candidate_finding_id, candidate_closure_id) in bindings {
+        binding_count += tx.execute(
+            r#"
+            insert or ignore into finding_remediation_bindings(
+                project_id, finding_id, closure_id, work_unit_id,
+                work_unit_activation_id, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, current_timestamp)
+            "#,
+            params![
+                project_id,
+                candidate_finding_id,
+                candidate_closure_id,
+                work_unit_id,
+                activation_id
+            ],
+        )?;
+    }
+    if let Some((dependency_id, reopened_event_id)) = recovery_epoch {
+        tx.execute(
+            r#"
+            update work_unit_dependencies
+            set status = 'resolved', resolved_at = current_timestamp,
+                resolved_by_work_unit_event_id = ?1
+            where id = ?2 and work_unit_id = ?3 and depends_on_work_unit_id = ?3
+              and dependency_type = 'invalidates_closure' and status = 'open'
+            "#,
+            params![reopened_event_id, dependency_id, work_unit_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(WorkRemediateOutcome {
+        work_unit_id,
+        activation_id,
+        binding_count: binding_count as i64,
+        idempotent: false,
+    })
 }
 
 pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<WorkOutcome> {
@@ -39,6 +316,7 @@ pub fn start_work_with_options(root: &Path, input: WorkStart<'_>) -> Result<Work
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_work_mutation_allowed(&tx, "work start", None)?;
 
     if active_activation(&tx)?.is_some() {
         bail!("cannot start work while another activation is active");
@@ -123,15 +401,24 @@ pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    let dependency_selected = current_phase_blocker(&tx)?.is_some_and(|blocker| {
+        blocker.kind == "finding_remediation_recovery"
+            && action_selects_work(&blocker.next_action, "work activate", input.work_unit_id)
+    });
+    ensure_work_mutation_allowed(
+        &tx,
+        "work activate",
+        Some((input.work_unit_id, "work activate")),
+    )?;
 
     if let Some(design_version_id) = input.design_version_id {
         ensure_work_unit_has_design_scope(&tx, project_id, input.work_unit_id, design_version_id)?;
     }
 
-    if active_activation(&tx)?.is_some() {
+    if !dependency_selected && active_activation(&tx)?.is_some() {
         bail!("cannot activate work while another activation is active");
     }
-    if suspended_activation(&tx)?.is_some() {
+    if !dependency_selected && suspended_activation(&tx)?.is_some() {
         bail!(
             "cannot activate open work while a suspended activation exists; run resume-check and work resume"
         );
@@ -144,6 +431,59 @@ pub fn activate_work(root: &Path, input: WorkActivate<'_>) -> Result<WorkOutcome
     )
     .optional()?
     .context("open work unit not found")?;
+
+    if dependency_selected {
+        let reason = input
+            .reason
+            .unwrap_or("schedule selected remediation dependency");
+        let parent = prepare_parent_frame(
+            &tx,
+            reason,
+            &format!("resume after dependency work unit {}", input.work_unit_id),
+        )?;
+        tx.execute(
+            r#"
+            insert into work_unit_activations(
+                project_id, work_unit_id, parent_activation_id, stack_depth,
+                status, activation_reason, opened_at
+            ) values (?1, ?2, ?3, ?4, 'active', 'follow_up', current_timestamp)
+            "#,
+            params![
+                project_id,
+                input.work_unit_id,
+                parent.as_ref().map(|activation| activation.activation_id),
+                parent
+                    .as_ref()
+                    .map(|activation| activation.stack_depth + 1)
+                    .unwrap_or(0)
+            ],
+        )?;
+        let activation_id = tx.last_insert_rowid();
+        if let Some(parent) = &parent {
+            tx.execute(
+                "update work_unit_activations set suspended_by_activation_id=?1 where id=?2",
+                params![activation_id, parent.activation_id],
+            )?;
+        }
+        insert_event(
+            &tx,
+            NewEvent {
+                work_unit_id: input.work_unit_id,
+                activation_id: Some(activation_id),
+                related_activation_id: parent.as_ref().map(|activation| activation.activation_id),
+                event_type: "opened",
+                reason: Some(reason),
+                status_domain: "activation",
+                previous_status: None,
+                next_status: Some("active"),
+            },
+        )?;
+        tx.commit()?;
+        return Ok(WorkOutcome {
+            work_unit_id: input.work_unit_id,
+            activation_id,
+        });
+    }
 
     let prior_activation_count: i64 = tx.query_row(
         "select count(*) from work_unit_activations where work_unit_id = ?1",
@@ -293,6 +633,11 @@ pub fn abandon_work(
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
     let target = resolve_lifecycle_work_unit(&tx, project_id, work_unit_id)?;
+    ensure_work_mutation_allowed(
+        &tx,
+        "work abandon",
+        Some((target.work_unit_id, "work abandon")),
+    )?;
     let previous_status = target.status;
     if !matches!(previous_status.as_str(), "open" | "blocked" | "closed") {
         bail!("only open, blocked, or closed work units can be abandoned");
@@ -345,6 +690,11 @@ pub fn suspend_work(root: &Path, reason: &str, next_action: &str) -> Result<Susp
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let active = active_activation(&tx)?.context("no active activation to suspend")?;
+    ensure_work_mutation_allowed(
+        &tx,
+        "work suspend",
+        Some((active.work_unit_id, "work suspend")),
+    )?;
     let snapshot_id = suspend_active_activation(&tx, &active, reason, next_action)?;
     tx.commit()?;
 
@@ -359,6 +709,7 @@ pub fn interrupt_work(root: &Path, title: &str, reason: &str) -> Result<Interrup
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_work_mutation_allowed(&tx, "work interrupt", None)?;
     let parent = active_activation(&tx)?.context("no active activation to interrupt")?;
     let next_action = format!("resume work unit {}", parent.work_unit_id);
     let parent_snapshot_id = suspend_active_activation(&tx, &parent, reason, &next_action)?;
@@ -433,6 +784,10 @@ pub fn interrupt_work(root: &Path, title: &str, reason: &str) -> Result<Interrup
 }
 
 pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Result<CloseOutcome> {
+    {
+        let conn = open_existing_project(root)?;
+        ensure_work_mutation_allowed(&conn, "work close", None)?;
+    }
     let readiness = close_ready(root)?;
     if readiness.result != "pass" {
         let reason = readiness
@@ -463,8 +818,8 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
         params![close_summary, active.work_unit_id],
     )?;
     tx.execute(
-        "update work_unit_activations set status = 'completed', completed_at = current_timestamp where id = ?1",
-        params![active.activation_id],
+        "update work_unit_activations set status = 'completed', completed_at = current_timestamp where work_unit_id = ?1 and status in ('active', 'suspended')",
+        params![active.work_unit_id],
     )?;
 
     let reason = commit
@@ -641,7 +996,6 @@ pub fn close_ready(root: &Path) -> Result<CloseReadyOutcome> {
         if trace.missing_validation_gate_count == 0
             && validation.missing_run_count == 0
             && validation.unaccepted_failure_count == 0
-            && (trace.derived_task_count == 0 || validation.selected_gate_count > 0)
         {
             CloseReadyItem::pass(
                 "validation_runs_recorded",
@@ -1003,6 +1357,7 @@ fn is_no_resume_target_error(error: &anyhow::Error) -> bool {
 pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
+    ensure_work_mutation_allowed(&tx, "work resume", None)?;
 
     let check = tx
         .query_row(
@@ -1109,13 +1464,27 @@ pub fn reopen_work(root: &Path, input: WorkReopen<'_>) -> Result<WorkOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    let selected_recovery = current_phase_blocker(&tx)?.and_then(|blocker| {
+        (blocker.kind == "required_review_finding"
+            && blocker.work_unit_id == Some(input.work_unit_id)
+            && blocker.next_action.contains("work reopen"))
+        .then_some(blocker.finding_id)
+        .flatten()
+    });
+    if selected_recovery.is_some() && input.authority_event_id.is_none() {
+        bail!("selected terminal remediation recovery requires --authority");
+    }
+    ensure_work_mutation_allowed(
+        &tx,
+        "work reopen",
+        Some((input.work_unit_id, "work reopen")),
+    )?;
     ensure_reopen_authority(
         &tx,
         project_id,
         input.authority_event_id,
         input.acceptance_record_id,
     )?;
-
     let status = tx
         .query_row(
             "select status from work_units where id = ?1 and project_id = ?2",
@@ -1163,7 +1532,7 @@ pub fn reopen_work(root: &Path, input: WorkReopen<'_>) -> Result<WorkOutcome> {
             params![activation_id, parent.activation_id],
         )?;
     }
-    insert_event(
+    let reopened_event_id = insert_event(
         &tx,
         NewEvent {
             work_unit_id: input.work_unit_id,
@@ -1186,6 +1555,33 @@ pub fn reopen_work(root: &Path, input: WorkReopen<'_>) -> Result<WorkOutcome> {
         "#,
         params![input.work_unit_id, input.reason],
     )?;
+    let recovery_dependency_id = tx.last_insert_rowid();
+    if let Some(finding_id) = selected_recovery {
+        let closure_id: i64 = tx.query_row(
+            "select id from closures where finding_id = ?1 and status = 'registered' order by id desc limit 1",
+            params![finding_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            r#"
+            insert into finding_remediation_recovery_epochs(
+                project_id, finding_id, closure_id, work_unit_id,
+                work_unit_activation_id, dependency_id, reopened_event_id,
+                authority_event_id, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, current_timestamp)
+            "#,
+            params![
+                project_id,
+                finding_id,
+                closure_id,
+                input.work_unit_id,
+                activation_id,
+                recovery_dependency_id,
+                reopened_event_id,
+                input.authority_event_id.unwrap()
+            ],
+        )?;
+    }
     if let Some(parent) = &parent {
         tx.execute(
             r#"
@@ -1215,6 +1611,7 @@ pub fn create_follow_up_work(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_work_mutation_allowed(&tx, "work follow-up", None)?;
 
     let source_status = tx
         .query_row(
@@ -1392,6 +1789,7 @@ pub fn fork_work(root: &Path, input: NewWorkFork<'_>) -> Result<WorkForkOutcome>
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_work_mutation_allowed(&tx, "work fork", None)?;
 
     if active_activation(&tx)?.is_some() {
         bail!("cannot fork work while another activation is active");
@@ -1711,6 +2109,12 @@ fn update_work_unit_lifecycle(
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
     let target = resolve_lifecycle_work_unit(&tx, project_id, work_unit_id)?;
+    let selected = match event_type {
+        "unblocked" => Some((target.work_unit_id, "work unblock")),
+        "blocked" => Some((target.work_unit_id, "work block")),
+        _ => None,
+    };
+    ensure_work_mutation_allowed(&tx, event_type, selected)?;
     let previous_status = target.status;
     if previous_status != required_status {
         bail!("work unit must be {required_status} before {event_type}");
@@ -1739,6 +2143,81 @@ fn update_work_unit_lifecycle(
         activation_id: target.activation_id,
         previous_status,
         status: next_status.to_string(),
+    })
+}
+
+fn ensure_work_mutation_allowed(
+    conn: &Connection,
+    operation: &str,
+    selected_owner_action: Option<(i64, &str)>,
+) -> Result<()> {
+    if let Some(blocker) = current_phase_blocker(conn)? {
+        let selected = selected_owner_action.is_some_and(|(work_unit_id, command)| {
+            blocker.next_action.contains(command)
+                && (blocker.work_unit_id == Some(work_unit_id)
+                    || action_selects_work(&blocker.next_action, command, work_unit_id))
+        });
+        let implicit_selected_recovery = blocker.kind == "finding_remediation_recovery"
+            && blocker
+                .next_action
+                .contains(&format!("agent-workbench {operation}"));
+        if (selected || implicit_selected_recovery)
+            && blocker.kind == "finding_remediation_recovery"
+        {
+            return Ok(());
+        }
+        if !selected {
+            bail!(
+                "{operation} is blocked by the selected lifecycle action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let scoped_change: Option<(String, i64, i64, Option<i64>)> = conn
+        .query_row(
+            r#"
+            select 'finding_remediation', b.finding_id, b.closure_id, b.work_unit_id
+            from finding_remediation_bindings b
+            join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
+            join closures c on c.id = b.closure_id and c.status = 'registered'
+            join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+            where b.project_id = (select id from projects order by id limit 1)
+            union all
+            select 'source_correction', s.finding_id, s.closure_id, null
+            from correction_sessions s
+            join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+            join closures c on c.id = s.closure_id and c.status = 'registered'
+            where s.status = 'active'
+              and s.project_id = (select id from projects order by id limit 1)
+            limit 1
+            "#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    if let Some((kind, finding_id, closure_id, work_unit_id)) = scoped_change {
+        let permitted_alternate = kind == "finding_remediation"
+            && selected_owner_action.is_some_and(|(target, command)| {
+                work_unit_id == Some(target)
+                    && matches!(command, "work suspend" | "work block" | "work abandon")
+            });
+        if permitted_alternate {
+            return Ok(());
+        }
+        bail!(
+            "{operation} is forbidden during {kind} for finding {finding_id}; finish with agent-workbench closure ready {closure_id}"
+        );
+    }
+    Ok(())
+}
+
+fn action_selects_work(next_action: &str, command: &str, work_unit_id: i64) -> bool {
+    let needle = format!("{command} {work_unit_id}");
+    next_action.match_indices(&needle).any(|(index, _)| {
+        next_action[index + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_ascii_digit())
     })
 }
 
@@ -1986,10 +2465,11 @@ fn evaluate_resume_ready(conn: &Connection, maturity: &str) -> Result<ResumeGate
     let blocking_dependencies = conn.query_row(
         r#"
         select count(*)
-        from work_unit_dependencies
-        where work_unit_id = ?1
-          and dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
-          and status = 'open'
+        from work_unit_dependencies d
+        where d.work_unit_id = ?1
+          and d.dependency_type in ('blocks', 'invalidates_assumption', 'invalidates_closure')
+          and d.status = 'open'
+          and exists(select 1 from work_units dependency_target where dependency_target.id=d.depends_on_work_unit_id and dependency_target.status in ('open','blocked'))
         "#,
         params![target.work_unit_id],
         |row| row.get::<_, i64>(0),
@@ -2536,6 +3016,7 @@ fn validation_close_state(conn: &Connection, work_unit_id: i64) -> Result<Valida
             left join tasks t on t.id = vg.task_id
             where vg.status = 'active'
               and coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+              and (vg.task_id is null or t.status != 'accepted_out_of_scope')
         )
         "#,
         params![work_unit_id],
@@ -2606,6 +3087,7 @@ fn validation_gate_blocker_details_for_work(
             left join tasks t on t.id = vg.task_id
             where vg.status = 'active'
               and coalesce(vg.work_unit_id, t.work_unit_id) = ?1
+              and (vg.task_id is null or t.status != 'accepted_out_of_scope')
         )
         where latest_result is null
            or (latest_result != 'pass' and accepted_failure = 0)
@@ -3390,6 +3872,7 @@ fn design_versions_for_work(conn: &Connection, work_unit_id: i64) -> Result<Vec<
         join design_requirements r on r.id = td.design_requirement_id
         where t.work_unit_id = ?1
           and td.status in ('active', 'stale')
+          and t.status = 'closed'
         order by r.design_version_id
         "#,
     )?;
@@ -3513,7 +3996,7 @@ fn count_derived_tasks_missing_selected_gate_for_work(
         join design_packages p on p.id = v.design_package_id
         where t.work_unit_id = ?1
           and td.status in ('active', 'stale')
-          and t.status in ('closed', 'accepted_out_of_scope')
+          and t.status = 'closed'
           and not exists (
             select 1
             from acceptance_records ar
@@ -3569,7 +4052,7 @@ fn missing_selected_gate_details_for_work(
         join design_packages p on p.id = v.design_package_id
         where t.work_unit_id = ?1
           and td.status in ('active', 'stale')
-          and t.status in ('closed', 'accepted_out_of_scope')
+          and t.status = 'closed'
           and not exists (
             select 1
             from acceptance_records ar
@@ -3887,6 +4370,7 @@ fn count_stale_coverage_items_for_work(conn: &Connection, work_unit_id: i64) -> 
         join design_packages p on p.id = v.design_package_id
         left join tasks t on t.id = c.task_id
         where coalesce(c.work_unit_id, t.work_unit_id) = ?1
+          and c.status != 'accepted_out_of_scope'
           and p.current_design_version_id != r.design_version_id
           and not exists (
             select 1
@@ -4062,6 +4546,18 @@ pub struct WorkReopen<'a> {
     pub reason_type: &'a str,
     pub authority_event_id: Option<i64>,
     pub acceptance_record_id: Option<i64>,
+}
+
+pub struct WorkRemediate {
+    pub finding_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkRemediateOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: i64,
+    pub binding_count: i64,
+    pub idempotent: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]

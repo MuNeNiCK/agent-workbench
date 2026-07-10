@@ -788,9 +788,19 @@ pub fn add_general_acceptance(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    ensure_active_authority_event(&tx, project_id, input.approval_authority_event_id)?;
-    let target = resolve_general_acceptance_target(&tx, project_id, input.target)?;
-    tx.execute(
+    let outcome = add_general_acceptance_in(&tx, project_id, input)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn add_general_acceptance_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: NewGeneralAcceptance<'_>,
+) -> Result<GeneralAcceptanceOutcome> {
+    ensure_active_authority_event(conn, project_id, input.approval_authority_event_id)?;
+    let target = resolve_general_acceptance_target(conn, project_id, input.target)?;
+    conn.execute(
         r#"
         insert into acceptance_records(
             project_id, target_type, task_id, finding_id, validation_gate_id,
@@ -831,8 +841,7 @@ pub fn add_general_acceptance(
             input.approval_authority_event_id,
         ],
     )?;
-    let acceptance_record_id = tx.last_insert_rowid();
-    tx.commit()?;
+    let acceptance_record_id = conn.last_insert_rowid();
     Ok(GeneralAcceptanceOutcome {
         acceptance_record_id,
         authority_event_id: input.approval_authority_event_id,

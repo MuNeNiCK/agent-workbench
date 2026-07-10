@@ -3,12 +3,13 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::db::{open_existing_project, project_id};
+use crate::db::{ensure_unscoped_mutation_allowed, open_existing_project, project_id};
 
 pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<CoverageItemOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
+    ensure_unscoped_mutation_allowed(&tx, "coverage add")?;
     if input.status == "accepted_out_of_scope" {
         bail!("coverage accepted_out_of_scope requires an approved acceptance record");
     }

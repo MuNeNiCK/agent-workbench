@@ -59,8 +59,19 @@ pub(crate) fn run() -> Result<()> {
                         for remediation in &status.finding_remediations {
                             print_finding_remediation(remediation);
                         }
+                    } else if !status.source_corrections.is_empty() {
+                        println!("finding_remediation: false");
+                        println!("source_correction: true");
+                        println!(
+                            "source_correction_count: {}",
+                            status.source_corrections.len()
+                        );
+                        for correction in &status.source_corrections {
+                            print_source_correction(correction);
+                        }
                     } else {
                         println!("finding_remediation: false");
+                        println!("source_correction: false");
                     }
                 }
             }
@@ -80,6 +91,13 @@ pub(crate) fn run() -> Result<()> {
                 println!("finding_remediation_count: {}", remediations.len());
                 for remediation in &remediations {
                     print_finding_remediation(remediation);
+                }
+            }
+            NextAction::SourceCorrection { corrections } => {
+                println!("source correction");
+                println!("source_correction_count: {}", corrections.len());
+                for correction in &corrections {
+                    print_source_correction(correction);
                 }
             }
             NextAction::NoOpenWorkUnit => {
@@ -166,7 +184,28 @@ fn print_finding_remediation(remediation: &agent_workbench::FindingRemediation) 
     println!("description: {}", remediation.description);
     println!("affected_surfaces: {}", remediation.affected_surfaces);
     println!("fix_plan: {}", remediation.fix_plan);
+    println!("design_invariant: {}", remediation.design_invariant);
+    println!("tests_or_gates: {}", remediation.tests_or_gates);
+    println!("verification_plan: {}", remediation.verification_plan);
     println!("next: {}", remediation.next_action);
+}
+
+fn print_source_correction(correction: &agent_workbench::SourceCorrection) {
+    println!("work_unit_id: {}", correction.work_unit_id);
+    println!("review_plan_id: {}", correction.review_plan_id);
+    println!("finding_id: {}", correction.finding_id);
+    println!("closure_id: {}", correction.closure_id);
+    println!(
+        "correction_session_id: {}",
+        correction.correction_session_id
+    );
+    println!("description: {}", correction.description);
+    println!("affected_surfaces: {}", correction.affected_surfaces);
+    println!("fix_plan: {}", correction.fix_plan);
+    println!("design_invariant: {}", correction.design_invariant);
+    println!("tests_or_gates: {}", correction.tests_or_gates);
+    println!("verification_plan: {}", correction.verification_plan);
+    println!("next: {}", correction.next_action);
 }
 
 fn print_next_phase(work_unit: &agent_workbench::ActiveWorkUnit) {
