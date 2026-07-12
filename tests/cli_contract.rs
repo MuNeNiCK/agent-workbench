@@ -1,7 +1,8 @@
-use std::path::Path;
 use std::process::{Command, Output};
+use std::{fs, path::Path};
 
-use rusqlite::Connection;
+use agent_workbench::*;
+use rusqlite::{Connection, params};
 
 fn aw(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_agent-workbench"))
@@ -36,6 +37,524 @@ fn err(root: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stderr).expect("stderr must be utf-8")
 }
 
+#[test]
+fn correction_transition_cli_failure_is_atomic_and_exposes_apply_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let help = ok(temp.path(), &["closure", "transition", "apply", "--help"]);
+    assert!(help.contains("--token <TOKEN>"));
+    assert!(help.contains("--authority <AUTHORITY>"));
+    let before: (i64, i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases), (select count(*) from correction_tokens)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let message = err(
+        temp.path(),
+        &["closure", "transition", "apply", "999", "--token", "1"],
+    );
+    assert!(message.contains("correction transition token not found"));
+    let after: (i64, i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases), (select count(*) from correction_tokens)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn design_reconcile_runs_complete_public_cli_sequence_with_stale_predecessor() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "public reconciliation recovery", None).unwrap();
+    let package = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "public-reconcile",
+            title: "Public Reconcile",
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        r#"## REQ-001: Preserve public recovery
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+revision: 1
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+Preserve public recovery behavior.
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("validation/gates.md"),
+        r#"## GATE-001: Public recovery test
+```yaml agent-workbench
+type: validation_gate_template
+key: GATE-001
+applies_to: [REQ-001]
+expected_result: pass
+phase: implementation
+status: active
+```
+
+Run the public recovery test.
+"#,
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: design.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("01-introduction-goals.md"),
+        "# Introduction And Goals\n\nRefresh without changing REQ-001.\n",
+    )
+    .unwrap();
+    let current_design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: current_design.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let ready_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(current_design.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: ready_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!(
+                "review-context:design-review:design={}:work={}",
+                current_design.design_version_id, work.work_unit_id
+            )),
+            prompt_deviations: None,
+            result_summary: Some("clean design"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("cli-fixture-reviewer"),
+            external_agent_id: Some("cli-fixture-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("cli-fixture:design-ready"),
+        },
+    )
+    .unwrap();
+    let canonical = decompose_design(
+        temp.path(),
+        DesignDecomposition {
+            design_version_id: current_design.design_version_id,
+            work_unit_id: work.work_unit_id,
+            checklist_title: Some("canonical"),
+            reason: Some("public fixture"),
+        },
+    )
+    .unwrap();
+    let canonical_task: i64 = conn(temp.path())
+        .query_row(
+            "select task_id from checklist_items where checklist_id=?1",
+            params![canonical.checklist_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let duplicate = add_task(
+        temp.path(),
+        NewTask {
+            title: "legacy duplicate",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("disposed by public correction"),
+        },
+    )
+    .unwrap();
+    let duplicate_derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: current_design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: duplicate.task_id,
+            derivation_reason: Some("legacy duplicate"),
+            checklist_title: Some("duplicate"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let stale_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "stale predecessor",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("accepted by declared stale token"),
+        },
+    )
+    .unwrap();
+    let stale = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: stale_task.task_id,
+            derivation_reason: Some("legacy stale predecessor"),
+            checklist_title: Some("stale"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        conn(temp.path())
+            .query_row(
+                "select old_v.version_number < current_v.version_number and old_v.design_package_id=current_v.design_package_id from design_versions old_v join design_versions current_v on current_v.id=?2 where old_v.id=?1",
+                params![design.design_version_id, current_design.design_version_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "stale task must derive from an earlier version of the same design package"
+    );
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(current_design.design_version_id),
+            key: "implementation",
+            title: "Implementation",
+            kind: "implementation",
+            order: 1,
+            reason: Some("public fixture"),
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(temp.path(), phase.phase_id, duplicate.task_id).unwrap();
+    assign_task_to_phase(temp.path(), phase.phase_id, stale_task.task_id).unwrap();
+    let finding_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(current_design.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let finding_run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: finding_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("legacy duplicate and stale predecessor"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: finding_run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "public reconciliation fixture",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let surfaces = format!(
+        "transition:design-reconcile:{}/{}/{},transition:stale-accept:task_derivation/{},transition:phase-assign:{}/@task/REQ-001,transition:task-accept-out-of-scope:{},transition:task-accept-out-of-scope:{}",
+        current_design.design_version_id,
+        work.work_unit_id,
+        canonical.checklist_id,
+        stale.task_derivation_id,
+        phase.phase_id,
+        duplicate.task_id,
+        stale_task.task_id,
+    );
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "public recovery leaves one canonical bundle",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&surfaces),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("execute public correction sequence"),
+            tests_or_gates: Some("GATE-001"),
+            verification_plan: Some("public CLI assertions"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let closure_id = closure.closure_id.to_string();
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "correction-begin",
+            &closure.closure_id.to_string(),
+        ],
+    );
+    let bootstrap_retry = ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "1",
+        ],
+    );
+    assert!(bootstrap_retry.contains("application_id"));
+    let applied_once: (i64, i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select app.id from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=1), (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases)",
+            params![closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let idempotent_retry = ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "1",
+        ],
+    );
+    assert!(idempotent_retry.contains("idempotent: true"));
+    let applied_twice: (i64, i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select app.id from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=1), (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases)",
+            params![closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(applied_twice, applied_once);
+    conn(temp.path())
+        .execute(
+            "update task_derivations set status='stale' where id=?1",
+            params![stale.task_derivation_id],
+        )
+        .unwrap();
+    let before: (i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let wrong_order = err(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure.closure_id.to_string(),
+            "--token",
+            "3",
+        ],
+    );
+    assert!(
+        wrong_order.contains("token 2")
+            || wrong_order.contains("earliest")
+            || wrong_order.contains("selected transition"),
+        "{wrong_order}"
+    );
+    let after_wrong_order: (i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select count(*) from correction_transition_applications), (select count(*) from correction_transition_aliases)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_wrong_order, before);
+    let authority = cli_approval_authority_event(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "2",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "3",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "4",
+            "--authority",
+            &authority,
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "5",
+            "--authority",
+            &authority,
+        ],
+    );
+    let ready = ok(
+        temp.path(),
+        &[
+            "closure",
+            "ready",
+            &closure_id,
+            "--evidence",
+            "public sequence complete",
+            "--tests",
+            "GATE-001 public sequence pass",
+        ],
+    );
+    assert!(ready.contains("closure ready for verification"));
+    let db = conn(temp.path());
+    for task_id in [duplicate.task_id, stale_task.task_id] {
+        assert_eq!(
+            db.query_row(
+                "select status from tasks where id=?1",
+                params![task_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "accepted_out_of_scope"
+        );
+        assert_eq!(
+            db.query_row(
+                "select count(*) from work_phase_task_memberships where task_id=?1",
+                params![task_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        db.query_row(
+            "select count(*) from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, canonical_task],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "select status from task_derivations where id=?1",
+            params![duplicate_derivation.task_derivation_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "closed"
+    );
+    assert_eq!(
+        db.query_row(
+            "select status from task_derivations where id=?1",
+            params![stale.task_derivation_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "stale"
+    );
+}
+
 fn conn(root: &Path) -> Connection {
     Connection::open(root.join(".agent-workbench").join("ledger.sqlite"))
         .expect("failed to open ledger")
@@ -54,6 +573,8 @@ fn cli_approval_authority_event(root: &Path) -> String {
             "approve exception for test",
             "--source",
             "test-user",
+            "--scope",
+            "project",
         ],
     );
     conn(root)
@@ -4513,7 +5034,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
             id, project_id, validation_gate_id, work_unit_id, task_id,
             result, command, created_at
         ) values (1, 1, 1, 2, 2, 'pass', 'cargo test', current_timestamp);
-        delete from schema_migrations where version = 9;
+        delete from schema_migrations where version = 10;
         insert into schema_migrations(version, applied_at) values (6, current_timestamp);
         "#,
         )
@@ -4561,7 +5082,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
     );
     assert!(Path::new(backup).is_file());
 
-    assert!(ok(temp.path(), &["status"]).contains("schema_version: 9"));
+    assert!(ok(temp.path(), &["status"]).contains("schema_version: 10"));
     ok(temp.path(), &["next"]);
     ok(temp.path(), &["rules", "applicable"]);
     ok(temp.path(), &["correction", "list"]);

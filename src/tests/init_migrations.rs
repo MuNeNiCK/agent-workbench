@@ -18,6 +18,56 @@ fn init_creates_ledger_and_project() {
 }
 
 #[test]
+fn v9_to_v10_migration_installs_reconciliation_ownership_trigger() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_correction_alias_links_insert;
+        delete from schema_migrations where version=10;
+        insert or ignore into schema_migrations(version, applied_at) values (9, current_timestamp);
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    assert_eq!(
+        project_status(temp.path()).unwrap().schema_version,
+        Some(10)
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let trigger_sql: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type='trigger' and name='trg_correction_alias_links_insert'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(trigger_sql.contains("@superseded-task/"));
+    assert!(trigger_sql.contains("app.before_state"));
+    assert!(trigger_sql.contains("ci.checklist_id!="));
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from sqlite_schema where type='table' and name='correction_application_identity_links'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from sqlite_schema where type='trigger' and name='trg_correction_identity_link_insert'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn next_action_migrates_schema_before_querying_lifecycle_state() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -31,7 +81,7 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 9;
+        delete from schema_migrations where version = 10;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
@@ -533,7 +583,7 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 9;
+        delete from schema_migrations where version = 10;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )

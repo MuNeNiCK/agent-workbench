@@ -1,7 +1,9 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::db::{ensure_unscoped_mutation_allowed, open_existing_project, project_id};
 use crate::review_context::required_plans_missing_context_count;
@@ -144,12 +146,31 @@ pub(crate) fn decompose_design_in(
     project_id: i64,
     input: DesignDecomposition<'_>,
 ) -> Result<DesignDecompositionOutcome> {
-    validate_design_decomposition_in(
-        conn,
-        project_id,
-        input.design_version_id,
-        input.work_unit_id,
-    )?;
+    decompose_design_with_checklist_in(conn, project_id, input, None, true)
+}
+
+fn decompose_design_with_checklist_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    input: DesignDecomposition<'_>,
+    canonical_checklist_id: Option<i64>,
+    require_empty: bool,
+) -> Result<DesignDecompositionOutcome> {
+    if require_empty {
+        validate_design_decomposition_in(
+            conn,
+            project_id,
+            input.design_version_id,
+            input.work_unit_id,
+        )?;
+    } else {
+        validate_design_decomposition_scope_in(
+            conn,
+            project_id,
+            input.design_version_id,
+            input.work_unit_id,
+        )?;
+    }
 
     let mut stmt = conn.prepare(
         r#"
@@ -184,13 +205,16 @@ pub(crate) fn decompose_design_in(
     let checklist_title = input
         .checklist_title
         .unwrap_or("Design implementation checklist");
-    let checklist_id = get_or_create_checklist(
-        conn,
-        project_id,
-        input.work_unit_id,
-        input.design_version_id,
-        checklist_title,
-    )?;
+    let checklist_id = match canonical_checklist_id {
+        Some(checklist_id) => checklist_id,
+        None => get_or_create_checklist(
+            conn,
+            project_id,
+            input.work_unit_id,
+            input.design_version_id,
+            checklist_title,
+        )?,
+    };
     let mut created_tasks = 0;
     let mut created_derivations = 0;
     let mut created_validation_gates = 0;
@@ -403,6 +427,462 @@ fn reusable_unchanged_baseline_task(
         params![project_id, task_id, current_requirement_id],
     )?;
     Ok(Some(task_id))
+}
+
+pub(crate) fn reconcile_design_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    work_unit_id: i64,
+    canonical_checklist_id: i64,
+    reason: &str,
+) -> Result<DesignDecompositionOutcome> {
+    validate_design_decomposition_scope_in(conn, project_id, design_version_id, work_unit_id)?;
+    conn.query_row(
+        "select 1 from checklists where id=?1 and project_id=?2 and design_version_id=?3 and work_unit_id=?4 and status='active' and trim(title)!=''",
+        params![canonical_checklist_id, project_id, design_version_id, work_unit_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("canonical reconciliation checklist is not active for the correction design and owner")?;
+    let foreign_canonical_rows: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from checklist_items ci
+        left join design_requirements r on r.id=ci.design_requirement_id
+        where ci.checklist_id=?1
+          and (ci.project_id!=?2 or r.id is null or r.project_id!=?2 or r.design_version_id!=?3 or r.status!='active'
+            or exists(select 1 from task_derivations td
+              where td.checklist_item_id=ci.id and td.status='active'
+                and (td.project_id!=?2 or td.design_requirement_id!=ci.design_requirement_id
+                  or td.task_id!=ci.task_id)))
+        "#,
+        params![canonical_checklist_id, project_id, design_version_id],
+        |row| row.get(0),
+    )?;
+    if foreign_canonical_rows > 0 {
+        bail!("canonical reconciliation checklist contains foreign-design rows");
+    }
+
+    let canonical_conflicts: i64 = conn.query_row(
+        r#"
+        select
+          (select count(*) from (
+            select ci.design_requirement_id
+            from checklist_items ci
+            join design_requirements r on r.id=ci.design_requirement_id
+            left join task_derivations td on td.checklist_item_id=ci.id and td.status='active'
+            where ci.checklist_id=?1 and r.design_version_id=?2 and r.status='active'
+            group by ci.design_requirement_id having count(td.id)!=1
+          ))
+          +
+          (select count(*)
+           from checklist_items ci
+           join task_derivations td on td.checklist_item_id=ci.id and td.status='active'
+           join design_requirements r on r.id=ci.design_requirement_id
+           join tasks t on t.id=ci.task_id
+           where ci.checklist_id=?1 and r.design_version_id=?2 and r.status='active'
+             and (ci.status not in ('open','blocked') or t.work_unit_id!=?3
+                  or t.status not in ('open','blocked') or td.task_id!=ci.task_id))
+        "#,
+        params![canonical_checklist_id, design_version_id, work_unit_id],
+        |row| row.get(0),
+    )?;
+    if canonical_conflicts > 0 {
+        bail!("canonical reconciliation checklist contains conflicting requirement bundles");
+    }
+    let canonical_field_conflicts = {
+        let mut stmt = conn.prepare(
+            r#"
+            select r.requirement_key, r.requirement_text, r.priority,
+                   t.title, t.details, t.priority, t.completion_condition,
+                   ci.item_order, ci.title, ci.completion_condition,
+                   (select count(*)
+                    from design_requirements ordered
+                    where ordered.design_version_id=r.design_version_id
+                      and ordered.status='active'
+                      and ordered.requirement_key<=r.requirement_key)
+            from checklist_items ci
+            join task_derivations td on td.checklist_item_id=ci.id and td.status='active'
+            join design_requirements r on r.id=ci.design_requirement_id
+            join tasks t on t.id=ci.task_id
+            where ci.checklist_id=?1 and r.design_version_id=?2 and r.status='active'
+            "#,
+        )?;
+        let rows = stmt.query_map(params![canonical_checklist_id, design_version_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, i64>(10)?,
+            ))
+        })?;
+        let mut conflicts = 0;
+        for row in rows {
+            let (
+                key,
+                text,
+                priority,
+                task_title,
+                details,
+                task_priority,
+                task_completion,
+                item_order,
+                item_title,
+                item_completion,
+                expected_order,
+            ) = row?;
+            let expected_title = format!("Implement {key}: {}", first_line(&text));
+            let expected_completion = format!("Requirement {key} is implemented and validated");
+            if task_title != expected_title
+                || details.as_deref() != Some(text.as_str())
+                || task_priority != priority
+                || task_completion.as_deref() != Some(expected_completion.as_str())
+                || item_order != expected_order
+                || item_title != expected_title
+                || item_completion.as_deref() != Some(expected_completion.as_str())
+            {
+                conflicts += 1;
+            }
+        }
+        conflicts
+    };
+    if canonical_field_conflicts > 0 {
+        bail!("canonical reconciliation checklist failed canonical field validation");
+    }
+    validate_canonical_gate_sources(conn, canonical_checklist_id, design_version_id)?;
+    let semantic_conflicts: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from checklist_items ci
+        join task_derivations td on td.checklist_item_id=ci.id and td.status='active'
+        join design_requirements r on r.id=ci.design_requirement_id
+        join tasks t on t.id=ci.task_id
+        where ci.checklist_id=?1 and r.design_version_id=?2 and r.status='active'
+          and (
+            t.source!='design' or trim(coalesce(t.completion_condition,''))=''
+            or trim(coalesce(ci.completion_condition,''))=''
+            or td.design_requirement_id!=ci.design_requirement_id or td.task_id!=ci.task_id
+            or exists(
+              select 1 from validation_gates vg
+              left join validation_gate_templates gt on gt.id=vg.template_id
+              left join validation_gate_template_requirements gm
+                on gm.validation_gate_template_id=gt.id and gm.design_requirement_id=r.id
+              where vg.task_id=t.id and vg.design_requirement_id=r.id
+                and (vg.project_id!=?3 or vg.work_unit_id!=?4 or vg.status!='active'
+                  or gt.design_version_id!=?2 or gt.status!='active' or gm.id is null
+                  or trim(gt.gate_hash)='' or trim(gt.stage)='' or trim(gt.gate_text)=''
+                  or vg.selected_before_edit!=1
+                  or vg.gate_key!=gt.gate_key or vg.command is not gt.command
+                  or vg.expected_result!=gt.expected_result)
+            )
+            or exists(
+              select 1 from coverage_items c
+              where c.task_id=t.id and c.design_requirement_id=r.id
+                and (c.project_id!=?3 or c.work_unit_id!=?4
+                  or c.status not in ('covered','needs_evidence'))
+            )
+            or exists(
+              select 1 from coverage_items c
+              where c.design_requirement_id=r.id and c.work_unit_id=?4
+                and c.status in ('covered','needs_evidence') and c.task_id!=t.id
+                and not exists(
+                  select 1 from task_derivations duplicate_td
+                  where duplicate_td.design_requirement_id=r.id
+                    and duplicate_td.task_id=c.task_id and duplicate_td.status='active'
+                )
+            )
+            or exists(
+              select 1 from acceptance_records ar
+              left join authority_events ae on ae.id=ar.approved_by_authority_event_id
+              where (ar.task_id=t.id or ar.checklist_item_id=ci.id
+                or ar.validation_gate_id in (select id from validation_gates where task_id=t.id and design_requirement_id=r.id)
+                or ar.coverage_item_id in (select id from coverage_items where task_id=t.id and design_requirement_id=r.id))
+                and (ar.status!='approved' or ae.id is null or ae.project_id!=?3
+                  or ae.status!='active' or ae.event_type not in ('user_instruction','policy','design_doc')
+                  or (ae.scope!='project' and ae.scope!='work-unit:'||?4
+                    and ae.scope!='requirement:'||r.requirement_key))
+            )
+          )
+        "#,
+        params![canonical_checklist_id, design_version_id, project_id, work_unit_id],
+        |row| row.get(0),
+    )?;
+    if semantic_conflicts > 0 {
+        bail!("canonical reconciliation checklist failed semantic equivalence validation");
+    }
+    let gate_cardinality_conflicts: i64 = conn.query_row(
+        r#"
+        select count(*) from checklist_items ci
+        join design_requirements r on r.id=ci.design_requirement_id
+        where ci.checklist_id=?1 and r.design_version_id=?2
+          and (select count(*) from validation_gates vg
+               where vg.task_id=ci.task_id and vg.design_requirement_id=r.id and vg.status='active')
+              !=
+              (select count(*) from validation_gate_template_requirements gm
+               join validation_gate_templates gt on gt.id=gm.validation_gate_template_id
+               where gm.design_requirement_id=r.id and gt.design_version_id=?2 and gt.status='active')
+        "#,
+        params![canonical_checklist_id, design_version_id],
+        |row| row.get(0),
+    )?;
+    if gate_cardinality_conflicts > 0 {
+        bail!("canonical reconciliation checklist has incomplete validation gate bundles");
+    }
+    let coverage_cardinality_conflicts: i64 = conn.query_row(
+        r#"
+        select count(*) from checklist_items ci
+        join design_requirements r on r.id=ci.design_requirement_id
+        where ci.checklist_id=?1 and r.design_version_id=?2
+          and (select count(*) from coverage_items c
+               where c.task_id=ci.task_id and c.design_requirement_id=r.id
+                 and c.status in ('covered','needs_evidence')) > 1
+        "#,
+        params![canonical_checklist_id, design_version_id],
+        |row| row.get(0),
+    )?;
+    if coverage_cardinality_conflicts > 0 {
+        bail!("canonical reconciliation checklist has conflicting coverage bundles");
+    }
+
+    let duplicate_item_ids = {
+        let mut stmt = conn.prepare(
+            r#"
+            select distinct ci.id
+            from task_derivations td
+            join design_requirements r on r.id=td.design_requirement_id
+            join tasks t on t.id=td.task_id
+            join checklist_items ci on ci.id=td.checklist_item_id
+            where r.design_version_id=?1 and r.status='active' and td.status='active'
+              and t.work_unit_id=?2 and ci.checklist_id!=?3
+            order by ci.id
+            "#,
+        )?;
+        stmt.query_map(
+            params![design_version_id, work_unit_id, canonical_checklist_id],
+            |row| row.get::<_, i64>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let (shared_gate_nodes, shared_coverage_nodes): (i64, i64) = conn.query_row(
+        r#"
+        select
+          (select count(*) from checklist_items duplicate_ci
+           where duplicate_ci.id in (select value from json_each(?1))
+             and exists(select 1 from validation_gates vg
+               where vg.task_id=duplicate_ci.task_id
+                 and vg.design_requirement_id=duplicate_ci.design_requirement_id
+                 and vg.status='active')
+             and exists(select 1 from task_derivations other_td
+               where other_td.task_id=duplicate_ci.task_id
+                 and other_td.design_requirement_id=duplicate_ci.design_requirement_id
+                 and other_td.checklist_item_id!=duplicate_ci.id
+                 and other_td.status='active')),
+          (select count(*) from checklist_items duplicate_ci
+           where duplicate_ci.id in (select value from json_each(?1))
+             and exists(select 1 from coverage_items c
+               where c.task_id=duplicate_ci.task_id
+                 and c.design_requirement_id=duplicate_ci.design_requirement_id
+                 and c.status!='stale')
+             and exists(select 1 from task_derivations other_td
+               where other_td.task_id=duplicate_ci.task_id
+                 and other_td.design_requirement_id=duplicate_ci.design_requirement_id
+                 and other_td.checklist_item_id!=duplicate_ci.id
+                 and other_td.status='active'))
+        "#,
+        params![format!(
+            "[{}]",
+            duplicate_item_ids
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if shared_gate_nodes > 0 || shared_coverage_nodes > 0 {
+        bail!("reconciliation duplicate bundle contains shared gate or coverage nodes");
+    }
+    for item_id in duplicate_item_ids {
+        conn.execute(
+            "update validation_gates set status='closed' where project_id=?1 and status='active' and task_id=(select task_id from checklist_items where id=?2) and design_requirement_id=(select design_requirement_id from checklist_items where id=?2)",
+            params![project_id, item_id],
+        )?;
+        conn.execute(
+            "update coverage_items set status='stale' where project_id=?1 and status!='stale' and task_id=(select task_id from checklist_items where id=?2) and design_requirement_id=(select design_requirement_id from checklist_items where id=?2)",
+            params![project_id, item_id],
+        )?;
+        conn.execute(
+            "update task_derivations set status='closed' where project_id=?1 and checklist_item_id=?2 and status='active'",
+            params![project_id, item_id],
+        )?;
+        conn.execute(
+            "update checklist_items set status='closed' where project_id=?1 and id=?2 and status in ('open','blocked')",
+            params![project_id, item_id],
+        )?;
+    }
+    conn.execute(
+        r#"
+        update checklists set status='closed'
+        where project_id=?1 and design_version_id=?2 and work_unit_id=?3
+          and id!=?4 and status='active'
+          and not exists(select 1 from checklist_items ci where ci.checklist_id=checklists.id and ci.status in ('open','blocked'))
+        "#,
+        params![project_id, design_version_id, work_unit_id, canonical_checklist_id],
+    )?;
+    let residual: i64 = conn.query_row(
+        r#"
+        select count(*) from task_derivations td
+        join design_requirements r on r.id=td.design_requirement_id
+        join tasks t on t.id=td.task_id
+        left join checklist_items ci on ci.id=td.checklist_item_id
+        where r.design_version_id=?1 and r.status='active' and td.status='active'
+          and t.work_unit_id=?2 and coalesce(ci.checklist_id,0)!=?3
+        "#,
+        params![design_version_id, work_unit_id, canonical_checklist_id],
+        |row| row.get(0),
+    )?;
+    if residual > 0 {
+        bail!("reconciliation left residual active current derivations");
+    }
+    decompose_design_with_checklist_in(
+        conn,
+        project_id,
+        DesignDecomposition {
+            design_version_id,
+            work_unit_id,
+            checklist_title: None,
+            reason: Some(reason),
+        },
+        Some(canonical_checklist_id),
+        false,
+    )
+}
+
+#[derive(Deserialize)]
+struct ReconciledGateMetadata {
+    #[serde(rename = "type")]
+    record_type: String,
+    key: String,
+    phase: String,
+    expected_result: String,
+    #[serde(default)]
+    applies_to: Vec<String>,
+    #[serde(default)]
+    command_template: Option<String>,
+    status: String,
+}
+
+fn validate_canonical_gate_sources(
+    conn: &rusqlite::Connection,
+    canonical_checklist_id: i64,
+    design_version_id: i64,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        r#"
+        select distinct dv.package_path, df.relative_path, gt.source_section,
+               gt.gate_key, gt.gate_hash, gt.stage, gt.command,
+               gt.expected_result, gt.requirement_keys, gt.gate_text, gt.status
+        from checklist_items ci
+        join validation_gates vg on vg.task_id=ci.task_id
+          and vg.design_requirement_id=ci.design_requirement_id and vg.status='active'
+        join validation_gate_templates gt on gt.id=vg.template_id
+        join design_files df on df.id=gt.source_design_file_id
+        join design_versions dv on dv.id=gt.design_version_id
+        where ci.checklist_id=?1 and gt.design_version_id=?2
+        "#,
+    )?;
+    let rows = stmt.query_map(params![canonical_checklist_id, design_version_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+        ))
+    })?;
+    for row in rows {
+        let (
+            package_path,
+            relative_path,
+            source_section,
+            gate_key,
+            gate_hash,
+            stage,
+            command,
+            expected_result,
+            requirement_keys,
+            gate_text,
+            status,
+        ) = row?;
+        let content = fs::read_to_string(Path::new(&package_path).join(relative_path))
+            .context("canonical gate source file is unavailable")?;
+        let (metadata_text, body) = agent_block_source(&content, &source_section)
+            .context("canonical gate source block is unavailable")?;
+        let metadata: ReconciledGateMetadata = yaml_serde::from_str(&metadata_text)
+            .context("canonical gate source metadata is invalid")?;
+        let normalized_stage = match metadata.phase.as_str() {
+            "design" => "design-ready",
+            "implementation" => "implementation-ready",
+            "close" => "close-ready",
+            "resume" => "resume-ready",
+            other => other,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(metadata_text.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(body.trim().as_bytes());
+        let source_hash = format!("{:x}", hasher.finalize());
+        let source_requirements = if metadata.applies_to.is_empty() {
+            None
+        } else {
+            Some(metadata.applies_to.join(","))
+        };
+        if metadata.record_type != "validation_gate_template"
+            || metadata.key != gate_key
+            || source_hash != gate_hash
+            || normalized_stage != stage
+            || metadata.command_template != command
+            || metadata.expected_result != expected_result
+            || source_requirements != requirement_keys
+            || body.trim() != gate_text
+            || metadata.status != status
+        {
+            bail!("canonical reconciliation gate differs from imported design source");
+        }
+    }
+    Ok(())
+}
+
+fn agent_block_source(content: &str, source_section: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let heading = format!("## {source_section}");
+    let index = lines.iter().position(|line| line.trim() == heading)?;
+    let fence_start = index + 1;
+    if lines.get(fence_start)?.trim() != "```yaml agent-workbench" {
+        return None;
+    }
+    let fence_end = (fence_start + 1..lines.len()).find(|&i| lines[i].trim() == "```")?;
+    let body_end = (fence_end + 1..lines.len())
+        .find(|&i| lines[i].starts_with("## "))
+        .unwrap_or(lines.len());
+    Some((
+        lines[fence_start + 1..fence_end].join("\n"),
+        lines[fence_end + 1..body_end].join("\n"),
+    ))
 }
 
 fn validation_gate_templates_for_requirement(
@@ -1063,6 +1543,36 @@ pub(crate) fn validate_design_decomposition_in(
     design_version_id: i64,
     work_unit_id: i64,
 ) -> Result<()> {
+    validate_design_decomposition_scope_in(conn, project_id, design_version_id, work_unit_id)?;
+    let (_requirements, derived, wrong_owner): (i64, i64, i64) = conn.query_row(
+        r#"
+        select
+          (select count(*) from design_requirements r
+           where r.design_version_id=?1 and r.status='active'),
+          (select count(*) from task_derivations td
+           join design_requirements r on r.id=td.design_requirement_id
+           where r.design_version_id=?1 and r.status='active' and td.status='active'),
+          (select count(*) from task_derivations td
+           join design_requirements r on r.id=td.design_requirement_id
+           join tasks t on t.id=td.task_id
+           where r.design_version_id=?1 and r.status='active' and td.status='active'
+             and t.work_unit_id != ?2)
+        "#,
+        params![design_version_id, work_unit_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if wrong_owner > 0 || derived > 0 {
+        bail!("design decomposition has partial or conflicting current derivations");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_design_decomposition_scope_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_version_id: i64,
+    work_unit_id: i64,
+) -> Result<()> {
     conn.query_row(
         "select 1 from work_units where id = ?1 and project_id = ?2 and status = 'open'",
         params![work_unit_id, project_id],
@@ -1084,26 +1594,6 @@ pub(crate) fn validate_design_decomposition_in(
     .optional()?
     .context("design version is not the current approved design")?;
     ensure_design_ready_for_decomposition(conn, project_id, design_version_id)?;
-    let (_requirements, derived, wrong_owner): (i64, i64, i64) = conn.query_row(
-        r#"
-        select
-          (select count(*) from design_requirements r
-           where r.design_version_id=?1 and r.status='active'),
-          (select count(*) from task_derivations td
-           join design_requirements r on r.id=td.design_requirement_id
-           where r.design_version_id=?1 and r.status='active' and td.status='active'),
-          (select count(*) from task_derivations td
-           join design_requirements r on r.id=td.design_requirement_id
-           join tasks t on t.id=td.task_id
-           where r.design_version_id=?1 and r.status='active' and td.status='active'
-             and t.work_unit_id != ?2)
-        "#,
-        params![design_version_id, work_unit_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    if wrong_owner > 0 || derived > 0 {
-        bail!("design decomposition has partial or conflicting current derivations");
-    }
     Ok(())
 }
 

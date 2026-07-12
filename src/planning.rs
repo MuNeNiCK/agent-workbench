@@ -382,6 +382,87 @@ pub(crate) fn accept_task_out_of_scope_in(
     })
 }
 
+pub(crate) fn accept_recovery_task_out_of_scope_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    task_id: i64,
+    design_requirement_id: i64,
+    current_design_version_id: i64,
+    reason: &str,
+    authority_event_id: i64,
+) -> Result<TaskAcceptanceOutcome> {
+    let work_unit_id = open_task_work_unit(conn, task_id)?;
+    let (key, eligible): (String, bool) = conn.query_row(
+        r#"
+        select current_r.requirement_key,
+          exists(
+            select 1
+            from task_derivations td
+            join design_requirements r on r.id=td.design_requirement_id
+            join design_versions v on v.id=r.design_version_id
+            join design_versions current_v on current_v.id=current_r.design_version_id
+            where td.task_id=?1 and r.id=?2
+              and v.design_package_id=current_v.design_package_id
+              and r.requirement_key=current_r.requirement_key
+              and (
+                td.status='active'
+                or (td.status='stale' and exists(
+                  select 1 from acceptance_records ar
+                  where ar.target_type='stale_record'
+                    and ar.stale_record_type='task_derivation'
+                    and ar.stale_record_id=td.id and ar.status='approved'
+                ))
+                or (td.status='closed' and exists(
+                  select 1 from correction_transition_aliases a
+                  join correction_transition_applications app on app.id=a.correction_application_id
+                  join correction_tokens token on token.id=app.correction_token_id
+                  where a.record_type='task' and a.record_id=?1
+                    and a.alias='@superseded-task/'||?1
+                    and token.operation='design-reconcile'
+                ))
+              )
+          )
+        from design_requirements current_r
+        where current_r.design_version_id=?3
+          and current_r.requirement_key=(select requirement_key from design_requirements where id=?2)
+        "#,
+        params![task_id, design_requirement_id, current_design_version_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if !eligible {
+        bail!("task is not an eligible predecessor or reconciled duplicate");
+    }
+    let scope: String = conn
+        .query_row(
+            "select scope from authority_events where id=?1 and project_id=?2 and status='active' and event_type in ('user_instruction','policy','design_doc')",
+            params![authority_event_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("task acceptance requires active user, policy, or design authority")?;
+    let work_scope = work_unit_id.map(|id| format!("work-unit:{id}"));
+    if scope != "project"
+        && scope != format!("requirement:{key}")
+        && work_scope.as_deref() != Some(scope.as_str())
+    {
+        bail!("recovery task authority scope does not cover the exact requirement or work unit");
+    }
+    let acceptance_record_id = apply_task_acceptance_bundle(
+        conn,
+        project_id,
+        task_id,
+        Some(design_requirement_id),
+        work_unit_id,
+        reason,
+        authority_event_id,
+    )?;
+    Ok(TaskAcceptanceOutcome {
+        task_id,
+        acceptance_record_id,
+        authority_event_id,
+    })
+}
+
 pub(crate) fn ensure_verified_baseline_carry_forward(
     conn: &rusqlite::Connection,
     project_id: i64,

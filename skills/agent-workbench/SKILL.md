@@ -228,6 +228,12 @@ from structured ledger state.
   order with `closure transition apply`; do not run the underlying task,
   decomposition, phase, dependency, or stale mutation directly. Run `closure
   ready` only after every file postcondition and transition token is complete.
+- For legacy partial or duplicate current decomposition, use only a declared
+  `design-reconcile:<design>/<work>/<canonical-checklist>` transition. Apply
+  stale tokens first, reconcile before using generated aliases, replace phase
+  memberships before predecessor or rejected numeric task disposition, and
+  keep normal `design-decompose` strict. If the registered closure lacks these
+  tokens, use authority-backed `closure supersede`; do not improvise commands.
 - After `closure ready`, generate `review-context finding-fix`, run an actual
   independent resume review, and record it with the exact context target,
   `--finding-result`, one carried finding, and trusted provenance. Then run

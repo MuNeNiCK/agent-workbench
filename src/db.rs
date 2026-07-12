@@ -9,7 +9,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 9;
+pub(crate) const SCHEMA_VERSION: i64 = 10;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -1107,6 +1107,7 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         || !table_exists(conn, "correction_sessions")?
         || !table_exists(conn, "correction_tokens")?
         || !table_exists(conn, "correction_transition_aliases")?
+        || !table_exists(conn, "correction_application_identity_links")?
     {
         return Ok(true);
     }
@@ -1125,7 +1126,7 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         r#"
         select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert' and sql like '%phase_dependency_max%')
            and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_application_links_insert' and sql like '%work_phase_task_memberships%')
-           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_alias_links_insert' and sql like '%@accepted-task/%')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_alias_links_insert' and sql like '%@superseded-task/%')
         "#,
         [],
         |row| row.get(0),
@@ -1763,6 +1764,112 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             unique(correction_session_id, alias)
         );
 
+        create table if not exists correction_application_identity_links (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            correction_session_id integer not null references correction_sessions(id) on delete cascade,
+            correction_application_id integer not null references correction_transition_applications(id) on delete cascade,
+            link_kind text not null check (link_kind in (
+                'adopted', 'created', 'superseded', 'updated',
+                'membership_removed', 'membership_assigned'
+            )),
+            record_type text not null check (record_type in (
+                'task', 'checklist', 'task_derivation', 'checklist_item',
+                'validation_gate', 'coverage_item', 'phase', 'phase_dependency',
+                'acceptance_record', 'phase_membership'
+            )),
+            record_id integer not null,
+            created_at text not null,
+            check (
+                (record_type='phase_membership' and link_kind in ('membership_removed','membership_assigned'))
+                or (record_type!='phase_membership' and link_kind not in ('membership_removed','membership_assigned'))
+            ),
+            unique(correction_application_id, record_type, record_id)
+        );
+
+        create trigger if not exists trg_correction_identity_link_insert
+        before insert on correction_application_identity_links
+        for each row when
+            new.project_id != (select project_id from correction_transition_applications where id=new.correction_application_id)
+            or new.correction_session_id != (select correction_session_id from correction_transition_applications where id=new.correction_application_id)
+            or new.project_id != (select project_id from correction_sessions where id=new.correction_session_id)
+            or (new.record_type='phase_membership' and new.link_kind='membership_removed' and (
+                ('|'||(select substr(before_state,
+                    instr(before_state,'memberships=[')+13,
+                    instr(before_state,'];checklists=')-(instr(before_state,'memberships=[')+13))
+                  from correction_transition_applications where id=new.correction_application_id)||'|')
+                not like '%|'||new.record_id||':%'
+                or ('|'||(select substr(after_state,
+                    instr(after_state,'memberships=[')+13,
+                    instr(after_state,'];checklists=')-(instr(after_state,'memberships=[')+13))
+                  from correction_transition_applications where id=new.correction_application_id)||'|')
+                like '%|'||new.record_id||':%'))
+            or (new.record_type='phase_membership' and new.link_kind='membership_assigned' and (
+                ('|'||(select substr(after_state,
+                    instr(after_state,'memberships=[')+13,
+                    instr(after_state,'];checklists=')-(instr(after_state,'memberships=[')+13))
+                  from correction_transition_applications where id=new.correction_application_id)||'|')
+                not like '%|'||new.record_id||':%'
+                or ('|'||(select substr(before_state,
+                    instr(before_state,'memberships=[')+13,
+                    instr(before_state,'];checklists=')-(instr(before_state,'memberships=[')+13))
+                  from correction_transition_applications where id=new.correction_application_id)||'|')
+                like '%|'||new.record_id||':%'))
+            or (new.record_type!='phase_membership' and not (
+                (new.record_type='task' and exists(select 1 from tasks t join work_units w on w.id=t.work_unit_id where t.id=new.record_id and w.project_id=new.project_id))
+                or (new.record_type='checklist' and exists(select 1 from checklists where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='task_derivation' and exists(select 1 from task_derivations where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='checklist_item' and exists(select 1 from checklist_items where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='validation_gate' and exists(select 1 from validation_gates where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='coverage_item' and exists(select 1 from coverage_items where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='phase' and exists(select 1 from work_phases where id=new.record_id and project_id=new.project_id))
+                or (new.record_type='phase_dependency' and exists(select 1 from work_phase_dependencies d join work_phases p on p.id=d.from_phase_id where d.id=new.record_id and p.project_id=new.project_id))
+                or (new.record_type='acceptance_record' and exists(select 1 from acceptance_records where id=new.record_id and project_id=new.project_id))
+            ))
+            or (new.record_type!='phase_membership' and new.link_kind in ('adopted','created') and not exists(
+                select 1 from correction_transition_aliases alias
+                where alias.correction_application_id=new.correction_application_id
+                  and alias.record_type=new.record_type and alias.record_id=new.record_id
+            ))
+            or (new.record_type!='phase_membership' and new.link_kind='superseded' and not (
+                (new.record_type='task' and exists(
+                    select 1 from correction_transition_aliases alias
+                    where alias.correction_application_id=new.correction_application_id
+                      and alias.record_type='task' and alias.record_id=new.record_id
+                      and alias.alias='@superseded-task/'||new.record_id
+                ))
+                or (new.record_type='checklist'
+                    and ('|'||(select substr(before_state, instr(before_state,'checklists=[')+12, instr(before_state,'];derivations=')-(instr(before_state,'checklists=[')+12)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':active|%'
+                    and ('|'||(select substr(after_state, instr(after_state,'checklists=[')+12, instr(after_state,'];derivations=')-(instr(after_state,'checklists=[')+12)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':closed|%')
+                or (new.record_type='task_derivation'
+                    and ('|'||(select substr(before_state, instr(before_state,'derivations=[')+13, instr(before_state,'];items=')-(instr(before_state,'derivations=[')+13)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':active|%'
+                    and ('|'||(select substr(after_state, instr(after_state,'derivations=[')+13, instr(after_state,'];items=')-(instr(after_state,'derivations=[')+13)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':closed|%')
+                or (new.record_type='checklist_item'
+                    and ('|'||(select substr(before_state, instr(before_state,'items=[')+7, instr(before_state,'];gates=')-(instr(before_state,'items=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':%'
+                    and ('|'||(select substr(after_state, instr(after_state,'items=[')+7, instr(after_state,'];gates=')-(instr(after_state,'items=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':closed|%')
+                or (new.record_type='validation_gate'
+                    and ('|'||(select substr(before_state, instr(before_state,'gates=[')+7, instr(before_state,'];coverage=')-(instr(before_state,'gates=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':active|%'
+                    and ('|'||(select substr(after_state, instr(after_state,'gates=[')+7, instr(after_state,'];coverage=')-(instr(after_state,'gates=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':closed|%')
+                or (new.record_type='coverage_item'
+                    and ('|'||(select substr(before_state, instr(before_state,'coverage=[')+10, instr(before_state,'];phases=')-(instr(before_state,'coverage=[')+10)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':%'
+                    and ('|'||(select substr(after_state, instr(after_state,'coverage=[')+10, instr(after_state,'];phases=')-(instr(after_state,'coverage=[')+10)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':stale|%')
+            ))
+            or (new.record_type!='phase_membership' and new.link_kind='updated' and not exists(
+                select 1 from correction_transition_aliases alias
+                where alias.correction_application_id=new.correction_application_id
+                  and alias.record_type=new.record_type and alias.record_id=new.record_id
+                  and alias.alias like '@accepted-%'
+            ))
+        begin select raise(abort, 'invalid correction application identity link ownership'); end;
+
+        create trigger if not exists trg_correction_identity_link_immutable_update
+        before update on correction_application_identity_links
+        begin select raise(abort, 'correction application identity links are immutable'); end;
+
+        create trigger if not exists trg_correction_identity_link_immutable_delete
+        before delete on correction_application_identity_links
+        begin select raise(abort, 'correction application identity links are immutable'); end;
+
         create trigger if not exists trg_remediation_binding_insert
         before insert on finding_remediation_bindings
         for each row when
@@ -1933,7 +2040,7 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             or not (
                 (new.token_kind='file' and new.operation in ('edit','create','delete'))
                 or (new.token_kind='transition' and new.operation in (
-                    'design-decompose','task-accept-out-of-scope','phase-create',
+                    'design-decompose','design-reconcile','task-accept-out-of-scope','phase-create',
                     'phase-assign','phase-dependency-add','phase-dependency-satisfy',
                     'phase-dependency-accept','stale-accept','stale-close'
                 ))
@@ -1944,6 +2051,12 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                  and new.target not glob '*[^0-9/]*'
                  and cast(substr(new.target,1,instr(new.target,'/')-1) as integer)>0
                  and cast(substr(new.target,instr(new.target,'/')+1) as integer)>0)
+                or (new.operation='design-reconcile'
+                    and length(new.target)-length(replace(new.target,'/',''))=2
+                    and new.target not glob '*[^0-9/]*'
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') as integer)>0)
                 or (new.operation='task-accept-out-of-scope' and (
                     (new.target not glob '*[^0-9]*' and cast(new.target as integer)>0)
                     or (new.target glob '@task/*' and length(new.target)>6
@@ -2131,6 +2244,10 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                  where new.result_ref='checklist:'||c.id and c.project_id=new.project_id
                    and c.id>cast(substr(token.pre_state,instr(token.pre_state,':')+1) as integer)
                    and token.target=cast(c.design_version_id as text)||'/'||cast(c.work_unit_id as text)))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='design-reconcile'
+               and exists(select 1 from checklists c join correction_tokens token on token.id=new.correction_token_id
+                 where new.result_ref='checklist:'||c.id and c.project_id=new.project_id
+                   and token.target=cast(c.design_version_id as text)||'/'||cast(c.work_unit_id as text)||'/'||cast(c.id as text)))
             )
         begin select raise(abort, 'invalid correction transition application links'); end;
 
@@ -2165,7 +2282,7 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
               (
                 (select token.operation from correction_transition_applications application
                  join correction_tokens token on token.id=application.correction_token_id
-                 where application.id=new.correction_application_id)='design-decompose'
+                where application.id=new.correction_application_id) in ('design-decompose','design-reconcile')
                 and (
                   (new.record_type='checklist' and
                    new.alias='@checklist' and
@@ -2194,6 +2311,26 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                     where vg.id=new.record_id and vg.design_requirement_id=ci.design_requirement_id and
                       new.alias='@gate/'||r.requirement_key||'/'||vg.gate_key and
                       (select result_ref from correction_transition_applications where id=new.correction_application_id)='checklist:'||ci.checklist_id))
+                  or (new.record_type='task'
+                      and (select token.operation from correction_transition_applications application join correction_tokens token on token.id=application.correction_token_id where application.id=new.correction_application_id)='design-reconcile'
+                      and new.alias='@superseded-task/'||new.record_id
+                      and exists(
+                        select 1
+                        from task_derivations td
+                        join design_requirements r on r.id=td.design_requirement_id
+                        join tasks t on t.id=td.task_id
+                        join checklist_items ci on ci.id=td.checklist_item_id
+                        join correction_transition_applications app on app.id=new.correction_application_id
+                        join correction_tokens token on token.id=app.correction_token_id
+                        where td.task_id=new.record_id and td.status='closed'
+                          and r.design_version_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') as integer)
+                          and t.work_unit_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') as integer)
+                          and ci.checklist_id!=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[2]') as integer)
+                          and ('|'||substr(app.before_state,
+                            instr(app.before_state,'derivations=[')+13,
+                            instr(app.before_state,'];items=')-(instr(app.before_state,'derivations=[')+13)
+                          )||'|') like '%|'||td.id||':active|%'
+                      ))
                 )
               )
               or
@@ -2206,17 +2343,23 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                    new.alias='@accepted-task/'||new.record_id and
                    (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||new.record_id||':acceptance:%')
                   or (new.record_type='checklist_item' and exists(
-                    select 1 from checklist_items ci where ci.id=new.record_id and
+                    select 1 from checklist_items ci where ci.id=new.record_id and ci.status='accepted_out_of_scope' and
                       new.alias='@accepted-checklist_item/'||new.record_id and
-                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||ci.task_id||':acceptance:%'))
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||ci.task_id||':acceptance:%' and
+                      ('|'||(select substr(before_state, instr(before_state,'items=[')+7, instr(before_state,'];gates=')-(instr(before_state,'items=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.record_id||':accepted_out_of_scope|%' and
+                      ('|'||(select substr(after_state, instr(after_state,'items=[')+7, instr(after_state,'];gates=')-(instr(after_state,'items=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':accepted_out_of_scope|%'))
                   or (new.record_type='validation_gate' and exists(
-                    select 1 from validation_gates vg where vg.id=new.record_id and
+                    select 1 from validation_gates vg where vg.id=new.record_id and vg.status='closed' and
                       new.alias='@accepted-validation_gate/'||new.record_id and
-                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||vg.task_id||':acceptance:%'))
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||vg.task_id||':acceptance:%' and
+                      ('|'||(select substr(before_state, instr(before_state,'gates=[')+7, instr(before_state,'];coverage=')-(instr(before_state,'gates=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.record_id||':closed|%' and
+                      ('|'||(select substr(after_state, instr(after_state,'gates=[')+7, instr(after_state,'];coverage=')-(instr(after_state,'gates=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':closed|%'))
                   or (new.record_type='coverage_item' and exists(
-                    select 1 from coverage_items c where c.id=new.record_id and
+                    select 1 from coverage_items c where c.id=new.record_id and c.status='accepted_out_of_scope' and
                       new.alias='@accepted-coverage_item/'||new.record_id and
-                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||c.task_id||':acceptance:%'))
+                      (select result_ref from correction_transition_applications where id=new.correction_application_id) like 'task:'||c.task_id||':acceptance:%' and
+                      ('|'||(select substr(before_state, instr(before_state,'coverage=[')+10, instr(before_state,'];phases=')-(instr(before_state,'coverage=[')+10)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.record_id||':accepted_out_of_scope|%' and
+                      ('|'||(select substr(after_state, instr(after_state,'coverage=[')+10, instr(after_state,'];phases=')-(instr(after_state,'coverage=[')+10)) from correction_transition_applications where id=new.correction_application_id)||'|') like '%|'||new.record_id||':accepted_out_of_scope|%'))
                 )
               )
               or

@@ -53,6 +53,16 @@ surfaces must be typed `design:`, `plan:`, `docs:`, `workflow:`, or a supported
 edit race, transition application is atomic with its audit row, and ready
 requires all declared postconditions.
 
+Legacy partial or duplicate current decompositions use the closed
+`design-reconcile:<design>/<work>/<canonical-checklist>` transition inside the
+source-correction contract. The canonical checklist is explicit. Reconciliation
+atomically adopts valid nodes, completes missing nodes, supersedes noncanonical
+trace bundles, and exports current task aliases. Apply phase replacement before
+authority-backed numeric disposition of predecessor or rejected tasks;
+`closure ready` rejects residual memberships, tasks, or duplicate derivations.
+Do not substitute normal `decompose design`, which intentionally rejects a
+partial current graph.
+
 Generate the printed `review-context finding-fix`, run an independent resume
 review, and record its typed `--finding-result` with one carried finding and
 trusted provenance. `finding verify --result` must match that outcome. Failed

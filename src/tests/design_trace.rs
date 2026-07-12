@@ -2148,6 +2148,1524 @@ fn mediated_design_decomposition_records_complete_owned_alias_graph() {
 }
 
 #[test]
+fn mediated_design_reconcile_recovers_duplicate_current_derivations() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "recover duplicate decomposition", None).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "storage-recovery",
+            title: "Storage Recovery",
+        },
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Preserve cleanup behavior", "high"),
+    )
+    .unwrap();
+    fs::write(
+        init.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &init.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: design.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let ready = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: ready.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!(
+                "review-context:design-review:design={}:work={}",
+                design.design_version_id, work.work_unit_id
+            )),
+            prompt_deviations: None,
+            result_summary: Some("design ready"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("reviewer"),
+            external_agent_id: Some("reviewer-reconcile"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:reconcile-ready"),
+        },
+    )
+    .unwrap();
+    let canonical = decompose_design(
+        temp.path(),
+        DesignDecomposition {
+            design_version_id: design.design_version_id,
+            work_unit_id: work.work_unit_id,
+            checklist_title: Some("canonical"),
+            reason: Some("initial decomposition"),
+        },
+    )
+    .unwrap();
+    let canonical_task_for_coverage: i64 = open_ledger(&default_ledger_path(temp.path()))
+        .unwrap()
+        .query_row(
+            "select task_id from checklist_items where checklist_id=?1",
+            params![canonical.checklist_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical_coverage = add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work.work_unit_id),
+            task_id: Some(canonical_task_for_coverage),
+            requirement: "canonical coverage",
+            runtime_boundary_evidence: Some("reconciliation test"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("GATE-001"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    let duplicate_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "duplicate cleanup task",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("duplicate is superseded"),
+        },
+    )
+    .unwrap();
+    let duplicate = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: duplicate_task.task_id,
+            derivation_reason: Some("legacy duplicate"),
+            checklist_title: Some("duplicate"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: design.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: duplicate_task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    let duplicate_coverage = add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work.work_unit_id),
+            task_id: Some(duplicate_task.task_id),
+            requirement: "duplicate coverage",
+            runtime_boundary_evidence: Some("legacy duplicate"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("GATE-001"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            key: "implementation",
+            title: "Implementation",
+            kind: "implementation",
+            order: 1,
+            reason: Some("legacy phase membership"),
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(temp.path(), phase.phase_id, duplicate_task.task_id).unwrap();
+    let historical_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "pre-existing closed history",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("must not be adopted by reconciliation"),
+        },
+    )
+    .unwrap();
+    let unrelated_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "unrelated mapping target",
+            priority: "low",
+            source: "user",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("must not enter the canonical bundle"),
+        },
+    )
+    .unwrap();
+    let historical = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: historical_task.task_id,
+            derivation_reason: Some("old closed history"),
+            checklist_title: Some("historical"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='closed' where id=?1",
+        params![historical.task_derivation_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update checklist_items set status='closed' where id=?1",
+        params![historical.checklist_item_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update checklists set status='closed' where id=?1",
+        params![historical.checklist_id],
+    )
+    .unwrap();
+    drop(conn);
+    assign_task_to_phase(temp.path(), phase.phase_id, historical_task.task_id).unwrap();
+    let stale_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "pre-existing stale accepted task",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("pre-existing acceptance is not session ownership"),
+        },
+    )
+    .unwrap();
+    let stale = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: stale_task.task_id,
+            derivation_reason: Some("pre-existing stale derivation"),
+            checklist_title: Some("stale historical"),
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='stale' where id=?1",
+        params![stale.task_derivation_id],
+    )
+    .unwrap();
+    drop(conn);
+    let stale_authority = approval_authority_event(temp.path());
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: &format!("stale:task_derivation:{}", stale.task_derivation_id),
+            acceptance_type: "stale_accepted",
+            reason: "approved before the correction session",
+            approval_authority_event_id: stale_authority,
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(temp.path(), phase.phase_id, stale_task.task_id).unwrap();
+    let correction_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            review_type: "design_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: correction_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("duplicate current decomposition"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "reconcile duplicate current decomposition",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let surface = format!(
+        "transition:design-reconcile:{}/{}/{},transition:stale-accept:coverage_item/{},transition:phase-assign:{}/@task/REQ-001,transition:task-accept-out-of-scope:{}",
+        design.design_version_id,
+        work.work_unit_id,
+        canonical.checklist_id,
+        duplicate_coverage.coverage_item_id,
+        phase.phase_id,
+        duplicate_task.task_id
+    );
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "one canonical current bundle remains",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&surface),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("reconcile canonical checklist"),
+            tests_or_gates: Some("GATE-001"),
+            verification_plan: Some("resume design review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    begin_correction(temp.path(), closure.closure_id).unwrap();
+    let provenance_authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "canonical acceptance provenance",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let canonical_task: i64 = open_ledger(&default_ledger_path(temp.path()))
+        .unwrap()
+        .query_row(
+            "select task_id from checklist_items where checklist_id=?1",
+            params![canonical.checklist_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let canonical_gate: i64 = conn
+        .query_row(
+            "select id from validation_gates where task_id=?1",
+            params![canonical_task],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical_item: i64 = conn
+        .query_row(
+            "select id from checklist_items where checklist_id=?1 and task_id=?2",
+            params![canonical.checklist_id, canonical_task],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical_derivation: i64 = conn
+        .query_row(
+            "select id from task_derivations where checklist_item_id=?1 and status='active'",
+            params![canonical_item],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "update task_derivations set checklist_item_id=?1 where id=?2",
+        params![canonical_item, historical.task_derivation_id],
+    )
+    .unwrap();
+    let (
+        canonical_task_title,
+        canonical_task_details,
+        canonical_task_priority,
+        canonical_task_completion,
+    ): (String, String, String, String) = conn
+        .query_row(
+            "select title, details, priority, completion_condition from tasks where id=?1",
+            params![canonical_task],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    let (canonical_item_order, canonical_item_title, canonical_item_completion): (
+        i64,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "select item_order, title, completion_condition from checklist_items where id=?1",
+            params![canonical_item],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let (canonical_template, canonical_gate_hash, canonical_gate_stage): (i64, String, String) = conn
+        .query_row(
+            "select vg.template_id, gt.gate_hash, gt.stage from validation_gates vg join validation_gate_templates gt on gt.id=vg.template_id where vg.id=?1",
+            params![canonical_gate],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    conn.execute(
+        r#"insert into acceptance_records(
+            project_id, target_type, checklist_item_id, acceptance_type, reason,
+            scope, created_by, status, approved_by_authority_event_id, approved_at, created_at
+        ) values (1, 'checklist_item', ?1, 'explicit_exception', 'canonical provenance',
+            'project', 'user', 'approved', ?2, current_timestamp, current_timestamp)"#,
+        params![canonical_item, provenance_authority.authority_event_id],
+    )
+    .unwrap();
+    for (target_type, target_column, target_id) in [
+        ("task", "task_id", canonical_task),
+        ("validation_gate", "validation_gate_id", canonical_gate),
+        (
+            "coverage_item",
+            "coverage_item_id",
+            canonical_coverage.coverage_item_id,
+        ),
+    ] {
+        conn.execute(
+            &format!("insert into acceptance_records(project_id, target_type, {target_column}, acceptance_type, reason, scope, created_by, status, approved_by_authority_event_id, approved_at, created_at) values (1, ?1, ?2, 'explicit_exception', 'canonical provenance', 'project', 'user', 'approved', ?3, current_timestamp, current_timestamp)"),
+            params![target_type, target_id, provenance_authority.authority_event_id],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        r#"insert into design_requirements(
+            project_id, design_version_id, source_design_file_id, source_section,
+            requirement_key, revision, requirement_hash, supersedes_requirement_id,
+            requirement_text, priority, required_surfaces, validation_expectation,
+            status, created_at)
+        select project_id, design_version_id, source_design_file_id, 'REQ-999: matrix',
+            'REQ-999', 1, 'matrix-only-requirement', null, 'matrix only', 'low',
+            null, null, 'active', current_timestamp
+        from design_requirements where design_version_id=?1 and requirement_key='REQ-001'"#,
+        params![design.design_version_id],
+    )
+    .unwrap();
+    let matrix_requirement = conn.last_insert_rowid();
+    conn.execute(
+        r#"insert into design_versions(
+            project_id, design_package_id, version_number, source_ref, package_hash,
+            content_hash, package_path, manifest_path, format, manifest_version,
+            status, imported_at)
+        select project_id, design_package_id, version_number+100, 'matrix-foreign',
+            'matrix-foreign-package', 'matrix-foreign-content', package_path,
+            manifest_path, format, manifest_version, 'draft', current_timestamp
+        from design_versions where id=?1"#,
+        params![design.design_version_id],
+    )
+    .unwrap();
+    let foreign_design_version = conn.last_insert_rowid();
+    conn.execute(
+        "update design_requirements set design_version_id=?1 where id=?2",
+        params![foreign_design_version, matrix_requirement],
+    )
+    .unwrap();
+    macro_rules! rejects_corruption_atomically {
+        ($corrupt:expr, $restore:expr) => {{
+            $corrupt.unwrap();
+            let before_transition: String = conn.query_row(
+                r#"select group_concat(snapshot, '|') from (
+                    select 'task:'||id||':'||quote(title)||':'||priority||':'||status||':'||source||':'||quote(details)||':'||quote(completion_condition) snapshot from tasks where work_unit_id=?1
+                    union all select 'derivation:'||td.id||':'||td.design_requirement_id||':'||td.task_id||':'||quote(td.checklist_item_id)||':'||td.status from task_derivations td join design_requirements r on r.id=td.design_requirement_id where r.design_version_id=?2
+                    union all select 'checklist:'||id||':'||quote(title)||':'||status from checklists where work_unit_id=?1 and design_version_id=?2
+                    union all select 'item:'||ci.id||':'||ci.project_id||':'||ci.checklist_id||':'||ci.design_requirement_id||':'||ci.task_id||':'||ci.item_order||':'||quote(ci.title)||':'||quote(ci.completion_condition)||':'||ci.status from checklist_items ci join checklists c on c.id=ci.checklist_id where c.work_unit_id=?1 and c.design_version_id=?2
+                    union all select 'gate:'||id||':'||gate_key||':'||quote(template_id)||':'||quote(task_id)||':'||quote(design_requirement_id)||':'||quote(command)||':'||expected_result||':'||selected_before_edit||':'||status from validation_gates where work_unit_id=?1
+                    union all select 'coverage:'||id||':'||quote(task_id)||':'||design_requirement_id||':'||status from coverage_items where work_unit_id=?1
+                    union all select 'acceptance:'||id||':'||target_type||':'||quote(task_id)||':'||quote(checklist_item_id)||':'||quote(validation_gate_id)||':'||quote(coverage_item_id)||':'||acceptance_type||':'||status||':'||quote(approved_by_authority_event_id) from acceptance_records where project_id=1
+                    union all select 'membership:'||phase_id||':'||task_id from work_phase_task_memberships where phase_id=?4
+                    union all select 'token:'||id||':'||status from correction_tokens where closure_id=?5
+                    union all select 'application:'||id from correction_transition_applications
+                    union all select 'alias:'||id||':'||alias from correction_transition_aliases
+                    order by snapshot
+                )"#,
+                params![work.work_unit_id, design.design_version_id, canonical_item, phase.phase_id, closure.closure_id],
+                |row| row.get(0),
+            ).unwrap();
+            assert!(
+                apply_correction_transition(temp.path(), closure.closure_id, 1, None, None)
+                    .is_err()
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select count(*) from correction_transition_applications",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select count(*) from correction_transition_aliases",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select count(*) from correction_tokens where closure_id=?1 and token_ordinal=1 and status='pending'",
+                    params![closure.closure_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                1
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select status from task_derivations where id=?1",
+                    params![duplicate.task_derivation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+                "active"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select count(*) from work_phase_task_memberships where phase_id=?1",
+                    params![phase.phase_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                3
+            );
+            let after_transition: String = conn.query_row(
+                r#"select group_concat(snapshot, '|') from (
+                    select 'task:'||id||':'||quote(title)||':'||priority||':'||status||':'||source||':'||quote(details)||':'||quote(completion_condition) snapshot from tasks where work_unit_id=?1
+                    union all select 'derivation:'||td.id||':'||td.design_requirement_id||':'||td.task_id||':'||quote(td.checklist_item_id)||':'||td.status from task_derivations td join design_requirements r on r.id=td.design_requirement_id where r.design_version_id=?2
+                    union all select 'checklist:'||id||':'||quote(title)||':'||status from checklists where work_unit_id=?1 and design_version_id=?2
+                    union all select 'item:'||ci.id||':'||ci.project_id||':'||ci.checklist_id||':'||ci.design_requirement_id||':'||ci.task_id||':'||ci.item_order||':'||quote(ci.title)||':'||quote(ci.completion_condition)||':'||ci.status from checklist_items ci join checklists c on c.id=ci.checklist_id where c.work_unit_id=?1 and c.design_version_id=?2
+                    union all select 'gate:'||id||':'||gate_key||':'||quote(template_id)||':'||quote(task_id)||':'||quote(design_requirement_id)||':'||quote(command)||':'||expected_result||':'||selected_before_edit||':'||status from validation_gates where work_unit_id=?1
+                    union all select 'coverage:'||id||':'||quote(task_id)||':'||design_requirement_id||':'||status from coverage_items where work_unit_id=?1
+                    union all select 'acceptance:'||id||':'||target_type||':'||quote(task_id)||':'||quote(checklist_item_id)||':'||quote(validation_gate_id)||':'||quote(coverage_item_id)||':'||acceptance_type||':'||status||':'||quote(approved_by_authority_event_id) from acceptance_records where project_id=1
+                    union all select 'membership:'||phase_id||':'||task_id from work_phase_task_memberships where phase_id=?4
+                    union all select 'token:'||id||':'||status from correction_tokens where closure_id=?5
+                    union all select 'application:'||id from correction_transition_applications
+                    union all select 'alias:'||id||':'||alias from correction_transition_aliases
+                    order by snapshot
+                )"#,
+                params![work.work_unit_id, design.design_version_id, canonical_item, phase.phase_id, closure.closure_id],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(after_transition, before_transition);
+            $restore.unwrap();
+        }};
+    }
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update tasks set source='user' where id=?1",
+            params![canonical_task]
+        ),
+        conn.execute(
+            "update tasks set source='design' where id=?1",
+            params![canonical_task]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set task_id=?1 where id=?2",
+            params![historical_task.task_id, canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set task_id=?1 where id=?2",
+            params![canonical_task, canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set design_requirement_id=?1 where id=?2",
+            params![matrix_requirement, canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set design_requirement_id=(select design_requirement_id from task_derivations where id=?1) where id=?2",
+            params![canonical_derivation, canonical_item]
+        )
+    );
+    conn.execute_batch("drop trigger trg_checklist_item_project_update; pragma foreign_keys=off;")
+        .unwrap();
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set project_id=999 where id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set project_id=1 where id=?1",
+            params![canonical_item]
+        )
+    );
+    conn.execute_batch(
+        r#"pragma foreign_keys=on;
+        create trigger trg_checklist_item_project_update
+        before update of project_id, checklist_id, design_requirement_id, task_id on checklist_items
+        for each row
+        when new.project_id != (select project_id from checklists where id = new.checklist_id)
+          or new.project_id != (select project_id from design_requirements where id = new.design_requirement_id)
+          or new.project_id != coalesce(
+              (select project_id from work_units where id = (select work_unit_id from tasks where id = new.task_id)),
+              (select id from projects order by id limit 1)
+          )
+        begin
+            select raise(abort, 'checklist item project_id must match referenced rows');
+        end;"#,
+    )
+    .unwrap();
+    conn.execute(
+        "update checklist_items set task_id=?1 where id=?2",
+        params![canonical_task, duplicate.checklist_item_id],
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row(
+            r#"select count(*) from checklist_items duplicate_ci
+               where duplicate_ci.id=?1
+                 and exists(select 1 from task_derivations canonical_td
+                   where canonical_td.task_id=duplicate_ci.task_id
+                     and canonical_td.design_requirement_id=duplicate_ci.design_requirement_id
+                     and canonical_td.checklist_item_id!=duplicate_ci.id
+                     and canonical_td.status='active')
+                 and exists(select 1 from validation_gates vg where vg.task_id=duplicate_ci.task_id and vg.design_requirement_id=duplicate_ci.design_requirement_id and vg.status='active')
+                 and exists(select 1 from coverage_items c where c.task_id=duplicate_ci.task_id and c.design_requirement_id=duplicate_ci.design_requirement_id and c.status!='stale')"#,
+            params![duplicate.checklist_item_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+        "fixture must share both active gate and live coverage with the canonical bundle"
+    );
+    let shared_error =
+        apply_correction_transition(temp.path(), closure.closure_id, 1, None, None).unwrap_err();
+    assert!(
+        shared_error
+            .to_string()
+            .contains("shared gate or coverage nodes")
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set task_id=?1 where id=?2",
+            params![canonical_task, duplicate.checklist_item_id]
+        ),
+        conn.execute(
+            "update checklist_items set task_id=?1 where id=?2",
+            params![duplicate_task.task_id, duplicate.checklist_item_id]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update task_derivations set checklist_item_id=null where id=?1",
+            params![canonical_derivation]
+        ),
+        conn.execute(
+            "update task_derivations set checklist_item_id=?1 where id=?2",
+            params![canonical_item, canonical_derivation]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update task_derivations set task_id=?1 where id=?2",
+            params![unrelated_task.task_id, canonical_derivation]
+        ),
+        conn.execute(
+            "update task_derivations set task_id=?1 where id=?2",
+            params![canonical_task, canonical_derivation]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update task_derivations set design_requirement_id=?1 where id=?2",
+            params![matrix_requirement, canonical_derivation]
+        ),
+        conn.execute(
+            "update task_derivations set design_requirement_id=(select design_requirement_id from checklist_items where id=?1) where id=?2",
+            params![canonical_item, canonical_derivation]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update tasks set title='corrupt' where id=?1",
+            params![canonical_task]
+        ),
+        conn.execute(
+            "update tasks set title=?1 where id=?2",
+            params![canonical_task_title, canonical_task]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update tasks set details='corrupt' where id=?1",
+            params![canonical_task]
+        ),
+        conn.execute(
+            "update tasks set details=?1 where id=?2",
+            params![canonical_task_details, canonical_task]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update tasks set priority='low' where id=?1",
+            params![canonical_task]
+        ),
+        conn.execute(
+            "update tasks set priority=?1 where id=?2",
+            params![canonical_task_priority, canonical_task]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update tasks set completion_condition='corrupt' where id=?1",
+            params![canonical_task]
+        ),
+        conn.execute(
+            "update tasks set completion_condition=?1 where id=?2",
+            params![canonical_task_completion, canonical_task]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set item_order=2 where id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set item_order=?1 where id=?2",
+            params![canonical_item_order, canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set title='corrupt' where id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set title=?1 where id=?2",
+            params![canonical_item_title, canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update checklist_items set completion_condition='corrupt' where id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update checklist_items set completion_condition=?1 where id=?2",
+            params![canonical_item_completion, canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gates set status='closed' where id=?1",
+            params![canonical_gate]
+        ),
+        conn.execute(
+            "update validation_gates set status='active' where id=?1",
+            params![canonical_gate]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gates set selected_before_edit=0 where id=?1",
+            params![canonical_gate]
+        ),
+        conn.execute(
+            "update validation_gates set selected_before_edit=1 where id=?1",
+            params![canonical_gate]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute("update validation_gates set expected_result='corrupt' where id=?1", params![canonical_gate]),
+        conn.execute("update validation_gates set expected_result=(select expected_result from validation_gate_templates where id=?2) where id=?1", params![canonical_gate, canonical_template])
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gates set gate_key='GATE-999' where id=?1",
+            params![canonical_gate]
+        ),
+        conn.execute(
+            "update validation_gates set gate_key='GATE-001' where id=?1",
+            params![canonical_gate]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute("update validation_gates set command='corrupt' where id=?1", params![canonical_gate]),
+        conn.execute("update validation_gates set command=(select command from validation_gate_templates where id=?2) where id=?1", params![canonical_gate, canonical_template])
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gates set template_id=null where id=?1",
+            params![canonical_gate]
+        ),
+        conn.execute(
+            "update validation_gates set template_id=?1 where id=?2",
+            params![canonical_template, canonical_gate]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set gate_hash='different-nonempty-hash' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set gate_hash=?1 where id=?2",
+            params![canonical_gate_hash, canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set gate_key='GATE-999' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set gate_key='GATE-001' where id=?1",
+            params![canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set command='corrupt' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set command=null where id=?1",
+            params![canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set expected_result='fail' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set expected_result='pass' where id=?1",
+            params![canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set requirement_keys='REQ-999' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set requirement_keys='REQ-001' where id=?1",
+            params![canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set status='superseded' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set status='active' where id=?1",
+            params![canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set stage='design-ready' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set stage=?1 where id=?2",
+            params![canonical_gate_stage, canonical_template]
+        )
+    );
+    let canonical_gate_text: String = conn
+        .query_row(
+            "select gate_text from validation_gate_templates where id=?1",
+            params![canonical_template],
+            |row| row.get(0),
+        )
+        .unwrap();
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update validation_gate_templates set gate_text='different nonempty text' where id=?1",
+            params![canonical_template]
+        ),
+        conn.execute(
+            "update validation_gate_templates set gate_text=?1 where id=?2",
+            params![canonical_gate_text, canonical_template]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update coverage_items set status='stale' where id=?1",
+            params![canonical_coverage.coverage_item_id]
+        ),
+        conn.execute(
+            "update coverage_items set status='covered' where id=?1",
+            params![canonical_coverage.coverage_item_id]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update coverage_items set task_id=?1 where id=?2",
+            params![historical_task.task_id, canonical_coverage.coverage_item_id]
+        ),
+        conn.execute(
+            "update coverage_items set task_id=?1 where id=?2",
+            params![canonical_task, canonical_coverage.coverage_item_id]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            r#"insert into coverage_items(project_id, review_scope_id, work_unit_id,
+                design_requirement_id, task_id, requirement, runtime_boundary_evidence,
+                ux_boundary_evidence, lifecycle_boundary_evidence, tests_or_gates,
+                missing_or_unverified, status, created_at)
+            select project_id, review_scope_id, work_unit_id, design_requirement_id, task_id,
+                requirement, runtime_boundary_evidence, ux_boundary_evidence,
+                lifecycle_boundary_evidence, tests_or_gates, missing_or_unverified,
+                status, current_timestamp from coverage_items where id=?1"#,
+            params![canonical_coverage.coverage_item_id]
+        ),
+        conn.execute("delete from coverage_items where work_unit_id=?1 and design_requirement_id=(select design_requirement_id from coverage_items where id=?2) and task_id=?3 and id!=?2", params![work.work_unit_id, canonical_coverage.coverage_item_id, canonical_task])
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update authority_events set scope='work-unit:999' where id=?1",
+            params![provenance_authority.authority_event_id]
+        ),
+        conn.execute(
+            "update authority_events set scope='project' where id=?1",
+            params![provenance_authority.authority_event_id]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update acceptance_records set status='proposed' where checklist_item_id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update acceptance_records set status='approved' where checklist_item_id=?1",
+            params![canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update acceptance_records set status='rejected' where checklist_item_id=?1",
+            params![canonical_item]
+        ),
+        conn.execute(
+            "update acceptance_records set status='approved' where checklist_item_id=?1",
+            params![canonical_item]
+        )
+    );
+    rejects_corruption_atomically!(
+        conn.execute(
+            "update authority_events set event_type='review_result' where id=?1",
+            params![provenance_authority.authority_event_id]
+        ),
+        conn.execute(
+            "update authority_events set event_type='user_instruction' where id=?1",
+            params![provenance_authority.authority_event_id]
+        )
+    );
+    conn.execute(
+        "delete from design_requirements where id=?1",
+        params![matrix_requirement],
+    )
+    .unwrap();
+    drop(conn);
+    apply_correction_transition(temp.path(), closure.closure_id, 1, None, None).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let (reconcile_application, correction_session): (i64, i64) = conn
+        .query_row(
+            "select app.id, app.correction_session_id from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=1",
+            params![closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        conn.execute(
+            "insert into correction_transition_aliases(project_id, correction_session_id, correction_application_id, alias, record_type, record_id, created_at) values (1, ?1, ?2, ?3, 'task', ?4, current_timestamp)",
+            params![correction_session, reconcile_application, format!("@superseded-task/{}", historical_task.task_id), historical_task.task_id],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'adopted', 'task', ?3, current_timestamp)",
+            params![correction_session, reconcile_application, unrelated_task.task_id],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'superseded', 'task', ?3, current_timestamp)",
+            params![correction_session, reconcile_application, canonical_task],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'adopted', 'task', 999999, current_timestamp)",
+            params![correction_session, reconcile_application],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'created', 'task', ?3, current_timestamp)",
+            params![correction_session, reconcile_application, canonical_task],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'superseded', 'checklist', ?3, current_timestamp)",
+            params![correction_session, reconcile_application, historical.checklist_id],
+        )
+        .is_err()
+    );
+    drop(conn);
+    apply_correction_transition(temp.path(), closure.closure_id, 2, None, None).unwrap();
+    apply_correction_transition(temp.path(), closure.closure_id, 3, None, None).unwrap();
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-user"),
+            summary: "accept reconciled duplicate task",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"insert into design_requirements(
+            project_id, design_version_id, source_design_file_id, source_section,
+            requirement_key, revision, requirement_hash, supersedes_requirement_id,
+            requirement_text, priority, required_surfaces, validation_expectation,
+            status, created_at)
+        select project_id, design_version_id, source_design_file_id, 'REQ-998: ambiguity',
+            'REQ-998', 1, 'ambiguity-requirement', null, 'ambiguity only', 'high',
+            null, null, 'active', current_timestamp
+        from design_requirements where design_version_id=?1 and requirement_key='REQ-001'"#,
+        params![design.design_version_id],
+    )
+    .unwrap();
+    let ambiguous_requirement = conn.last_insert_rowid();
+    conn.execute(
+        "insert into task_derivations(project_id, design_requirement_id, task_id, checklist_item_id, derivation_reason, status, created_at) values (1, ?1, ?2, null, 'ambiguity fixture', 'closed', current_timestamp)",
+        params![ambiguous_requirement, duplicate_task.task_id],
+    )
+    .unwrap();
+    let ambiguous_derivation = conn.last_insert_rowid();
+    let applications_before_ambiguity: i64 = conn
+        .query_row(
+            "select count(*) from correction_transition_applications",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    assert!(
+        apply_correction_transition(
+            temp.path(),
+            closure.closure_id,
+            4,
+            Some(authority.authority_event_id),
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("ambiguous eligible derivations")
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_transition_applications",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        applications_before_ambiguity
+    );
+    conn.execute(
+        "update design_requirements set design_version_id=?1 where id=?2",
+        params![foreign_design_version, ambiguous_requirement],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into checklist_items(project_id, checklist_id, design_requirement_id, task_id, item_order, title, completion_condition, status) values (1, ?1, ?2, ?3, 999, 'untouched foreign item', 'unchanged', 'open')",
+        params![duplicate.checklist_id, ambiguous_requirement, duplicate_task.task_id],
+    )
+    .unwrap();
+    let untouched_item = conn.last_insert_rowid();
+    conn.execute(
+        "update task_derivations set checklist_item_id=?1 where id=?2",
+        params![untouched_item, ambiguous_derivation],
+    )
+    .unwrap();
+    conn.execute(
+        r#"insert into validation_gates(project_id, gate_key, template_id, work_unit_id, task_id, design_requirement_id, command, expected_result, selected_before_edit, status, created_at)
+            select project_id, 'GATE-UNTOUCHED', template_id, work_unit_id, task_id, ?1, command, expected_result, selected_before_edit, 'closed', current_timestamp
+            from validation_gates where task_id=?2 limit 1"#,
+        params![ambiguous_requirement, duplicate_task.task_id],
+    )
+    .unwrap();
+    let untouched_gate = conn.last_insert_rowid();
+    conn.execute(
+        "insert into coverage_items(project_id, work_unit_id, design_requirement_id, task_id, requirement, status, created_at) values (1, ?1, ?2, ?3, 'untouched foreign coverage', 'accepted_out_of_scope', current_timestamp)",
+        params![work.work_unit_id, ambiguous_requirement, duplicate_task.task_id],
+    )
+    .unwrap();
+    let untouched_coverage = conn.last_insert_rowid();
+    drop(conn);
+    apply_correction_transition(
+        temp.path(),
+        closure.closure_id,
+        4,
+        Some(authority.authority_event_id),
+        None,
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let acceptance_application: i64 = conn
+        .query_row(
+            "select app.id from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=4",
+            params![closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (record_type, record_id) in [
+        ("checklist_item", untouched_item),
+        ("validation_gate", untouched_gate),
+        ("coverage_item", untouched_coverage),
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from correction_transition_aliases where correction_application_id=?1 and record_type=?2 and record_id=?3",
+                params![acceptance_application, record_type, record_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from correction_application_identity_links where correction_application_id=?1 and record_type=?2 and record_id=?3",
+                params![acceptance_application, record_type, record_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+    }
+    conn.execute(
+        "update checklist_items set status='accepted_out_of_scope' where id=?1",
+        params![untouched_item],
+    )
+    .unwrap();
+    assert!(
+        conn.execute(
+            "insert into correction_transition_aliases(project_id, correction_session_id, correction_application_id, alias, record_type, record_id, created_at) values (1, ?1, ?2, ?3, 'checklist_item', ?4, current_timestamp)",
+            params![correction_session, acceptance_application, format!("@accepted-checklist_item/{untouched_item}"), untouched_item],
+        )
+        .is_err()
+    );
+    let phase_application: i64 = conn
+        .query_row(
+            "select app.id from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=3",
+            params![closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_application_identity_links where correction_application_id=?1 and link_kind='superseded' and record_type in ('checklist','task_derivation','checklist_item','validation_gate','coverage_item')",
+            params![reconcile_application],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        5
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_application_identity_links where correction_application_id=?1 and link_kind='adopted' and record_type in ('checklist','task','task_derivation','checklist_item','validation_gate','coverage_item')",
+            params![reconcile_application],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        6
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_application_identity_links where correction_application_id=?1 and link_kind in ('membership_removed','membership_assigned') and record_type='phase_membership'",
+            params![phase_application],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+    let unchanged_membership: i64 = conn
+        .query_row(
+            "select id from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, historical_task.task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for forged_kind in ["membership_removed", "membership_assigned"] {
+        assert!(
+            conn.execute(
+                "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, ?3, 'phase_membership', ?4, current_timestamp)",
+                params![correction_session, phase_application, forged_kind, unchanged_membership],
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'adopted', 'phase_membership', ?3, current_timestamp)",
+            params![correction_session, phase_application, unchanged_membership],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (1, ?1, ?2, 'membership_removed', 'task', ?3, current_timestamp)",
+            params![correction_session, phase_application, canonical_task],
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "insert into correction_application_identity_links(project_id, correction_session_id, correction_application_id, link_kind, record_type, record_id, created_at) values (999, ?1, ?2, 'adopted', 'task', ?3, current_timestamp)",
+            params![correction_session, reconcile_application, canonical_task],
+        )
+        .is_err()
+    );
+    let duplicate_status: String = conn
+        .query_row(
+            "select status from task_derivations where id=?1",
+            params![duplicate.task_derivation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let superseded_aliases: i64 = conn
+        .query_row(
+            "select count(*) from correction_transition_aliases where alias=?1 and record_id=?2",
+            params![
+                format!("@superseded-task/{}", duplicate_task.task_id),
+                duplicate_task.task_id
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(duplicate_status, "closed");
+    assert_eq!(superseded_aliases, 1);
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_transition_aliases where correction_application_id=?1 and alias='@derivation/REQ-001' and record_id=?2",
+            params![reconcile_application, canonical_derivation],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_transition_aliases where correction_application_id=?1 and record_type='task_derivation' and record_id=?2",
+            params![reconcile_application, historical.task_derivation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "retained closed canonical history must not be exported as an active alias"
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_transition_aliases where alias=?1",
+            params![format!("@superseded-task/{}", historical_task.task_id)],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "select status from tasks where id=?1",
+            params![duplicate_task.task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "accepted_out_of_scope"
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, canonical_task],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, historical_task.task_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, stale_task.task_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+        "a pre-existing approved stale acceptance is not current-session eligibility"
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from task_derivations td join design_requirements r on r.id=td.design_requirement_id where r.design_version_id=?1 and td.status='active'",
+            params![design.design_version_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    conn.execute_batch("drop trigger trg_correction_alias_immutable_update;")
+        .unwrap();
+    conn.execute(
+        "update correction_transition_aliases set alias='@numeric-disposition-proof' where correction_application_id=?1 and record_type='task' and record_id=?2",
+        params![reconcile_application, duplicate_task.task_id],
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from correction_transition_aliases where correction_session_id=?1 and alias like '@superseded-task/%'",
+            params![correction_session],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "ready drift checks below must be proved by the numeric token branch, not aliases"
+    );
+    let (acceptance_application, exact_acceptance_result): (i64, String) = conn
+        .query_row(
+            "select app.id, app.result_ref from correction_transition_applications app join correction_tokens token on token.id=app.correction_token_id where token.closure_id=?1 and token.token_ordinal=4",
+            params![closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    conn.execute_batch("drop trigger trg_correction_application_links_update;")
+        .unwrap();
+    conn.execute(
+        "update correction_transition_applications set result_ref='task:malformed:acceptance:proof' where id=?1",
+        params![acceptance_application],
+    )
+    .unwrap();
+    let attempts_before_malformed: i64 = conn
+        .query_row(
+            "select count(*) from closure_attempts where closure_id=?1",
+            params![closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        ready_closure(
+            temp.path(),
+            ClosureReady {
+                closure_id: closure.closure_id,
+                implementation_evidence: "malformed proof must reject",
+                tests_or_gates: "exact numeric acceptance proof",
+                closed_by_commit: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("all reconciled duplicate tasks, memberships, and derivations")
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from closure_attempts where closure_id=?1",
+            params![closure.closure_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        attempts_before_malformed
+    );
+    conn.execute(
+        "update correction_transition_applications set result_ref=?1 where id=?2",
+        params![exact_acceptance_result, acceptance_application],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "create trigger trg_correction_application_links_update before update on correction_transition_applications begin select raise(abort, 'correction transition applications are immutable'); end;",
+    )
+    .unwrap();
+    macro_rules! rejects_ready_drift {
+        ($corrupt:expr, $restore:expr) => {{
+            $corrupt.unwrap();
+            let attempts_before: i64 = conn
+                .query_row(
+                    "select count(*) from closure_attempts where closure_id=?1",
+                    params![closure.closure_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let error = ready_closure(
+                temp.path(),
+                ClosureReady {
+                    closure_id: closure.closure_id,
+                    implementation_evidence: "drift must reject",
+                    tests_or_gates: "recovery postcondition drift",
+                    closed_by_commit: None,
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("all reconciled duplicate tasks, memberships, and derivations")
+            );
+            assert_eq!(
+                conn.query_row(
+                    "select count(*) from closure_attempts where closure_id=?1",
+                    params![closure.closure_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                attempts_before
+            );
+            $restore.unwrap();
+        }};
+    }
+    rejects_ready_drift!(
+        conn.execute(
+            "update tasks set status='open' where id=?1",
+            params![duplicate_task.task_id]
+        ),
+        conn.execute(
+            "update tasks set status='accepted_out_of_scope' where id=?1",
+            params![duplicate_task.task_id]
+        )
+    );
+    rejects_ready_drift!(
+        conn.execute(
+            "insert into work_phase_task_memberships(project_id, phase_id, task_id, assigned_at) values (1, ?1, ?2, current_timestamp)",
+            params![phase.phase_id, duplicate_task.task_id]
+        ),
+        conn.execute(
+            "delete from work_phase_task_memberships where phase_id=?1 and task_id=?2",
+            params![phase.phase_id, duplicate_task.task_id]
+        )
+    );
+    rejects_ready_drift!(
+        conn.execute(
+            "update task_derivations set status='active' where id=?1",
+            params![duplicate.task_derivation_id]
+        ),
+        conn.execute(
+            "update task_derivations set status='closed' where id=?1",
+            params![duplicate.task_derivation_id]
+        )
+    );
+    conn.execute(
+        "update correction_transition_aliases set alias=?1 where correction_application_id=?2 and record_type='task' and record_id=?3",
+        params![format!("@superseded-task/{}", duplicate_task.task_id), reconcile_application, duplicate_task.task_id],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "create trigger trg_correction_alias_immutable_update before update on correction_transition_aliases begin select raise(abort, 'correction transition aliases are immutable'); end;",
+    )
+    .unwrap();
+    drop(conn);
+    ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: closure.closure_id,
+            implementation_evidence: "canonical graph reconciled",
+            tests_or_gates: "duplicate task disposition and phase replacement verified",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
 fn stale_close_disposes_selected_validation_gate() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

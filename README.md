@@ -23,6 +23,13 @@ correction session. Run the printed `closure correction-begin`, change only the
 declared Markdown surfaces, apply any declared product transitions with
 `closure transition apply`, and then run `closure ready`. Direct underlying
 task, phase, decomposition, or stale commands cannot bypass an active session.
+If an older release already created partial or duplicate current derivations,
+supersede the correction contract with the printed audited tokens and use
+`transition:design-reconcile:<design>/<work>/<canonical-checklist>`. Apply stale
+dispositions first, reconcile the canonical checklist, replace phase membership
+with current `@task/<requirement>` aliases, and authority-disposition rejected
+numeric task IDs last. Normal `design-decompose` continues to reject partial
+state.
 
 Legacy ledgers that fail migration with invalid validation-run links have an
 official recovery path. Run `agent-workbench doctor validation-links` for a

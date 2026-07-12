@@ -1188,6 +1188,20 @@ pub fn apply_correction_transition(
             ensure_mediated_decomposition_coverage(&tx, project_id, work, design)?;
             format!("checklist:{}", outcome.checklist_id)
         }
+        "design-reconcile" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            let design = parts[0].parse::<i64>()?;
+            let work = parts[1].parse::<i64>()?;
+            let checklist = parts[2].parse::<i64>()?;
+            if work != work_unit_id || design_version_id != Some(design) {
+                bail!("design-reconcile target is outside the correction owner or design")
+            }
+            let outcome = crate::traceability::reconcile_design_in(
+                &tx, project_id, design, work, checklist, &reason,
+            )?;
+            ensure_mediated_decomposition_coverage(&tx, project_id, work, design)?;
+            format!("checklist:{}", outcome.checklist_id)
+        }
         "task-accept-out-of-scope" => {
             let (task_id, design_requirement_id) = resolve_task_ref(
                 &tx,
@@ -1197,14 +1211,26 @@ pub fn apply_correction_transition(
                 design_version_id,
                 &target,
             )?;
-            let outcome = crate::planning::accept_task_out_of_scope_in(
-                &tx,
-                project_id,
-                task_id,
-                design_requirement_id,
-                &reason,
-                authority_event_id.unwrap(),
-            )?;
+            let outcome = if target.starts_with("@task/") {
+                crate::planning::accept_task_out_of_scope_in(
+                    &tx,
+                    project_id,
+                    task_id,
+                    design_requirement_id,
+                    &reason,
+                    authority_event_id.unwrap(),
+                )?
+            } else {
+                crate::planning::accept_recovery_task_out_of_scope_in(
+                    &tx,
+                    project_id,
+                    task_id,
+                    design_requirement_id,
+                    design_version_id.context("correction review has no design")?,
+                    &reason,
+                    authority_event_id.unwrap(),
+                )?
+            };
             format!(
                 "task:{}:acceptance:{}",
                 task_id, outcome.acceptance_record_id
@@ -1252,6 +1278,52 @@ pub fn apply_correction_transition(
                 design_version_id,
                 task_ref,
             )?;
+            if let Some(requirement_key) = task_ref.strip_prefix("@task/") {
+                tx.execute(
+                    r#"
+                    delete from work_phase_task_memberships
+                    where phase_id=?5 and task_id!=?1 and task_id in (
+                      select distinct predecessor.id
+                      from tasks predecessor
+                      join task_derivations td on td.task_id=predecessor.id
+                      join design_requirements r on r.id=td.design_requirement_id
+                      join design_versions v on v.id=r.design_version_id
+                      join design_versions current_v on current_v.id=?2
+                      where predecessor.work_unit_id=?3
+                        and predecessor.status in ('open','blocked')
+                        and r.requirement_key=?4
+                        and v.design_package_id=current_v.design_package_id
+                        and (
+                          td.status='active'
+                          or (td.status='stale' and exists(
+                            select 1 from acceptance_records ar
+                            join correction_transition_applications stale_app
+                              on stale_app.correction_session_id=?6
+                            join correction_tokens stale_token
+                              on stale_token.id=stale_app.correction_token_id
+                            where ar.target_type='stale_record'
+                              and ar.stale_record_type='task_derivation'
+                              and ar.stale_record_id=td.id and ar.status='approved'
+                              and stale_token.operation='stale-accept'
+                              and stale_token.token_ordinal<?7
+                              and stale_app.result_ref='stale:task_derivation:'||td.id||':stale_accepted'
+                          ))
+                          or (td.status='closed' and exists(
+                            select 1 from correction_transition_aliases a
+                            join correction_transition_applications app on app.id=a.correction_application_id
+                            join correction_tokens token on token.id=app.correction_token_id
+                            where a.correction_session_id=?6 and a.record_type='task'
+                              and a.record_id=predecessor.id
+                              and a.alias='@superseded-task/'||predecessor.id
+                              and token.operation='design-reconcile'
+                              and token.token_ordinal<?7
+                          ))
+                        )
+                    )
+                    "#,
+                    params![task_id, design_version_id, work_unit_id, requirement_key, phase_id, session_id, token_ordinal],
+                )?;
+            }
             crate::phases::assign_task_to_phase_in(&tx, project_id, phase_id, task_id)?;
             format!("phase:{phase_id}:task:{task_id}")
         }
@@ -1444,7 +1516,7 @@ fn record_correction_transition_aliases(
 ) -> Result<()> {
     let mut aliases = Vec::<(String, String, i64)>::new();
     match operation {
-        "design-decompose" => {
+        "design-decompose" | "design-reconcile" => {
             let checklist_id = result_ref
                 .strip_prefix("checklist:")
                 .context("invalid decomposition application result")?
@@ -1459,8 +1531,9 @@ fn record_correction_transition_aliases(
                 select r.requirement_key, ci.id, ci.task_id, td.id, c.id
                 from checklist_items ci
                 join design_requirements r on r.id = ci.design_requirement_id
-                join task_derivations td on td.checklist_item_id = ci.id
+                join task_derivations td on td.checklist_item_id = ci.id and td.status='active'
                 join coverage_items c on c.task_id = ci.task_id and c.design_requirement_id = r.id
+                  and c.status in ('covered','needs_evidence')
                 where ci.checklist_id = ?1
                 order by r.requirement_key
                 "#,
@@ -1496,10 +1569,13 @@ fn record_correction_transition_aliases(
                     r#"
                     select vg.id, vg.gate_key
                     from validation_gates vg
+                    join validation_gate_templates gt on gt.id=vg.template_id and gt.status='active'
                     join checklist_items ci
                       on ci.task_id = vg.task_id
                      and ci.design_requirement_id = vg.design_requirement_id
-                    where ci.id = ?1
+                    join checklists checklist on checklist.id=ci.checklist_id
+                    where ci.id = ?1 and vg.status='active'
+                      and gt.design_version_id=checklist.design_version_id
                     order by vg.id
                     "#,
                 )?;
@@ -1512,6 +1588,40 @@ fn record_correction_transition_aliases(
                         format!("@gate/{key}/{gate_key}"),
                         "validation_gate".to_string(),
                         gate_id,
+                    ));
+                }
+            }
+            if operation == "design-reconcile" {
+                let parts = target.split('/').collect::<Vec<_>>();
+                let design = parts[0].parse::<i64>()?;
+                let work = parts[1].parse::<i64>()?;
+                let mut rejected = conn.prepare(
+                    r#"
+                    select distinct t.id
+                    from task_derivations td
+                    join design_requirements r on r.id=td.design_requirement_id
+                    join tasks t on t.id=td.task_id
+                    join checklist_items ci on ci.id=td.checklist_item_id
+                    join correction_transition_applications app on app.id=?4
+                    where r.design_version_id=?1 and t.work_unit_id=?2
+                      and ci.checklist_id!=?3 and td.status='closed'
+                      and ('|'||substr(app.before_state,
+                        instr(app.before_state,'derivations=[')+13,
+                        instr(app.before_state,'];items=')-(instr(app.before_state,'derivations=[')+13)
+                      )||'|') like '%|'||td.id||':active|%'
+                    order by t.id
+                    "#,
+                )?;
+                let rejected_rows = rejected
+                    .query_map(params![design, work, checklist_id, application_id], |row| {
+                        row.get::<_, i64>(0)
+                    })?;
+                for rejected_task in rejected_rows {
+                    let rejected_task = rejected_task?;
+                    aliases.push((
+                        format!("@superseded-task/{rejected_task}"),
+                        "task".to_string(),
+                        rejected_task,
                     ));
                 }
             }
@@ -1538,6 +1648,11 @@ fn record_correction_transition_aliases(
                 "task".to_string(),
                 task_id,
             ));
+            let (before_state, after_state): (String, String) = conn.query_row(
+                "select before_state, after_state from correction_transition_applications where id=?1",
+                params![application_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
             let mut stmt = conn.prepare(
                 r#"
                 select 'checklist_item', ci.id from checklist_items ci where ci.task_id=?1
@@ -1550,6 +1665,17 @@ fn record_correction_transition_aliases(
             })?;
             for row in rows {
                 let (record_type, record_id) = row?;
+                let section = match record_type.as_str() {
+                    "checklist_item" => "items",
+                    "validation_gate" => "gates",
+                    "coverage_item" => "coverage",
+                    _ => continue,
+                };
+                let before = snapshot_entries(&before_state, section);
+                let after = snapshot_entries(&after_state, section);
+                if before.get(&record_id) == after.get(&record_id) {
+                    continue;
+                }
                 aliases.push((
                     format!("@accepted-{record_type}/{record_id}"),
                     record_type,
@@ -1570,7 +1696,7 @@ fn record_correction_transition_aliases(
         }
         _ => {}
     }
-    for (alias, record_type, record_id) in aliases {
+    for (alias, record_type, record_id) in &aliases {
         conn.execute(
             r#"
             insert into correction_transition_aliases(
@@ -1588,7 +1714,143 @@ fn record_correction_transition_aliases(
             ],
         )?;
     }
+    record_correction_application_identity_links(
+        conn,
+        project_id,
+        session_id,
+        application_id,
+        operation,
+        &aliases,
+    )?;
     Ok(())
+}
+
+fn record_correction_application_identity_links(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    session_id: i64,
+    application_id: i64,
+    operation: &str,
+    aliases: &[(String, String, i64)],
+) -> Result<()> {
+    let (before_state, after_state): (String, String) = conn.query_row(
+        "select before_state, after_state from correction_transition_applications where id=?1",
+        params![application_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let section_for = |record_type: &str| match record_type {
+        "task" => Some("tasks"),
+        "checklist" => Some("checklists"),
+        "task_derivation" => Some("derivations"),
+        "checklist_item" => Some("items"),
+        "validation_gate" => Some("gates"),
+        "coverage_item" => Some("coverage"),
+        "phase" => Some("phases"),
+        "phase_dependency" => Some("phase_dependencies"),
+        "acceptance_record" => Some("acceptances"),
+        _ => None,
+    };
+    let mut links = std::collections::BTreeSet::<(String, String, i64)>::new();
+    for (alias, record_type, record_id) in aliases {
+        let existed = section_for(record_type).is_some_and(|section| {
+            snapshot_entries(&before_state, section).contains_key(record_id)
+        });
+        links.insert((
+            if alias.starts_with("@superseded-task/") {
+                "superseded"
+            } else if alias.starts_with("@accepted-") {
+                "updated"
+            } else if existed {
+                "adopted"
+            } else {
+                "created"
+            }
+            .to_string(),
+            record_type.clone(),
+            *record_id,
+        ));
+    }
+    if operation == "design-reconcile" {
+        for (section, record_type) in [
+            ("checklists", "checklist"),
+            ("derivations", "task_derivation"),
+            ("items", "checklist_item"),
+            ("gates", "validation_gate"),
+            ("coverage", "coverage_item"),
+        ] {
+            let before = snapshot_entries(&before_state, section);
+            let after = snapshot_entries(&after_state, section);
+            for (record_id, before_value) in &before {
+                if after
+                    .get(record_id)
+                    .is_some_and(|after_value| after_value != before_value)
+                {
+                    links.insert((
+                        "superseded".to_string(),
+                        record_type.to_string(),
+                        *record_id,
+                    ));
+                }
+            }
+        }
+    }
+    let before_memberships = snapshot_entries(&before_state, "memberships");
+    let after_memberships = snapshot_entries(&after_state, "memberships");
+    for record_id in before_memberships.keys() {
+        if !after_memberships.contains_key(record_id) {
+            links.insert((
+                "membership_removed".to_string(),
+                "phase_membership".to_string(),
+                *record_id,
+            ));
+        }
+    }
+    for record_id in after_memberships.keys() {
+        if !before_memberships.contains_key(record_id) {
+            links.insert((
+                "membership_assigned".to_string(),
+                "phase_membership".to_string(),
+                *record_id,
+            ));
+        }
+    }
+    for (link_kind, record_type, record_id) in links {
+        conn.execute(
+            r#"
+            insert into correction_application_identity_links(
+                project_id, correction_session_id, correction_application_id,
+                link_kind, record_type, record_id, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+            "#,
+            params![
+                project_id,
+                session_id,
+                application_id,
+                link_kind,
+                record_type,
+                record_id
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn snapshot_entries(snapshot: &str, section: &str) -> std::collections::BTreeMap<i64, String> {
+    let prefix = format!("{section}=[");
+    let Some(start) = snapshot.find(&prefix).map(|index| index + prefix.len()) else {
+        return std::collections::BTreeMap::new();
+    };
+    let Some(end) = snapshot[start..].find(']').map(|offset| start + offset) else {
+        return std::collections::BTreeMap::new();
+    };
+    snapshot[start..end]
+        .split('|')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let (id, value) = entry.split_once(':')?;
+            Some((id.parse().ok()?, value.to_string()))
+        })
+        .collect()
 }
 
 fn parse_pair(target: &str) -> Result<(i64, i64)> {
@@ -1610,19 +1872,62 @@ fn resolve_task_ref(
         bail!("invalid task reference");
     }
     if let Some(task_id) = numeric_id {
-        return conn
-            .query_row(
+        let mut stmt = conn.prepare(
                 r#"
-                select t.id, r.id from tasks t
-                join task_derivations td on td.task_id = t.id and td.status = 'active'
+                select distinct t.id, r.id from tasks t
+                join task_derivations td on td.task_id = t.id
                 join design_requirements r on r.id = td.design_requirement_id
-                where t.id = ?1 and t.work_unit_id = ?2 and r.design_version_id = ?3
+                join design_versions v on v.id=r.design_version_id
+                join design_versions current_v on current_v.id=?3
+                join design_requirements current_r on current_r.design_version_id=current_v.id
+                  and current_r.requirement_key=r.requirement_key
+                where t.id = ?1 and t.work_unit_id = ?2
+                  and v.design_package_id=current_v.design_package_id
+                  and (
+                    td.status='active'
+                    or (td.status='stale' and exists(
+                      select 1 from acceptance_records ar
+                      join correction_transition_applications stale_app
+                        on stale_app.correction_session_id=?4
+                      join correction_tokens stale_token
+                        on stale_token.id=stale_app.correction_token_id
+                      where ar.target_type='stale_record'
+                        and ar.stale_record_type='task_derivation' and ar.stale_record_id=td.id
+                        and ar.status='approved'
+                        and stale_token.operation='stale-accept'
+                        and stale_token.token_ordinal<?5
+                        and stale_app.result_ref='stale:task_derivation:'||td.id||':stale_accepted'
+                    ))
+                    or (td.status='closed' and exists(
+                      select 1 from correction_transition_aliases a
+                      join correction_transition_applications app on app.id=a.correction_application_id
+                      join correction_tokens token on token.id=app.correction_token_id
+                      where a.record_type='task' and a.record_id=t.id
+                        and a.alias='@superseded-task/'||t.id
+                        and token.operation='design-reconcile'
+                        and a.correction_session_id=?4 and token.token_ordinal<?5
+                    ))
+                  )
+                order by (r.design_version_id=?3) desc, r.id
                 "#,
-                params![task_id, work_unit_id, design_version_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?
-            .context("task id is outside the correction owner or current design");
+            )?;
+        let candidates = stmt
+            .query_map(
+                params![
+                    task_id,
+                    work_unit_id,
+                    design_version_id,
+                    session_id,
+                    token_ordinal
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        return match candidates.as_slice() {
+            [candidate] => Ok(*candidate),
+            [] => bail!("task id is outside the correction owner or current design"),
+            _ => bail!("numeric task disposition has ambiguous eligible derivations"),
+        };
     }
     conn.query_row(
         r#"
@@ -1761,6 +2066,7 @@ fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionToken>> {
             if !matches!(
                 verb,
                 "design-decompose"
+                    | "design-reconcile"
                     | "task-accept-out-of-scope"
                     | "phase-create"
                     | "phase-assign"
@@ -1786,7 +2092,7 @@ fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionToken>> {
             if !transition_effects.insert(effect_key) {
                 bail!("duplicate correction transition effect is not allowed");
             }
-            if verb == "design-decompose" {
+            if matches!(verb, "design-decompose" | "design-reconcile") {
                 has_decomposition = true;
             }
             if verb == "phase-create" {
@@ -1866,6 +2172,15 @@ fn validate_correction_transition_target(
             positive(parts[0])?;
             positive(parts[1])?;
         }
+        "design-reconcile" => {
+            let parts = target.split('/').collect::<Vec<_>>();
+            if parts.len() != 3 {
+                bail!("design-reconcile target requires design/work/canonical-checklist")
+            }
+            positive(parts[0])?;
+            positive(parts[1])?;
+            positive(parts[2])?;
+        }
         "task-accept-out-of-scope" => {
             if target.starts_with("@task/") {
                 let key = target.trim_start_matches("@task/");
@@ -1875,7 +2190,9 @@ fn validate_correction_transition_target(
                         .chars()
                         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
                 {
-                    bail!("task alias requires an earlier design-decompose token")
+                    bail!(
+                        "task alias requires an earlier design decomposition or reconciliation token"
+                    )
                 }
             } else {
                 positive(target)?;
@@ -1921,7 +2238,9 @@ fn validate_correction_transition_target(
                         .chars()
                         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
                 {
-                    bail!("task alias requires an earlier design-decompose token")
+                    bail!(
+                        "task alias requires an earlier design decomposition or reconciliation token"
+                    )
                 }
             } else {
                 positive(task)?;
@@ -2088,14 +2407,39 @@ fn validate_correction_transition_preflight(
                     conn, project_id, design, work,
                 )?;
             }
+            "design-reconcile" => {
+                let parts = target.split('/').collect::<Vec<_>>();
+                let design = parts[0].parse::<i64>()?;
+                let work = parts[1].parse::<i64>()?;
+                let checklist = parts[2].parse::<i64>()?;
+                if work != work_unit_id || design_version_id != Some(design) {
+                    bail!("design-reconcile target is outside the correction owner or design");
+                }
+                crate::traceability::validate_design_decomposition_scope_in(
+                    conn, project_id, design, work,
+                )?;
+                conn.query_row(
+                    "select 1 from checklists where id=?1 and project_id=?2 and design_version_id=?3 and work_unit_id=?4 and status='active'",
+                    params![checklist, project_id, design, work],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .context("canonical reconciliation checklist is outside the correction owner or design")?;
+            }
             "task-accept-out-of-scope" if !target.starts_with("@task/") => {
                 let task_id = target.parse::<i64>()?;
                 conn.query_row(
                     r#"select 1 from tasks t
                        where t.id=?1 and t.work_unit_id=?2 and t.status in ('open','blocked')
                          and (?3 is null or exists(
-                           select 1 from task_derivations td join design_requirements r on r.id=td.design_requirement_id
-                           where td.task_id=t.id and td.status='active' and r.design_version_id=?3
+                           select 1 from task_derivations td
+                           join design_requirements r on r.id=td.design_requirement_id
+                           join design_versions v on v.id=r.design_version_id
+                           join design_versions current_v on current_v.id=?3
+                           join design_requirements current_r on current_r.design_version_id=current_v.id
+                             and current_r.requirement_key=r.requirement_key
+                           where td.task_id=t.id and v.design_package_id=current_v.design_package_id
+                             and td.status in ('active','stale','closed')
                          ))"#,
                     params![task_id, work_unit_id, design_version_id],
                     |_| Ok(()),
@@ -2449,6 +2793,53 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
                 "closure ready requires the selected transition: agent-workbench closure transition apply {} --token {}",
                 input.closure_id,
                 token
+            );
+        }
+        let recovery_residuals: i64 = tx.query_row(
+            r#"
+            select
+              (select count(*)
+               from correction_transition_aliases a
+               join tasks t on t.id=a.record_id
+               where a.correction_session_id=?1 and a.alias like '@superseded-task/%'
+                 and (t.status in ('open','blocked')
+                   or exists(select 1 from work_phase_task_memberships m where m.task_id=t.id)
+                   or exists(select 1 from task_derivations td where td.task_id=t.id and td.status='active')))
+              +
+              (select count(*)
+               from correction_tokens token
+               join task_derivations td
+               join design_requirements r on r.id=td.design_requirement_id
+               join tasks t on t.id=td.task_id
+               left join checklist_items ci on ci.id=td.checklist_item_id
+               where token.closure_id=?2 and token.operation='design-reconcile'
+                 and token.status='applied' and td.status='active'
+                 and r.design_version_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') as integer)
+                 and t.work_unit_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') as integer)
+                 and coalesce(ci.checklist_id,0)!=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[2]') as integer))
+              +
+              (select count(*)
+               from correction_tokens token
+               join correction_transition_applications app
+                 on app.correction_token_id=token.id and app.correction_session_id=?1
+               join tasks t on t.id=cast(token.target as integer)
+               left join acceptance_records ar
+                 on ar.task_id=t.id and ar.status='approved'
+                and ar.acceptance_type='accepted_out_of_scope'
+                and ar.approved_by_authority_event_id=app.authority_event_id
+                and app.result_ref='task:'||t.id||':acceptance:'||ar.id
+               where token.closure_id=?2 and token.operation='task-accept-out-of-scope'
+                 and token.status='applied' and token.target not glob '*[^0-9]*'
+                 and (ar.id is null or t.status!='accepted_out_of_scope'
+                   or exists(select 1 from work_phase_task_memberships m where m.task_id=t.id)
+                   or exists(select 1 from task_derivations td where td.task_id=t.id and td.status='active')))
+            "#,
+            params![session_id, input.closure_id],
+            |row| row.get(0),
+        )?;
+        if recovery_residuals > 0 {
+            bail!(
+                "closure ready requires all reconciled duplicate tasks, memberships, and derivations to be dispositioned"
             );
         }
         let design_root: Option<String> = tx
