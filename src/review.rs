@@ -1107,6 +1107,7 @@ pub fn apply_correction_transition(
         {
             bail!("transition token was already applied with different authority or evidence");
         }
+        validate_completion_inheritance_application(&tx, application_id)?;
         return Ok(CorrectionTransitionOutcome {
             closure_id,
             token_ordinal,
@@ -1166,6 +1167,7 @@ pub fn apply_correction_transition(
     )?;
     let reason = format!("correction closure {closure_id} token {token_ordinal}");
     let before_state = transition_state_snapshot(&tx, work_unit_id)?;
+    let mut completion_inheritances = Vec::new();
     let result_ref = match operation.as_str() {
         "design-decompose" => {
             let (design, work) = parse_pair(&target)?;
@@ -1199,6 +1201,7 @@ pub fn apply_correction_transition(
             let outcome = crate::traceability::reconcile_design_in(
                 &tx, project_id, design, work, checklist, &reason,
             )?;
+            completion_inheritances = outcome.completion_inheritances;
             ensure_mediated_decomposition_coverage(&tx, project_id, work, design)?;
             format!("checklist:{}", outcome.checklist_id)
         }
@@ -1425,6 +1428,14 @@ pub fn apply_correction_transition(
         ],
     )?;
     let application_id = tx.last_insert_rowid();
+    record_completion_inheritances(
+        &tx,
+        project_id,
+        session_id,
+        application_id,
+        &completion_inheritances,
+    )?;
+    validate_completion_inheritance_application(&tx, application_id)?;
     record_correction_transition_aliases(
         &tx,
         project_id,
@@ -1448,12 +1459,122 @@ pub fn apply_correction_transition(
     })
 }
 
+fn record_completion_inheritances(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    session_id: i64,
+    application_id: i64,
+    inheritances: &[crate::traceability::CompletionInheritance],
+) -> Result<()> {
+    for inheritance in inheritances {
+        conn.execute(
+            r#"insert into correction_completion_inheritance_sources(
+                project_id,correction_session_id,correction_application_id,
+                current_requirement_id,source_requirement_id,source_design_approval_event_id,
+                source_task_id,source_checklist_item_id,source_membership_id,
+                source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,
+                canonical_task_id,canonical_checklist_item_id,created_at
+            ) values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,current_timestamp)"#,
+            params![
+                project_id,
+                session_id,
+                application_id,
+                inheritance.current_requirement_id,
+                inheritance.source_requirement_id,
+                inheritance.source_design_approval_event_id,
+                inheritance.source_task_id,
+                inheritance.source_checklist_item_id,
+                inheritance.source_membership_id,
+                inheritance.source_membership_assigned_at,
+                inheritance.source_phase_id,
+                inheritance.source_phase_closed_event_id,
+                inheritance.canonical_task_id,
+                inheritance.canonical_checklist_item_id
+            ],
+        )?;
+        let source_id = conn.last_insert_rowid();
+        for evidence_id in &inheritance.implementation_evidence_ids {
+            conn.execute(
+                "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) values (?1,?2,'implementation_evidence',?3,null,null,current_timestamp)",
+                params![project_id,source_id,evidence_id],
+            )?;
+        }
+        conn.execute(
+            "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) values (?1,?2,'coverage_item',?3,?4,null,current_timestamp)",
+            params![project_id,source_id,inheritance.source_coverage_id,inheritance.canonical_coverage_id],
+        )?;
+        for (source_gate, canonical_gate, validation_run) in &inheritance.gate_mappings {
+            conn.execute(
+                "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) values (?1,?2,'validation_gate',?3,?4,?5,current_timestamp)",
+                params![project_id,source_id,source_gate,canonical_gate,validation_run],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_completion_inheritance_application(
+    conn: &rusqlite::Connection,
+    application_id: i64,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "select id,source_task_id,source_requirement_id,source_phase_id,current_requirement_id,canonical_task_id from correction_completion_inheritance_sources where correction_application_id=?1",
+    )?;
+    let rows = stmt
+        .query_map(params![application_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for (
+        source_id,
+        source_task,
+        source_requirement,
+        source_phase,
+        current_requirement,
+        canonical_task,
+    ) in rows
+    {
+        let currently_valid: bool = conn.query_row(
+            "select exists(select 1 from valid_completion_inheritance_sources where id=?1)",
+            params![source_id],
+            |row| row.get(0),
+        )?;
+        let (mapped_implementation, eligible_implementation, mapped_coverage, mapped_gates, canonical_gates): (i64,i64,i64,i64,i64) = conn.query_row(
+            r#"select
+                (select count(*) from correction_completion_inheritance_evidence where inheritance_source_id=?1 and evidence_kind='implementation_evidence'),
+                (select count(*) from implementation_evidence where task_id=?2 and design_requirement_id=?3 and created_at<=(select closed_at from work_phases where id=?4)),
+                (select count(*) from correction_completion_inheritance_evidence where inheritance_source_id=?1 and evidence_kind='coverage_item'),
+                (select count(*) from correction_completion_inheritance_evidence where inheritance_source_id=?1 and evidence_kind='validation_gate'),
+                (select count(*) from validation_gates where task_id=?5 and design_requirement_id=?6 and selected_before_edit=1 and status='closed')"#,
+            params![source_id,source_task,source_requirement,source_phase,canonical_task,current_requirement],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        )?;
+        if !currently_valid
+            || eligible_implementation == 0
+            || mapped_implementation != eligible_implementation
+            || mapped_coverage != 1
+            || mapped_gates != canonical_gates
+        {
+            bail!("completion inheritance evidence set is incomplete");
+        }
+    }
+    Ok(())
+}
+
 fn transition_state_snapshot(conn: &rusqlite::Connection, work_unit_id: i64) -> Result<String> {
     let state: (String, String, String, String, String, String, String, String, String, String) = conn.query_row(
         r#"
         select
           coalesce((select group_concat(v,'|') from (select id||':'||status v from tasks where work_unit_id=?1 order by id)),''),
-          coalesce((select group_concat(v,'|') from (select m.id||':'||m.phase_id||':'||m.task_id v from work_phase_task_memberships m join work_phases p on p.id=m.phase_id where p.work_unit_id=?1 order by m.id)),''),
+          coalesce((select group_concat(v,'|') from (select m.id||':'||m.phase_id||':'||m.task_id||':'||m.assigned_at v from work_phase_task_memberships m join work_phases p on p.id=m.phase_id where p.work_unit_id=?1 order by m.id)),''),
           coalesce((select group_concat(v,'|') from (select id||':'||status v from checklists where work_unit_id=?1 order by id)),''),
           coalesce((select group_concat(v,'|') from (select td.id||':'||td.status v from task_derivations td join tasks t on t.id=td.task_id where t.work_unit_id=?1 order by td.id)),''),
           coalesce((select group_concat(v,'|') from (select ci.id||':'||ci.status v from checklist_items ci join tasks t on t.id=ci.task_id where t.work_unit_id=?1 order by ci.id)),''),
@@ -1792,6 +1913,54 @@ fn record_correction_application_identity_links(
                     ));
                 }
             }
+        }
+        let mut inherited = conn.prepare(
+            "select canonical_task_id,canonical_checklist_item_id from correction_completion_inheritance_sources where correction_application_id=?1",
+        )?;
+        let inherited_rows = inherited.query_map(params![application_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for inherited_row in inherited_rows {
+            let (task_id, item_id) = inherited_row?;
+            links.retain(|(_, record_type, record_id)| {
+                !((record_type == "task" && *record_id == task_id)
+                    || (record_type == "checklist_item" && *record_id == item_id))
+            });
+            links.insert(("updated".to_string(), "task".to_string(), task_id));
+            links.insert(("updated".to_string(), "checklist_item".to_string(), item_id));
+        }
+        let mut sources = conn.prepare(
+            "select source_task_id,source_phase_id from correction_completion_inheritance_sources where correction_application_id=?1",
+        )?;
+        let source_rows = sources.query_map(params![application_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for source_row in source_rows {
+            let (task_id, phase_id) = source_row?;
+            links.insert(("completion_source".to_string(), "task".to_string(), task_id));
+            links.insert((
+                "completion_source".to_string(),
+                "phase".to_string(),
+                phase_id,
+            ));
+        }
+        let mut mapped = conn.prepare(
+            "select evidence_kind,canonical_record_id from correction_completion_inheritance_evidence evidence join correction_completion_inheritance_sources source on source.id=evidence.inheritance_source_id where source.correction_application_id=?1 and canonical_record_id is not null",
+        )?;
+        let mapped_rows = mapped.query_map(params![application_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for mapped_row in mapped_rows {
+            let (kind, record_id) = mapped_row?;
+            let record_type = if kind == "validation_gate" {
+                "validation_gate"
+            } else {
+                "coverage_item"
+            };
+            links.retain(|(_, existing_type, existing_id)| {
+                !(existing_type == record_type && *existing_id == record_id)
+            });
+            links.insert(("updated".to_string(), record_type.to_string(), record_id));
         }
     }
     let before_memberships = snapshot_entries(&before_state, "memberships");

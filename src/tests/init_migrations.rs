@@ -18,15 +18,23 @@ fn init_creates_ledger_and_project() {
 }
 
 #[test]
-fn v9_to_v10_migration_installs_reconciliation_ownership_trigger() {
+fn v10_to_v11_migration_installs_completion_inheritance_schema() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute_batch(
         r#"
         drop trigger trg_correction_alias_links_insert;
-        delete from schema_migrations where version=10;
-        insert or ignore into schema_migrations(version, applied_at) values (9, current_timestamp);
+        drop trigger trg_completion_source_insert;
+        drop trigger trg_completion_evidence_insert;
+        drop trigger trg_completion_source_immutable_update;
+        drop trigger trg_completion_source_immutable_delete;
+        drop trigger trg_completion_evidence_immutable_update;
+        drop trigger trg_completion_evidence_immutable_delete;
+        drop table correction_completion_inheritance_evidence;
+        drop table correction_completion_inheritance_sources;
+        delete from schema_migrations where version=11;
+        insert or ignore into schema_migrations(version, applied_at) values (10, current_timestamp);
         "#,
     )
     .unwrap();
@@ -34,7 +42,7 @@ fn v9_to_v10_migration_installs_reconciliation_ownership_trigger() {
 
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
-        Some(10)
+        Some(11)
     );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let trigger_sql: String = conn
@@ -65,6 +73,55 @@ fn v9_to_v10_migration_installs_reconciliation_ownership_trigger() {
         .unwrap(),
         1
     );
+    for table in [
+        "correction_completion_inheritance_sources",
+        "correction_completion_inheritance_evidence",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from sqlite_schema where type='table' and name=?1",
+                params![table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from sqlite_schema where type='index' and name in ('idx_completion_evidence_null_canonical','idx_completion_evidence_mapped')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+    for trigger in [
+        "trg_completion_source_insert",
+        "trg_completion_evidence_insert",
+        "trg_completion_source_immutable_update",
+        "trg_completion_source_immutable_delete",
+        "trg_completion_evidence_immutable_update",
+        "trg_completion_evidence_immutable_delete",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from sqlite_schema where type='trigger' and name=?1",
+                params![trigger],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+    let identity_sql: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type='table' and name='correction_application_identity_links'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(identity_sql.contains("completion_source"));
 }
 
 #[test]
@@ -81,7 +138,7 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
@@ -583,7 +640,7 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )

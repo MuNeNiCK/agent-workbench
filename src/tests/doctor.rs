@@ -76,7 +76,7 @@ fn corrupt_repairable_validation_links(root: &Path) {
 
         drop table validation_link_repair_changes;
         drop table validation_link_repair_runs;
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         insert into schema_migrations(version, applied_at)
         values (6, current_timestamp);
         "#,
@@ -254,7 +254,7 @@ fn doctor_repairs_legacy_validation_links_with_backup_audit_and_idempotence() {
 
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
-        Some(10)
+        Some(11)
     );
     let audit = list_validation_link_audit(temp.path()).unwrap();
     assert_eq!(audit.len(), 1);
@@ -348,10 +348,10 @@ fn doctor_rolls_back_rows_and_audit_when_normal_migration_fails() {
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute_batch(
         r#"
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         create trigger fail_schema_9
         before insert on schema_migrations
-        when new.version = 10
+        when new.version = 11
         begin
             select raise(abort, 'injected schema migration failure');
         end;
@@ -456,7 +456,7 @@ fn doctor_retains_compatible_command_usage_and_detaches_conflicting_run_snapshot
             id, project_id, validation_gate_id, work_unit_id,
             command_usage_id, repository_snapshot_id, result, created_at
         ) values (1, 1, 1, 1, 1, 2, 'pass', current_timestamp);
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         insert into schema_migrations(version, applied_at) values (6, current_timestamp);
         "#,
     )

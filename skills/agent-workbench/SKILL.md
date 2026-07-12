@@ -232,7 +232,10 @@ from structured ledger state.
   `design-reconcile:<design>/<work>/<canonical-checklist>` transition. Apply
   stale tokens first, reconcile before using generated aliases, replace phase
   memberships before predecessor or rejected numeric task disposition, and
-  keep normal `design-decompose` strict. If the registered closure lacks these
+  keep normal `design-decompose` strict. Reconciliation may replace a uniquely
+  matched completed predecessor membership inside a closed phase with the
+  canonical task while preserving the phase's closed state; never create an
+  open replacement phase for completed work. If the registered closure lacks these
   tokens, use authority-backed `closure supersede`; do not improvise commands.
 - After `closure ready`, generate `review-context finding-fix`, run an actual
   independent resume review, and record it with the exact context target,

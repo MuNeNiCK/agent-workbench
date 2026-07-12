@@ -9,7 +9,7 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 10;
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 pub fn default_ledger_path(root: &Path) -> PathBuf {
     root.join(LEDGER_DIR).join(LEDGER_FILE)
@@ -1108,7 +1108,17 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         || !table_exists(conn, "correction_tokens")?
         || !table_exists(conn, "correction_transition_aliases")?
         || !table_exists(conn, "correction_application_identity_links")?
+        || !table_exists(conn, "correction_completion_inheritance_sources")?
+        || !table_exists(conn, "correction_completion_inheritance_evidence")?
     {
+        return Ok(true);
+    }
+    let valid_inheritance_view: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='view' and name='valid_completion_inheritance_sources' and sql like '%mapping.design_requirement_id=source.current_requirement_id%' and sql like '%candidate_version.version_number%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !valid_inheritance_view {
         return Ok(true);
     }
     let correction_status_triggers: bool = conn.query_row(
@@ -1127,11 +1137,21 @@ fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert' and sql like '%phase_dependency_max%')
            and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_application_links_insert' and sql like '%work_phase_task_memberships%')
            and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_alias_links_insert' and sql like '%@superseded-task/%')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_identity_link_insert' and sql like '%completion_source%')
+           and exists(select 1 from sqlite_schema where type='trigger' and name='trg_completion_source_insert' and sql like '%candidate_version.version_number%')
         "#,
         [],
         |row| row.get(0),
     )?;
     if !correction_semantic_triggers {
+        return Ok(true);
+    }
+    let completion_identity_kind: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='table' and name='correction_application_identity_links' and sql like '%completion_source%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !completion_identity_kind {
         return Ok(true);
     }
     if !table_has_column(conn, "acceptance_records", "coverage_item_id")? {
@@ -1236,9 +1256,17 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_correction_alias_links_insert;
         drop trigger if exists trg_correction_alias_immutable_update;
         drop trigger if exists trg_correction_alias_immutable_delete;
+        drop trigger if exists trg_completion_source_insert;
+        drop trigger if exists trg_completion_evidence_insert;
+        drop trigger if exists trg_completion_source_immutable_update;
+        drop trigger if exists trg_completion_source_immutable_delete;
+        drop trigger if exists trg_completion_evidence_immutable_update;
+        drop trigger if exists trg_completion_evidence_immutable_delete;
+        drop view if exists valid_completion_inheritance_sources;
         "#,
     )?;
     prepare_acceptance_records_for_schema(conn)?;
+    migrate_completion_identity_link_kind(conn)?;
     prepare_review_runs_for_schema(conn)?;
     prepare_project_scoped_ledger_rows_for_schema(conn)?;
     drop_phase_review_target_reference_triggers(conn)?;
@@ -1422,6 +1450,8 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "acceptance_records", "stale_record_type", "text")?;
     ensure_column(conn, "acceptance_records", "stale_record_id", "integer")?;
 
+    ensure_completion_inheritance_triggers(conn)?;
+
     let current_version = conn
         .query_row(
             "select version from schema_migrations order by version desc limit 1",
@@ -1438,6 +1468,166 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn ensure_completion_inheritance_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+create trigger if not exists trg_completion_source_insert
+before insert on correction_completion_inheritance_sources
+for each row when
+    new.project_id!=(select project_id from correction_transition_applications where id=new.correction_application_id)
+    or new.correction_session_id!=(select correction_session_id from correction_transition_applications where id=new.correction_application_id)
+    or new.project_id!=(select project_id from correction_sessions where id=new.correction_session_id)
+    or new.project_id!=(select project_id from design_requirements where id=new.current_requirement_id)
+    or new.project_id!=(select project_id from design_requirements where id=new.source_requirement_id)
+    or new.project_id!=(select project_id from work_phases where id=new.source_phase_id)
+    or new.source_task_id!=(select task_id from checklist_items where id=new.source_checklist_item_id)
+    or new.source_requirement_id!=(select design_requirement_id from checklist_items where id=new.source_checklist_item_id)
+    or new.source_phase_id!=(select phase_id from work_phase_events where id=new.source_phase_closed_event_id and event_type='closed')
+    or new.source_design_approval_event_id!=(select approved_by_authority_event_id from design_versions where id=(select design_version_id from design_requirements where id=new.source_requirement_id))
+    or new.canonical_task_id!=(select task_id from checklist_items where id=new.canonical_checklist_item_id)
+    or new.current_requirement_id!=(select design_requirement_id from checklist_items where id=new.canonical_checklist_item_id)
+    or (select work_unit_id from tasks where id=new.source_task_id)!=(select work_unit_id from tasks where id=new.canonical_task_id)
+    or (select work_unit_id from work_phases where id=new.source_phase_id)!=(select work_unit_id from tasks where id=new.canonical_task_id)
+    or (select design_package_id from design_versions where id=(select design_version_id from design_requirements where id=new.source_requirement_id))
+       !=(select design_package_id from design_versions where id=(select design_version_id from design_requirements where id=new.current_requirement_id))
+    or not exists(
+       select 1
+       from design_requirements old_requirement
+       join design_requirements current_requirement on current_requirement.id=new.current_requirement_id
+       join design_versions old_version on old_version.id=old_requirement.design_version_id
+       join design_versions current_version on current_version.id=current_requirement.design_version_id
+       where old_requirement.id=new.source_requirement_id
+         and old_version.status in ('approved','superseded')
+         and old_version.approved_at is not null
+         and old_version.approved_by_authority_event_id=new.source_design_approval_event_id
+         and exists(select 1 from authority_events approval
+                    where approval.id=old_version.approved_by_authority_event_id
+                      and approval.project_id=new.project_id and approval.status='active')
+         and old_version.design_package_id=current_version.design_package_id
+         and old_version.version_number<current_version.version_number
+         and old_version.version_number=(
+           select max(candidate_version.version_number)
+           from design_versions candidate_version
+           where candidate_version.design_package_id=current_version.design_package_id
+             and candidate_version.version_number<current_version.version_number
+             and candidate_version.status in ('approved','superseded')
+             and candidate_version.approved_at is not null
+             and candidate_version.approved_by_authority_event_id is not null
+             and exists(select 1 from authority_events candidate_approval
+                        where candidate_approval.id=candidate_version.approved_by_authority_event_id
+                          and candidate_approval.project_id=new.project_id and candidate_approval.status='active')
+             and (select count(*) from design_requirements candidate_requirement
+                  where candidate_requirement.design_version_id=candidate_version.id
+                    and candidate_requirement.requirement_key=current_requirement.requirement_key)=1)
+         and old_requirement.requirement_key=current_requirement.requirement_key
+         and old_requirement.revision=current_requirement.revision
+         and old_requirement.requirement_hash=current_requirement.requirement_hash
+         and old_requirement.required_surfaces is current_requirement.required_surfaces
+         and not exists(
+           select 1 from validation_gate_template_requirements current_map
+           join validation_gate_templates current_template on current_template.id=current_map.validation_gate_template_id
+             and current_template.status='active'
+           where current_map.design_requirement_id=current_requirement.id
+             and not exists(
+               select 1 from validation_gate_template_requirements old_map
+               join validation_gate_templates old_template on old_template.id=old_map.validation_gate_template_id
+                 and old_template.status='active'
+               where old_map.design_requirement_id=old_requirement.id
+                 and old_template.gate_key=current_template.gate_key
+                 and old_template.gate_hash=current_template.gate_hash))
+         and not exists(
+           select 1 from validation_gate_template_requirements old_map
+           join validation_gate_templates old_template on old_template.id=old_map.validation_gate_template_id
+             and old_template.status='active'
+           where old_map.design_requirement_id=old_requirement.id
+             and not exists(
+               select 1 from validation_gate_template_requirements current_map
+               join validation_gate_templates current_template on current_template.id=current_map.validation_gate_template_id
+                 and current_template.status='active'
+               where current_map.design_requirement_id=current_requirement.id
+                 and current_template.gate_key=old_template.gate_key
+                 and current_template.gate_hash=old_template.gate_hash))
+    )
+    or new.source_membership_assigned_at>(select closed_at from work_phases where id=new.source_phase_id)
+    or (select created_at from work_phase_events where id=new.source_phase_closed_event_id)!=(select closed_at from work_phases where id=new.source_phase_id)
+    or ('|'||(select substr(before_state,instr(before_state,'memberships=[')+13,instr(before_state,'];checklists=')-(instr(before_state,'memberships=[')+13)) from correction_transition_applications where id=new.correction_application_id)||'|')
+       not like '%|'||new.source_membership_id||':'||new.source_phase_id||':'||new.source_task_id||':'||new.source_membership_assigned_at||'|%'
+    or ('|'||(select substr(after_state,instr(after_state,'memberships=[')+13,instr(after_state,'];checklists=')-(instr(after_state,'memberships=[')+13)) from correction_transition_applications where id=new.correction_application_id)||'|')
+       like '%|'||new.source_membership_id||':%'
+    or ('|'||(select substr(after_state,instr(after_state,'memberships=[')+13,instr(after_state,'];checklists=')-(instr(after_state,'memberships=[')+13)) from correction_transition_applications where id=new.correction_application_id)||'|')
+       not like '%:'||new.source_phase_id||':'||new.canonical_task_id||':%'
+    or ('|'||(select substr(before_state,instr(before_state,'tasks=[')+7,instr(before_state,'];memberships=')-(instr(before_state,'tasks=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.source_task_id||':closed|%'
+    or ('|'||(select substr(after_state,instr(after_state,'tasks=[')+7,instr(after_state,'];memberships=')-(instr(after_state,'tasks=[')+7)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.source_task_id||':closed|%'
+    or ('|'||(select substr(before_state,instr(before_state,'phases=[')+8,instr(before_state,'];phase_dependencies=')-(instr(before_state,'phases=[')+8)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.source_phase_id||':closed|%'
+    or ('|'||(select substr(after_state,instr(after_state,'phases=[')+8,instr(after_state,'];phase_dependencies=')-(instr(after_state,'phases=[')+8)) from correction_transition_applications where id=new.correction_application_id)||'|') not like '%|'||new.source_phase_id||':closed|%'
+begin select raise(abort, 'invalid completion inheritance source ownership'); end;
+create trigger if not exists trg_completion_evidence_insert
+before insert on correction_completion_inheritance_evidence
+for each row when
+    new.project_id!=(select project_id from correction_completion_inheritance_sources where id=new.inheritance_source_id)
+    or (new.evidence_kind='implementation_evidence' and not exists(
+        select 1 from implementation_evidence evidence join correction_completion_inheritance_sources source on source.id=new.inheritance_source_id
+        join work_phases phase on phase.id=source.source_phase_id
+        where evidence.id=new.source_record_id and evidence.task_id=source.source_task_id and evidence.design_requirement_id=source.source_requirement_id
+          and evidence.created_at<=phase.closed_at))
+    or (new.evidence_kind='coverage_item' and not exists(
+        select 1 from coverage_items old_coverage join coverage_items current_coverage on current_coverage.id=new.canonical_record_id
+        join correction_completion_inheritance_sources source on source.id=new.inheritance_source_id
+        join work_phases phase on phase.id=source.source_phase_id
+        where old_coverage.id=new.source_record_id and old_coverage.task_id=source.source_task_id and old_coverage.design_requirement_id=source.source_requirement_id
+          and old_coverage.status='covered' and old_coverage.created_at<=phase.closed_at
+          and current_coverage.task_id=source.canonical_task_id and current_coverage.design_requirement_id=source.current_requirement_id))
+    or (new.evidence_kind='validation_gate' and not exists(
+        select 1 from validation_gates old_gate join validation_gates current_gate on current_gate.id=new.canonical_record_id
+        join validation_runs run on run.id=new.validation_run_id and run.validation_gate_id=old_gate.id and run.result='pass'
+        join correction_completion_inheritance_sources source on source.id=new.inheritance_source_id
+        join validation_gate_templates old_template on old_template.id=old_gate.template_id
+        join validation_gate_templates current_template on current_template.id=current_gate.template_id
+        join work_phases phase on phase.id=source.source_phase_id
+        where old_gate.id=new.source_record_id and old_gate.task_id=source.source_task_id and old_gate.design_requirement_id=source.source_requirement_id
+          and current_gate.task_id=source.canonical_task_id and current_gate.design_requirement_id=source.current_requirement_id
+          and old_template.gate_key=current_template.gate_key and old_template.gate_hash=current_template.gate_hash
+          and run.created_at<=phase.closed_at
+          and run.command is old_gate.command
+          and run.command_usage_id is not null and exists(
+              select 1 from command_usages usage
+              where usage.id=run.command_usage_id and usage.project_id=source.project_id
+                and usage.work_unit_id=(select work_unit_id from tasks where id=source.source_task_id)
+                and (old_gate.command is null or usage.command=old_gate.command) and usage.result='pass')
+          and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at)))
+begin select raise(abort, 'invalid completion inheritance evidence ownership'); end;
+"#,
+    )?;
+    Ok(())
+}
+
+fn migrate_completion_identity_link_kind(conn: &Connection) -> Result<()> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            "select sql from sqlite_schema where type='table' and name='correction_application_identity_links'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if table_sql
+        .as_deref()
+        .is_none_or(|sql| sql.contains("completion_source"))
+    {
+        return Ok(());
+    }
+    let schema_version: i64 = conn.pragma_query_value(None, "schema_version", |row| row.get(0))?;
+    conn.execute_batch(
+        r#"pragma writable_schema=on;
+        update sqlite_schema set sql=replace(sql,
+          '''membership_removed'', ''membership_assigned''',
+          '''membership_removed'', ''membership_assigned'', ''completion_source''')
+        where type='table' and name='correction_application_identity_links';
+        pragma writable_schema=off;"#,
+    )?;
+    conn.pragma_update(None, "schema_version", schema_version + 1)?;
     Ok(())
 }
 
@@ -1771,7 +1961,7 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             correction_application_id integer not null references correction_transition_applications(id) on delete cascade,
             link_kind text not null check (link_kind in (
                 'adopted', 'created', 'superseded', 'updated',
-                'membership_removed', 'membership_assigned'
+                'membership_removed', 'membership_assigned', 'completion_source'
             )),
             record_type text not null check (record_type in (
                 'task', 'checklist', 'task_derivation', 'checklist_item',
@@ -1859,6 +2049,24 @@ fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                 where alias.correction_application_id=new.correction_application_id
                   and alias.record_type=new.record_type and alias.record_id=new.record_id
                   and alias.alias like '@accepted-%'
+            ) and not exists(
+                select 1 from correction_completion_inheritance_sources source
+                where source.correction_application_id=new.correction_application_id
+                  and ((new.record_type='task' and source.canonical_task_id=new.record_id)
+                    or (new.record_type='checklist_item' and source.canonical_checklist_item_id=new.record_id))
+            ) and not exists(
+                select 1 from correction_completion_inheritance_evidence evidence
+                join correction_completion_inheritance_sources source on source.id=evidence.inheritance_source_id
+                where source.correction_application_id=new.correction_application_id
+                  and evidence.canonical_record_id=new.record_id
+                  and ((new.record_type='validation_gate' and evidence.evidence_kind='validation_gate')
+                    or (new.record_type='coverage_item' and evidence.evidence_kind='coverage_item'))
+            ))
+            or (new.link_kind='completion_source' and not exists(
+                select 1 from correction_completion_inheritance_sources source
+                where source.correction_application_id=new.correction_application_id
+                  and ((new.record_type='task' and source.source_task_id=new.record_id)
+                    or (new.record_type='phase' and source.source_phase_id=new.record_id))
             ))
         begin select raise(abort, 'invalid correction application identity link ownership'); end;
 
@@ -7499,4 +7707,155 @@ when exists (select 1 from work_record_files where git_file_change_id = old.id)
 begin
     select raise(abort, 'cannot delete git file change referenced by ledger rows');
 end;
+
+create table if not exists correction_completion_inheritance_sources (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    correction_session_id integer not null references correction_sessions(id) on delete cascade,
+    correction_application_id integer not null references correction_transition_applications(id) on delete cascade,
+    current_requirement_id integer not null references design_requirements(id),
+    source_requirement_id integer not null references design_requirements(id),
+    source_design_approval_event_id integer not null references authority_events(id),
+    source_task_id integer not null references tasks(id),
+    source_checklist_item_id integer not null references checklist_items(id),
+    source_membership_id integer not null,
+    source_membership_assigned_at text not null,
+    source_phase_id integer not null references work_phases(id),
+    source_phase_closed_event_id integer not null references work_phase_events(id),
+    canonical_task_id integer not null references tasks(id),
+    canonical_checklist_item_id integer not null references checklist_items(id),
+    created_at text not null,
+    unique(correction_application_id, current_requirement_id),
+    unique(correction_application_id, source_membership_id)
+);
+
+create table if not exists correction_completion_inheritance_evidence (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    inheritance_source_id integer not null references correction_completion_inheritance_sources(id) on delete cascade,
+    evidence_kind text not null check (evidence_kind in ('implementation_evidence','coverage_item','validation_gate')),
+    source_record_id integer not null,
+    canonical_record_id integer,
+    validation_run_id integer references validation_runs(id),
+    created_at text not null,
+    check ((evidence_kind='implementation_evidence' and canonical_record_id is null and validation_run_id is null)
+        or (evidence_kind='coverage_item' and canonical_record_id is not null and validation_run_id is null)
+        or (evidence_kind='validation_gate' and canonical_record_id is not null and validation_run_id is not null))
+);
+
+create unique index if not exists idx_completion_evidence_null_canonical
+on correction_completion_inheritance_evidence(inheritance_source_id,evidence_kind,source_record_id)
+where canonical_record_id is null;
+
+create unique index if not exists idx_completion_evidence_mapped
+on correction_completion_inheritance_evidence(inheritance_source_id,evidence_kind,source_record_id,canonical_record_id)
+where canonical_record_id is not null;
+
+create trigger if not exists trg_completion_source_immutable_update
+before update on correction_completion_inheritance_sources
+begin select raise(abort, 'completion inheritance source is immutable'); end;
+create trigger if not exists trg_completion_source_immutable_delete
+before delete on correction_completion_inheritance_sources
+begin select raise(abort, 'completion inheritance source is immutable'); end;
+create trigger if not exists trg_completion_evidence_immutable_update
+before update on correction_completion_inheritance_evidence
+begin select raise(abort, 'completion inheritance evidence is immutable'); end;
+create trigger if not exists trg_completion_evidence_immutable_delete
+before delete on correction_completion_inheritance_evidence
+begin select raise(abort, 'completion inheritance evidence is immutable'); end;
+
+create view if not exists valid_completion_inheritance_sources as
+select source.id
+from correction_completion_inheritance_sources source
+join design_requirements old_requirement on old_requirement.id=source.source_requirement_id
+join design_requirements current_requirement on current_requirement.id=source.current_requirement_id
+join design_versions old_version on old_version.id=old_requirement.design_version_id
+join design_versions current_version on current_version.id=current_requirement.design_version_id
+join tasks old_task on old_task.id=source.source_task_id and old_task.status='closed'
+join tasks current_task on current_task.id=source.canonical_task_id and current_task.status='closed'
+join checklist_items old_item on old_item.id=source.source_checklist_item_id and old_item.status='closed'
+join checklist_items current_item on current_item.id=source.canonical_checklist_item_id and current_item.status='closed'
+join work_phases phase on phase.id=source.source_phase_id and phase.status='closed'
+join work_phase_events close_event on close_event.id=source.source_phase_closed_event_id
+  and close_event.phase_id=phase.id and close_event.event_type='closed' and close_event.created_at=phase.closed_at
+where old_version.design_package_id=current_version.design_package_id
+  and old_version.status in ('approved','superseded')
+  and old_version.approved_at is not null
+  and old_version.approved_by_authority_event_id=source.source_design_approval_event_id
+  and exists(select 1 from authority_events approval
+      where approval.id=old_version.approved_by_authority_event_id
+        and approval.project_id=source.project_id and approval.status='active')
+  and old_version.version_number<current_version.version_number
+  and old_version.version_number=(
+      select max(candidate_version.version_number)
+      from design_versions candidate_version
+      where candidate_version.design_package_id=current_version.design_package_id
+        and candidate_version.version_number<current_version.version_number
+        and candidate_version.status in ('approved','superseded')
+        and candidate_version.approved_at is not null
+        and candidate_version.approved_by_authority_event_id is not null
+        and exists(select 1 from authority_events candidate_approval
+            where candidate_approval.id=candidate_version.approved_by_authority_event_id
+              and candidate_approval.project_id=source.project_id and candidate_approval.status='active')
+        and (select count(*) from design_requirements candidate_requirement
+            where candidate_requirement.design_version_id=candidate_version.id
+              and candidate_requirement.requirement_key=current_requirement.requirement_key)=1)
+  and old_requirement.requirement_key=current_requirement.requirement_key
+  and old_requirement.revision=current_requirement.revision
+  and old_requirement.requirement_hash=current_requirement.requirement_hash
+  and old_requirement.required_surfaces is current_requirement.required_surfaces
+  and not exists(
+      select 1 from validation_gate_template_requirements current_map
+      join validation_gate_templates current_template on current_template.id=current_map.validation_gate_template_id
+        and current_template.status='active'
+      where current_map.design_requirement_id=current_requirement.id
+        and not exists(
+          select 1 from validation_gate_template_requirements old_map
+          join validation_gate_templates old_template on old_template.id=old_map.validation_gate_template_id
+            and old_template.status='active'
+          where old_map.design_requirement_id=old_requirement.id
+            and old_template.gate_key=current_template.gate_key
+            and old_template.gate_hash=current_template.gate_hash))
+  and not exists(
+      select 1 from validation_gate_template_requirements old_map
+      join validation_gate_templates old_template on old_template.id=old_map.validation_gate_template_id
+        and old_template.status='active'
+      where old_map.design_requirement_id=old_requirement.id
+        and not exists(
+          select 1 from validation_gate_template_requirements current_map
+          join validation_gate_templates current_template on current_template.id=current_map.validation_gate_template_id
+            and current_template.status='active'
+          where current_map.design_requirement_id=current_requirement.id
+            and current_template.gate_key=old_template.gate_key
+            and current_template.gate_hash=old_template.gate_hash))
+  and exists(select 1 from implementation_evidence evidence
+      where evidence.task_id=source.source_task_id and evidence.design_requirement_id=source.source_requirement_id
+        and evidence.created_at<=phase.closed_at)
+  and (select count(*) from correction_completion_inheritance_evidence mapped
+       where mapped.inheritance_source_id=source.id and mapped.evidence_kind='implementation_evidence')
+      =(select count(*) from implementation_evidence evidence
+        where evidence.task_id=source.source_task_id and evidence.design_requirement_id=source.source_requirement_id
+          and evidence.created_at<=phase.closed_at)
+  and (select count(*) from correction_completion_inheritance_evidence mapped
+       join coverage_items old_coverage on old_coverage.id=mapped.source_record_id and old_coverage.status='covered'
+       join coverage_items current_coverage on current_coverage.id=mapped.canonical_record_id and current_coverage.status='covered'
+       where mapped.inheritance_source_id=source.id and mapped.evidence_kind='coverage_item'
+         and old_coverage.task_id=source.source_task_id and old_coverage.design_requirement_id=source.source_requirement_id
+         and current_coverage.task_id=source.canonical_task_id and current_coverage.design_requirement_id=source.current_requirement_id)=1
+  and (select count(*) from correction_completion_inheritance_evidence mapped
+       join validation_gates old_gate on old_gate.id=mapped.source_record_id
+       join validation_gates current_gate on current_gate.id=mapped.canonical_record_id and current_gate.status='closed'
+       join validation_gate_templates old_template on old_template.id=old_gate.template_id
+       join validation_gate_templates current_template on current_template.id=current_gate.template_id
+       join validation_runs run on run.id=mapped.validation_run_id and run.validation_gate_id=old_gate.id and run.result='pass'
+       join command_usages usage on usage.id=run.command_usage_id and usage.result='pass'
+       where mapped.inheritance_source_id=source.id and mapped.evidence_kind='validation_gate'
+         and old_template.gate_key=current_template.gate_key and old_template.gate_hash=current_template.gate_hash
+         and usage.project_id=source.project_id and usage.work_unit_id=old_task.work_unit_id
+         and run.command is old_gate.command and (old_gate.command is null or usage.command=old_gate.command)
+         and run.created_at<=phase.closed_at
+         and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at))
+      =(select count(*) from validation_gate_template_requirements mapping
+        join validation_gate_templates template on template.id=mapping.validation_gate_template_id
+        where mapping.design_requirement_id=source.current_requirement_id and template.status='active');
 "#;

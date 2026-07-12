@@ -1853,6 +1853,17 @@ fn count_phase_missing_evidence(conn: &rusqlite::Connection, phase_id: i64) -> R
               where e.task_id = td.task_id
                 and e.design_requirement_id = td.design_requirement_id
           )
+          and not exists (
+              select 1 from correction_completion_inheritance_sources inheritance
+              join valid_completion_inheritance_sources valid on valid.id=inheritance.id
+              where inheritance.current_requirement_id=td.design_requirement_id
+                and inheritance.canonical_task_id=td.task_id
+                and exists (
+                    select 1 from correction_completion_inheritance_evidence mapped
+                    where mapped.inheritance_source_id=inheritance.id
+                      and mapped.evidence_kind='implementation_evidence'
+                )
+          )
         "#,
         params![phase_id],
         |row| row.get(0),

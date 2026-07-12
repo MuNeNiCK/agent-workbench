@@ -70,6 +70,52 @@ fn correction_transition_cli_failure_is_atomic_and_exposes_apply_contract() {
 fn design_reconcile_runs_complete_public_cli_sequence_with_stale_predecessor() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
+    let legacy = conn(temp.path());
+    let legacy_schema_cookie: i64 = legacy
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .unwrap();
+    legacy
+        .execute_batch(
+            r#"drop view valid_completion_inheritance_sources;
+            drop trigger trg_completion_source_insert;
+            drop trigger trg_completion_evidence_insert;
+            drop trigger trg_completion_source_immutable_update;
+            drop trigger trg_completion_source_immutable_delete;
+            drop trigger trg_completion_evidence_immutable_update;
+            drop trigger trg_completion_evidence_immutable_delete;
+            drop table correction_completion_inheritance_evidence;
+            drop table correction_completion_inheritance_sources;
+            delete from schema_migrations where version=11;
+            insert or ignore into schema_migrations(version,applied_at) values(10,current_timestamp);
+            pragma writable_schema=on;
+            update sqlite_schema set sql=replace(sql,
+              '''membership_removed'', ''membership_assigned'', ''completion_source''',
+              '''membership_removed'', ''membership_assigned''')
+            where type='table' and name='correction_application_identity_links';
+            pragma writable_schema=off;"#,
+        )
+        .unwrap();
+    legacy
+        .pragma_update(None, "schema_version", legacy_schema_cookie + 1)
+        .unwrap();
+    drop(legacy);
+    assert!(!conn(temp.path())
+        .query_row(
+            "select sql from sqlite_schema where type='table' and name='correction_application_identity_links'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+        .contains("completion_source"));
+    assert!(ok(temp.path(), &["status"]).contains("schema_version: 11"));
+    assert!(conn(temp.path())
+        .query_row(
+            "select sql from sqlite_schema where type='table' and name='correction_application_identity_links'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+        .contains("completion_source"));
     let work = start_work(temp.path(), "public reconciliation recovery", None).unwrap();
     let package = init_design_package(
         temp.path(),
@@ -131,6 +177,23 @@ Run the public recovery test.
     fs::write(
         package.package_path.join("01-introduction-goals.md"),
         "# Introduction And Goals\n\nRefresh without changing REQ-001.\n",
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        r#"## REQ-001: Preserve public recovery
+```yaml agent-workbench
+type: requirement
+key: REQ-001
+revision: 1
+priority: high
+surfaces: [cli, database]
+validation: [GATE-001]
+status: active
+```
+
+Preserve public recovery behavior.
+"#,
     )
     .unwrap();
     let current_design = import_design_package(
@@ -245,7 +308,7 @@ Run the public recovery test.
     let stale = derive_task_from_requirement(
         temp.path(),
         NewTaskDerivation {
-            design_version_id: design.design_version_id,
+            design_version_id: current_design.design_version_id,
             requirement_key: "REQ-001",
             task_id: stale_task.task_id,
             derivation_reason: Some("legacy stale predecessor"),
@@ -255,17 +318,155 @@ Run the public recovery test.
         },
     )
     .unwrap();
-    assert_eq!(
-        conn(temp.path())
-            .query_row(
-                "select old_v.version_number < current_v.version_number and old_v.design_package_id=current_v.design_package_id from design_versions old_v join design_versions current_v on current_v.id=?2 where old_v.id=?1",
-                params![design.design_version_id, current_design.design_version_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-        1,
-        "stale task must derive from an earlier version of the same design package"
-    );
+    let completed_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "completed predecessor",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("completed before refresh"),
+        },
+    )
+    .unwrap();
+    let completed = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: completed_task.task_id,
+            derivation_reason: Some("completed predecessor"),
+            checklist_title: Some("completed predecessor"),
+            item_title: None,
+            completion_condition: Some("completed before refresh"),
+        },
+    )
+    .unwrap();
+    let completed_gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: design.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: completed_task.task_id,
+            command: None,
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    add_implementation_evidence(
+        temp.path(),
+        NewImplementationEvidence {
+            task_id: Some(completed_task.task_id),
+            design_version_id: Some(design.design_version_id),
+            requirement_key: Some("REQ-001"),
+            evidence_type: "commit",
+            commit_sha: Some("completed-predecessor"),
+            file_path: None,
+            line_ref: None,
+            symbol: None,
+            artifact_path: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: Some(work.work_unit_id),
+            task_id: Some(completed_task.task_id),
+            requirement: "completed predecessor coverage",
+            runtime_boundary_evidence: Some("covered before phase close"),
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: Some("GATE-001"),
+            missing_or_unverified: None,
+            status: "covered",
+        },
+    )
+    .unwrap();
+    let completed_usage = add_command_usage(
+        temp.path(),
+        NewCommandUsage {
+            profile: None,
+            command: Some("manual GATE-001 validation"),
+            result: "pass",
+            log_path: None,
+            work_unit_id: Some(work.work_unit_id),
+        },
+    )
+    .unwrap();
+    add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: completed_gate.validation_gate_id,
+            command_usage_id: Some(completed_usage.command_usage_id),
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("passed before close"),
+        },
+    )
+    .unwrap();
+    let unlinked_run = add_validation_run(
+        temp.path(),
+        NewValidationRun {
+            validation_gate_id: completed_gate.validation_gate_id,
+            command_usage_id: None,
+            repository_snapshot_id: None,
+            result: "pass",
+            command: None,
+            classification: None,
+            acceptance_record_id: None,
+            artifact_path: None,
+            artifact_hash: None,
+            notes: Some("unlinked pass must not qualify"),
+        },
+    )
+    .unwrap();
+    let completed_phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            key: "completed-history",
+            title: "Completed history",
+            kind: "implementation",
+            order: 1,
+            reason: Some("public fixture"),
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(
+        temp.path(),
+        completed_phase.phase_id,
+        completed_task.task_id,
+    )
+    .unwrap();
+    conn(temp.path())
+        .execute_batch(&format!(
+            "update tasks set status='closed' where id={};
+             update checklist_items set status='closed' where id={};
+             update task_derivations set status='closed' where id={};
+             update work_phases set status='closed',closed_at=current_timestamp,close_summary='completed' where id={};
+             insert into work_phase_events(project_id,phase_id,event_type,reason,next_status,created_at)
+             values (1,{},'closed','completed','closed',current_timestamp);",
+            completed_task.task_id,
+            completed.checklist_item_id,
+            completed.task_derivation_id,
+            completed_phase.phase_id,
+            completed_phase.phase_id
+        ))
+        .unwrap();
     let phase = create_phase(
         temp.path(),
         NewWorkPhase {
@@ -366,6 +567,81 @@ Run the public recovery test.
             &closure.closure_id.to_string(),
         ],
     );
+    let unlinked_rejected = err(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "1",
+        ],
+    );
+    assert!(unlinked_rejected.contains("lacks qualifying evidence"));
+    assert_eq!(
+        conn(temp.path())
+            .query_row(
+                "select count(*) from correction_transition_applications",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    conn(temp.path())
+        .execute(
+            "delete from validation_runs where id=?1",
+            params![unlinked_run.validation_run_id],
+        )
+        .unwrap();
+    conn(temp.path())
+        .execute(
+            "insert into work_phase_task_memberships(project_id,phase_id,task_id,assigned_at) values (1,?1,?2,current_timestamp)",
+            params![phase.phase_id, canonical_task],
+        )
+        .unwrap();
+    let reconciliation_snapshot = || {
+        conn(temp.path())
+            .query_row(
+                r#"select
+                    (select count(*) from correction_transition_applications)||':'||
+                    (select count(*) from correction_completion_inheritance_sources)||':'||
+                    (select count(*) from correction_completion_inheritance_evidence)||':'||
+                    (select count(*) from correction_application_identity_links)||':'||
+                    (select count(*) from work_phase_task_memberships)||':'||
+                    (select group_concat(id||'='||status,',') from tasks)||':'||
+                    (select group_concat(id||'='||status,',') from checklist_items)||':'||
+                    (select group_concat(id||'='||status,',') from validation_gates)||':'||
+                    (select group_concat(id||'='||status,',') from coverage_items)"#,
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before_preassignment = reconciliation_snapshot();
+    let preassignment_rejected = err(
+        temp.path(),
+        &[
+            "closure",
+            "transition",
+            "apply",
+            &closure_id,
+            "--token",
+            "1",
+        ],
+    );
+    assert!(
+        preassignment_rejected.contains("already phase-assigned"),
+        "{preassignment_rejected}"
+    );
+    assert_eq!(reconciliation_snapshot(), before_preassignment);
+    conn(temp.path())
+        .execute(
+            "delete from work_phase_task_memberships where task_id=?1",
+            params![canonical_task],
+        )
+        .unwrap();
     let bootstrap_retry = ok(
         temp.path(),
         &[
@@ -385,6 +661,192 @@ Run the public recovery test.
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
+    let inheritance_audit: (i64, i64, i64, i64) = conn(temp.path())
+        .query_row(
+            r#"select
+                (select count(*) from correction_completion_inheritance_sources),
+                (select count(*) from correction_completion_inheritance_evidence),
+                (select count(*) from correction_application_identity_links where link_kind='completion_source'),
+                (select count(*) from correction_transition_aliases where alias like '@completion-source-%')"#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(inheritance_audit.0, 1);
+    assert_eq!(inheritance_audit.1, 3);
+    assert_eq!(inheritance_audit.2, 2);
+    assert_eq!(inheritance_audit.3, 0);
+    let before_forgery: (i64, i64) = conn(temp.path())
+        .query_row(
+            "select (select count(*) from correction_completion_inheritance_sources),(select count(*) from correction_completion_inheritance_evidence)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let db = conn(temp.path());
+    assert!(db.execute("update correction_completion_inheritance_sources set source_membership_id=source_membership_id+1", []).is_err());
+    assert!(
+        db.execute("delete from correction_completion_inheritance_sources", [])
+            .is_err()
+    );
+    assert!(db.execute("update correction_completion_inheritance_evidence set source_record_id=source_record_id+1", []).is_err());
+    assert!(
+        db.execute("delete from correction_completion_inheritance_evidence", [])
+            .is_err()
+    );
+    assert!(db.execute(
+        "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) select project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,current_timestamp from correction_completion_inheritance_evidence where canonical_record_id is null limit 1",
+        [],
+    ).is_err());
+    assert!(db.execute(
+        "insert into correction_application_identity_links(project_id,correction_session_id,correction_application_id,link_kind,record_type,record_id,created_at) select project_id,correction_session_id,correction_application_id,'completion_source','task',canonical_task_id,current_timestamp from correction_completion_inheritance_sources limit 1",
+        [],
+    ).is_err());
+    assert_eq!(
+        db.query_row(
+            "select (select count(*) from correction_completion_inheritance_sources),(select count(*) from correction_completion_inheritance_evidence)",
+            [],
+            |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)),
+        ).unwrap(),
+        before_forgery
+    );
+    db.execute_batch(
+        "create temp table inheritance_source_backup as select * from correction_completion_inheritance_sources;",
+    )
+    .unwrap();
+    let forged_sources = [
+        "select project_id,correction_session_id+999,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+        "select project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,canonical_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+        "select project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id+999,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+        "select project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,datetime(source_membership_assigned_at,'+1 day'),source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+        "select project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id+999,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+    ];
+    for forged_select in forged_sources {
+        db.execute_batch(
+            "savepoint source_forgery;
+             drop trigger trg_completion_evidence_immutable_delete;
+             drop trigger trg_completion_source_immutable_delete;
+             delete from correction_completion_inheritance_evidence;
+             delete from correction_completion_inheritance_sources;",
+        )
+        .unwrap();
+        let forged_insert = format!(
+            "insert into correction_completion_inheritance_sources(project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,created_at) {forged_select}"
+        );
+        assert!(db.execute(&forged_insert, []).is_err());
+        db.execute_batch("rollback to source_forgery; release source_forgery;")
+            .unwrap();
+    }
+    for provenance_mutation in [
+        "update design_requirements set requirement_hash=requirement_hash||'-forged' where id=(select source_requirement_id from inheritance_source_backup limit 1)",
+        "update design_versions set approved_at=null where id=(select design_version_id from design_requirements where id=(select source_requirement_id from inheritance_source_backup limit 1))",
+        "update authority_events set status='inactive' where id=(select source_design_approval_event_id from inheritance_source_backup limit 1)",
+        "update validation_gate_templates set gate_hash=gate_hash||'-forged' where design_version_id=(select design_version_id from design_requirements where id=(select source_requirement_id from inheritance_source_backup limit 1))",
+    ] {
+        db.execute_batch(
+            "savepoint provenance_forgery;
+             drop trigger trg_completion_evidence_immutable_delete;
+             drop trigger trg_completion_source_immutable_delete;
+             delete from correction_completion_inheritance_evidence;
+             delete from correction_completion_inheritance_sources;",
+        )
+        .unwrap();
+        db.execute_batch(provenance_mutation).unwrap();
+        assert!(db.execute(
+            "insert into correction_completion_inheritance_sources(project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,created_at) select project_id,correction_session_id,correction_application_id,current_requirement_id,source_requirement_id,source_design_approval_event_id,source_task_id,source_checklist_item_id,source_membership_id,source_membership_assigned_at,source_phase_id,source_phase_closed_event_id,canonical_task_id,canonical_checklist_item_id,current_timestamp from inheritance_source_backup",
+            [],
+        ).is_err());
+        db.execute_batch("rollback to provenance_forgery; release provenance_forgery;")
+            .unwrap();
+    }
+    for forged_evidence in [
+        "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) select project_id,id,'implementation_evidence',999999,null,null,current_timestamp from correction_completion_inheritance_sources",
+        "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) select project_id,id,'coverage_item',source_task_id,canonical_task_id,null,current_timestamp from correction_completion_inheritance_sources",
+        "insert into correction_completion_inheritance_evidence(project_id,inheritance_source_id,evidence_kind,source_record_id,canonical_record_id,validation_run_id,created_at) select project_id,id,'validation_gate',source_task_id,canonical_task_id,999999,current_timestamp from correction_completion_inheritance_sources",
+    ] {
+        assert!(db.execute(forged_evidence, []).is_err());
+    }
+    assert!(db.execute("update correction_application_identity_links set record_id=record_id+1 where link_kind='completion_source'", []).is_err());
+    assert!(
+        db.execute(
+            "delete from correction_application_identity_links where link_kind='completion_source'",
+            []
+        )
+        .is_err()
+    );
+    assert_eq!(
+        conn(temp.path())
+            .query_row(
+                "select count(*) from valid_completion_inheritance_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    for provenance_drift in [
+        "update design_requirements set revision=revision+1 where id=(select source_requirement_id from correction_completion_inheritance_sources limit 1)",
+        "update design_versions set approved_at=null where id=(select design_version_id from design_requirements where id=(select source_requirement_id from correction_completion_inheritance_sources limit 1))",
+        "update authority_events set status='inactive' where id=(select source_design_approval_event_id from correction_completion_inheritance_sources limit 1)",
+        "update validation_gate_templates set gate_hash=gate_hash||'-drift' where design_version_id=(select design_version_id from design_requirements where id=(select source_requirement_id from correction_completion_inheritance_sources limit 1))",
+    ] {
+        let db = conn(temp.path());
+        db.execute_batch("savepoint provenance_drift;").unwrap();
+        db.execute_batch(provenance_drift).unwrap();
+        assert_eq!(
+            db.query_row(
+                "select count(*) from valid_completion_inheritance_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        db.execute_batch("rollback to provenance_drift; release provenance_drift;")
+            .unwrap();
+    }
+    conn(temp.path())
+        .execute(
+            "update coverage_items set status='partial' where task_id=?1 and design_requirement_id=(select source_requirement_id from correction_completion_inheritance_sources limit 1)",
+            params![completed_task.task_id],
+        )
+        .unwrap();
+    assert_eq!(
+        conn(temp.path())
+            .query_row(
+                "select count(*) from valid_completion_inheritance_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    conn(temp.path())
+        .execute(
+            "update coverage_items set status='covered' where task_id=?1",
+            params![completed_task.task_id],
+        )
+        .unwrap();
+    for gate_column in ["canonical_record_id", "source_record_id"] {
+        let db = conn(temp.path());
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        db.execute_batch(&format!(
+            "savepoint gate_drift; delete from validation_gates where id=(select {gate_column} from correction_completion_inheritance_evidence where evidence_kind='validation_gate' limit 1);"
+        ))
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "select count(*) from valid_completion_inheritance_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        db.execute_batch("rollback to gate_drift; release gate_drift;")
+            .unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+    }
     let idempotent_retry = ok(
         temp.path(),
         &[
@@ -405,6 +867,16 @@ Run the public recovery test.
         )
         .unwrap();
     assert_eq!(applied_twice, applied_once);
+    assert_eq!(
+        conn(temp.path())
+            .query_row(
+                "select count(*) from correction_completion_inheritance_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
     conn(temp.path())
         .execute(
             "update task_derivations set status='stale' where id=?1",
@@ -5034,7 +5506,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
             id, project_id, validation_gate_id, work_unit_id, task_id,
             result, command, created_at
         ) values (1, 1, 1, 2, 2, 'pass', 'cargo test', current_timestamp);
-        delete from schema_migrations where version = 10;
+        delete from schema_migrations where version = 11;
         insert into schema_migrations(version, applied_at) values (6, current_timestamp);
         "#,
         )
@@ -5082,7 +5554,7 @@ fn validation_link_doctor_recovers_a_v017_ledger_and_restores_normal_cli() {
     );
     assert!(Path::new(backup).is_file());
 
-    assert!(ok(temp.path(), &["status"]).contains("schema_version: 10"));
+    assert!(ok(temp.path(), &["status"]).contains("schema_version: 11"));
     ok(temp.path(), &["next"]);
     ok(temp.path(), &["rules", "applicable"]);
     ok(temp.path(), &["correction", "list"]);
