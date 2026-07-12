@@ -364,7 +364,7 @@ fn reusable_unchanged_baseline_task(
          and baseline_r.required_surfaces is current_r.required_surfaces
         join task_derivations td
           on td.design_requirement_id = baseline_r.id
-         and td.status in ('stale', 'closed')
+         and td.status in ('active', 'stale', 'closed')
         join tasks t on t.id = td.task_id
         where current_r.id = ?1 and current_r.project_id = ?2
           and t.work_unit_id = ?3 and t.status in ('open', 'blocked')
@@ -380,7 +380,29 @@ fn reusable_unchanged_baseline_task(
     if task_ids.len() > 1 {
         bail!("unchanged baseline decomposition has ambiguous reusable tasks");
     }
-    Ok(task_ids.into_iter().next())
+    let Some(task_id) = task_ids.into_iter().next() else {
+        return Ok(None);
+    };
+    conn.execute(
+        r#"
+        update task_derivations
+        set status = 'closed'
+        where project_id = ?1 and task_id = ?2 and status = 'active'
+          and design_requirement_id in (
+              select baseline_r.id
+              from design_requirements current_r
+              join design_versions current_v on current_v.id = current_r.design_version_id
+              join design_requirements baseline_r
+                on baseline_r.requirement_key = current_r.requirement_key
+              join design_versions baseline_v on baseline_v.id = baseline_r.design_version_id
+              where current_r.id = ?3
+                and baseline_v.design_package_id = current_v.design_package_id
+                and baseline_v.version_number < current_v.version_number
+          )
+        "#,
+        params![project_id, task_id, current_requirement_id],
+    )?;
+    Ok(Some(task_id))
 }
 
 fn validation_gate_templates_for_requirement(

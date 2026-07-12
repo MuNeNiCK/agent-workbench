@@ -2702,22 +2702,21 @@ fn mediated_task_carry_forward_requires_verified_baseline_and_is_atomic() {
         },
     )
     .unwrap();
-    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    conn.execute(
-        "update task_derivations set status='stale' where id=?1",
-        params![baseline_derivation.task_derivation_id],
-    )
-    .unwrap();
-    drop(conn);
-    accept_stale_record(
-        temp.path(),
-        StaleRecordDisposition {
-            record_type: "task_derivation",
-            record_id: baseline_derivation.task_derivation_id,
-            reason: "current unchanged derivation supersedes baseline linkage",
-        },
-    )
-    .unwrap();
+    assert_eq!(
+        list_task_derivations(
+            temp.path(),
+            TaskDerivationListQuery {
+                design_version_id: baseline.design_version_id,
+                work_unit_id: Some(work.work_unit_id),
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == baseline_derivation.task_derivation_id)
+        .unwrap()
+        .status,
+        "active"
+    );
     let plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
