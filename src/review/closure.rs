@@ -1,0 +1,774 @@
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
+use rusqlite::{OptionalExtension, params};
+
+use crate::db::{current_phase_blocker, open_existing_project, project_id};
+
+use super::{correction_contract::*, evaluation::*, *};
+
+pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureReadyOutcome> {
+    require_text(
+        Some(input.implementation_evidence),
+        "closure ready requires --evidence",
+    )?;
+    require_text(Some(input.tests_or_gates), "closure ready requires --tests")?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let selected_ready = blocker
+            .next_action
+            .starts_with("agent-workbench closure ready")
+            && blocker.next_action.contains(&input.closure_id.to_string());
+        if !selected_ready {
+            bail!(
+                "closure ready is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let (finding_id, status): (i64, String) = tx
+        .query_row(
+            r#"
+            select c.finding_id, c.status
+            from closures c join findings f on f.id = c.finding_id
+            where c.id = ?1 and c.project_id = ?2
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![input.closure_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .context("open valid closure not found")?;
+    if status != "registered" {
+        bail!("closure ready requires a registered closure");
+    }
+    let eligible_owner: Option<i64> = tx
+        .query_row(
+            r#"
+            select p.work_unit_id
+            from findings f
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where f.id = ?1 and p.project_id = ?2 and p.required = 1
+              and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            "#,
+            params![finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let mut correction_session_id = None;
+    if let Some(work_unit_id) = eligible_owner {
+        let selected_finding_id: i64 = tx.query_row(
+            r#"
+            select min(b.finding_id)
+            from finding_remediation_bindings b
+            join findings selected_f on selected_f.id = b.finding_id
+              and selected_f.status = 'open' and selected_f.classification = 'valid'
+            join closures selected_c on selected_c.id = b.closure_id
+              and selected_c.status = 'registered'
+            join work_unit_activations selected_a on selected_a.id = b.work_unit_activation_id
+              and selected_a.status = 'active'
+            where b.work_unit_id = ?1 and b.project_id = ?2
+            "#,
+            params![work_unit_id, project_id],
+            |row| row.get(0),
+        )?;
+        if selected_finding_id != finding_id {
+            bail!(
+                "closure ready targets finding {finding_id}, but finding {selected_finding_id} is selected"
+            );
+        }
+        let bound: i64 = tx.query_row(
+            r#"
+            select count(*)
+            from finding_remediation_bindings b
+            join work_unit_activations a on a.id = b.work_unit_activation_id
+            join work_units w on w.id = b.work_unit_id
+            where b.finding_id = ?1 and b.closure_id = ?2
+              and b.work_unit_id = ?3 and b.project_id = ?4
+              and a.status = 'active' and a.work_unit_id = b.work_unit_id
+              and w.status = 'open'
+            "#,
+            params![finding_id, input.closure_id, work_unit_id, project_id],
+            |row| row.get(0),
+        )?;
+        if bound == 0 {
+            bail!(
+                "closure ready requires active audited remediation; run agent-workbench work remediate --finding {finding_id}"
+            );
+        }
+    } else {
+        let session_id: i64 = tx
+            .query_row(
+                "select id from correction_sessions where closure_id = ?1 and status = 'active' order by id desc limit 1",
+                params![input.closure_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .with_context(|| {
+                format!(
+                    "closure ready requires an active correction session; run agent-workbench closure correction-begin {}",
+                    input.closure_id
+                )
+            })?;
+        correction_session_id = Some(session_id);
+        let pending_transitions: i64 = tx.query_row(
+            "select count(*) from correction_tokens where closure_id = ?1 and token_kind = 'transition' and status != 'applied'",
+            params![input.closure_id],
+            |row| row.get(0),
+        )?;
+        if pending_transitions > 0 {
+            let token: i64 = tx.query_row(
+                "select min(token_ordinal) from correction_tokens where closure_id = ?1 and token_kind = 'transition' and status = 'pending'",
+                params![input.closure_id],
+                |row| row.get(0),
+            )?;
+            bail!(
+                "closure ready requires the selected transition: agent-workbench closure transition apply {} --token {}",
+                input.closure_id,
+                token
+            );
+        }
+        let recovery_residuals: i64 = tx.query_row(
+            r#"
+            select
+              (select count(*)
+               from correction_transition_aliases a
+               join tasks t on t.id=a.record_id
+               where a.correction_session_id=?1 and a.alias like '@superseded-task/%'
+                 and (t.status in ('open','blocked')
+                   or exists(select 1 from work_phase_task_memberships m where m.task_id=t.id)
+                   or exists(select 1 from task_derivations td where td.task_id=t.id and td.status='active')))
+              +
+              (select count(*)
+               from correction_tokens token
+               join task_derivations td
+               join design_requirements r on r.id=td.design_requirement_id
+               join tasks t on t.id=td.task_id
+               left join checklist_items ci on ci.id=td.checklist_item_id
+               where token.closure_id=?2 and token.operation='design-reconcile'
+                 and token.status='applied' and td.status='active'
+                 and r.design_version_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') as integer)
+                 and t.work_unit_id=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') as integer)
+                 and coalesce(ci.checklist_id,0)!=cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[2]') as integer))
+              +
+              (select count(*)
+               from correction_tokens token
+               join correction_transition_applications app
+                 on app.correction_token_id=token.id and app.correction_session_id=?1
+               join tasks t on t.id=cast(token.target as integer)
+               left join acceptance_records ar
+                 on ar.task_id=t.id and ar.status='approved'
+                and ar.acceptance_type='accepted_out_of_scope'
+                and ar.approved_by_authority_event_id=app.authority_event_id
+                and app.result_ref='task:'||t.id||':acceptance:'||ar.id
+               where token.closure_id=?2 and token.operation='task-accept-out-of-scope'
+                 and token.status='applied' and token.target not glob '*[^0-9]*'
+                 and (ar.id is null or t.status!='accepted_out_of_scope'
+                   or exists(select 1 from work_phase_task_memberships m where m.task_id=t.id)
+                   or exists(select 1 from task_derivations td where td.task_id=t.id and td.status='active')))
+            "#,
+            params![session_id, input.closure_id],
+            |row| row.get(0),
+        )?;
+        if recovery_residuals > 0 {
+            bail!(
+                "closure ready requires all reconciled duplicate tasks, memberships, and derivations to be dispositioned"
+            );
+        }
+        let design_root: Option<String> = tx
+            .query_row(
+                r#"
+                select dp.root_path
+                from closures c
+                join findings f on f.id = c.finding_id
+                join review_runs r on r.id = f.review_run_id
+                join review_plans p on p.id = r.review_plan_id
+                left join design_versions dv on dv.id = p.design_version_id
+                left join design_packages dp on dp.id = dv.design_package_id
+                where c.id = ?1
+                "#,
+                params![input.closure_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let mut stmt = tx.prepare(
+            "select operation, target, pre_hash from correction_tokens where closure_id = ?1 and token_kind = 'file' order by token_ordinal",
+        )?;
+        let rows = stmt.query_map(params![input.closure_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let file_tokens = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        for (operation, target, pre_hash) in file_tokens {
+            let token = CorrectionToken {
+                kind: "file".to_string(),
+                operation: operation.clone(),
+                target,
+            };
+            let path = correction_file_path(root, design_root.as_deref(), &token)?;
+            match operation.as_str() {
+                "create" if !path.is_file() => {
+                    bail!(
+                        "created correction surface is still absent: {}",
+                        path.display()
+                    )
+                }
+                "delete" if path.exists() => {
+                    bail!(
+                        "deleted correction surface still exists: {}",
+                        path.display()
+                    )
+                }
+                "edit" if !path.is_file() => {
+                    bail!(
+                        "edited correction surface is not a regular file: {}",
+                        path.display()
+                    )
+                }
+                "edit" if Some(file_sha256(&path)?) == pre_hash => {
+                    bail!("edited correction surface is unchanged: {}", path.display())
+                }
+                _ => {}
+            }
+        }
+    }
+    let high_watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    let attempt_number: i64 = tx.query_row(
+        "select coalesce(max(attempt_number), 0) + 1 from closure_attempts where closure_id = ?1",
+        params![input.closure_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        r#"
+        insert into closure_attempts(
+            project_id, closure_id, attempt_number, implementation_evidence,
+            tests_or_gates, closed_by_commit, review_run_high_watermark, created_at
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.closure_id,
+            attempt_number,
+            input.implementation_evidence,
+            input.tests_or_gates,
+            input.closed_by_commit,
+            high_watermark,
+        ],
+    )?;
+    let attempt_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closures set status = 'ready_for_verification' where id = ?1",
+        params![input.closure_id],
+    )?;
+    if let Some(session_id) = correction_session_id {
+        tx.execute(
+            "update correction_sessions set status = 'completed', completed_at = current_timestamp where id = ?1",
+            params![session_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(ClosureReadyOutcome {
+        closure_id: input.closure_id,
+        finding_id,
+        attempt_id,
+        attempt_number,
+        context_ref: finding_fix_context_ref(finding_id, input.closure_id, attempt_id),
+    })
+}
+
+pub fn supersede_closure(
+    root: &Path,
+    input: ClosureSupersession<'_>,
+) -> Result<ClosureSupersessionOutcome> {
+    require_text(Some(input.reason), "closure supersede requires --reason")?;
+    require_text(
+        Some(input.new_closure.design_invariant),
+        "closure supersede requires --invariant",
+    )?;
+    require_text(
+        input.new_closure.affected_surfaces,
+        "closure supersede requires --surfaces",
+    )?;
+    require_text(
+        input.new_closure.fix_plan,
+        "closure supersede requires --fix-plan",
+    )?;
+    require_text(
+        input.new_closure.tests_or_gates,
+        "closure supersede requires --tests",
+    )?;
+    require_text(
+        input.new_closure.verification_plan,
+        "closure supersede requires --verification",
+    )?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
+    let finding_id: i64 = tx
+        .query_row(
+            r#"
+            select c.finding_id from closures c join findings f on f.id = c.finding_id
+            where c.id = ?1 and c.project_id = ?2
+              and c.status in ('registered', 'incomplete')
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![input.closure_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("current registered or incomplete closure not found")?;
+    ensure_review_finding_target(&tx, finding_id, "closure supersede")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let selected_contract_action = blocker
+            .next_action
+            .starts_with("agent-workbench closure supersede")
+            || blocker
+                .next_action
+                .starts_with("agent-workbench work remediate")
+            || blocker
+                .next_action
+                .starts_with("agent-workbench closure correction-begin");
+        if !selected_contract_action {
+            bail!(
+                "closure supersede is not selected; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let eligible = finding_is_remediation_eligible(&tx, project_id, finding_id)?;
+    if !eligible {
+        parse_correction_tokens(input.new_closure.affected_surfaces.unwrap())?;
+    }
+    tx.execute(
+        r#"
+        insert into closures(
+            project_id, finding_id, design_invariant, design_citations,
+            implementation_evidence, affected_surfaces, same_invariant_search,
+            other_violations_found, fix_plan, tests_or_gates,
+            verification_plan, closed_by_commit, status, created_at
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'registered', current_timestamp)
+        "#,
+        params![
+            project_id, finding_id, input.new_closure.design_invariant,
+            input.new_closure.design_citations, input.new_closure.implementation_evidence,
+            input.new_closure.affected_surfaces, input.new_closure.same_invariant_search,
+            input.new_closure.other_violations_found, input.new_closure.fix_plan,
+            input.new_closure.tests_or_gates, input.new_closure.verification_plan,
+            input.new_closure.closed_by_commit,
+        ],
+    )?;
+    let new_closure_id = tx.last_insert_rowid();
+    if !eligible {
+        let design_root = correction_design_root(&tx, finding_id)?;
+        record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            new_closure_id,
+            input.new_closure.affected_surfaces.unwrap(),
+            design_root.as_deref(),
+        )?;
+    }
+    tx.execute(
+        "update closures set status = 'superseded', superseded_by_closure_id = ?1, superseded_at = current_timestamp, superseded_by_authority_event_id = ?2, supersession_reason = ?3 where id = ?4",
+        params![new_closure_id, input.authority_event_id, input.reason, input.closure_id],
+    )?;
+    tx.execute(
+        "update correction_sessions set status = 'superseded', completed_at = current_timestamp where closure_id = ?1 and status = 'active'",
+        params![input.closure_id],
+    )?;
+    tx.commit()?;
+    Ok(ClosureSupersessionOutcome {
+        closure_id: new_closure_id,
+        superseded_closure_id: input.closure_id,
+        finding_id,
+    })
+}
+
+pub fn accept_finding_out_of_scope(
+    root: &Path,
+    input: FindingOutOfScope<'_>,
+) -> Result<FindingOutOfScopeOutcome> {
+    require_text(
+        Some(input.reason),
+        "out-of-scope disposition requires --reason",
+    )?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    ensure_review_finding_target(&tx, input.finding_id, "finding accept-out-of-scope")?;
+    ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
+    let review_plan_id: i64 = tx
+        .query_row(
+            r#"
+            select r.review_plan_id from findings f join review_runs r on r.id = f.review_run_id
+            where f.id = ?1 and f.project_id = ?2 and f.status = 'open'
+            "#,
+            params![input.finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("open finding not found")?;
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id, target_type, finding_id, acceptance_type, reason,
+            created_by, status, approved_by_authority_event_id,
+            approved_at, created_at
+        ) values (?1, 'finding', ?2, 'accepted_out_of_scope', ?3,
+                  'user', 'approved', ?4, current_timestamp, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.finding_id,
+            input.reason,
+            input.authority_event_id
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closure_attempts set result = 'superseded', resolved_at = current_timestamp where result is null and closure_id in (select id from closures where finding_id = ?1 and status = 'ready_for_verification')",
+        params![input.finding_id],
+    )?;
+    tx.execute(
+        "update closures set status = 'superseded', superseded_at = current_timestamp, superseded_by_authority_event_id = ?1 where finding_id = ?2 and status != 'superseded'",
+        params![input.authority_event_id, input.finding_id],
+    )?;
+    tx.execute(
+        "update correction_sessions set status = 'superseded', completed_at = current_timestamp where finding_id = ?1 and status = 'active'",
+        params![input.finding_id],
+    )?;
+    tx.execute(
+        "update findings set status = 'accepted_out_of_scope' where id = ?1",
+        params![input.finding_id],
+    )?;
+    let owner_work_unit_id: i64 = tx.query_row(
+        r#"
+        select p.work_unit_id from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        where f.id = ?1
+        "#,
+        params![input.finding_id],
+        |row| row.get(0),
+    )?;
+    let surviving_candidates: i64 = tx.query_row(
+        r#"
+        select count(*)
+        from findings f
+        join review_runs r on r.id = f.review_run_id
+        join review_plans p on p.id = r.review_plan_id
+        join closures c on c.finding_id = f.id and c.status = 'registered'
+        where p.work_unit_id = ?1 and f.status = 'open' and f.classification = 'valid'
+          and p.required = 1 and p.stage = 'close-ready'
+          and p.review_type in ('implementation_review', 'design_implementation_diff')
+        "#,
+        params![owner_work_unit_id],
+        |row| row.get(0),
+    )?;
+    if surviving_candidates == 0 {
+        tx.execute(
+            r#"
+            update work_unit_dependencies
+            set status = 'resolved', resolved_at = current_timestamp,
+                resolved_by_work_unit_event_id = (
+                    select epoch.reopened_event_id
+                    from finding_remediation_recovery_epochs epoch
+                    where epoch.dependency_id = work_unit_dependencies.id
+                    order by epoch.id desc limit 1
+                )
+            where status = 'open' and id in (
+                select epoch.dependency_id
+                from finding_remediation_recovery_epochs epoch
+                where epoch.work_unit_id = ?1
+            )
+            "#,
+            params![owner_work_unit_id],
+        )?;
+    }
+    let watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    tx.execute(
+        "update review_plans set fresh_review_after_run_id = ?1 where id = ?2",
+        params![watermark, review_plan_id],
+    )?;
+    tx.commit()?;
+    Ok(FindingOutOfScopeOutcome {
+        finding_id: input.finding_id,
+        acceptance_record_id,
+    })
+}
+
+pub fn finding_fix_context_ref(finding_id: i64, closure_id: i64, attempt_id: i64) -> String {
+    format!(
+        "review-context:finding-fix:finding={finding_id}:closure={closure_id}:attempt={attempt_id}"
+    )
+}
+
+pub(super) fn ensure_active_acceptance_authority(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    authority_event_id: i64,
+) -> Result<()> {
+    let valid: bool = conn.query_row(
+        r#"
+        select exists(select 1 from authority_events
+                      where id = ?1 and project_id = ?2 and status = 'active'
+                        and event_type in ('user_instruction', 'policy', 'design_doc'))
+        "#,
+        params![authority_event_id, project_id],
+        |row| row.get(0),
+    )?;
+    if !valid {
+        bail!("operation requires an active user, policy, or design authority event");
+    }
+    Ok(())
+}
+
+pub(super) fn ensure_review_finding_target(
+    conn: &rusqlite::Connection,
+    finding_id: i64,
+    operation: &str,
+) -> Result<()> {
+    if let Some(blocker) = current_phase_blocker(conn)? {
+        let same_selected_finding =
+            blocker.kind == "required_review_finding" && blocker.finding_id == Some(finding_id);
+        if !same_selected_finding {
+            bail!(
+                "{operation} is not allowed under the selected resolver action; next: {}",
+                blocker.next_action
+            );
+        }
+        return Ok(());
+    }
+    let selected_active_finding: Option<i64> = conn.query_row(
+        r#"
+        with active_scopes(finding_id) as (
+          select b.finding_id
+          from finding_remediation_bindings b
+          join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
+          join closures c on c.id = b.closure_id and c.status = 'registered'
+          join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+          union
+          select s.finding_id
+          from correction_sessions s
+          join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+          join closures c on c.id = s.closure_id and c.status = 'registered'
+          where s.status = 'active'
+        )
+        select min(finding_id) from active_scopes
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if selected_active_finding.is_some_and(|selected| selected != finding_id) {
+        bail!(
+            "{operation} targets finding {finding_id}, but active scoped finding {selected_active_finding:?} is selected"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn finding_is_remediation_eligible(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    finding_id: i64,
+) -> Result<bool> {
+    conn.query_row(
+        r#"
+        select exists(
+            select 1
+            from findings f
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            where f.id = ?1 and f.project_id = ?2
+              and p.required = 1 and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+        )
+        "#,
+        params![finding_id, project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub(super) fn require_text(value: Option<&str>, message: &str) -> Result<()> {
+    if value.is_none_or(|value| value.trim().is_empty()) {
+        bail!(message.to_string());
+    }
+    Ok(())
+}
+
+pub fn add_finding_verification(
+    root: &Path,
+    input: NewFindingVerification<'_>,
+) -> Result<FindingVerificationOutcome> {
+    if !matches!(input.result, "verified" | "not_fixed" | "needs_evidence") {
+        bail!(
+            "finding verification result must be verified|not_fixed|needs_evidence; use finding accept-out-of-scope for authority disposition"
+        );
+    }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let verification_run = tx
+        .query_row(
+            r#"
+            select run_type, run_purpose, finding_fix_result, clean_run,
+                   new_findings_count, carried_findings_checked, target_ref,
+                   review_provenance, review_provenance_ref,
+                   exists(select 1 from review_agent_invocations i
+                          where i.review_run_id = review_runs.id
+                            and coalesce(i.external_agent_id, '') != '')
+            from review_runs
+            where id = ?1 and project_id = ?2
+            "#,
+            params![input.review_run_id, project_id],
+            |row| {
+                Ok(StoredReviewRunPurpose {
+                    run_type: row.get(0)?,
+                    run_purpose: row.get(1)?,
+                    finding_fix_result: row.get(2)?,
+                    clean_run: row.get::<_, i64>(3)? == 1,
+                    new_findings_count: row.get(4)?,
+                    carried_findings_checked: row.get(5)?,
+                    _target_ref: row.get(6)?,
+                    review_provenance: row.get(7)?,
+                    review_provenance_ref: row.get(8)?,
+                    has_external_agent: row.get::<_, i64>(9)? == 1,
+                })
+            },
+        )
+        .optional()?
+        .context("review run not found")?;
+    if verification_run.run_type != "resume"
+        || verification_run.run_purpose != "finding_fix_verification"
+    {
+        bail!("finding verification requires a resume finding_fix_verification run");
+    }
+    if verification_run.finding_fix_result.as_deref() != Some(input.result)
+        || verification_run.new_findings_count != 0
+        || verification_run.carried_findings_checked != 1
+        || (input.result == "verified") != verification_run.clean_run
+    {
+        bail!("finding verification result is inconsistent with the resume review outcome");
+    }
+    let trusted = match verification_run.review_provenance.as_str() {
+        "external_agent" => {
+            verification_run.has_external_agent
+                && verification_run
+                    .review_provenance_ref
+                    .as_deref()
+                    .is_some_and(|v| !v.trim().is_empty())
+        }
+        "human_review" => verification_run
+            .review_provenance_ref
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty()),
+        _ => false,
+    };
+    if !trusted {
+        bail!("finding verification requires trusted review provenance");
+    }
+    let attempt_id: i64 = tx
+        .query_row(
+            r#"
+        select a.id
+        from closures c
+        join closure_attempts a on a.closure_id = c.id and a.result is null
+        join findings f on f.id = c.finding_id
+        join review_runs verifier on verifier.id = ?1 and verifier.project_id = ?5
+        join review_runs source_run on source_run.id = f.review_run_id
+        where c.id = ?2
+          and c.finding_id = ?3
+          and c.project_id = ?5
+          and f.project_id = ?5
+          and f.id = ?3
+          and source_run.review_plan_id = verifier.review_plan_id
+          and c.status = 'ready_for_verification'
+          and verifier.id > a.review_run_high_watermark
+          and verifier.target_ref = 'review-context:finding-fix:finding=' || f.id
+                    || ':closure=' || c.id || ':attempt=' || a.id
+        "#,
+            params![
+                input.review_run_id,
+                input.closure_id,
+                input.finding_id,
+                input.result,
+                project_id,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("finding verification target mismatch")?;
+    tx.execute(
+        r#"
+        insert into finding_verifications(
+            project_id, review_run_id, finding_id, closure_id, closure_attempt_id,
+            result, notes, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.review_run_id,
+            input.finding_id,
+            input.closure_id,
+            attempt_id,
+            input.result,
+            input.notes,
+        ],
+    )?;
+    let finding_verification_id = tx.last_insert_rowid();
+    tx.execute(
+        "update closure_attempts set result = ?1, resolved_at = current_timestamp where id = ?2",
+        params![input.result, attempt_id],
+    )?;
+    if input.result == "verified" {
+        tx.execute(
+            "update findings set status = 'closed' where id = ?1 and project_id = ?2",
+            params![input.finding_id, project_id],
+        )?;
+        tx.execute(
+            "update closures set status = 'verified' where id = ?1",
+            params![input.closure_id],
+        )?;
+    } else {
+        tx.execute(
+            "update closures set status = 'registered' where id = ?1",
+            params![input.closure_id],
+        )?;
+        tx.execute(
+            "update correction_sessions set status = 'active', completed_at = null where id = (select max(id) from correction_sessions where closure_id = ?1 and status = 'completed')",
+            params![input.closure_id],
+        )?;
+    }
+    let fresh_watermark: i64 =
+        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
+            row.get(0)
+        })?;
+    tx.execute(
+        "update review_plans set fresh_review_after_run_id = ?1 where id = (select review_plan_id from review_runs where id = ?2)",
+        params![fresh_watermark, input.review_run_id],
+    )?;
+    refresh_plan_for_run(&tx, project_id, input.review_run_id)?;
+    tx.commit()?;
+    Ok(FindingVerificationOutcome {
+        finding_verification_id,
+    })
+}

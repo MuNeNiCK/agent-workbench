@@ -1,7 +1,7 @@
+use std::fs;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use rusqlite::{Connection, params};
 
 use super::args::*;
 use agent_workbench::*;
@@ -43,10 +43,13 @@ pub(crate) fn handle_work_record(root: &Path, command: WorkRecordCommand) -> Res
             if args.format != "md" {
                 anyhow::bail!("only --format md is implemented");
             }
-            print!(
-                "{}",
-                export_work_record_markdown(root, args.work_record_id)?
-            );
+            let markdown = export_work_record_markdown(root, args.work_record_id)?;
+            if let Some(parent) = args.output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&args.output, markdown)?;
+            println!("exported work record");
+            println!("path: {}", args.output.display());
         }
         WorkRecordCommand::Command { command } => match command {
             WorkRecordCommandLinkCommand::Add(args) => {
@@ -428,29 +431,5 @@ fn resolve_git_commit_sha(positional: Option<&str>, flagged: Option<&str>) -> Re
             bail!("provide commit sha either positionally or with --sha, not both")
         }
         (None, None) => bail!("commit sha is required"),
-    }
-}
-
-fn resolve_git_commit_id(root: &Path, commit: &str) -> Result<i64> {
-    if let Ok(id) = commit.parse::<i64>() {
-        return Ok(id);
-    }
-    let conn = Connection::open(agent_workbench::default_ledger_path(root))?;
-    let mut stmt = conn.prepare(
-        r#"
-        select c.id
-        from git_commits c
-        join repositories r on r.id = c.repository_id
-        join projects p on p.id = r.project_id
-        where c.commit_sha = ?1 or c.short_sha = ?1
-        order by c.id
-        "#,
-    )?;
-    let rows = stmt.query_map(params![commit], |row| row.get::<_, i64>(0))?;
-    let ids = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-    match ids.as_slice() {
-        [id] => Ok(*id),
-        [] => bail!("git commit not found for {commit}"),
-        _ => bail!("git commit is ambiguous for {commit}"),
     }
 }

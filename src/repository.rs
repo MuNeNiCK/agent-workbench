@@ -504,6 +504,29 @@ fn bool_to_i64(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
+pub fn resolve_git_commit_id(root: &Path, commit: &str) -> Result<i64> {
+    if let Ok(id) = commit.parse::<i64>() {
+        return Ok(id);
+    }
+    let conn = open_existing_project(root)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select c.id
+        from git_commits c
+        join repositories r on r.id = c.repository_id
+        where c.commit_sha = ?1 or c.short_sha = ?1
+        order by c.id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![commit], |row| row.get::<_, i64>(0))?;
+    let ids = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    match ids.as_slice() {
+        [id] => Ok(*id),
+        [] => bail!("git commit not found for {commit}"),
+        _ => bail!("git commit is ambiguous for {commit}"),
+    }
+}
+
 pub struct NewRepository<'a> {
     pub name: &'a str,
     pub path: &'a str,

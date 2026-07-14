@@ -1,6 +1,6 @@
 ---
 name: agent-workbench
-description: Use when managing long-running coding-agent work with structured project memory, task ledgers, design decisions, review loops, work records, and Markdown exports across Agent Skills-compatible coding-agent workflows.
+description: Use when managing long-running coding-agent work with structured project memory, task tracking, design decisions, review loops, work records, and classified Markdown exports across Agent Skills-compatible coding-agent workflows.
 license: MIT
 ---
 
@@ -53,6 +53,12 @@ Common command groups include:
 - `agent-workbench doctor validation-links`
 - `agent-workbench doctor validation-links --repair`
 - `agent-workbench doctor validation-links --audit`
+- `agent-workbench migration task-history plan`
+- `agent-workbench migration task-history ambiguity-list`
+- `agent-workbench migration task-history authority-record`
+- `agent-workbench migration task-history ambiguity-decide`
+- `agent-workbench migration task-history apply`
+- `agent-workbench migration task-history audit`
 - `agent-workbench rules applicable --scope current`
 - `agent-workbench authority list`
 - `agent-workbench design init`
@@ -129,7 +135,6 @@ Common command groups include:
 - `agent-workbench closure correction-begin`
 - `agent-workbench closure transition apply`
 - `agent-workbench closure ready`
-- `agent-workbench closure ready`
 - `agent-workbench closure supersede`
 - `agent-workbench review-context`
 - `agent-workbench evidence add`
@@ -146,7 +151,7 @@ Common command groups include:
 - `agent-workbench repository commit add`
 - `agent-workbench repository file add`
 - `agent-workbench git commit add`
-- `agent-workbench git file add`
+- `agent-workbench git files add`
 - `agent-workbench work start`
 - `agent-workbench work activate`
 - `agent-workbench work remediate --finding <finding-id>`
@@ -168,7 +173,7 @@ Common command groups include:
 - `agent-workbench record link command`
 - `agent-workbench record link commit`
 - `agent-workbench record link file`
-- `agent-workbench record export`
+- `agent-workbench record export <record-id> --output <path>`
 - `agent-workbench kpt start --from corrections`
 - `agent-workbench kpt item add`
 - `agent-workbench kpt item list`
@@ -187,14 +192,15 @@ Load only the reference needed for the current operation:
 - `references/repository-validation.md` for validation, repository, Git, and
   work-record evidence commands.
 - `references/close-ready-troubleshooting.md` when `close-ready` is blocked.
-- `references/ledger-recovery.md` when normal commands report invalid
-  validation-run project links.
+- `references/state-recovery.md` when normal commands report invalid
+  validation-run project links or when historical phase-bearing task data needs
+  the explicit task-history migration.
 
 ## References
 
 Use the local design references in this repository when changing the skill or
 CLI. Do not treat old Markdown exports as standing policy unless they are linked
-from structured ledger state.
+from current managed project state.
 
 ## Rules
 
@@ -202,9 +208,10 @@ from structured ledger state.
 - Use `agent-workbench status` and `agent-workbench next` before long-running
   work, executed through the wrapper path resolved relative to this skill.
 - If `status` or `next` reports `finding_remediation: true` or
-  `finding remediation`, inspect `finding_remediation_count`; implementation is
-  allowed only in the printed owning work unit and only to satisfy the printed
-  finding/closure contracts. Keep the findings open. After implementing and
+  `finding remediation`, inspect `finding_remediation_count`, then run
+  `agent-workbench finding list --status open` to explicitly retrieve the
+  project-internal closure contracts. Implementation is allowed only in the
+  printed owning work unit and only to satisfy those contracts. Keep the findings open. After implementing and
   testing each fix, run its exact printed `closure ready` command; do not launch
   resume review before that boundary. Stale design-derived state always takes
   precedence over this exception.
@@ -217,7 +224,7 @@ from structured ledger state.
   eligible registered implementation finding, including an inactive owner.
   Run that exact command before editing. It creates or reuses only the audited
   scoped activation selected by the resolver; do not substitute `work activate`,
-  `work reopen`, or direct ledger changes.
+  `work reopen`, or changes outside the supported CLI.
 - In `finding_remediation`, edit only the listed closure contracts. `work
   suspend`, `work block`, and `work abandon` are the only work lifecycle
   alternates; they apply only to the active bound owner. Finish a selected
@@ -248,19 +255,24 @@ from structured ledger state.
   and apply active user corrections for the current scope.
 - Before choosing validation or test commands, run `agent-workbench command list`
   and prefer applicable fixed or preferred command profiles.
-- Treat the ledger as a private implementation detail. Do not use `sqlite3`,
-  SQL queries, table names, schema inspection, or direct ledger joins during
+- Treat managed project state as a private implementation detail. Do not use
+  unsupported tools, internal queries, or implementation names during
   normal agent workflow. Use Agent Workbench CLI commands and `review-context`.
   If a required state question has no CLI or review-context answer, report the
-  missing product surface as a blocker instead of reading the database directly.
-- If normal commands fail with `validation_runs contains invalid project
-  links`, use `agent-workbench doctor validation-links` for read-only diagnosis.
+  missing product surface as a blocker instead of bypassing the CLI.
+- If normal commands report invalid validation project links, use
+  `agent-workbench doctor validation-links` for read-only diagnosis.
   Run `agent-workbench doctor validation-links --repair` only when the complete
-  plan is repairable. It creates and prints a consistent backup, repairs known
-  parent/dependent links transactionally, records immutable audit rows, and
+  plan is repairable. It preserves a recovery point, repairs known
+  parent/dependent links atomically, records an immutable audit, and
   commits only after migration and integrity validation pass. Use `--audit` to
   list prior repairs. An unrepairable result is a blocker, not permission to
-  inspect or edit SQLite directly.
+  inspect or alter private managed state outside the CLI.
+- Historical task migration is an explicit operator action. Normal task, phase,
+  refresh, reconciliation, status, and resume commands must never apply it.
+  Follow `references/state-recovery.md`, bind every mutating step to the opaque
+  handles printed by the read-only plan, and stop on a stale handle or unresolved
+  ambiguity.
 - When repeated corrections, command drift, recurring findings, or recurring
   close/resume failures appear, propose or run `agent-workbench kpt start` and
   inspect items with `agent-workbench kpt item list`.
@@ -306,8 +318,8 @@ from structured ledger state.
   Use `checklist item list --checklist <checklist-id>` to inspect items. Do
   not use stale disposition commands for non-stale checklist completion.
 - Use `review-context` when launching a review agent so the prompt is focused
-  on the relevant design version, work unit, or review kind. Copy the printed
-  `context_ref` into `review run add --target <context_ref>`. The command
+  on the relevant design version, work unit, or review kind. Pass the printed
+  target value to `review run add --target`. The command
   records a completed review; it does not launch or perform the review.
   Design-derived gates require clean fresh runs tied to that context with
   trusted provenance such as `--provenance external_agent --external-agent-id
@@ -315,8 +327,8 @@ from structured ledger state.
   `--provenance human_review --provenance-ref <review-output-ref>`.
   Self-recorded clean runs must not be used to satisfy readiness gates.
 - If a required review plan was created for the wrong scope, is no longer
-  required, or is intentionally superseded, do not inspect or edit ledger
-  internals. Record the authority event, then run
+  required, or is intentionally superseded, do not inspect or alter private
+  managed state. Record the authority event, then run
   `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
 - For final completion checks, use a fresh unbiased review unless the user
   explicitly asks only for resume verification of known findings. Do not use a
@@ -326,7 +338,7 @@ from structured ledger state.
   tests match the design but the installed skill cannot guide a fresh coding
   agent through setup, reviews, implementation, interruption recovery,
   close-ready troubleshooting, and evidence recording.
-- Use `resume-check` only when a ledger row should be recorded for an actual
+- Use `resume-check` only when a durable result should be recorded for an actual
   resume operation.
 - Record reusable validation commands with `command fixed add` and command runs
   with `command usage add` so work records can link to stable evidence.

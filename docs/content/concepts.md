@@ -1,15 +1,10 @@
 # Concepts
 
-## Ledger
+## Project state
 
-The ledger is a project-local SQLite database at:
-
-```text
-.agent-workbench/ledger.sqlite
-```
-
-It is the source of truth for operational state. Markdown files and exports are
-useful for people, but the ledger stores the structured relationships that
+Agent Workbench keeps structured operational state inside the project. It is
+the source of truth for agent workflow. Explicit exports are
+useful for people, while the managed project state stores the relationships that
 agents need before they plan, resume, review, or close work.
 
 ## Work unit
@@ -41,23 +36,18 @@ state, repository state, or review state changed while the work was suspended.
 
 ## Design Package
 
-A Design Package is structured design material stored under:
-
-```text
-.agent-workbench/designs/<design-id>/
-```
-
-It contains human-readable architecture sections plus machine-readable
+A Design Package is structured design material created with `design init`.
+It contains human-readable design sections plus machine-readable
 requirements, decisions, and validation gate templates.
 
 Agent Workbench does not treat arbitrary local notes as standing authority.
-Design notes should be converted into a Design Package and imported into the
-ledger.
+Design notes should be converted into a Design Package and imported through the
+CLI.
 
 ## Requirement
 
 A requirement is a stable, importable statement of expected behavior or
-constraint. Requirements use keys such as `REQ-001`.
+constraint. Their stable keys belong to the package that defines them.
 
 Requirements can be linked to tasks, validation gates, implementation evidence,
 coverage records, findings, and validation runs.

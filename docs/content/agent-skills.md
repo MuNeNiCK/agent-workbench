@@ -3,8 +3,8 @@
 Agent Workbench is installed as an Agent Skill. This page is for the person
 configuring the skill for a user or project.
 
-Use the skill when you want an agent to manage long-running repository work with
-a ledger instead of relying only on chat history.
+Use the skill when you want an agent to manage long-running repository work
+without relying only on chat history.
 
 ## Install with GitHub CLI
 

@@ -304,6 +304,7 @@ pub fn export_work_record_markdown(root: &Path, work_record_id: i64) -> Result<S
     };
 
     let mut out = String::new();
+    out.push_str("classification: project-internal\n\n");
     out.push_str(&format!("# {}\n\n", record.topic));
     out.push_str(&format!("- work_record_id: {}\n", record.id));
     out.push_str(&format!("- created_at: {}\n", record.created_at));

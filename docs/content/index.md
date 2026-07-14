@@ -34,7 +34,7 @@ project.
 
 ## What you get
 
-- A project-local SQLite ledger under `.agent-workbench/`.
+- Project-local structured workflow state managed through the CLI.
 - Work units with active, suspended, blocked, closed, reopened, and follow-up
   states.
 - Design Package import for requirements, decisions, and validation gate
@@ -57,9 +57,10 @@ People normally install the skill and then ask their agent to use
 
 ## Stored data
 
-Agent Workbench creates `.agent-workbench/` in the project. Treat it as project
-operational data: it can contain task titles, command records, design summaries,
-review findings, Git references, and user corrections.
+Agent Workbench keeps private operational state in the project. It can contain
+task titles, command records, design summaries, review findings, Git references,
+and user corrections, so agents access it through classified inspection and
+explicit export commands.
 
 ## Next step
 

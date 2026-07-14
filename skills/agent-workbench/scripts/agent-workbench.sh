@@ -72,6 +72,7 @@ need curl
 need sed
 need tar
 need sha256sum
+need grep
 
 if [ -z "$VERSION" ]; then
   version_file="$SKILL_DIR/CLI_VERSION"
@@ -94,7 +95,17 @@ cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/agent-workbench/releases/$VERSION/$P
 cli="$cache_root/agent-workbench"
 checksum_marker="$cache_root/agent-workbench.sha256"
 
-if [ ! -x "$cli" ] || [ ! -s "$checksum_marker" ]; then
+cache_valid=false
+if [ -x "$cli" ] && [ -s "$checksum_marker" ]; then
+  expected_cached_sha="$(sed -n '1{s/[[:space:]]//g;p;}' "$checksum_marker")"
+  actual_cached_sha="$(sha256sum "$cli" | sed -n 's/[[:space:]].*//p')"
+  if printf '%s\n' "$expected_cached_sha" | grep -Eq '^[0-9a-f]{64}$' \
+    && [ "$actual_cached_sha" = "$expected_cached_sha" ]; then
+    cache_valid=true
+  fi
+fi
+
+if [ "$cache_valid" != true ]; then
   cache_parent="$(dirname -- "$cache_root")"
   mkdir -p "$cache_parent"
   tmpdir="$(mktemp -d)"
@@ -119,9 +130,10 @@ if [ ! -x "$cli" ] || [ ! -s "$checksum_marker" ]; then
   tar -xzf "$tmpdir/$asset" -C "$tmpcache"
   chmod +x "$tmpcache/agent-workbench"
   "$tmpcache/agent-workbench" status --help >/dev/null
-  sed -n "s/  $asset\$//p" "$tmpdir/$asset.sha256" > "$tmpcache/agent-workbench.sha256"
+  sha256sum "$tmpcache/agent-workbench" \
+    | sed -n 's/[[:space:]].*//p' > "$tmpcache/agent-workbench.sha256"
 
-  if [ ! -x "$cli" ] || [ ! -s "$checksum_marker" ]; then
+  if [ "$cache_valid" != true ]; then
     rm -rf "$cache_root"
     mv "$tmpcache" "$cache_root"
     tmpcache=""

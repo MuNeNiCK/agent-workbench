@@ -3,14 +3,14 @@ use crate::db::{SCHEMA_VERSION, open_ledger};
 use rusqlite::params;
 use std::fs;
 
-mod design_trace;
-mod doctor;
-mod init_migrations;
-mod repository_ledger;
+mod database;
+mod design;
+mod governance;
+mod identity;
+mod migration;
+mod repository;
 mod review;
-mod rules_kpt;
-mod work_memory;
-mod work_stack;
+mod work;
 
 fn requirement_doc(key: &str, title: &str, priority: &str) -> String {
     format!(

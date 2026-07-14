@@ -3,10 +3,12 @@ use clap::Parser;
 use std::env;
 
 mod args;
+mod classification;
 mod design_flow;
 mod doctor;
 mod gate;
 mod memory;
+mod migration;
 mod phases;
 mod planning;
 mod records;
@@ -15,7 +17,10 @@ mod work;
 
 use args::*;
 
-use agent_workbench::{NextAction, PhaseBlocker, init_project, next_action, project_status};
+use agent_workbench::{
+    NextAction, OwnerAction, PhaseBlocker, ProjectIntegrityStatus, init_project, next_action,
+    project_status,
+};
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = match cli.root {
@@ -23,200 +28,209 @@ pub(crate) fn run() -> Result<()> {
         None => env::current_dir()?,
     };
 
-    match cli.command {
-        Command::Init => {
-            let outcome = init_project(&root)?;
-            println!("initialized ledger: {}", outcome.ledger_path.display());
-        }
-        Command::Status => {
-            let status = project_status(&root)?;
-            if !status.initialized {
-                println!("not initialized");
-                println!("ledger: {}", status.ledger_path.display());
-                println!("next: agent-workbench init");
-            } else {
-                println!("initialized");
-                println!("ledger: {}", status.ledger_path.display());
-                if let Some(name) = status.project_name {
-                    println!("project: {name}");
-                }
-                if let Some(version) = status.schema_version {
-                    println!("schema_version: {version}");
-                }
-                println!("open_work_units: {}", status.open_work_units);
-                println!("active_activations: {}", status.active_activations);
-                if let Some(blocker) = status.phase_blocker {
-                    println!("phase_blocked: true");
-                    print_phase_blocker(&blocker);
-                } else {
-                    println!("phase_blocked: false");
-                    if !status.finding_remediations.is_empty() {
-                        println!("finding_remediation: true");
-                        println!(
-                            "finding_remediation_count: {}",
-                            status.finding_remediations.len()
-                        );
-                        for remediation in &status.finding_remediations {
-                            print_finding_remediation(remediation);
-                        }
-                    } else if !status.source_corrections.is_empty() {
-                        println!("finding_remediation: false");
-                        println!("source_correction: true");
-                        println!(
-                            "source_correction_count: {}",
-                            status.source_corrections.len()
-                        );
-                        for correction in &status.source_corrections {
-                            print_source_correction(correction);
-                        }
-                    } else {
-                        println!("finding_remediation: false");
-                        println!("source_correction: false");
-                    }
-                }
-            }
-        }
-        Command::Next => match next_action(&root)? {
-            NextAction::NotInitialized { ledger_path } => {
-                println!("not initialized");
-                println!("ledger: {}", ledger_path.display());
-                println!("next: agent-workbench init");
-            }
-            NextAction::BlockedPhase { blocker } => {
-                println!("blocked phase");
-                print_phase_blocker(&blocker);
-            }
-            NextAction::FindingRemediation { remediations } => {
-                println!("finding remediation");
-                println!("finding_remediation_count: {}", remediations.len());
-                for remediation in &remediations {
-                    print_finding_remediation(remediation);
-                }
-            }
-            NextAction::SourceCorrection { corrections } => {
-                println!("source correction");
-                println!("source_correction_count: {}", corrections.len());
-                for correction in &corrections {
-                    print_source_correction(correction);
-                }
-            }
-            NextAction::NoOpenWorkUnit => {
-                println!("no open work unit");
-                println!("next: agent-workbench work start <title>");
-            }
-            NextAction::ResumeSuspended { work_unit } => {
-                println!("suspended work unit");
-                println!("work_unit_id: {}", work_unit.id);
-                println!("title: {}", work_unit.title);
-                if let Some(design_version_id) = work_unit.design_version_id {
-                    println!("design_version_id: {design_version_id}");
-                }
-                print_next_phase(&work_unit);
-                println!("next: agent-workbench resume-check --maturity trace-aware");
-                println!("then: agent-workbench work resume --check <resume-check-id>");
-            }
-            NextAction::ActivateOpen { work_unit } => {
-                println!("open inactive work unit");
-                println!("work_unit_id: {}", work_unit.id);
-                println!("title: {}", work_unit.title);
-                match work_unit.design_version_id {
-                    Some(design_version_id) => {
-                        println!("design_version_id: {design_version_id}");
-                        println!(
-                            "next: agent-workbench work activate --implementation --design-version {} {}",
-                            design_version_id, work_unit.id
-                        );
-                    }
-                    None => println!("next: agent-workbench work activate {}", work_unit.id),
-                }
-                print_next_phase(&work_unit);
-            }
-            NextAction::ContinueActive { work_unit } => {
-                println!("continue active work unit");
-                println!("work_unit_id: {}", work_unit.id);
-                println!("title: {}", work_unit.title);
-                if let Some(design_version_id) = work_unit.design_version_id {
-                    println!("design_version_id: {design_version_id}");
-                }
-                print_next_phase(&work_unit);
-            }
-        },
-        Command::Doctor { command } => doctor::handle(&root, command)?,
-        Command::Work { command } => work::handle(&root, command)?,
-        Command::ResumeCheck(args) => work::handle_resume_check(&root, args)?,
-        Command::Gate { command } => gate::handle(&root, command)?,
-        Command::Correction { command } => memory::handle_correction(&root, command)?,
-        Command::Command { command } => memory::handle_command(&root, command)?,
-        Command::Git { command } => records::handle_git(&root, command)?,
-        Command::Rules { command } => memory::handle_rules(&root, command)?,
-        Command::WorkRecord { command } => records::handle_work_record(&root, command)?,
-        Command::Repository { command } => records::handle_repository(&root, command)?,
-        Command::Task { command } => planning::handle_task(&root, command)?,
-        Command::Phase { command } => phases::handle_phase(&root, command)?,
-        Command::Decision { command } => planning::handle_decision(&root, command)?,
-        Command::Design { command } => planning::handle_design(&root, command)?,
-        Command::Requirement { command } => planning::handle_requirement(&root, command)?,
-        Command::DesignDecision { command } => planning::handle_design_decision(&root, command)?,
-        Command::GateTemplate { command } => planning::handle_gate_template(&root, command)?,
-        Command::Trace { command } => planning::handle_trace(&root, command)?,
-        Command::Evidence { command } => planning::handle_evidence(&root, command)?,
-        Command::Coverage { command } => planning::handle_coverage(&root, command)?,
-        Command::Review { command } => review_ops::handle_review(&root, command)?,
-        Command::Finding { command } => review_ops::handle_finding(&root, command)?,
-        Command::Closure { command } => review_ops::handle_closure(&root, command)?,
-        Command::Acceptance { command } => review_ops::handle_acceptance(&root, command)?,
-        Command::Authority { command } => review_ops::handle_authority(&root, command)?,
-        Command::Kpt { command } => review_ops::handle_kpt(&root, command)?,
-        Command::Decompose { command } => design_flow::handle_decompose(&root, command)?,
-        Command::Checklist { command } => design_flow::handle_checklist(&root, command)?,
-        Command::Stale { command } => design_flow::handle_stale(&root, command)?,
-        Command::ReviewContext(args) => design_flow::print_review_context(&root, &args)?,
-        Command::Export { command } => design_flow::handle_export(&root, command)?,
+    let publication = classification::publication_class(&cli.command);
+    if let Some(label) = publication.label() {
+        println!("classification: {label}");
     }
-    Ok(())
+
+    let result: Result<()> = (|| {
+        match cli.command {
+            Command::Init => {
+                init_project(&root)?;
+                println!("initialized project state");
+            }
+            Command::Status => {
+                let status = project_status(&root)?;
+                if !status.initialized {
+                    println!("not initialized");
+                    println!("next: agent-workbench init");
+                } else {
+                    println!("initialized");
+                    println!("open_work_units: {}", status.open_work_units);
+                    println!("active_activations: {}", status.active_activations);
+                    print_project_integrity(&status.project_integrity);
+                    if status.project_integrity.result == "blocked" {
+                        println!("project_blocked: true");
+                        return Ok(());
+                    }
+                    println!("project_blocked: false");
+                    if let Some(blocker) = status.phase_blocker {
+                        println!("phase_blocked: true");
+                        print_phase_blocker(&blocker);
+                    } else {
+                        println!("phase_blocked: false");
+                        if !status.finding_remediations.is_empty() {
+                            println!("finding_remediation: true");
+                            println!(
+                                "finding_remediation_count: {}",
+                                status.finding_remediations.len()
+                            );
+                            for remediation in &status.finding_remediations {
+                                print_finding_remediation_summary(remediation);
+                            }
+                        } else if !status.source_corrections.is_empty() {
+                            println!("finding_remediation: false");
+                            println!("source_correction: true");
+                            println!(
+                                "source_correction_count: {}",
+                                status.source_corrections.len()
+                            );
+                            for correction in &status.source_corrections {
+                                print_source_correction_summary(correction);
+                            }
+                        } else {
+                            println!("finding_remediation: false");
+                            println!("source_correction: false");
+                        }
+                        print_owner_actions(&status.owner_actions);
+                    }
+                }
+            }
+            Command::Next => match next_action(&root)? {
+                NextAction::NotInitialized { ledger_path } => {
+                    let _ = ledger_path;
+                    println!("not initialized");
+                    println!("next: agent-workbench init");
+                }
+                NextAction::BlockedPhase { blocker } => {
+                    println!("blocked phase");
+                    print_phase_blocker(&blocker);
+                }
+                NextAction::ProjectIntegrityBlocked { integrity } => {
+                    println!("project integrity blocked");
+                    print_project_integrity(&integrity);
+                }
+                NextAction::OwnerActions { owners } => {
+                    println!("owner actions");
+                    print_owner_actions(&owners);
+                }
+                NextAction::FindingRemediation { remediations } => {
+                    println!("finding remediation");
+                    println!("finding_remediation_count: {}", remediations.len());
+                    for remediation in &remediations {
+                        print_finding_remediation_summary(remediation);
+                    }
+                }
+                NextAction::SourceCorrection { corrections } => {
+                    println!("source correction");
+                    println!("source_correction_count: {}", corrections.len());
+                    for correction in &corrections {
+                        print_source_correction_summary(correction);
+                    }
+                }
+                NextAction::NoOpenWorkUnit => {
+                    println!("no open work unit");
+                    println!("next: agent-workbench work start <title>");
+                }
+                NextAction::ResumeSuspended { work_unit } => {
+                    println!("suspended work unit");
+                    println!("work_unit_id: {}", work_unit.id);
+                    print_next_phase(&work_unit);
+                    println!("next: agent-workbench resume-check --maturity trace-aware");
+                    println!("then: agent-workbench work resume --check <resume-check-id>");
+                }
+                NextAction::ActivateOpen { work_unit } => {
+                    println!("open inactive work unit");
+                    println!("work_unit_id: {}", work_unit.id);
+                    match work_unit.design_version_id {
+                        Some(design_version_id) => {
+                            println!(
+                                "next: agent-workbench work activate --implementation --design-version {} {}",
+                                design_version_id, work_unit.id
+                            );
+                        }
+                        None => println!("next: agent-workbench work activate {}", work_unit.id),
+                    }
+                    print_next_phase(&work_unit);
+                }
+                NextAction::ContinueActive { work_unit } => {
+                    println!("continue active work unit");
+                    println!("work_unit_id: {}", work_unit.id);
+                    print_next_phase(&work_unit);
+                }
+            },
+            Command::Doctor { command } => doctor::handle(&root, command)?,
+            Command::Migration { command } => migration::handle(&root, command)?,
+            Command::Work { command } => work::handle(&root, command)?,
+            Command::ResumeCheck(args) => work::handle_resume_check(&root, args)?,
+            Command::Gate { command } => gate::handle(&root, command)?,
+            Command::Correction { command } => memory::handle_correction(&root, command)?,
+            Command::Command { command } => memory::handle_command(&root, command)?,
+            Command::Git { command } => records::handle_git(&root, command)?,
+            Command::Rules { command } => memory::handle_rules(&root, command)?,
+            Command::WorkRecord { command } => records::handle_work_record(&root, command)?,
+            Command::Repository { command } => records::handle_repository(&root, command)?,
+            Command::Task { command } => planning::handle_task(&root, command)?,
+            Command::Phase { command } => phases::handle_phase(&root, command)?,
+            Command::Decision { command } => planning::handle_decision(&root, command)?,
+            Command::Design { command } => planning::handle_design(&root, command)?,
+            Command::Requirement { command } => planning::handle_requirement(&root, command)?,
+            Command::DesignDecision { command } => {
+                planning::handle_design_decision(&root, command)?
+            }
+            Command::GateTemplate { command } => planning::handle_gate_template(&root, command)?,
+            Command::Trace { command } => planning::handle_trace(&root, command)?,
+            Command::Evidence { command } => planning::handle_evidence(&root, command)?,
+            Command::Coverage { command } => planning::handle_coverage(&root, command)?,
+            Command::Review { command } => review_ops::handle_review(&root, command)?,
+            Command::Finding { command } => review_ops::handle_finding(&root, command)?,
+            Command::Closure { command } => review_ops::handle_closure(&root, command)?,
+            Command::Acceptance { command } => review_ops::handle_acceptance(&root, command)?,
+            Command::Authority { command } => review_ops::handle_authority(&root, command)?,
+            Command::Kpt { command } => review_ops::handle_kpt(&root, command)?,
+            Command::Decompose { command } => design_flow::handle_decompose(&root, command)?,
+            Command::Checklist { command } => design_flow::handle_checklist(&root, command)?,
+            Command::Stale { command } => design_flow::handle_stale(&root, command)?,
+            Command::ReviewContext(args) => design_flow::print_review_context(&root, &args)?,
+            Command::Export { command } => design_flow::handle_export(&root, command)?,
+        }
+        Ok(())
+    })();
+
+    result.map_err(|error| classification::classify_error(error, &root, publication))
 }
 
-fn print_finding_remediation(remediation: &agent_workbench::FindingRemediation) {
+fn print_project_integrity(integrity: &ProjectIntegrityStatus) {
+    println!("project_integrity: {}", integrity.result);
+    if integrity.result == "blocked" {
+        println!("inspect: agent-workbench doctor validation-links");
+    }
+}
+
+fn print_owner_actions(owners: &[OwnerAction]) {
+    println!("owner_action_count: {}", owners.len());
+    for owner in owners {
+        println!("owner: {}:{}", owner.owner_type, owner.owner_id);
+        println!("owner_state: {}", owner.state);
+        println!("owner_schedulable: {}", owner.schedulable);
+        if let Some(kind) = owner.blocker_kind.as_deref() {
+            println!("owner_blocker_kind: {kind}");
+        }
+        if owner.next_action.contains("review-context:") {
+            println!("owner_next: agent-workbench finding list --status open");
+        } else {
+            println!("owner_next: {}", owner.next_action);
+        }
+    }
+}
+
+fn print_finding_remediation_summary(remediation: &agent_workbench::FindingRemediation) {
     println!("work_unit_id: {}", remediation.work_unit_id);
-    println!("review_plan_id: {}", remediation.review_plan_id);
     println!("finding_id: {}", remediation.finding_id);
     println!("closure_id: {}", remediation.closure_id);
-    println!("description: {}", remediation.description);
-    println!("affected_surfaces: {}", remediation.affected_surfaces);
-    println!("fix_plan: {}", remediation.fix_plan);
-    println!("design_invariant: {}", remediation.design_invariant);
-    println!("tests_or_gates: {}", remediation.tests_or_gates);
-    println!("verification_plan: {}", remediation.verification_plan);
-    println!("next: {}", remediation.next_action);
+    println!("inspect: agent-workbench finding list --status open");
 }
 
-fn print_source_correction(correction: &agent_workbench::SourceCorrection) {
+fn print_source_correction_summary(correction: &agent_workbench::SourceCorrection) {
     println!("work_unit_id: {}", correction.work_unit_id);
-    println!("review_plan_id: {}", correction.review_plan_id);
     println!("finding_id: {}", correction.finding_id);
     println!("closure_id: {}", correction.closure_id);
-    println!(
-        "correction_session_id: {}",
-        correction.correction_session_id
-    );
-    println!("description: {}", correction.description);
-    println!("affected_surfaces: {}", correction.affected_surfaces);
-    println!("fix_plan: {}", correction.fix_plan);
-    println!("design_invariant: {}", correction.design_invariant);
-    println!("tests_or_gates: {}", correction.tests_or_gates);
-    println!("verification_plan: {}", correction.verification_plan);
-    println!("next: {}", correction.next_action);
+    println!("inspect: agent-workbench finding list --status open");
 }
 
 fn print_next_phase(work_unit: &agent_workbench::ActiveWorkUnit) {
     if let Some(phase_id) = work_unit.next_phase_id {
         println!("next_phase_id: {phase_id}");
-        if let Some(key) = work_unit.next_phase_key.as_deref() {
-            println!("next_phase_key: {key}");
-        }
-        if let Some(title) = work_unit.next_phase_title.as_deref() {
-            println!("next_phase_title: {title}");
-        }
     }
 }
 
@@ -225,27 +239,8 @@ fn print_phase_blocker(blocker: &PhaseBlocker) {
     if let Some(work_unit_id) = blocker.work_unit_id {
         println!("work_unit_id: {work_unit_id}");
     }
-    if let Some(review_plan_id) = blocker.review_plan_id {
-        println!("review_plan_id: {review_plan_id}");
-    }
-    if let Some(review_run_id) = blocker.review_run_id {
-        println!("review_run_id: {review_run_id}");
-    }
     if let Some(finding_id) = blocker.finding_id {
         println!("finding_id: {finding_id}");
     }
-    if let Some(review_type) = blocker.review_type.as_deref() {
-        println!("review_type: {review_type}");
-    }
-    if let Some(stage) = blocker.stage.as_deref() {
-        println!("stage: {stage}");
-    }
-    if let Some(severity) = blocker.severity.as_deref() {
-        println!("severity: {severity}");
-    }
-    if let Some(classification) = blocker.classification.as_deref() {
-        println!("classification: {classification}");
-    }
-    println!("description: {}", blocker.description);
     println!("next: {}", blocker.next_action);
 }

@@ -8,8 +8,9 @@ normal coding-agent work.
 1. Run `agent-workbench status`.
 2. Run `agent-workbench next`.
 3. If either command reports `finding_remediation: true` or
-   `finding remediation`, inspect `finding_remediation_count`, implement only
-   the printed finding contracts in their owning work unit, then run each
+   `finding remediation`, inspect `finding_remediation_count`, run
+   `agent-workbench finding list --status open` to retrieve the classified
+   contracts, implement only those contracts in their owning work unit, then run each
    printed `closure ready` command. Stale design-derived state takes precedence.
    If either
    command reports `phase_blocked: true` or `blocked phase`, perform
@@ -37,7 +38,8 @@ authority.
 1. Create or convert design material into a workbench design package with
    `agent-workbench design init <design-id> --title "<title>"`.
 2. Import the package with
-   `agent-workbench design import .agent-workbench/designs/<design-id> --status draft`.
+   `agent-workbench design import <package-path> --status draft`, using the path
+   printed by `design init`.
 3. Add the required design document review plan with
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required`.
 4. Build the design review context with
@@ -80,7 +82,7 @@ authority.
    command. If `next` reports suspended work, run the printed resume-check and
    resume commands. Do not start an unrelated new work unit after decomposition.
    If `next` cannot identify the correct continue, activate, or resume command,
-   report the workflow blocker instead of inspecting the ledger.
+   report the workflow blocker instead of inspecting private managed state.
 13. Treat `task list` as an inventory. Follow explicit implementation plan,
    dependency, wave, checklist, or requirement order. Do not invent a different
    task order from implementation intuition.
@@ -130,9 +132,9 @@ agent-workbench phase close <phase-id> --summary "<summary>"
 agent-workbench phase accept-out-of-scope <phase-id> --reason "<reason>" --authority <authority-event-id>
 ```
 
-Agents must treat the ledger as private storage during this workflow. Use
-Agent Workbench CLI commands and `review-context`; do not run `sqlite3`, SQL
-queries, table-name inspection, or direct ledger joins.
+Agents must treat managed project state as private during this workflow. Use
+Agent Workbench CLI commands and classified inspection output; do not bypass
+the supported CLI.
 
 ## Close Work
 
@@ -156,7 +158,7 @@ queries, table-name inspection, or direct ledger joins.
 7. Use `agent-workbench review-context design-implementation-diff` or
    `agent-workbench review-context implementation-review` to launch focused
    review agents. Include the relevant `--design-version` and `--work-unit`
-   flags, then pass the printed `context_ref` to `review run add --target`.
+   flags, then pass the printed review target to `review run add --target`.
 8. Record clean close review runs or record findings, closures, and
    verifications until the configured review policy is satisfied. Every
    `review run add` command must include `--plan <review-plan-id>` and trusted

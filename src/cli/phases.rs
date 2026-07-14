@@ -93,14 +93,8 @@ pub(crate) fn handle_phase(root: &Path, command: PhaseCommand) -> Result<()> {
                 println!("dependency_id: {}", outcome.dependency_id);
             }
             PhaseDependencyCommand::Accept(args) => {
-                let outcome = accept_phase_dependency(
-                    root,
-                    args.dependency_id,
-                    &args.reason,
-                    args.authority,
-                )?;
+                accept_phase_dependency(root, args.dependency_id, &args.reason, args.authority)?;
                 println!("accepted phase dependency");
-                println!("dependency_id: {}", outcome.dependency_id);
             }
         },
         PhaseCommand::Trace { command } => match command {
@@ -179,11 +173,8 @@ pub(crate) fn handle_phase(root: &Path, command: PhaseCommand) -> Result<()> {
             println!("phase_id: {}", outcome.phase_id);
         }
         PhaseCommand::AcceptOutOfScope(args) => {
-            let outcome =
-                accept_phase_out_of_scope(root, args.phase_id, &args.reason, args.authority)?;
+            accept_phase_out_of_scope(root, args.phase_id, &args.reason, args.authority)?;
             println!("accepted phase out of scope");
-            println!("phase_id: {}", outcome.phase_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
         }
     }
     Ok(())

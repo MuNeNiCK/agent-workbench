@@ -1,0 +1,359 @@
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
+use rusqlite::{OptionalExtension, params};
+
+use crate::db::{current_phase_blocker, open_existing_project, project_id};
+
+use super::{closure::*, correction_contract::*, evaluation::*, *};
+
+pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let run = tx
+        .query_row(
+            r#"
+            select r.run_type, p.review_policy_id, p.review_type, r.clean_run
+            from review_runs r
+            join review_plans p on p.id = r.review_plan_id
+            where r.id = ?1 and r.project_id = ?2
+            "#,
+            params![input.review_run_id, project_id],
+            |row| {
+                Ok(StoredReviewRunPolicy {
+                    run_type: row.get(0)?,
+                    review_policy_id: row.get(1)?,
+                    review_type: row.get(2)?,
+                    clean_run: row.get::<_, i64>(3)? == 1,
+                })
+            },
+        )
+        .optional()?
+        .context("review run not found")?;
+    ensure_finding_type_matches_review_type(input.finding_type, &run.review_type)?;
+    if run.clean_run {
+        bail!("cannot add finding to a clean review run");
+    }
+    let policy = load_review_policy(&tx, project_id, run.review_policy_id)?;
+    if run.run_type == "resume" && !policy.allow_new_findings_in_resume {
+        bail!("new findings are disabled for resume review by policy");
+    }
+    tx.query_row(
+        "select id from review_runs where id = ?1 and project_id = ?2",
+        params![input.review_run_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()?
+    .context("review run not found")?;
+    tx.execute(
+        r#"
+        insert into findings(
+            project_id, review_run_id, finding_type, severity, description,
+            classification, status, design_requirement_id, task_id, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, 'unclassified', 'open', ?6, ?7, current_timestamp)
+        "#,
+        params![
+            project_id,
+            input.review_run_id,
+            input.finding_type,
+            input.severity,
+            input.description,
+            input.design_requirement_id,
+            input.task_id,
+        ],
+    )?;
+    let finding_id = tx.last_insert_rowid();
+    refresh_plan_for_run(&tx, project_id, input.review_run_id)?;
+    tx.commit()?;
+    Ok(FindingOutcome { finding_id })
+}
+
+pub fn classify_finding(
+    root: &Path,
+    finding_id: i64,
+    classification: &str,
+) -> Result<FindingClassificationOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let current_status: String = tx
+        .query_row(
+            "select status from findings where id = ?1 and project_id = ?2",
+            params![finding_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("finding not found")?;
+    ensure_review_finding_target(&tx, finding_id, "finding classify")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench finding classify {finding_id}");
+        if !blocker.next_action.starts_with(&expected) {
+            bail!(
+                "finding classify is not selected; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    if matches!(current_status.as_str(), "closed" | "accepted_out_of_scope") {
+        bail!("terminal finding cannot be reclassified without an explicit authority transition");
+    }
+    let current_classification: String = tx.query_row(
+        "select classification from findings where id = ?1 and project_id = ?2",
+        params![finding_id, project_id],
+        |row| row.get(0),
+    )?;
+    if current_classification == classification {
+        return Ok(FindingClassificationOutcome { finding_id });
+    }
+    if current_classification == "valid" && classification != "valid" {
+        bail!(
+            "a valid finding cannot be reclassified to bypass closure, remediation, and verification"
+        );
+    }
+    let status = match classification {
+        "invalid" => "closed",
+        "valid" => "open",
+        "design_conflict" | "needs_evidence" | "unclassified" => "open",
+        _ => bail!("invalid finding classification"),
+    };
+    let changed = tx.execute(
+        r#"
+        update findings
+        set classification = ?1, status = ?2
+        where id = ?3 and project_id = ?4
+        "#,
+        params![classification, status, finding_id, project_id],
+    )?;
+    if changed == 0 {
+        bail!("finding not found");
+    }
+    let review_run_id: i64 = tx.query_row(
+        "select review_run_id from findings where id = ?1",
+        params![finding_id],
+        |row| row.get(0),
+    )?;
+    refresh_plan_for_run(&tx, project_id, review_run_id)?;
+    tx.commit()?;
+    Ok(FindingClassificationOutcome { finding_id })
+}
+
+pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome> {
+    require_text(Some(input.design_invariant), "closure requires --invariant")?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let finding = tx
+        .query_row(
+            "select id, classification, status from findings where id = ?1 and project_id = ?2",
+            params![input.finding_id, project_id],
+            |row| {
+                Ok(StoredFinding {
+                    id: row.get(0)?,
+                    classification: row.get(1)?,
+                    status: row.get(2)?,
+                })
+            },
+        )
+        .optional()?
+        .context("finding not found")?;
+    ensure_review_finding_target(&tx, finding.id, "closure add")?;
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench closure add --finding {}", finding.id);
+        if !blocker.next_action.starts_with(&expected) {
+            bail!("closure add is not selected; next: {}", blocker.next_action);
+        }
+    }
+    if finding.classification != "valid" {
+        bail!("closure requires a valid finding");
+    }
+    if finding.status != "open" {
+        bail!("finding is not open");
+    }
+    let current_exists: bool = tx.query_row(
+        "select exists(select 1 from closures where finding_id = ?1 and status != 'superseded')",
+        params![finding.id],
+        |row| row.get(0),
+    )?;
+    if current_exists {
+        bail!(
+            "finding already has a current closure; use closure supersede when the contract must change"
+        );
+    }
+    let eligible = finding_is_remediation_eligible(&tx, project_id, finding.id)?;
+    if eligible {
+        require_text(
+            input.affected_surfaces,
+            "eligible closure requires --surfaces",
+        )?;
+        require_text(input.fix_plan, "eligible closure requires --fix-plan")?;
+        require_text(input.tests_or_gates, "eligible closure requires --tests")?;
+        require_text(
+            input.verification_plan,
+            "eligible closure requires --verification",
+        )?;
+    } else {
+        require_text(
+            input.affected_surfaces,
+            "source correction closure requires --surfaces",
+        )?;
+        require_text(
+            input.fix_plan,
+            "source correction closure requires --fix-plan",
+        )?;
+        require_text(
+            input.tests_or_gates,
+            "source correction closure requires --tests",
+        )?;
+        require_text(
+            input.verification_plan,
+            "source correction closure requires --verification",
+        )?;
+        parse_correction_tokens(input.affected_surfaces.unwrap())?;
+    }
+    tx.execute(
+        r#"
+        insert into closures(
+            project_id, finding_id, design_invariant, design_citations,
+            implementation_evidence, affected_surfaces, same_invariant_search,
+            other_violations_found, fix_plan, tests_or_gates,
+            verification_plan, closed_by_commit, status, created_at
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'registered', current_timestamp)
+        "#,
+        params![
+            project_id,
+            finding.id,
+            input.design_invariant,
+            input.design_citations,
+            input.implementation_evidence,
+            input.affected_surfaces,
+            input.same_invariant_search,
+            input.other_violations_found,
+            input.fix_plan,
+            input.tests_or_gates,
+            input.verification_plan,
+            input.closed_by_commit,
+        ],
+    )?;
+    let closure_id = tx.last_insert_rowid();
+    if !eligible {
+        let design_root = correction_design_root(&tx, finding.id)?;
+        record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            closure_id,
+            input.affected_surfaces.unwrap(),
+            design_root.as_deref(),
+        )?;
+    }
+    tx.commit()?;
+    Ok(ClosureOutcome { closure_id })
+}
+
+pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let selected_active_closure: Option<i64> = tx
+        .query_row(
+            "select closure_id from correction_sessions where project_id = ?1 and status = 'active' order by id limit 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if selected_active_closure.is_some_and(|selected| selected != closure_id) {
+        bail!(
+            "another source correction session is selected; finish closure {} first",
+            selected_active_closure.unwrap()
+        );
+    }
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench closure correction-begin {closure_id}");
+        if blocker.next_action != expected {
+            bail!(
+                "closure correction-begin is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
+    }
+    let (finding_id, surfaces, eligible, design_root): (i64, String, bool, Option<String>) = tx
+        .query_row(
+            r#"
+            select c.finding_id, c.affected_surfaces,
+                   p.required = 1 and p.stage = 'close-ready'
+                     and p.review_type in ('implementation_review', 'design_implementation_diff'),
+                   dp.root_path
+            from closures c
+            join findings f on f.id = c.finding_id
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
+            left join design_versions dv on dv.id = p.design_version_id
+            left join design_packages dp on dp.id = dv.design_package_id
+            where c.id = ?1 and c.project_id = ?2 and c.status = 'registered'
+              and f.status = 'open' and f.classification = 'valid'
+            "#,
+            params![closure_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?
+        .context("registered correction closure not found")?;
+    if eligible {
+        bail!("implementation findings use agent-workbench work remediate");
+    }
+    if let Some(session_id) = tx
+        .query_row(
+            "select id from correction_sessions where closure_id = ?1 and status = 'active'",
+            params![closure_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        let token_count = tx.query_row(
+            "select count(*) from correction_tokens where closure_id = ?1",
+            params![closure_id],
+            |row| row.get(0),
+        )?;
+        return Ok(CorrectionBeginOutcome {
+            closure_id,
+            session_id,
+            token_count,
+            idempotent: true,
+        });
+    }
+    let mut token_count: i64 = tx.query_row(
+        "select count(*) from correction_tokens where closure_id = ?1",
+        params![closure_id],
+        |row| row.get(0),
+    )?;
+    if token_count == 0 {
+        token_count = record_correction_tokens(
+            &tx,
+            root,
+            project_id,
+            closure_id,
+            &surfaces,
+            design_root.as_deref(),
+        )?;
+    } else {
+        ensure_correction_prestate_unchanged(&tx, root, closure_id, design_root.as_deref())?;
+    }
+    validate_correction_transition_preflight(&tx, project_id, closure_id, finding_id)?;
+    tx.execute(
+        r#"
+        insert into correction_sessions(project_id, finding_id, closure_id, status, created_at)
+        values (?1, ?2, ?3, 'active', current_timestamp)
+        "#,
+        params![project_id, finding_id, closure_id],
+    )?;
+    let session_id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(CorrectionBeginOutcome {
+        closure_id,
+        session_id,
+        token_count,
+        idempotent: false,
+    })
+}

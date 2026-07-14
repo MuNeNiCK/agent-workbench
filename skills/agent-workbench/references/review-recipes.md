@@ -51,7 +51,7 @@ context for the child work unit.
 Run an actual independent review first. `review run add` records the result; it
 does not launch or perform the review.
 
-For a clean design-derived gate review, copy the printed `context_ref` into the
+For a clean design-derived gate review, copy the printed review target into the
 run and include trusted provenance for the reviewer output:
 
 ```sh
@@ -114,7 +114,7 @@ findings are verified or disposed; resume review is not final completion proof.
 When asking a review agent whether the project is complete, the prompt must
 make the skill itself part of the product. A valid `COMPLETE` answer must check:
 
-- the CLI and database implement the design workflow
+- the CLI behavior implements the design workflow
 - tests cover the implemented design surfaces
 - README examples match executable CLI behavior
 - `skills/agent-workbench/SKILL.md` tells agents when to load references and

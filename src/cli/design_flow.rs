@@ -18,7 +18,7 @@ use agent_workbench::{
 pub(crate) fn handle_decompose(root: &Path, command: DecomposeCommand) -> Result<()> {
     match command {
         DecomposeCommand::Design(args) => {
-            let outcome = decompose_design(
+            decompose_design(
                 root,
                 DesignDecomposition {
                     design_version_id: args.design_version_id,
@@ -28,15 +28,6 @@ pub(crate) fn handle_decompose(root: &Path, command: DecomposeCommand) -> Result
                 },
             )?;
             println!("decomposed design");
-            println!("design_version_id: {}", outcome.design_version_id);
-            println!("work_unit_id: {}", outcome.work_unit_id);
-            println!("checklist_id: {}", outcome.checklist_id);
-            println!("created_tasks: {}", outcome.created_tasks);
-            println!("created_derivations: {}", outcome.created_derivations);
-            println!(
-                "created_validation_gates: {}",
-                outcome.created_validation_gates
-            );
         }
     }
     Ok(())
@@ -63,9 +54,8 @@ pub(crate) fn handle_checklist(root: &Path, command: ChecklistCommand) -> Result
             }
         }
         ChecklistCommand::Close(args) => {
-            let outcome = close_checklist(root, args.checklist_id)?;
+            close_checklist(root, args.checklist_id)?;
             println!("closed checklist");
-            println!("checklist_id: {}", outcome.checklist_id);
         }
         ChecklistCommand::Item { command } => match command {
             ChecklistItemCommand::List(args) => {
@@ -97,9 +87,8 @@ pub(crate) fn handle_checklist(root: &Path, command: ChecklistCommand) -> Result
                 }
             }
             ChecklistItemCommand::Close(args) => {
-                let outcome = close_checklist_item(root, args.checklist_item_id)?;
+                close_checklist_item(root, args.checklist_item_id)?;
                 println!("closed checklist item");
-                println!("checklist_item_id: {}", outcome.checklist_item_id);
             }
         },
     }
@@ -118,7 +107,7 @@ pub(crate) fn handle_stale(root: &Path, command: StaleCommand) -> Result<()> {
             }
         }
         StaleCommand::Accept(args) => {
-            let outcome = accept_stale_record(
+            accept_stale_record(
                 root,
                 StaleRecordDisposition {
                     record_type: &args.record_type,
@@ -127,13 +116,9 @@ pub(crate) fn handle_stale(root: &Path, command: StaleCommand) -> Result<()> {
                 },
             )?;
             println!("accepted stale record");
-            println!("record_type: {}", outcome.record_type);
-            println!("record_id: {}", outcome.record_id);
-            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
         }
         StaleCommand::Close(args) => {
-            let outcome = close_stale_record(
+            close_stale_record(
                 root,
                 StaleRecordDisposition {
                     record_type: &args.record_type,
@@ -142,11 +127,6 @@ pub(crate) fn handle_stale(root: &Path, command: StaleCommand) -> Result<()> {
                 },
             )?;
             println!("closed stale record");
-            println!("record_type: {}", outcome.record_type);
-            println!("record_id: {}", outcome.record_id);
-            println!("status: {}", outcome.status);
-            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
         }
     }
     Ok(())
@@ -161,7 +141,10 @@ pub(crate) fn handle_export(root: &Path, command: ExportCommand) -> Result<()> {
                     design_version_id: args.design,
                 },
             )?;
-            let mut output = format!("# Design {}\n\n## Requirements\n\n", args.design);
+            let mut output = format!(
+                "classification: project-internal\n\n# Design {}\n\n## Requirements\n\n",
+                args.design
+            );
             for record in records {
                 output.push_str(&format!(
                     "- {} [{}:{}] {}\n",
@@ -173,7 +156,6 @@ pub(crate) fn handle_export(root: &Path, command: ExportCommand) -> Result<()> {
             }
             write_export(&args.output, &output)?;
             println!("exported design");
-            println!("path: {}", args.output.display());
         }
         ExportCommand::Plan(args) => {
             let records = list_task_derivations(
@@ -183,7 +165,10 @@ pub(crate) fn handle_export(root: &Path, command: ExportCommand) -> Result<()> {
                     work_unit_id: None,
                 },
             )?;
-            let mut output = format!("# Implementation Plan {}\n\n", args.design);
+            let mut output = format!(
+                "classification: project-internal\n\n# Implementation Plan {}\n\n",
+                args.design
+            );
             for record in records {
                 let checklist = record
                     .checklist_item_id
@@ -200,7 +185,6 @@ pub(crate) fn handle_export(root: &Path, command: ExportCommand) -> Result<()> {
             }
             write_export(&args.output, &output)?;
             println!("exported plan");
-            println!("path: {}", args.output.display());
         }
     }
     Ok(())
@@ -218,7 +202,7 @@ pub(crate) fn print_review_context(root: &std::path::Path, args: &ReviewContextA
             .attempt
             .ok_or_else(|| anyhow::anyhow!("finding-fix context requires --attempt"))?;
         let document = render_finding_fix_context(root, finding, closure, attempt)?;
-        print!("{}", document.text);
+        print_review_document(&document.text);
         return Ok(());
     }
     let document = render_review_context(
@@ -230,8 +214,16 @@ pub(crate) fn print_review_context(root: &std::path::Path, args: &ReviewContextA
             phase_id: args.phase,
         },
     )?;
-    print!("{}", document.text);
+    print_review_document(&document.text);
     Ok(())
+}
+
+fn print_review_document(text: &str) {
+    print!(
+        "{}",
+        text.strip_prefix("classification: project-internal\n")
+            .unwrap_or(text)
+    );
 }
 
 fn write_export(path: &std::path::Path, content: &str) -> Result<()> {

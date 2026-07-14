@@ -10,7 +10,7 @@ recorded.
 
 - [Overview](content/index.md) - What Agent Workbench is and who should use it.
 - [Quick Start](content/quick-start.md) - Install the skill and initialize a project.
-- [Concepts](content/concepts.md) - The ledger, work units, design packages, gates, reviews, and evidence.
+- [Concepts](content/concepts.md) - Work units, design packages, gates, reviews, and evidence.
 - [Workflows](content/workflows.md) - Practical flows for starting, suspending, reviewing, and closing work.
 - [Design Packages](content/design-packages.md) - How design material becomes requirements, decisions, and gates.
 - [Operations](content/operations.md) - Project data, installation scope, releases, cache behavior, and privacy.

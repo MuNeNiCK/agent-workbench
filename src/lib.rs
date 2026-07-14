@@ -4,6 +4,7 @@ mod coverage;
 mod db;
 mod design;
 mod doctor;
+mod identity;
 mod kpt;
 mod phases;
 mod planning;
@@ -12,6 +13,7 @@ mod repository;
 mod review;
 mod review_context;
 mod rules;
+mod task_identity;
 mod traceability;
 mod work;
 
@@ -32,9 +34,10 @@ pub use coverage::{
     add_coverage_item, list_coverage_items,
 };
 pub use db::{
-    ActiveWorkUnit, FindingRemediation, InitOutcome, NextAction, PhaseBlocker, ProjectStatus,
-    SourceCorrection, default_design_root, default_export_root, default_ledger_path,
-    default_log_root, init_project, next_action, project_status,
+    ActiveWorkUnit, FindingRemediation, InitOutcome, IntegrityPredicateStatus, NextAction,
+    OwnerAction, PhaseBlocker, ProjectIntegrityStatus, ProjectStatus, SourceCorrection,
+    default_design_root, default_export_root, default_ledger_path, default_log_root, init_project,
+    next_action, project_status,
 };
 pub use design::{
     DesignDecisionListQuery, DesignDecisionRecord, DesignExceptionAcceptanceOutcome,
@@ -95,7 +98,7 @@ pub use repository::{
     RepositorySnapshotRecord, RepositoryStateClassificationOutcome, add_git_commit,
     add_git_file_change, add_repository, add_repository_dirty_entry, add_repository_snapshot,
     add_repository_snapshot_comparison, add_repository_state_classification, list_repositories,
-    list_repository_snapshots,
+    list_repository_snapshots, resolve_git_commit_id,
 };
 pub use review::{
     ClosureOutcome, ClosureReady, ClosureReadyOutcome, ClosureSupersession,
@@ -120,6 +123,13 @@ pub use review_context::{
 pub use rules::{
     NewUserCorrection, RuleQuery, RuleRecord, UserCorrectionOutcome, UserCorrectionRecord,
     add_user_correction, applicable_rules, list_user_corrections,
+};
+pub use task_identity::{
+    TaskIdentityAmbiguityOutput, TaskIdentityApplyOutput, TaskIdentityAuditOutput,
+    TaskIdentityAuthorityOutput, TaskIdentityAuthorityRequest, TaskIdentityDecisionOutput,
+    TaskIdentityDecisionRequest, TaskIdentityPlanOutput, apply_task_identity, audit_task_identity,
+    decide_task_identity_ambiguity, list_task_identity_ambiguities, plan_task_identity,
+    record_task_identity_authority,
 };
 pub use traceability::{
     ChecklistItemListQuery, ChecklistItemOutcome, ChecklistItemRecord, ChecklistOutcome,

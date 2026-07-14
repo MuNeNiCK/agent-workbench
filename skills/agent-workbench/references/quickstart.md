@@ -1,6 +1,6 @@
 # Quickstart
 
-Use this when starting a project that has no Agent Workbench ledger yet.
+Use this when starting a project that has not initialized Agent Workbench yet.
 
 Run these commands through the skill wrapper described in `SKILL.md`. The
 examples use `agent-workbench ...` as the command spelling; in an installed
@@ -28,19 +28,20 @@ the printed blocker-resolution command before asking the agent to implement or
 validate code.
 
 If it reports `finding_remediation: true` or `finding remediation`, inspect
-`finding_remediation_count`, implement only the printed closure contracts in
+`finding_remediation_count`, run `agent-workbench finding list --status open`
+to retrieve the classified closure contracts, and implement only those contracts in
 their owning work unit, then run each printed `closure ready` command. After
 that boundary, use the exact finding-fix contexts, independent typed resume
 reviews, and matching `finding verify` results. Stale design state blocks this
 permission.
 
 If the project already has design material, convert it into the workbench design
-package shape under `.agent-workbench/designs/<design-id>` before importing it.
+package shape at a project-local location printed by the command before importing it.
 Do not import arbitrary external prose directly as authority.
 
 ```sh
 agent-workbench design init <design-id> --title "<title>"
-agent-workbench design import .agent-workbench/designs/<design-id> --status draft
+agent-workbench design import <package-path> --status draft
 agent-workbench requirement list --design <design-version-id>
 agent-workbench gate-template list --design <design-version-id>
 agent-workbench design-decision list --design <design-version-id>
@@ -50,13 +51,13 @@ agent-workbench design-decision list --design <design-version-id>
 
 1. Add a required design review plan.
 2. Build `review-context design-review`.
-3. Launch a fresh design review agent with the printed `context_ref`.
+3. Launch a fresh design review agent with the printed review target.
 4. Record a clean design review run or findings and closures.
 5. Run `gate design-ready --dry-run`.
 6. Decompose the design.
 7. Add a required design task decomposition review plan.
 8. Build `review-context design-task-decomposition`.
-9. Launch a fresh decomposition review agent with the printed `context_ref`.
+9. Launch a fresh decomposition review agent with the printed review target.
 10. Run `gate implementation-ready --dry-run`.
 11. Run `next` and implement through the same work unit that owns the
     decomposed tasks, checklists, validation gates, and review plans.
@@ -68,7 +69,7 @@ agent-workbench design-decision list --design <design-version-id>
     resume commands.
 14. If the CLI cannot continue, activate, or resume that same work unit, report
     the workflow blocker. Do not create an unrelated work unit with
-    `work start`, and do not inspect the ledger directly.
+    `work start`, and do not inspect private managed state outside the CLI.
 
 ```sh
 agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required

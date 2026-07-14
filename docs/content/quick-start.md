@@ -38,26 +38,16 @@ supported `--agent` values.
 After installation, ask your coding agent to initialize the repository:
 
 ```text
-Use $agent-workbench for this project and initialize the ledger.
+Use $agent-workbench for this project and initialize it.
 ```
 
-The agent creates `.agent-workbench/ledger.sqlite`, checks current workbench
-state, and records the project as initialized.
+The agent creates managed project state, checks the current workbench state, and
+records the project as initialized.
 
 ## Expected project data
 
-After initialization, the project has:
-
-```text
-.agent-workbench/
-  ledger.sqlite
-  designs/
-  exports/
-  logs/
-```
-
-These files are project operational data. Decide per repository whether to keep
-them local, archive them, or commit them.
+After initialization, the project has product-managed operational state. Access
+it through Agent Workbench commands; explicit exports require a destination.
 
 ## Start work
 
@@ -78,7 +68,7 @@ Ask the agent:
 Use $agent-workbench and report the current workbench status.
 ```
 
-The response should tell you whether the ledger is initialized, what work is
+The response should tell you whether the project is initialized, what work is
 active, and what action is next.
 
 If the response says the phase is blocked, ask the agent to resolve that blocker

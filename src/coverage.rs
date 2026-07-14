@@ -84,6 +84,24 @@ pub fn add_coverage_item(root: &Path, input: NewCoverageItem<'_>) -> Result<Cove
 
     tx.execute(
         r#"
+        update coverage_items
+        set status = 'stale'
+        where project_id = ?1
+          and design_requirement_id = ?2
+          and task_id is ?3
+          and work_unit_id is ?4
+          and status != 'stale'
+        "#,
+        params![
+            project_id,
+            design_requirement_id,
+            input.task_id,
+            work_unit_id
+        ],
+    )?;
+
+    tx.execute(
+        r#"
         insert into coverage_items(
             project_id, review_scope_id, work_unit_id, design_requirement_id, task_id,
             requirement, runtime_boundary_evidence, ux_boundary_evidence,

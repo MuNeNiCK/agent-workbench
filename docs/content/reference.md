@@ -13,7 +13,7 @@ skill instructions and uses the wrapper internally.
 | --- | --- |
 | `AGENT_WORKBENCH_REPO` | Override the GitHub repository used for release downloads. |
 | `AGENT_WORKBENCH_VERSION` | Pin the release tag used by the wrapper. |
-| `AGENT_WORKBENCH_BIN` | Execute an already-built local CLI instead of downloading a release asset. Used for CI and release-candidate validation. |
+| `AGENT_WORKBENCH_BIN` | Execute an already-built local CLI instead of downloading a release asset. Used for local development and explicit release inspection. |
 | `GITHUB_TOKEN` | Optional token for GitHub API and release download requests. |
 | `XDG_CACHE_HOME` | Override the cache root. |
 
@@ -26,7 +26,7 @@ the checkout's already-built `target/debug/agent-workbench` or
 | Group | Purpose |
 | --- | --- |
 | `init`, `status`, `next` | Project setup and current work query. |
-| `doctor validation-links` | Migration-independent diagnosis, transactional repair, and immutable repair audit for legacy validation links. |
+| `doctor validation-links` | Migration-independent diagnosis, atomic repair, and immutable repair audit for legacy validation links. |
 | `work` | Work-unit lifecycle and activation stack operations. |
 | `resume-check`, `gate resume-ready` | Recorded and read-only resume evaluation. |
 | `rules`, `correction`, `authority` | Project and work-scope operating rules. |
@@ -69,11 +69,11 @@ with trusted provenance. Use `--provenance external_agent --external-agent-id
 or `--provenance human_review --provenance-ref <review-output-ref>` for a human
 review. Self-recorded clean runs do not satisfy gate review evidence.
 
-Finding-fix resume runs target
-`review-context:finding-fix:finding=<id>:closure=<id>:attempt=<id>` and require
-`--finding-result verified|not_fixed|needs_evidence`. They carry exactly one
-finding. `verified` is clean; failure outcomes are non-clean. The later
-`finding verify --result` must match exactly.
+Finding-fix resume runs target the verification context emitted by
+`closure ready` and require `--finding-result
+verified|not_fixed|needs_evidence`. They carry exactly one finding. `verified`
+is clean; failure outcomes are non-clean. The later `finding verify --result`
+must match exactly.
 
 | Closure command | Purpose |
 | --- | --- |
@@ -101,7 +101,7 @@ If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run
 `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
 This records an approved exception that readiness gates understand without
-direct ledger edits.
+private-state changes outside the CLI.
 
 Work phases group tasks inside an aggregate work unit without changing
 ownership by default. Use `phase create`, `phase assign`, and `phase inventory`
@@ -119,27 +119,21 @@ versions, close-ready treats the current design's selected validation gate as
 covering the older equivalent requirement record for the same task. Agents
 should not repair that case by selecting gates against obsolete design records.
 
-When `close-ready` is blocked, the failed item details are intended to be the
-agent-facing repair surface. `validation_runs_recorded` lists missing selected
-gate derivations as `task_derivation:<id>` and validation run blockers as
-`validation_gate:<id>`. `review_plans_clean` lists `review_plan:<id>`, stale
-target counts, and the exact `context_ref` required for context-targeted review
-runs. Agents should use those printed IDs with normal CLI commands, not inspect
-the ledger directly.
+When `close-ready` is blocked, use its classified diagnostic output and the
+exact follow-up commands it prints. Do not infer private record relationships
+or inspect managed state outside the CLI.
 
 ## Agent-facing state
 
-The ledger is storage, not the agent-facing API. Agents should use `status`,
-`next`, `review-context`, list commands, and readiness gates to decide what to
-do. If the CLI cannot answer a workflow question, that is a product gap to fix,
-not a reason for agents to inspect the ledger directly.
+Agents should use `status`, `next`, classified inspection commands, and
+readiness gates to decide what to do. If the CLI cannot answer a workflow
+question, that is a product gap to fix, not permission to inspect private
+managed state by another route.
 
-The one supported ledger-compatibility exception is still a CLI workflow, not
-direct database access. When normal migration reports invalid validation-run
-links, use `doctor validation-links` (or explicit `--dry-run`), then `--repair`.
-Use `--audit` to list prior repair runs and their field-level changes. An
-unrepairable result requires resolving the reported gate or authority conflict;
-it is not permission to execute SQL.
+When normal migration reports invalid validation-run links, use `doctor
+validation-links` (or explicit `--dry-run`), then `--repair`. Use `--audit` to
+list prior repairs. An unrepairable result requires resolving the reported gate
+or authority conflict.
 
 `status` and `next` can report a phase blocker. In that state the agent-facing
 next action is the printed blocker-resolution command, such as finding

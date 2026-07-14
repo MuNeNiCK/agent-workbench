@@ -53,11 +53,8 @@ pub(crate) fn handle_task(root: &Path, command: TaskCommand) -> Result<()> {
             println!("task_id: {}", outcome.task_id);
         }
         TaskCommand::AcceptOutOfScope(args) => {
-            let outcome = accept_task_out_of_scope(root, args.task_id, &args.reason)?;
+            accept_task_out_of_scope(root, args.task_id, &args.reason)?;
             println!("accepted task out of scope");
-            println!("task_id: {}", outcome.task_id);
-            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
         }
     }
     Ok(())
@@ -94,7 +91,7 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
     match command {
         DesignCommand::Init(args) => {
             let title = args.title.as_deref().unwrap_or(&args.design_id);
-            let outcome = init_design_package(
+            init_design_package(
                 root,
                 NewDesignPackage {
                     design_id: &args.design_id,
@@ -102,7 +99,6 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
                 },
             )?;
             println!("initialized design package");
-            println!("path: {}", outcome.package_path.display());
         }
         DesignCommand::Import(args) => {
             let outcome = import_design_package(
@@ -113,18 +109,7 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
                 },
             )?;
             println!("imported design package");
-            println!("design_package_id: {}", outcome.design_package_id);
             println!("design_version_id: {}", outcome.design_version_id);
-            println!("version_number: {}", outcome.version_number);
-            println!("file_count: {}", outcome.file_count);
-            println!("requirement_count: {}", outcome.requirement_count);
-            println!("decision_count: {}", outcome.decision_count);
-            println!(
-                "validation_gate_template_count: {}",
-                outcome.validation_gate_template_count
-            );
-            println!("warning_count: {}", outcome.warning_count);
-            println!("content_hash: {}", outcome.content_hash);
         }
         DesignCommand::Refresh(args) => {
             let outcome = import_design_package(
@@ -135,21 +120,10 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
                 },
             )?;
             println!("refreshed design package");
-            println!("design_package_id: {}", outcome.design_package_id);
             println!("design_version_id: {}", outcome.design_version_id);
-            println!("version_number: {}", outcome.version_number);
-            println!("file_count: {}", outcome.file_count);
-            println!("requirement_count: {}", outcome.requirement_count);
-            println!("decision_count: {}", outcome.decision_count);
-            println!(
-                "validation_gate_template_count: {}",
-                outcome.validation_gate_template_count
-            );
-            println!("warning_count: {}", outcome.warning_count);
-            println!("content_hash: {}", outcome.content_hash);
         }
         DesignCommand::Approve(args) => {
-            let outcome = approve_design_version(
+            approve_design_version(
                 root,
                 DesignVersionApproval {
                     design_version_id: args.design_version_id,
@@ -157,9 +131,6 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
                 },
             )?;
             println!("approved design version");
-            println!("design_package_id: {}", outcome.design_package_id);
-            println!("design_version_id: {}", outcome.design_version_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
         }
     }
     Ok(())
@@ -253,7 +224,7 @@ pub(crate) fn handle_gate_template(root: &Path, command: GateTemplateCommand) ->
 pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
     match command {
         TraceCommand::DeriveTask(args) => {
-            let outcome = derive_task_from_requirement(
+            derive_task_from_requirement(
                 root,
                 NewTaskDerivation {
                     design_version_id: args.design,
@@ -266,11 +237,6 @@ pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
                 },
             )?;
             println!("derived task from requirement");
-            println!("task_derivation_id: {}", outcome.task_derivation_id);
-            println!("checklist_id: {}", outcome.checklist_id);
-            println!("checklist_item_id: {}", outcome.checklist_item_id);
-            println!("design_requirement_id: {}", outcome.design_requirement_id);
-            println!("task_id: {}", outcome.task_id);
         }
         TraceCommand::Derivation { command } => match command {
             TraceDerivationCommand::List(args) => {
@@ -308,7 +274,7 @@ pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
 pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<()> {
     match command {
         EvidenceCommand::Add(args) => {
-            let outcome = if args.repository_id.is_some()
+            if args.repository_id.is_some()
                 || args.git_commit_id.is_some()
                 || args.git_file_change_id.is_some()
             {
@@ -348,16 +314,6 @@ pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<(
                 )?
             };
             println!("added implementation evidence");
-            println!(
-                "implementation_evidence_id: {}",
-                outcome.implementation_evidence_id
-            );
-            if let Some(task_id) = outcome.task_id {
-                println!("task_id: {task_id}");
-            }
-            if let Some(design_requirement_id) = outcome.design_requirement_id {
-                println!("design_requirement_id: {design_requirement_id}");
-            }
         }
         EvidenceCommand::List(args) => {
             let records = list_implementation_evidence(
@@ -391,7 +347,7 @@ pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<(
 pub(crate) fn handle_coverage(root: &Path, command: CoverageCommand) -> Result<()> {
     match command {
         CoverageCommand::Add(args) => {
-            let outcome = add_coverage_item(
+            add_coverage_item(
                 root,
                 NewCoverageItem {
                     design_version_id: args.design,
@@ -409,14 +365,6 @@ pub(crate) fn handle_coverage(root: &Path, command: CoverageCommand) -> Result<(
                 },
             )?;
             println!("added coverage item");
-            println!("coverage_item_id: {}", outcome.coverage_item_id);
-            println!("design_requirement_id: {}", outcome.design_requirement_id);
-            if let Some(work_unit_id) = outcome.work_unit_id {
-                println!("work_unit_id: {work_unit_id}");
-            }
-            if let Some(task_id) = outcome.task_id {
-                println!("task_id: {task_id}");
-            }
         }
         CoverageCommand::List(args) => {
             let records = list_coverage_items(

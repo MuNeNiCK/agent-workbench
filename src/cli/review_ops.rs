@@ -147,7 +147,7 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                 }
             }
             ReviewPlanCommand::Waive(args) => {
-                let outcome = waive_review_plan(
+                waive_review_plan(
                     root,
                     ReviewPlanWaiver {
                         review_plan_id: args.review_plan_id,
@@ -156,9 +156,6 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                     },
                 )?;
                 println!("waived review plan");
-                println!("review_plan_id: {}", outcome.review_plan_id);
-                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-                println!("authority_event_id: {}", outcome.authority_event_id);
             }
             ReviewPlanCommand::Target { command } => match command {
                 ReviewPlanTargetCommand::Add(args) => {
@@ -265,7 +262,7 @@ fn review_role_defaults(review_type: &str) -> ReviewRoleDefaults {
             expected_output_type: "implementation_finding",
         },
         _ => ReviewRoleDefaults {
-            allowed_inputs: "project ledger, active work unit, applicable rules, implementation context",
+            allowed_inputs: "managed project state, active work unit, applicable rules, implementation context",
             forbidden_judgments: "do not bypass active work-unit rules or review-specific gates",
             expected_output_type: "general",
         },
@@ -302,6 +299,7 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
         }
         FindingCommand::List(args) => {
             let records = list_findings(root, args.status.as_deref())?;
+            let status = project_status(root)?;
             if records.is_empty() {
                 println!("no findings");
             }
@@ -315,6 +313,32 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                     record.status,
                     record.description
                 );
+                if let Some(remediation) = status
+                    .finding_remediations
+                    .iter()
+                    .find(|item| item.finding_id == record.id)
+                {
+                    println!("closure_id: {}", remediation.closure_id);
+                    println!("affected_surfaces: {}", remediation.affected_surfaces);
+                    println!("fix_plan: {}", remediation.fix_plan);
+                    println!("design_invariant: {}", remediation.design_invariant);
+                    println!("tests_or_gates: {}", remediation.tests_or_gates);
+                    println!("verification_plan: {}", remediation.verification_plan);
+                    println!("next: {}", remediation.next_action);
+                }
+                if let Some(correction) = status
+                    .source_corrections
+                    .iter()
+                    .find(|item| item.finding_id == record.id)
+                {
+                    println!("closure_id: {}", correction.closure_id);
+                    println!("affected_surfaces: {}", correction.affected_surfaces);
+                    println!("fix_plan: {}", correction.fix_plan);
+                    println!("design_invariant: {}", correction.design_invariant);
+                    println!("tests_or_gates: {}", correction.tests_or_gates);
+                    println!("verification_plan: {}", correction.verification_plan);
+                    println!("next: {}", correction.next_action);
+                }
             }
         }
         FindingCommand::Verify(args) => {
@@ -335,7 +359,7 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             );
         }
         FindingCommand::AcceptOutOfScope(args) => {
-            let outcome = accept_finding_out_of_scope(
+            accept_finding_out_of_scope(
                 root,
                 FindingOutOfScope {
                     finding_id: args.finding_id,
@@ -344,8 +368,6 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                 },
             )?;
             println!("accepted finding out of scope");
-            println!("finding_id: {}", outcome.finding_id);
-            println!("acceptance_record_id: {}", outcome.acceptance_record_id);
         }
     }
     Ok(())
@@ -450,7 +472,7 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
     match command {
         AcceptanceCommand::Add(args) => {
             if args.design.is_some() || args.package.is_some() {
-                let outcome = accept_design_exception(
+                accept_design_exception(
                     root,
                     NewDesignExceptionAcceptance {
                         design_version_id: args.design,
@@ -462,29 +484,8 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
                     },
                 )?;
                 println!("accepted design exception");
-                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-                println!("authority_event_id: {}", outcome.authority_event_id);
-                println!("target_type: {}", outcome.target_type);
-                if let Some(design_requirement_id) = outcome.design_requirement_id {
-                    println!("design_requirement_id: {design_requirement_id}");
-                }
-                if let Some(validation_gate_template_id) = outcome.validation_gate_template_id {
-                    println!("validation_gate_template_id: {validation_gate_template_id}");
-                }
-                if let Some(coverage_item_id) = outcome.coverage_item_id {
-                    println!("coverage_item_id: {coverage_item_id}");
-                }
-                if let Some(design_package_key) = outcome.design_package_key {
-                    println!("design_package_key: {design_package_key}");
-                }
-                if let Some(design_file_path) = outcome.design_file_path {
-                    println!("design_file_path: {design_file_path}");
-                }
-                if let Some(design_requirement_key) = outcome.design_requirement_key {
-                    println!("design_requirement_key: {design_requirement_key}");
-                }
             } else {
-                let outcome = add_general_acceptance(
+                add_general_acceptance(
                     root,
                     NewGeneralAcceptance {
                         target: &args.target,
@@ -494,9 +495,6 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
                     },
                 )?;
                 println!("accepted workflow exception");
-                println!("acceptance_record_id: {}", outcome.acceptance_record_id);
-                println!("authority_event_id: {}", outcome.authority_event_id);
-                println!("target_type: {}", outcome.target_type);
             }
         }
     }

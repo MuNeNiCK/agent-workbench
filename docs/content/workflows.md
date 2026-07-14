@@ -24,7 +24,7 @@ Use $agent-workbench and report the current status, next action, active work,
 rules, corrections, and command profiles.
 ```
 
-The agent should not rely only on chat history. It should query the ledger and
+The agent should not rely only on chat history. It should query project state and
 explain what is active or blocked.
 
 If status or next reports a blocked phase, the agent should resolve the printed
@@ -43,25 +43,9 @@ design-derived state suppresses all remediation permission until resolved.
 
 An inactive owner is not a dead end. The resolver prints `work remediate
 --finding <id>`; the command creates a new audited child activation and binds
-the current same-owner finding set. It never reactivates an old suspended row.
+the current same-owner finding set. It never reactivates an old suspension.
 Blocked owners require `work unblock`; closed or abandoned owners require an
 authority-backed `work reopen` followed by the still-mandatory remediation bind.
-
-Non-implementation findings use `closure correction-begin`. Their closure
-surfaces must be typed `design:`, `plan:`, `docs:`, `workflow:`, or a supported
-`transition:` token. Registration captures file pre-state, begin rejects an
-edit race, transition application is atomic with its audit row, and ready
-requires all declared postconditions.
-
-Legacy partial or duplicate current decompositions use the closed
-`design-reconcile:<design>/<work>/<canonical-checklist>` transition inside the
-source-correction contract. The canonical checklist is explicit. Reconciliation
-atomically adopts valid nodes, completes missing nodes, supersedes noncanonical
-trace bundles, and exports current task aliases. Apply phase replacement before
-authority-backed numeric disposition of predecessor or rejected tasks;
-`closure ready` rejects residual memberships, tasks, or duplicate derivations.
-Do not substitute normal `decompose design`, which intentionally rejects a
-partial current graph.
 
 Generate the printed `review-context finding-fix`, run an independent resume
 review, and record its typed `--finding-result` with one carried finding and
@@ -103,7 +87,7 @@ relationship.
 When work is based on design requirements:
 
 1. Convert design notes into a Design Package.
-2. Import the package into the ledger.
+2. Import the package into managed project state.
 3. Run design review.
 4. Decompose requirements into tasks and checklists.
 5. Run task decomposition review.

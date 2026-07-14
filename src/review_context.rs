@@ -16,6 +16,8 @@ use crate::traceability::{
     list_stale_records, list_task_derivations, list_validation_gate_context,
 };
 
+mod work_evidence;
+
 pub struct ReviewContextQuery<'a> {
     pub kind: &'a str,
     pub design_version_id: Option<i64>,
@@ -76,6 +78,7 @@ pub fn render_finding_fix_context(
             },
         )
         .map_err(anyhow::Error::from)?;
+    let text = format!("classification: project-internal\n{text}");
     Ok(ReviewContextDocument { context_ref, text })
 }
 
@@ -118,6 +121,7 @@ pub fn render_review_context(
         query.phase_id,
     );
     let mut output = String::new();
+    writeln!(output, "classification: project-internal")?;
     writeln!(output, "review_context: {}", query.kind)?;
     writeln!(output, "context_ref: {context_ref}")?;
     if let Some(phase_id) = query.phase_id {
@@ -154,7 +158,38 @@ pub(crate) fn review_plan_has_clean_context_run(
     design_version_id: Option<i64>,
     work_unit_id: Option<i64>,
 ) -> Result<bool> {
-    let context_ref = review_context_ref(kind, design_version_id, work_unit_id);
+    let mut statement = conn.prepare(
+        r#"
+        select phase_id
+        from work_phase_review_targets
+        where review_plan_id = ?1
+        order by phase_id
+        "#,
+    )?;
+    let rows = statement.query_map([review_plan_id], |row| row.get::<_, i64>(0))?;
+    let mut phase_ids = Vec::new();
+    for row in rows {
+        phase_ids.push(row?);
+    }
+    if phase_ids.is_empty() {
+        let context_ref = review_context_ref(kind, design_version_id, work_unit_id);
+        return review_plan_has_clean_target_ref(conn, review_plan_id, &context_ref);
+    }
+    for phase_id in phase_ids {
+        let context_ref =
+            review_context_ref_with_phase(kind, design_version_id, work_unit_id, Some(phase_id));
+        if !review_plan_has_clean_target_ref(conn, review_plan_id, &context_ref)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn review_plan_has_clean_target_ref(
+    conn: &rusqlite::Connection,
+    review_plan_id: i64,
+    context_ref: &str,
+) -> Result<bool> {
     conn.query_row(
         r#"
         select exists (
@@ -413,6 +448,7 @@ fn render_design_context(
             work_unit_id,
         },
     )?;
+    coverage.retain(|record| record.status != "stale");
     if let Some(tasks) = &phase_tasks {
         coverage.retain(|record| match record.task_id {
             Some(task_id) => tasks.contains(&task_id),
@@ -496,6 +532,7 @@ fn render_work_context(
             task.id, task.priority, task.status, task.title
         )?;
     }
+    work_evidence::render(root, work_unit_id, output)?;
     Ok(())
 }
 
@@ -762,6 +799,15 @@ fn list_phase_stale_records(root: &Path, phase_id: i64) -> Result<Vec<StaleRecor
         where m.phase_id = ?2
           and c.project_id = ?1
           and c.status = 'stale'
+          and not exists (
+            select 1 from coverage_items replacement
+            where replacement.project_id=c.project_id
+              and replacement.design_requirement_id=c.design_requirement_id
+              and replacement.task_id is c.task_id
+              and replacement.work_unit_id is c.work_unit_id
+              and replacement.status!='stale'
+              and replacement.id>c.id
+          )
         order by c.id
         "#,
         &mut records,
@@ -861,6 +907,15 @@ fn list_work_stale_records(root: &Path, work_unit_id: i64) -> Result<Vec<StaleRe
         where c.project_id = ?1
           and coalesce(c.work_unit_id, t.work_unit_id) = ?2
           and c.status = 'stale'
+          and not exists (
+              select 1 from coverage_items replacement
+              where replacement.project_id=c.project_id
+                and replacement.design_requirement_id=c.design_requirement_id
+                and replacement.task_id is c.task_id
+                and replacement.work_unit_id is c.work_unit_id
+                and replacement.status!='stale'
+                and replacement.id>c.id
+          )
           and not exists (
               select 1
               from acceptance_records ar

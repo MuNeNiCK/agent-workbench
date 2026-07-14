@@ -11,15 +11,15 @@ items.
 | open checklist items or active checklists | inspect with `agent-workbench checklist item list --checklist <checklist-id>`, close completed items with `agent-workbench checklist item close <item-id>`, then close the active checklist with `agent-workbench checklist close <checklist-id>` |
 | selected gate has no run | `agent-workbench command usage add ...` then `agent-workbench gate record --gate <gate-id> --result pass --usage <usage-id>` |
 | selected gate is stale | update the selected gate from the current design, or run `agent-workbench stale close validation_gate <gate-id> --reason "<reason>"`; do not use `task accept-out-of-scope` |
-| missing selected gates | read the `missing selected gate derivations:` detail from `gate close-ready --dry-run`; it lists `task_derivation:<id>`, `task:<id>`, requirement key, source design version, and current design version |
-| selected validation gate run blockers | read the `validation gate run blockers:` detail; `validation_gate:<id>` is the ID to use with `agent-workbench gate record --gate <id> ...` |
-| missing selected gates remain only for an old design version | unchanged carried requirements should be satisfied by the current selected gate; if the blocker remains, use the printed `task_derivation:<id>` with the stale disposition commands instead of inspecting the ledger |
+| missing selected gates | use the classified `gate close-ready --dry-run` output and follow its exact selection or disposition command |
+| selected validation gate run blockers | use the classified blocker output and pass its printed gate ID to `agent-workbench gate record --gate <id> ...` |
+| missing selected gates remain only for an old design version | unchanged carried requirements should be satisfied by the current selected gate; if the blocker remains, follow the classified stale-disposition command instead of inspecting private state |
 | validation failure is unresolved | classify the failure, fix it, rerun, or record user-approved acceptance |
 | fixed command was not used | run the fixed command and record usage, or add a command deviation and acceptance |
 | shadowed rule conflicts remain | run `agent-workbench rules applicable --scope current`, inspect lines with `shadowed_by=<id>`, then fix the conflicting rule or record `agent-workbench acceptance add --target rule:<rule-id> --type explicit_exception ...` for the shadowed rule |
 | repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
 | required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
-| required close review has stale or missing context evidence | read the `review plan blockers:` detail; it lists `review_plan:<id>`, stale target counts, and the exact `context_ref` required for `review run add --target <context_ref>` |
+| required close review has stale or missing context evidence | use the classified review blocker output and pass its printed plan and target values to the shown `review run add` command |
 | required review plan was created for the wrong scope or is intentionally not required | record authority, then `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>` |
 | valid close-ready review finding has no closure | add a complete closure contract with surfaces, fix plan, tests, and verification plan |
 | finding is in scoped remediation | implement the printed closure contract, test it, then run `closure ready` |
