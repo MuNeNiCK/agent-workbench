@@ -253,6 +253,11 @@ from current managed project state.
   resumed or interrupted work unit.
 - Before planning, editing, or reviewing, run `agent-workbench correction list`
   and apply active user corrections for the current scope.
+- Treat Design Package authority as Markdown-only. Every manifest path under
+  `arc42`, `requirements`, and `validation` must name a regular `.md` file.
+  Keep JSON, test vectors, fixtures, generated output, binaries, and other data
+  outside the Design Package; specify their required behavior in Markdown and
+  validate them through repository evidence.
 - Before choosing validation or test commands, run `agent-workbench command list`
   and prefer applicable fixed or preferred command profiles.
 - Treat managed project state as a private implementation detail. Do not use

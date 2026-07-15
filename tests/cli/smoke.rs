@@ -44,6 +44,53 @@ fn design_init_creates_package_under_workbench() {
 }
 
 #[test]
+fn design_import_and_refresh_reject_non_markdown_manifest_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    ok(
+        temp.path(),
+        &[
+            "design",
+            "init",
+            "markdown-only",
+            "--title",
+            "Markdown Only",
+        ],
+    );
+    let package = temp.path().join(".agent-workbench/designs/markdown-only");
+    std::fs::create_dir(package.join("source")).unwrap();
+    std::fs::write(package.join("source/decision.json"), "{}\n").unwrap();
+    let manifest_path = package.join("design.yaml");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        manifest.replace(
+            "decisions: 09-decisions.md",
+            "decisions: source/decision.json",
+        ),
+    )
+    .unwrap();
+
+    for command in ["import", "refresh"] {
+        let output = aw(
+            temp.path(),
+            &[
+                "design",
+                command,
+                ".agent-workbench/designs/markdown-only",
+                "--status",
+                "draft",
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("design manifest paths must name Markdown files ending in .md")
+        );
+    }
+}
+
+#[test]
 fn design_and_acceptance_errors_carry_their_publication_class() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);

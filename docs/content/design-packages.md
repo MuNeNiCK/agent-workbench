@@ -20,14 +20,20 @@ prints the project-local package location to the invoking user.
 The package contains:
 
 - `design.yaml`
-- arc42-style architecture sections
-- `requirements/`
-- `validation/`
+- arc42-style Markdown sections
+- Markdown files under `requirements/`
+- Markdown files under `validation/`
 - `09-decisions.md`
 
 The architecture sections help people and review agents understand the system.
 The machine-readable files let Agent Workbench import requirements, decisions, and
 validation gate templates.
+
+Every path declared by the manifest's `arc42`, `requirements`, and `validation`
+fields must name a regular file ending in `.md`. JSON, test vectors, fixtures,
+generated output, binaries, and other data files are not Design Package files.
+Describe their required behavior in Markdown and validate their implementation
+through normal repository evidence instead of adding them to `design.yaml`.
 
 ## Requirements
 

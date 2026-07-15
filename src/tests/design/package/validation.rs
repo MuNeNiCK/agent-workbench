@@ -1,6 +1,118 @@
 use super::super::*;
 
 #[test]
+fn design_import_rejects_non_markdown_entries_before_creating_a_version() {
+    for (design_id, manifest_entry, replacement) in [
+        (
+            "json-arc42",
+            "introduction_goals: 01-introduction-goals.md",
+            "introduction_goals: source/introduction.json",
+        ),
+        (
+            "json-requirement",
+            "  - requirements/README.md",
+            "  - source/requirement.json",
+        ),
+        (
+            "json-validation",
+            "  - validation/gates.md",
+            "  - source/gates.json",
+        ),
+        (
+            "uppercase-markdown-extension",
+            "introduction_goals: 01-introduction-goals.md",
+            "introduction_goals: source/introduction.MD",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        init_project(temp.path()).unwrap();
+        let init = init_design_package(
+            temp.path(),
+            NewDesignPackage {
+                design_id,
+                title: "Markdown Contract",
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(init.package_path.join("source")).unwrap();
+        fs::write(
+            init.package_path
+                .join(replacement.split_whitespace().last().unwrap()),
+            "{}\n",
+        )
+        .unwrap();
+        let manifest_path = init.package_path.join("design.yaml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(
+            &manifest_path,
+            manifest.replace(manifest_entry, replacement),
+        )
+        .unwrap();
+
+        let error = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("design manifest paths must name Markdown files ending in .md"),
+            "unexpected error for {design_id}: {error}"
+        );
+
+        fs::write(&manifest_path, manifest).unwrap();
+        let valid = import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .unwrap();
+        assert_eq!(valid.version_number, 1);
+    }
+}
+
+#[test]
+fn design_import_rejects_non_regular_markdown_manifest_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let init = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "markdown-directory",
+            title: "Markdown Directory",
+        },
+    )
+    .unwrap();
+    fs::create_dir(init.package_path.join("source.md")).unwrap();
+    let manifest_path = init.package_path.join("design.yaml");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            "introduction_goals: 01-introduction-goals.md",
+            "introduction_goals: source.md",
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        import_design_package(
+            temp.path(),
+            DesignPackageImport {
+                package_path: &init.package_path,
+                status: "draft",
+            },
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn design_import_reports_size_warnings_without_blocking() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

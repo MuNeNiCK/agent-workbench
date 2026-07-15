@@ -68,6 +68,9 @@ pub(super) fn validate_relative_manifest_path(path: &str) -> Result<()> {
     {
         bail!("design manifest paths must be relative package paths");
     }
+    if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+        bail!("design manifest paths must name Markdown files ending in .md");
+    }
     Ok(())
 }
 

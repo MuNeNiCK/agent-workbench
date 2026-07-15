@@ -37,6 +37,10 @@ state, repository state, or review state changed while the work was suspended.
 ## Design Package
 
 A Design Package is structured design material created with `design init`.
+Its manifest declares Markdown authority files only: every `arc42`,
+`requirements`, and `validation` path must end in `.md`. Arbitrary data and
+implementation fixtures do not become design authority by being placed in the
+package directory.
 It contains human-readable design sections plus machine-readable
 requirements, decisions, and validation gate templates.
 

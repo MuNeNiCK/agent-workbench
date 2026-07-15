@@ -38,6 +38,9 @@ permission.
 If the project already has design material, convert it into the workbench design
 package shape at a project-local location printed by the command before importing it.
 Do not import arbitrary external prose directly as authority.
+All paths declared under `arc42`, `requirements`, and `validation` must be
+regular Markdown files ending in `.md`; keep JSON, fixtures, test vectors, and
+generated output outside the Design Package.
 
 ```sh
 agent-workbench design init <design-id> --title "<title>"

@@ -37,6 +37,9 @@ authority.
 
 1. Create or convert design material into a workbench design package with
    `agent-workbench design init <design-id> --title "<title>"`.
+   Every manifest-declared `arc42`, `requirements`, and `validation` file must
+   be a regular Markdown file ending in `.md`; arbitrary data, test vectors,
+   fixtures, and generated output remain outside the Design Package.
 2. Import the package with
    `agent-workbench design import <package-path> --status draft`, using the path
    printed by `design init`.
