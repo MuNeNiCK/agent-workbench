@@ -7,6 +7,200 @@ use agent_workbench::*;
 
 pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
     match command {
+        ReviewCommand::Correction { command } => match command {
+            ReviewCorrectionCommand::Add(args) => {
+                let outcome = correct_terminal_review(
+                    root,
+                    &args.decision,
+                    &args.boundary,
+                    AdjudicationInput {
+                        decision: &args.outcome,
+                        reason: &args.reason,
+                        principal: &args.principal,
+                        capability: &args.capability,
+                        expected_current: &args.expected_boundary_current,
+                    },
+                )?;
+                println!("decision_handle: {}", outcome.decision_handle);
+            }
+        },
+        ReviewCommand::Adjudicate(args) => {
+            let outcome = adjudicate_review(
+                root,
+                args.run_id,
+                AdjudicationInput {
+                    decision: &args.decision,
+                    reason: &args.reason,
+                    principal: &args.principal,
+                    capability: &args.capability,
+                    expected_current: &args.expected_current,
+                },
+            )?;
+            println!("decision_handle: {}", outcome.decision_handle);
+        }
+        ReviewCommand::Invocation { command } => {
+            let outcome = match command {
+                ReviewInvocationCommand::Request(args) => request_invocation(
+                    root,
+                    InvocationRequest {
+                        review_plan_id: args.plan,
+                        target_context: &args.target,
+                        reviewer: &args.reviewer,
+                        idempotency_key: &args.idempotency_key,
+                        provenance: &args.provenance,
+                        purpose: &args.purpose,
+                        expected_plan_current: &args.expected_plan_current,
+                    },
+                )?,
+                ReviewInvocationCommand::Start(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Start,
+                    },
+                )?,
+                ReviewInvocationCommand::Complete(args) => {
+                    let terminal = match (
+                        args.claim.as_deref(),
+                        args.verification_claim.as_deref(),
+                        args.attempt,
+                    ) {
+                        (Some(claim), None, None) => InvocationTerminal::CompleteReview {
+                            claim,
+                            summary: &args.summary,
+                        },
+                        (None, Some(claim), Some(attempt)) => {
+                            InvocationTerminal::CompleteVerification {
+                                claim,
+                                attempt,
+                                summary: &args.summary,
+                            }
+                        }
+                        _ => anyhow::bail!(
+                            "complete requires either --claim or --verification-claim with --attempt"
+                        ),
+                    };
+                    transition_invocation(
+                        root,
+                        InvocationTransitionRequest {
+                            invocation_id: args.invocation_id,
+                            principal: &args.principal,
+                            expected_current: &args.expected_current,
+                            idempotency_key: &args.idempotency_key,
+                            outcome: terminal,
+                        },
+                    )?
+                }
+                ReviewInvocationCommand::Fail(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Fail {
+                            reason: &args.reason,
+                        },
+                    },
+                )?,
+                ReviewInvocationCommand::Cancel(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Cancel {
+                            reason: &args.reason,
+                        },
+                    },
+                )?,
+            };
+            println!("invocation_id: {}", outcome.invocation_id);
+            println!("invocation_handle: {}", outcome.invocation_handle);
+            println!("state: {}", outcome.state);
+        }
+        ReviewCommand::Provenance { command } => match command {
+            ReviewProvenanceCommand::Issue(args) => {
+                let outcome = issue_review_provenance(
+                    root,
+                    ReviewProvenanceIssueRequest {
+                        principal_handle: &args.principal,
+                        assertion_handle: &args.assertion,
+                        review_plan_id: args.plan,
+                        target_context: &args.target,
+                        provenance_kind: &args.provenance_kind,
+                        review_purpose: &args.review_purpose,
+                        reference_digest: &args.reference_digest,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?;
+                println!("provenance_handle: {}", outcome.provenance_handle);
+            }
+        },
+        ReviewCommand::Result { command } => {
+            let outcome = match command {
+                ReviewResultCommand::Stage(args) => create_result_stage(
+                    root,
+                    CreateResultStageRequest {
+                        invocation_id: args.invocation,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+                ReviewResultCommand::FindingAdd(args) => add_result_finding(
+                    root,
+                    AddResultFindingRequest {
+                        stage_handle: &args.stage_handle,
+                        finding_type: &args.finding_type,
+                        severity: &args.severity,
+                        description: &args.description,
+                        requirement: args.requirement,
+                        task: args.task,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+                ReviewResultCommand::Complete(args) => {
+                    if args.claim != "findings" {
+                        anyhow::bail!("result stage completion claim must be findings");
+                    }
+                    complete_result_stage(
+                        root,
+                        CompleteResultStageRequest {
+                            stage_handle: &args.stage_handle,
+                            expected_findings: args.expected_findings,
+                            summary: &args.summary,
+                            principal: &args.principal,
+                            expected_current: &args.expected_current,
+                            invocation_current: &args.invocation_current,
+                            idempotency_key: &args.idempotency_key,
+                        },
+                    )?
+                }
+                ReviewResultCommand::Cancel(args) => cancel_result_stage(
+                    root,
+                    CancelResultStageRequest {
+                        stage_handle: &args.stage_handle,
+                        reason: &args.reason,
+                        principal: &args.principal,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+            };
+            println!("stage_handle: {}", outcome.stage_handle);
+            println!("version_handle: {}", outcome.version_handle);
+            println!("state: {}", outcome.state);
+            if let Some(result) = outcome.result_handle {
+                println!("result_handle: {result}");
+            }
+        }
         ReviewCommand::Scope { command } => match command {
             ReviewScopeCommand::Start(args) => {
                 let defaults = review_role_defaults(&args.review_type);
@@ -181,34 +375,25 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
         },
         ReviewCommand::Run { command } => match command {
             ReviewRunCommand::Add(args) => {
-                let outcome = add_review_run_with_finding_result(
-                    root,
-                    NewReviewRun {
-                        review_plan_id: args.plan,
-                        run_type: &args.run_type,
-                        run_purpose: &args.purpose,
-                        target_ref: args.target.as_deref(),
-                        prompt_deviations: None,
-                        result_summary: args.summary.as_deref(),
-                        new_findings_count: args.new_findings,
-                        carried_findings_checked: args.carried_findings,
-                        clean_run: args.clean,
-                        status: &args.status,
-                        agent_label: args.agent_label.as_deref(),
-                        external_agent_id: args.external_agent_id.as_deref(),
-                        review_provenance: &args.provenance,
-                        review_provenance_ref: args.provenance_ref.as_deref(),
-                    },
-                    args.finding_result.as_deref(),
-                )?;
-                println!("added review run");
-                println!("review_run_id: {}", outcome.review_run_id);
-                println!(
-                    "review_agent_invocation_id: {}",
-                    outcome.review_agent_invocation_id
+                let (Some(target), Some(reviewer), Some(provenance), Some(key)) = (
+                    args.target.as_deref(),
+                    args.reviewer.as_deref(),
+                    args.provenance_ref.as_deref(),
+                    args.idempotency_key.as_deref(),
+                ) else {
+                    anyhow::bail!(
+                        "code: review_invocation_required\nrequired_input: target,reviewer,provenance-handle,idempotency-key\nnext: agent-workbench review invocation request --help"
+                    );
+                };
+                anyhow::bail!(
+                    "code: review_invocation_required\nnext: agent-workbench review invocation request --plan {} --target {} --reviewer {} --idempotency-key {} --provenance {} --purpose {} --expected-plan-current open",
+                    args.plan,
+                    target,
+                    reviewer,
+                    key,
+                    provenance,
+                    args.purpose
                 );
-                println!("review_plan_id: {}", outcome.review_plan_id);
-                println!("plan_status: {}", outcome.plan_status);
             }
             ReviewRunCommand::List(args) => {
                 let records = list_review_runs(root, args.plan)?;
@@ -277,25 +462,48 @@ struct ReviewRoleDefaults {
 
 pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()> {
     match command {
-        FindingCommand::Add(args) => {
-            let outcome = add_finding(
+        FindingCommand::Reopen(args) => {
+            let outcome = reopen_finding_epoch(
                 root,
-                NewFinding {
-                    review_run_id: args.run,
-                    finding_type: &args.finding_type,
-                    severity: &args.severity,
-                    description: &args.description,
-                    design_requirement_id: args.design_requirement,
-                    task_id: args.task,
+                args.finding_id,
+                args.epoch,
+                AdjudicationInput {
+                    decision: "reopened",
+                    reason: &args.reason,
+                    principal: &args.principal,
+                    capability: &args.capability,
+                    expected_current: &args.expected_current,
                 },
             )?;
-            println!("added finding");
-            println!("finding_id: {}", outcome.finding_id);
+            println!("decision_handle: {}", outcome.decision_handle);
+        }
+        FindingCommand::Decide(args) => {
+            let outcome = decide_finding(
+                root,
+                args.finding_id,
+                AdjudicationInput {
+                    decision: &args.decision,
+                    reason: &args.reason,
+                    principal: &args.principal,
+                    capability: &args.capability,
+                    expected_current: &args.expected_current,
+                },
+            )?;
+            println!("decision_handle: {}", outcome.decision_handle);
+        }
+        FindingCommand::Add(args) => {
+            anyhow::bail!(
+                "code: review_result_stage_required\nnext: agent-workbench review result finding-add --help (legacy run={}, type={})",
+                args.run,
+                args.finding_type
+            );
         }
         FindingCommand::Classify(args) => {
-            let outcome = classify_finding(root, args.finding_id, &args.classification)?;
-            println!("classified finding");
-            println!("finding_id: {}", outcome.finding_id);
+            anyhow::bail!(
+                "code: finding_adjudication_required\nnext: agent-workbench finding decide {} --help (legacy classification={})",
+                args.finding_id,
+                args.classification
+            );
         }
         FindingCommand::List(args) => {
             let records = list_findings(root, args.status.as_deref())?;
@@ -342,20 +550,12 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             }
         }
         FindingCommand::Verify(args) => {
-            let outcome = add_finding_verification(
-                root,
-                NewFindingVerification {
-                    review_run_id: args.run,
-                    finding_id: args.finding,
-                    closure_id: args.closure,
-                    result: &args.result,
-                    notes: args.notes.as_deref(),
-                },
-            )?;
-            println!("added finding verification");
-            println!(
-                "finding_verification_id: {}",
-                outcome.finding_verification_id
+            anyhow::bail!(
+                "code: review_invocation_required\nrequired_input: attempt,reviewer,provenance-handle,idempotency-key\nnext: agent-workbench review invocation request --help (legacy run={}, finding={}, closure={}, result={})",
+                args.run,
+                args.finding,
+                args.closure,
+                args.result
             );
         }
         FindingCommand::AcceptOutOfScope(args) => {
@@ -368,6 +568,29 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                 },
             )?;
             println!("accepted finding out of scope");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn handle_verification(root: &Path, command: VerificationCommand) -> Result<()> {
+    match command {
+        VerificationCommand::Adjudicate(args) => {
+            let outcome = adjudicate_verification(
+                root,
+                args.run,
+                args.finding,
+                args.closure,
+                args.attempt,
+                AdjudicationInput {
+                    decision: &args.decision,
+                    reason: &args.reason,
+                    principal: &args.principal,
+                    capability: &args.capability,
+                    expected_current: &args.expected_current,
+                },
+            )?;
+            println!("decision_handle: {}", outcome.decision_handle);
         }
     }
     Ok(())
@@ -495,71 +718,6 @@ pub(crate) fn handle_acceptance(root: &Path, command: AcceptanceCommand) -> Resu
                     },
                 )?;
                 println!("accepted workflow exception");
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn handle_authority(root: &Path, command: AuthorityCommand) -> Result<()> {
-    match command {
-        AuthorityCommand::Add(args) => {
-            let event_type = match args.authority_type.as_str() {
-                "design" => "design_doc",
-                other => other,
-            };
-            let summary = args.summary.unwrap_or_else(|| {
-                format!(
-                    "registered {} authority at {}",
-                    args.authority_type, args.path
-                )
-            });
-            let outcome = add_authority_event(
-                root,
-                NewAuthorityEvent {
-                    event_type,
-                    source: Some(&args.path),
-                    summary: &summary,
-                    scope: args.scope.as_deref(),
-                    precedence: args.precedence,
-                },
-            )?;
-            println!("added authority");
-            println!("authority_id: {}", outcome.authority_id);
-            println!("authority_event_id: {}", outcome.authority_event_id);
-        }
-        AuthorityCommand::Event { command } => match command {
-            AuthorityEventCommand::Add(args) => {
-                let outcome = add_authority_event(
-                    root,
-                    NewAuthorityEvent {
-                        event_type: &args.event_type,
-                        source: args.source.as_deref(),
-                        summary: &args.summary,
-                        scope: args.scope.as_deref(),
-                        precedence: args.precedence,
-                    },
-                )?;
-                println!("added authority event");
-                println!("authority_id: {}", outcome.authority_id);
-                println!("authority_event_id: {}", outcome.authority_event_id);
-            }
-        },
-        AuthorityCommand::List(args) => {
-            let records = list_authorities(root, args.scope.as_deref())?;
-            if records.is_empty() {
-                println!("no authorities");
-            }
-            for record in records {
-                let scope = record.scope.as_deref().unwrap_or("-");
-                println!(
-                    "{} [{} scope={} precedence={}] {}",
-                    record.id,
-                    record.authority_type,
-                    scope,
-                    record.precedence,
-                    record.path_or_label
-                );
             }
         }
     }

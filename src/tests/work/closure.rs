@@ -404,9 +404,9 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
             clean_run: true,
             status: "completed",
             agent_label: None,
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
+            external_agent_id: Some("test-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("test-output"),
         },
     )
     .unwrap();

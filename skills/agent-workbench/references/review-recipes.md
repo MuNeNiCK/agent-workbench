@@ -48,18 +48,26 @@ Use `--phase <phase-id>` only for grouped phases that remain inside the
 aggregate work unit. Split phase work units use the normal work-unit-scoped
 context for the child work unit.
 
-Run an actual independent review first. `review run add` records the result; it
-does not launch or perform the review.
+Run an actual independent review through a trusted invocation. Reviewer output
+is advisory until a separate authorized owner adjudicates it.
 
-For a clean design-derived gate review, copy the printed review target into the
-run and include trusted provenance for the reviewer output:
+For a clean design-derived gate review, first verify/import the provider
+assertion and resolve its principal. Then issue provenance and bind it to an
+invocation:
 
 ```sh
-agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
+agent-workbench authority provider verify --provider signed-envelope-v1
+agent-workbench authority assertion import --provider signed-envelope-v1 --purpose review_provenance --file <signed-envelope.cbor>
+agent-workbench principal resolve --provider signed-envelope-v1 --assertion <assertion-handle>
+agent-workbench review provenance issue --principal <reviewer-principal> --assertion <assertion-handle> --plan <review-plan-id> --target <context-ref> --kind external_agent --purpose new_unbiased_review --reference-digest <digest> --idempotency-key <key>
+agent-workbench review invocation request --plan <review-plan-id> --target <context-ref> --reviewer <reviewer-principal> --idempotency-key <key> --provenance <provenance-handle> --purpose new_unbiased_review --expected-plan-current open
+agent-workbench review invocation complete <invocation-id> --claim clean --summary "<summary>" --principal <reviewer-principal> --expected-current requested --idempotency-key <key>
 ```
 
-Use `--provenance human_review --provenance-ref <review-output-ref>` for a
-human reviewer. Do not use a self-recorded clean run to satisfy readiness gates.
+The owner then issues an exact grant-backed capability and runs `review
+adjudicate`; a reviewer cannot adjudicate its own claim. Legacy `review run add`
+and direct classification/verification spellings are compatibility diagnostics,
+not authority.
 
 ## Finding Lifecycle
 
@@ -67,7 +75,7 @@ When a review finds a problem:
 
 ```sh
 agent-workbench finding add --run <review-run-id> --type <finding-type> --severity <severity> --description "<description>"
-agent-workbench finding classify <finding-id> --classification valid
+agent-workbench finding decide <finding-id> --decision accepted --reason "<reason>" --principal <owner-principal> --capability <capability-handle> --expected-current pending
 agent-workbench closure add --finding <finding-id> --invariant "<what must now hold>" --surfaces "<affected surfaces>" --fix-plan "<fix>" --tests "<tests>" --verification "<resume review>"
 ```
 
@@ -79,8 +87,9 @@ agent-workbench work remediate --finding <finding-id>
 # implement and test only the printed remediation scope
 agent-workbench closure ready <closure-id> --evidence "<fix evidence>" --tests "<test evidence>" --commit <sha>
 agent-workbench review-context finding-fix --finding <finding-id> --closure <closure-id> --attempt <attempt-id>
-agent-workbench review run add --plan <plan-id> --type resume --purpose finding_fix_verification --target <context-ref> --finding-result verified --carried-findings 1 --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <output-ref>
-agent-workbench finding verify --run <review-run-id> --finding <finding-id> --closure <closure-id> --result verified
+agent-workbench review invocation request --plan <plan-id> --target <context-ref> --reviewer <reviewer-principal> --idempotency-key <key> --provenance <provenance-handle> --purpose finding_fix_verification --expected-plan-current open
+agent-workbench review invocation complete <invocation-id> --verification-claim verified --attempt <attempt-id> --summary "<summary>" --principal <reviewer-principal> --expected-current requested --idempotency-key <key>
+agent-workbench verification adjudicate --run <run-id> --finding <finding-id> --closure <closure-id> --attempt <attempt-id> --decision accepted --reason "<reason>" --principal <owner-principal> --capability <capability-handle> --expected-current pending
 ```
 
 `closure ready` evidence belongs to the immutable numbered attempt and does

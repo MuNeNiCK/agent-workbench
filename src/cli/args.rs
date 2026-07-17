@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod authority;
 mod evidence;
 mod migration;
 mod planning;
 mod review;
 mod work;
 
+pub(crate) use authority::*;
 pub(crate) use evidence::*;
 pub(crate) use migration::*;
 pub(crate) use planning::*;
@@ -148,6 +150,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: FindingCommand,
     },
+    /// Adjudicate immutable verification claims.
+    Verification {
+        #[command(subcommand)]
+        command: VerificationCommand,
+    },
     /// Manage finding closure records.
     Closure {
         #[command(subcommand)]
@@ -162,6 +169,16 @@ pub(crate) enum Command {
     Authority {
         #[command(subcommand)]
         command: AuthorityCommand,
+    },
+    /// Resolve trusted provider subjects into project-local principals.
+    Principal {
+        #[command(subcommand)]
+        command: PrincipalCommand,
+    },
+    /// Manage authenticated owner decision grants.
+    Owner {
+        #[command(subcommand)]
+        command: OwnerCommand,
     },
     /// Manage KPT reviews.
     Kpt {

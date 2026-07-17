@@ -1,178 +1,65 @@
-name: release
+name: release-observer
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to publish"
-        required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  linux-x86_64:
+  observe-linux-x86_64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-      - name: Test
-        run: cargo test --locked
-
-      - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: Build release binary
-        run: cargo build --release --locked
-
-      - name: Verify release identity
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
+      - name: Verify source
         run: |
           set -eu
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          case "$tag" in
-            v?*) version="${tag#v}" ;;
-            *) echo "::error::Release tag must start with v"; exit 1 ;;
-          esac
-          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
-          skill_version="$(sed -n '1{s/[[:space:]]//g;p;}' skills/agent-workbench/CLI_VERSION)"
-          git tag --points-at HEAD | grep -Fx "$tag" >/dev/null
-          test "$cargo_version" = "$version"
-          test "$skill_version" = "$tag"
-          test "$(target/release/agent-workbench --version)" = "agent-workbench $version"
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Package release assets
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
+      - name: Verify identity and public contract
         run: |
           set -eu
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          source_sha="$(git rev-parse HEAD)"
-          mkdir -p dist/binary dist/skill dist/docs
-          skill_members="$PWD/dist/skill-members.txt"
-          docs_members="$PWD/dist/docs-members.txt"
-
-          cp target/release/agent-workbench dist/binary/agent-workbench
-          tar -C dist/binary -czf "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" agent-workbench
-
-          printf '%s\n' \
-            agent-workbench/CLI_VERSION \
-            agent-workbench/LICENSE \
-            agent-workbench/SKILL.md \
-            agent-workbench/agents/openai.yaml \
-            agent-workbench/references/cli-workflow.md \
-            agent-workbench/references/close-ready-troubleshooting.md \
-            agent-workbench/references/interruption-recovery.md \
-            agent-workbench/references/quickstart.md \
-            agent-workbench/references/repository-validation.md \
-            agent-workbench/references/review-recipes.md \
-            agent-workbench/references/state-recovery.md \
-            agent-workbench/scripts/agent-workbench.sh \
-            > "$skill_members"
-          while IFS= read -r member; do
-            mkdir -p "dist/skill/$(dirname "$member")"
-            if test "$member" = agent-workbench/LICENSE; then
-              cp LICENSE "dist/skill/$member"
-            else
-              cp "skills/$member" "dist/skill/$member"
-            fi
-          done < "$skill_members"
-          tar -C dist/skill -czf "dist/agent-workbench-${tag}-skill.tar.gz" -T "$skill_members"
-
-          printf '%s\n' \
-            LICENSE \
-            README.md \
-            mkdocs.yml \
-            requirements.txt \
-            content/agent-skills.md \
-            content/concepts.md \
-            content/design-packages.md \
-            content/index.md \
-            content/operations.md \
-            content/quick-start.md \
-            content/reference.md \
-            content/workflows.md \
-            > "$docs_members"
-          while IFS= read -r member; do
-            mkdir -p "dist/docs/$(dirname "$member")"
-            if test "$member" = LICENSE; then
-              cp LICENSE "dist/docs/$member"
-            else
-              cp "docs/$member" "dist/docs/$member"
-            fi
-          done < "$docs_members"
-          tar -C dist/docs -czf "dist/agent-workbench-${tag}-docs.tar.gz" -T "$docs_members"
-
-          printf 'version=%s\ncommit=%s\ntarget=linux-x86_64\n' \
-            "$tag" "$source_sha" > "dist/agent-workbench-${tag}-release-metadata.txt"
-
-          (
-            cd dist
-            sha256sum \
-              "agent-workbench-${tag}-linux-x86_64.tar.gz" \
-              "agent-workbench-${tag}-skill.tar.gz" \
-              "agent-workbench-${tag}-docs.tar.gz" \
-              "agent-workbench-${tag}-release-metadata.txt" \
-              > "agent-workbench-${tag}-checksums.txt"
-          )
-
-      - name: Inspect release assets
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -eu
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          test "$(tar -tzf "dist/agent-workbench-${tag}-linux-x86_64.tar.gz")" = "agent-workbench"
-          tar -tzf "dist/agent-workbench-${tag}-skill.tar.gz" | diff -u dist/skill-members.txt -
-          tar -tzf "dist/agent-workbench-${tag}-docs.tar.gz" | diff -u dist/docs-members.txt -
-          (cd dist && sha256sum -c "agent-workbench-${tag}-checksums.txt")
-
-      - name: Exercise candidate wrapper and public contract
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -eu
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          tag="$GITHUB_REF_NAME"
           version="${tag#v}"
+          test "$(git describe --tags --exact-match HEAD)" = "$tag"
+          test "$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)" = "$version"
+          test "$(sed -n '1{s/[[:space:]]//g;p;}' skills/agent-workbench/CLI_VERSION)" = "$tag"
+          cargo build --locked
+          scripts/check-public-contract.sh
+
+      - name: Rebuild deterministic candidate assets
+        run: |
+          set -eu
+          scripts/build-release-assets.sh "$GITHUB_REF_NAME" "$PWD/dist"
+          test "$(tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-linux-x86_64.tar.gz")" = agent-workbench
+          if tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-skill.tar.gz" | grep -E '(^|/)\.agent-workbench/|(^|/)\.agents/' ; then exit 1; fi
+          if tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-docs.tar.gz" | grep -E '(^|/)\.agent-workbench/|(^|/)\.agents/' ; then exit 1; fi
+
+      - name: Exercise candidate wrapper
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
           candidate="$RUNNER_TEMP/agent-workbench-candidate"
           project="$candidate/project"
-          rm -rf "$candidate"
           mkdir -p "$candidate/binary" "$candidate/skill" "$project"
           tar -xzf "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" -C "$candidate/binary"
           tar -xzf "dist/agent-workbench-${tag}-skill.tar.gz" -C "$candidate/skill"
           binary="$candidate/binary/agent-workbench"
           wrapper="$candidate/skill/agent-workbench/scripts/agent-workbench.sh"
           chmod +x "$binary" "$wrapper"
-
-          test "$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --version)" = "agent-workbench $version"
+          test "$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --version)" = "agent-workbench ${tag#v}"
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" init
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" status \
-            | grep -Fx initialized >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" migration task-history --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review-context --help >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" status | grep -Fx initialized >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review invocation --help >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" decision capability issue --help >/dev/null
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -eu
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          source_sha="$(git rev-parse HEAD)"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::error::Release $tag already exists. Create a new tag instead of replacing published assets."
-            exit 1
-          fi
-          gh release create "$tag" \
-            "dist/agent-workbench-${tag}-linux-x86_64.tar.gz" \
-            "dist/agent-workbench-${tag}-skill.tar.gz" \
-            "dist/agent-workbench-${tag}-docs.tar.gz" \
-            "dist/agent-workbench-${tag}-release-metadata.txt" \
-            "dist/agent-workbench-${tag}-checksums.txt" \
-            --generate-notes --target "$source_sha"
+      - name: Confirm observer-only boundary
+        run: git diff --exit-code

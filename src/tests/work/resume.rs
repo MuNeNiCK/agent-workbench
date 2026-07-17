@@ -701,9 +701,9 @@ fn trace_aware_resume_requires_required_resume_plans_to_be_current() {
             clean_run: true,
             status: "completed",
             agent_label: None,
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
+            external_agent_id: Some("test-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("test-output"),
         },
     )
     .unwrap();

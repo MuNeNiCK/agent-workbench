@@ -337,6 +337,7 @@ pub(super) fn implementation_review_gate_state(
           and f.finding_type in ('design_finding', 'design_task_gap')
           and f.status not in ('closed', 'accepted_out_of_scope')
           and f.classification not in ('invalid')
+          and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
           and not exists (
             select 1
             from acceptance_records ar

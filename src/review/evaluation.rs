@@ -69,6 +69,11 @@ pub(super) fn evaluate_plan_status(
           and f.project_id = ?2
           and f.status = 'open'
           and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+          and not exists (
+            select 1 from legacy_claim_audits l
+            where l.project_id=f.project_id and l.review_run_id=f.review_run_id
+              and l.reviewer_resolution in ('unbound','ambiguous')
+          )
           and (
               ?3 = 0
               or case f.severity
@@ -205,6 +210,18 @@ pub(super) fn consecutive_clean_runs(
                    where i.review_run_id = r.id
                      and i.external_agent_id is not null
                      and i.external_agent_id != ''
+               ),
+               exists (
+                   select 1 from review_adjudication_decisions d
+                   where d.review_run_id=r.id and d.value='accepted'
+                     and not exists(select 1 from review_adjudication_decisions newer where newer.predecessor_id=d.id)
+               ),
+               exists (
+                   select 1 from review_agent_invocations i
+                   where i.review_run_id=r.id and i.review_provenance_id is not null
+               ) or exists (
+                   select 1 from legacy_claim_audits l
+                   where l.review_run_id=r.id and l.reviewer_resolution='trusted'
                )
         from review_runs
         r
@@ -227,18 +244,22 @@ pub(super) fn consecutive_clean_runs(
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, i64>(3)? == 1,
+            row.get::<_, i64>(4)? == 1,
+            row.get::<_, i64>(5)? == 1,
         ))
     })?;
     let mut count = 0;
     for row in rows {
-        let (clean_run, provenance, provenance_ref, has_external_agent) = row?;
-        let trusted = required_context.is_none()
-            || trusted_review_provenance(
-                &provenance,
-                provenance_ref.as_deref(),
-                has_external_agent,
-            );
-        if clean_run == 1 && trusted {
+        let (
+            clean_run,
+            _provenance,
+            _provenance_ref,
+            _has_external_agent,
+            accepted,
+            trusted_ingress,
+        ) = row?;
+        let trusted = required_context.is_none() || trusted_ingress;
+        if clean_run == 1 && trusted && accepted {
             count += 1;
         } else {
             break;

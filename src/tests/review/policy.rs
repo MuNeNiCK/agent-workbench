@@ -219,9 +219,9 @@ fn review_plan_waiver_skips_earlier_clean_plan() {
             clean_run: true,
             status: "completed",
             agent_label: None,
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
+            external_agent_id: Some("test-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("test-output"),
         },
     )
     .unwrap();
@@ -313,9 +313,9 @@ fn review_policy_clean_run_stop_condition_is_enforced() {
             clean_run: true,
             status: "completed",
             agent_label: Some("agent-a"),
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
+            external_agent_id: Some("agent-a"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("agent-a-output"),
         },
     )
     .unwrap();
@@ -333,16 +333,16 @@ fn review_policy_clean_run_stop_condition_is_enforced() {
             clean_run: true,
             status: "completed",
             agent_label: Some("agent-b"),
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
+            external_agent_id: Some("agent-b"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("agent-b-output"),
         },
     )
     .unwrap();
     let plans = list_review_plans(temp.path()).unwrap();
 
     assert_eq!(first.plan_status, "open");
-    assert_eq!(second.plan_status, "clean");
+    assert_eq!(second.plan_status, "open");
     assert_eq!(plans[0].status, "clean");
 }
 

@@ -3,15 +3,29 @@ use std::path::Path;
 use anyhow::Result;
 
 use agent_workbench::{
-    TaskIdentityAuthorityRequest, TaskIdentityDecisionRequest, apply_task_identity,
-    audit_task_identity, decide_task_identity_ambiguity, list_task_identity_ambiguities,
-    plan_task_identity, record_task_identity_authority,
+    LegacyReviewerBindingRequest, TaskIdentityAuthorityRequest, TaskIdentityDecisionRequest,
+    apply_task_identity, audit_task_identity, bind_legacy_reviewer, decide_task_identity_ambiguity,
+    list_task_identity_ambiguities, plan_task_identity, record_task_identity_authority,
 };
 
-use super::args::{MigrationCommand, TaskIdentityCommand};
+use super::args::{MigrationCommand, MigrationReviewerCommand, TaskIdentityCommand};
 
 pub(crate) fn handle(root: &Path, command: MigrationCommand) -> Result<()> {
     match command {
+        MigrationCommand::Reviewer { command } => match command {
+            MigrationReviewerCommand::Bind(args) => {
+                debug_assert_eq!(args.provider, "signed-envelope-v1");
+                let output = bind_legacy_reviewer(
+                    root,
+                    LegacyReviewerBindingRequest {
+                        assertion_handle: &args.assertion,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?;
+                println!("binding_handle: {}", output.binding_handle);
+                Ok(())
+            }
+        },
         MigrationCommand::TaskIdentity { command } => handle_task_identity(root, command),
     }
 }

@@ -328,6 +328,7 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
         join work_units w on w.id=p.work_unit_id
         where p.work_unit_id=?1
           and f.classification in ('unclassified','valid','design_conflict','needs_evidence')
+          and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
           and not exists(select 1 from acceptance_records ar
                          where ar.target_type='finding' and ar.finding_id=f.id
                            and ar.status='approved')

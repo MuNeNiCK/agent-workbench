@@ -232,6 +232,90 @@ pub(crate) enum DecisionCommand {
     Add(DecisionAddArgs),
     List(DecisionListArgs),
     Search(DecisionSearchArgs),
+    Capability {
+        #[command(subcommand)]
+        command: DecisionCapabilityCommand,
+    },
+    Adjudicate(DecisionAdjudicateArgs),
+    Continuation {
+        #[command(subcommand)]
+        command: DecisionContinuationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DecisionContinuationCommand {
+    Show(DecisionContinuationShowArgs),
+    Apply(DecisionContinuationApplyArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionContinuationShowArgs {
+    pub(crate) handle: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionContinuationApplyArgs {
+    pub(crate) handle: String,
+    #[arg(long)]
+    pub(crate) decision: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) principal: String,
+    #[arg(long)]
+    pub(crate) capability: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DecisionCapabilityCommand {
+    Issue(DecisionCapabilityIssueArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionCapabilityIssueArgs {
+    #[arg(long)]
+    pub(crate) principal: String,
+    #[arg(long)]
+    pub(crate) owner: String,
+    #[arg(long)]
+    pub(crate) target: String,
+    #[arg(long)]
+    pub(crate) role: String,
+    #[arg(long)]
+    pub(crate) decision_family: String,
+    #[arg(long)]
+    pub(crate) action: String,
+    #[arg(long)]
+    pub(crate) design_context: String,
+    #[arg(long)]
+    pub(crate) expires: String,
+    #[arg(long)]
+    pub(crate) issuer_assertion: String,
+    #[arg(long)]
+    pub(crate) owner_grant: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionAdjudicateArgs {
+    #[arg(long)]
+    pub(crate) principal: String,
+    #[arg(long)]
+    pub(crate) capability: String,
+    #[arg(long)]
+    pub(crate) owner: String,
+    #[arg(long)]
+    pub(crate) target: String,
+    #[arg(long)]
+    pub(crate) decision_family: String,
+    #[arg(long)]
+    pub(crate) action: String,
+    #[arg(long)]
+    pub(crate) decision: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }
 
 #[derive(Debug, Args)]

@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::params;
 
 use crate::db::{NewEvent, active_activation, insert_event, open_existing_project, project_id};
+use crate::identity::{CanonicalValue, domain_digest};
 
 use super::{close_repository::*, close_trace::*, forking::*, resume_validation::*, *};
 
@@ -246,6 +247,43 @@ pub fn close_active_work(root: &Path, summary: &str, commit: Option<&str>) -> Re
         "#,
         params![event_id, active.work_unit_id],
     )?;
+
+    let project = project_id(&tx)?;
+    let boundary_handle = format!(
+        "boundary_{}",
+        domain_digest(
+            b"agent-workbench:work-close-boundary-v1\0",
+            &CanonicalValue::object([
+                ("work", CanonicalValue::Integer(active.work_unit_id)),
+                ("event", CanonicalValue::Integer(event_id))
+            ])
+        )
+    );
+    let dependency_rows=tx.prepare("select 'task:'||id||':'||status from tasks where work_unit_id=?1 union all select 'gate:'||vg.id||':'||vg.status from validation_gates vg where vg.work_unit_id=?1 and vg.project_id=?2 order by 1")?.query_map(params![active.work_unit_id,project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let dependency_digest = domain_digest(
+        b"agent-workbench:boundary-dependencies-v1\0",
+        &CanonicalValue::Array(
+            dependency_rows
+                .into_iter()
+                .map(CanonicalValue::String)
+                .collect(),
+        ),
+    );
+    let decisions=tx.prepare("select od.id,od.decision_handle from owner_decisions od join review_adjudication_decisions d on d.owner_decision_id=od.id join review_runs r on r.id=d.review_run_id join review_plans p on p.id=r.review_plan_id where od.project_id=?1 and p.work_unit_id=?2 and d.value='accepted' and not exists(select 1 from review_adjudication_decisions n where n.predecessor_id=d.id) order by od.id")?.query_map(params![project,active.work_unit_id],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (decision_id, decision_handle) in decisions {
+        let snapshot_handle = format!(
+            "snapshot_{}",
+            domain_digest(
+                b"agent-workbench:review-boundary-snapshot-v1\0",
+                &CanonicalValue::object([
+                    ("boundary", CanonicalValue::string(&boundary_handle)),
+                    ("decision", CanonicalValue::string(&decision_handle)),
+                    ("dependencies", CanonicalValue::string(&dependency_digest))
+                ])
+            )
+        );
+        tx.execute("insert into review_boundary_snapshots(project_id,owner_ref,boundary_handle,snapshot_handle,historical_owner_decision_id,dependency_digest,status,created_at) values(?1,?2,?3,?4,?5,?6,'current',current_timestamp)",params![project,format!("work_unit:{}",active.work_unit_id),boundary_handle,snapshot_handle,decision_id,dependency_digest])?;
+    }
 
     tx.commit()?;
 

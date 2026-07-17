@@ -25,6 +25,59 @@ fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
 }
 
 #[test]
+fn authority_invocation_and_adjudication_have_recursive_help() {
+    let temp = tempfile::tempdir().unwrap();
+    for (path, needles) in [
+        (
+            &["authority", "assertion", "request", "--help"][..],
+            &[
+                "root-grant",
+                "capability-issue",
+                "grant-delegate",
+                "grant-revoke",
+                "review-provenance",
+                "legacy-reviewer-binding",
+            ][..],
+        ),
+        (
+            &["owner", "grant", "--help"][..],
+            &["root-issue", "delegate", "revoke"][..],
+        ),
+        (
+            &["review", "invocation", "--help"][..],
+            &["request", "start", "complete", "fail", "cancel"][..],
+        ),
+        (
+            &["review", "adjudicate", "--help"][..],
+            &[
+                "--decision",
+                "--principal",
+                "--capability",
+                "--expected-current",
+            ][..],
+        ),
+        (
+            &["finding", "decide", "--help"][..],
+            &[
+                "--decision",
+                "--principal",
+                "--capability",
+                "--expected-current",
+            ][..],
+        ),
+        (
+            &["verification", "adjudicate", "--help"][..],
+            &["--run", "--finding", "--closure", "--attempt"][..],
+        ),
+    ] {
+        let output = ok(temp.path(), path);
+        for needle in needles {
+            assert!(output.contains(needle), "{path:?} missing {needle}");
+        }
+    }
+}
+
+#[test]
 fn acceptance_success_confirmations_do_not_expose_target_ids() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

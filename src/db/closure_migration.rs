@@ -73,8 +73,10 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             result text check (result in ('verified', 'not_fixed', 'needs_evidence', 'superseded')),
             created_at text not null,
             resolved_at text,
-            unique(closure_id, attempt_number)
+            unique(closure_id, attempt_number),
+            unique(project_id, id)
         );
+        create unique index if not exists idx_closure_attempt_project_id on closure_attempts(project_id,id);
 
         create table if not exists finding_remediation_bindings (
             id integer primary key,

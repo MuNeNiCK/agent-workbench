@@ -47,9 +47,11 @@ the current same-owner finding set. It never reactivates an old suspension.
 Blocked owners require `work unblock`; closed or abandoned owners require an
 authority-backed `work reopen` followed by the still-mandatory remediation bind.
 
-Generate the printed `review-context finding-fix`, run an independent resume
-review, and record its typed `--finding-result` with one carried finding and
-trusted provenance. `finding verify --result` must match that outcome. Failed
+Generate the printed `review-context finding-fix`, resolve a provider-verified
+reviewer principal and provenance record, then use `review invocation
+request|start|complete`. The verification claim remains advisory until a
+different authorized owner presents an exact one-shot capability through
+`verification adjudicate`. Failed
 verification returns to remediation with a new attempt. Verified or
 authority-disposed findings still require a later fresh unbiased clean review.
 `closure ready` stores evidence, tests, and commit on the immutable numbered
@@ -126,6 +128,12 @@ using phase-scoped review context. A phase closes with `phase close-ready` and
 ## Review-driven close
 
 Before closing work, the agent should run close readiness.
+
+Review authority is deliberately split. A trusted reviewer principal creates an
+immutable claim through an invocation; an owner principal with a current
+OwnerDecisionGrant issues one exact DecisionCapability and uses `review
+adjudicate`, `finding decide`, or `verification adjudicate`. Stored reviewer
+labels, legacy result flags, and review output never create owner authority.
 
 Close readiness can require:
 

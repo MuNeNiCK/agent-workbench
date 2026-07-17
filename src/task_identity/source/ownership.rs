@@ -28,6 +28,21 @@ const CANDIDATE_SHARED: &[&str] = &[
     "git_commits",
     "git_file_changes",
     "schema_migrations",
+    "legacy_migration_candidates",
+    "legacy_migration_candidate_members",
+    "legacy_migration_edges",
+    "legacy_migration_projections",
+    "legacy_reviewer_bindings",
+    "legacy_claim_audits",
+    "legacy_finding_audits",
+    "authority_bootstrap_targets",
+    "review_boundary_snapshots",
+    "review_correction_events",
+    "review_correction_recovery_obligations",
+    "finding_decision_epochs",
+    "decision_continuations",
+    "authority_migration_sources",
+    "legacy_adjudication_migrations",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

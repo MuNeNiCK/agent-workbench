@@ -106,7 +106,7 @@ fn source_profile_rejects_family_drift_and_unsupported_versions() {
     init_project(unsupported.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(unsupported.path())).unwrap();
     conn.execute(
-        "insert into schema_migrations(version,applied_at) values(12,current_timestamp)",
+        "insert into schema_migrations(version,applied_at) values(13,current_timestamp)",
         [],
     )
     .unwrap();

@@ -3,6 +3,7 @@ use clap::Parser;
 use std::env;
 
 mod args;
+mod authority_ops;
 mod classification;
 mod design_flow;
 mod doctor;
@@ -174,9 +175,12 @@ pub(crate) fn run() -> Result<()> {
             Command::Coverage { command } => planning::handle_coverage(&root, command)?,
             Command::Review { command } => review_ops::handle_review(&root, command)?,
             Command::Finding { command } => review_ops::handle_finding(&root, command)?,
+            Command::Verification { command } => review_ops::handle_verification(&root, command)?,
             Command::Closure { command } => review_ops::handle_closure(&root, command)?,
             Command::Acceptance { command } => review_ops::handle_acceptance(&root, command)?,
-            Command::Authority { command } => review_ops::handle_authority(&root, command)?,
+            Command::Authority { command } => authority_ops::handle_authority(&root, command)?,
+            Command::Principal { command } => authority_ops::handle_principal(&root, command)?,
+            Command::Owner { command } => authority_ops::handle_owner(&root, command)?,
             Command::Kpt { command } => review_ops::handle_kpt(&root, command)?,
             Command::Decompose { command } => design_flow::handle_decompose(&root, command)?,
             Command::Checklist { command } => design_flow::handle_checklist(&root, command)?,

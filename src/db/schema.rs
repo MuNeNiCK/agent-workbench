@@ -1,3 +1,4 @@
+mod authority;
 mod commands;
 mod design;
 mod kpt;
@@ -10,6 +11,7 @@ pub(super) const SCHEMA_BATCHES: &[&str] = &[
     repository::SQL,
     work::SQL,
     commands::SQL,
+    authority::SQL,
     design::SQL,
     review::SQL,
     review_integrity::SQL,

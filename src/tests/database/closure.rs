@@ -16,7 +16,7 @@ fn v10_to_v11_migration_installs_completion_inheritance_schema() {
         drop trigger trg_completion_evidence_immutable_delete;
         drop table correction_completion_inheritance_evidence;
         drop table correction_completion_inheritance_sources;
-        delete from schema_migrations where version=11;
+        delete from schema_migrations where version in (11,12);
         insert or ignore into schema_migrations(version, applied_at) values (10, current_timestamp);
         "#,
     )
@@ -25,7 +25,7 @@ fn v10_to_v11_migration_installs_completion_inheritance_schema() {
 
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
-        Some(11)
+        Some(SCHEMA_VERSION)
     );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let trigger_sql: String = conn
@@ -438,7 +438,7 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 11;
+        delete from schema_migrations where version in (11, 12);
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )

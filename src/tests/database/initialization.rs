@@ -31,7 +31,7 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version = 11;
+        delete from schema_migrations where version in (11, 12);
         insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )

@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::params;
 
 use crate::db::{open_existing_project, project_id};
+use crate::identity::{CanonicalValue, domain_digest};
 use crate::review_context::required_plans_missing_context_count;
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
@@ -79,6 +80,47 @@ pub fn approve_design_version(
         "#,
         params![version.design_package_id],
     )?;
+    let boundary_handle = format!(
+        "boundary_{}",
+        domain_digest(
+            b"agent-workbench:design-approval-boundary-v1\0",
+            &CanonicalValue::object([
+                (
+                    "design_version",
+                    CanonicalValue::Integer(version.design_version_id)
+                ),
+                (
+                    "authority_event",
+                    CanonicalValue::Integer(authority_event_id)
+                ),
+            ]),
+        )
+    );
+    let dependencies = tx.prepare("select 'requirement:'||id||':'||status||':'||requirement_hash from design_requirements where project_id=?1 and design_version_id=?2 union all select 'task:'||t.id||':'||t.status from tasks t join task_derivations d on d.task_id=t.id join design_requirements r on r.id=d.design_requirement_id where r.project_id=?1 and r.design_version_id=?2 union all select 'gate:'||id||':'||status from validation_gates where project_id=?1 and design_requirement_id in(select id from design_requirements where design_version_id=?2) order by 1")?.query_map(params![project_id,version.design_version_id],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let dependency_digest = domain_digest(
+        b"agent-workbench:boundary-dependencies-v1\0",
+        &CanonicalValue::Array(
+            dependencies
+                .into_iter()
+                .map(CanonicalValue::String)
+                .collect(),
+        ),
+    );
+    let decisions=tx.prepare("select od.id,od.decision_handle from owner_decisions od join review_adjudication_decisions d on d.owner_decision_id=od.id join review_runs r on r.id=d.review_run_id join review_plans p on p.id=r.review_plan_id where od.project_id=?1 and p.design_version_id=?2 and d.value='accepted' and not exists(select 1 from review_adjudication_decisions n where n.predecessor_id=d.id) order by od.id")?.query_map(params![project_id,version.design_version_id],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (decision_id, decision_handle) in decisions {
+        let snapshot_handle = format!(
+            "snapshot_{}",
+            domain_digest(
+                b"agent-workbench:review-boundary-snapshot-v1\0",
+                &CanonicalValue::object([
+                    ("boundary", CanonicalValue::string(&boundary_handle)),
+                    ("decision", CanonicalValue::string(&decision_handle)),
+                    ("dependencies", CanonicalValue::string(&dependency_digest)),
+                ]),
+            )
+        );
+        tx.execute("insert into review_boundary_snapshots(project_id,owner_ref,boundary_handle,snapshot_handle,historical_owner_decision_id,dependency_digest,status,created_at) values(?1,?2,?3,?4,?5,?6,'current',current_timestamp)",params![project_id,format!("design_version:{}",version.design_version_id),boundary_handle,snapshot_handle,decision_id,dependency_digest])?;
+    }
     tx.commit()?;
 
     Ok(DesignVersionApprovalOutcome {
@@ -301,6 +343,7 @@ pub(super) fn design_review_gate_state(
           and rp.review_type = 'design_review'
           and f.status not in ('closed', 'accepted_out_of_scope')
           and f.classification not in ('invalid')
+          and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
           and not exists (
             select 1
             from acceptance_records ar

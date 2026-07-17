@@ -597,6 +597,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
               and f.project_id = ?1
               and f.status = 'open'
               and f.classification in ('unclassified', 'valid', 'design_conflict', 'needs_evidence')
+              and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
               and not (
                   f.classification = 'valid'
                   and p.stage = 'close-ready'
