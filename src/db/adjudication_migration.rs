@@ -108,7 +108,7 @@ fn encode_hex(value: &[u8]) -> String {
     hex
 }
 
-pub(super) fn validate_schema11_invalid_combinations(
+pub(crate) fn validate_schema11_invalid_combinations(
     conn: &Connection,
     project: i64,
 ) -> Result<()> {
@@ -116,7 +116,11 @@ pub(super) fn validate_schema11_invalid_combinations(
     if clean_with_findings == 1 {
         bail!("migration ambiguity: clean_with_findings");
     }
-    let orphan_verification:i64=conn.query_row("select exists(select 1 from finding_verifications v left join closure_attempts a on a.id=v.closure_attempt_id left join closures c on c.id=v.closure_id where v.project_id=?1 and v.result in ('verified','not_fixed','needs_evidence') and (v.closure_attempt_id is null or a.id is null or a.closure_id!=v.closure_id or c.finding_id!=v.finding_id))",params![project],|row|row.get(0))?;
+    // Schema 11 permits historical verification rows created before an exact
+    // attempt binding was recorded. Their NULL closure_attempt_id remains
+    // grandfathered audit history rather than new claim authority.
+    // A supplied-but-broken exact link is still corruption and must fail closed.
+    let orphan_verification:i64=conn.query_row("select exists(select 1 from finding_verifications v left join closure_attempts a on a.id=v.closure_attempt_id left join closures c on c.id=v.closure_id where v.project_id=?1 and v.result in ('verified','not_fixed','needs_evidence') and v.closure_attempt_id is not null and (a.id is null or a.closure_id!=v.closure_id or c.finding_id!=v.finding_id))",params![project],|row|row.get(0))?;
     if orphan_verification == 1 {
         bail!("migration ambiguity: applied_verification_without_exact_attempt");
     }
@@ -505,7 +509,7 @@ pub(super) fn record_candidate_projections(conn: &Connection, project: i64) -> R
             }
             "finding_epoch" => {
                 let lifecycle:String=conn.query_row("select f.lifecycle_state from findings f join legacy_migration_candidate_members m on m.source_table='findings' and m.source_row_id=f.id where m.project_id=?1 and m.candidate_id=?2",params![project,id],|row|row.get(0))?;
-                let pending_verifications:i64=conn.query_row("select count(*) from finding_verifications v join legacy_migration_candidate_members m on m.source_table='findings' and m.source_row_id=v.finding_id left join closure_attempts a on a.id=v.closure_attempt_id where m.project_id=?1 and m.candidate_id=?2 and (v.closure_attempt_id is null or a.result is null)",params![project,id],|row|row.get(0))?;
+                let pending_verifications:i64=conn.query_row("select count(*) from finding_verifications v join legacy_migration_candidate_members m on m.source_table='findings' and m.source_row_id=v.finding_id join closure_attempts a on a.id=v.closure_attempt_id where m.project_id=?1 and m.candidate_id=?2 and a.result is null",params![project,id],|row|row.get(0))?;
                 (
                     3,
                     format!(

@@ -12,6 +12,9 @@ mod runtime;
 mod schema;
 mod status;
 
+#[cfg(test)]
+pub(crate) use adjudication_migration::validate_schema11_invalid_combinations;
+
 use std::path::PathBuf;
 
 pub const LEDGER_DIR: &str = ".agent-workbench";

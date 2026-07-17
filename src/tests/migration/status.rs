@@ -4,6 +4,50 @@ use crate::task_identity::status::{
     RequirementState, TaskState,
 };
 
+fn schema11_verification_fixture(closure_attempt_id: Option<i64>) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        r#"
+        create table review_runs(id integer primary key, project_id integer, status text,
+            clean_run integer, new_findings_count integer);
+        create table findings(id integer primary key, project_id integer, review_run_id integer,
+            status text);
+        create table closures(id integer primary key, finding_id integer);
+        create table closure_attempts(id integer primary key, closure_id integer);
+        create table finding_verifications(id integer primary key, project_id integer,
+            finding_id integer, closure_id integer, closure_attempt_id integer, result text);
+        create table acceptance_records(project_id integer, finding_id integer, status text);
+        insert into review_runs values(1,1,'completed',0,1);
+        insert into findings values(1,1,1,'closed');
+        insert into closures values(1,1);
+        "#,
+    )
+    .unwrap();
+    conn.execute(
+        "insert into finding_verifications values(1,1,1,1,?1,'verified')",
+        params![closure_attempt_id],
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn schema11_pre_attempt_verification_is_grandfathered() {
+    let conn = schema11_verification_fixture(None);
+    crate::db::validate_schema11_invalid_combinations(&conn, 1).unwrap();
+}
+
+#[test]
+fn schema11_broken_explicit_attempt_link_still_fails_closed() {
+    let conn = schema11_verification_fixture(Some(99));
+    assert!(
+        crate::db::validate_schema11_invalid_combinations(&conn, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("applied_verification_without_exact_attempt")
+    );
+}
+
 fn assert_profile<T>(
     parse: impl Fn(&str) -> anyhow::Result<T>,
     accepted: &[&str],
