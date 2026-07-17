@@ -179,8 +179,6 @@ pub(crate) fn run() -> Result<()> {
             Command::Closure { command } => review_ops::handle_closure(&root, command)?,
             Command::Acceptance { command } => review_ops::handle_acceptance(&root, command)?,
             Command::Authority { command } => authority_ops::handle_authority(&root, command)?,
-            Command::Principal { command } => authority_ops::handle_principal(&root, command)?,
-            Command::Owner { command } => authority_ops::handle_owner(&root, command)?,
             Command::Kpt { command } => review_ops::handle_kpt(&root, command)?,
             Command::Decompose { command } => design_flow::handle_decompose(&root, command)?,
             Command::Checklist { command } => design_flow::handle_checklist(&root, command)?,

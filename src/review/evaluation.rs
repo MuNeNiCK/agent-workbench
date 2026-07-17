@@ -33,7 +33,7 @@ pub fn list_findings(root: &Path, status: Option<&str>) -> Result<Vec<FindingRec
     collect_rows(rows)
 }
 
-pub(super) fn refresh_plan_for_run(
+pub(crate) fn refresh_plan_for_run(
     conn: &rusqlite::Connection,
     project_id: i64,
     review_run_id: i64,
@@ -215,13 +215,20 @@ pub(super) fn consecutive_clean_runs(
                    select 1 from review_adjudication_decisions d
                    where d.review_run_id=r.id and d.value='accepted'
                      and not exists(select 1 from review_adjudication_decisions newer where newer.predecessor_id=d.id)
-               ),
-               exists (
-                   select 1 from review_agent_invocations i
-                   where i.review_run_id=r.id and i.review_provenance_id is not null
-               ) or exists (
+               )
+               , exists (
                    select 1 from legacy_claim_audits l
-                   where l.review_run_id=r.id and l.reviewer_resolution='trusted'
+                   where l.project_id=r.project_id and l.review_run_id=r.id
+                     and l.reviewer_resolution='trusted'
+               ) or exists (
+                   select 1 from legacy_signed_review_effects s
+                   where s.project_id=r.project_id and s.review_run_id=r.id
+               ), exists (
+                   select 1 from review_adjudication_decisions d
+                   join owner_decisions o on o.id=d.owner_decision_id
+                   where d.review_run_id=r.id and d.value='accepted'
+                     and o.capability_id is not null and o.principal_id is not null
+                     and not exists(select 1 from review_adjudication_decisions n where n.predecessor_id=d.id)
                )
         from review_runs
         r
@@ -246,19 +253,31 @@ pub(super) fn consecutive_clean_runs(
             row.get::<_, i64>(3)? == 1,
             row.get::<_, i64>(4)? == 1,
             row.get::<_, i64>(5)? == 1,
+            row.get::<_, i64>(6)? == 1,
         ))
     })?;
     let mut count = 0;
     for row in rows {
         let (
             clean_run,
-            _provenance,
-            _provenance_ref,
-            _has_external_agent,
+            provenance,
+            provenance_ref,
+            has_external_agent,
             accepted,
-            trusted_ingress,
+            legacy_trusted,
+            signed_legacy,
         ) = row?;
-        let trusted = required_context.is_none() || trusted_ingress;
+        let trusted = if signed_legacy {
+            legacy_trusted
+        } else {
+            legacy_trusted
+                || required_context.is_none()
+                || trusted_review_provenance(
+                    &provenance,
+                    provenance_ref.as_deref(),
+                    has_external_agent,
+                )
+        };
         if clean_run == 1 && trusted && accepted {
             count += 1;
         } else {

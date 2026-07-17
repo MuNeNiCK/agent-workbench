@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::identity::{CanonicalValue, domain_digest};
+use crate::review_context::review_context_ref;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -58,18 +59,54 @@ pub(super) fn migrate_if_needed(conn: &Connection) -> Result<()> {
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(0);
-    if source_generation == 11 {
-        let tx = conn.unchecked_transaction()?;
-        let project = project_id(&tx)?;
-        let digest =
-            super::adjudication_migration::legacy_source_digest(&tx, project, source_generation)?;
-        migrate(&tx).context("schema-11 migration failed while installing schema 12")?;
-        tx.execute("insert or ignore into authority_migration_sources(project_id,source_ledger_digest,source_generation,created_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation]).context("schema-11 migration failed while recording the source ledger")?;
-        migrate_legacy_review_candidates(&tx)
-            .context("schema-11 migration failed while normalizing legacy review state")?;
-        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project]).context("schema-11 migration failed while recording completion")?;
-        tx.commit()
-            .context("schema-11 migration failed while committing")?;
+    if (6..=12).contains(&source_generation) {
+        let foreign_keys_enabled: i64 =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            let project = project_id(&tx)?;
+            let digest = super::adjudication_migration::legacy_source_digest(
+                &tx,
+                project,
+                source_generation,
+            )?;
+            if source_generation == 12 {
+                validate_schema12_owner_decisions(&tx, project)?;
+            }
+            migrate(&tx).with_context(|| {
+                format!(
+                    "schema-{source_generation} migration failed while installing the current schema"
+                )
+            })?;
+            if source_generation <= 11 {
+                tx.execute("insert or ignore into authority_migration_sources(project_id,source_ledger_digest,source_generation,created_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation]).with_context(|| format!("schema-{source_generation} migration failed while recording the source ledger"))?;
+                migrate_legacy_review_candidates(&tx).with_context(|| {
+                    format!(
+                        "schema-{source_generation} migration failed while normalizing legacy review state"
+                    )
+                })?;
+                tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1 and source_generation=?2",params![project,source_generation]).with_context(|| format!("schema-{source_generation} migration failed while recording completion"))?;
+            } else {
+                tx.execute("insert into schema_retirement_records(project_id,source_ledger_digest,source_generation,completed_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation]).context("schema-12 migration failed while recording retirement")?;
+            }
+            let violations: i64 =
+                tx.query_row("select count(*) from pragma_foreign_key_check", [], |row| {
+                    row.get(0)
+                })?;
+            if violations != 0 {
+                bail!(
+                    "schema-{source_generation} migration produced {violations} foreign key violation(s)"
+                );
+            }
+            tx.commit().with_context(|| {
+                format!("schema-{source_generation} migration failed while committing")
+            })?;
+            Ok(())
+        })();
+        let restore_result = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled != 0);
+        migration_result?;
+        restore_result?;
         return Ok(());
     }
     if ledger_needs_migration(conn)? {
@@ -77,44 +114,186 @@ pub(super) fn migrate_if_needed(conn: &Connection) -> Result<()> {
             format!("migration from schema generation {source_generation} failed while installing the current schema")
         })?;
     }
-    let pending:i64=conn.query_row("select exists(select 1 from authority_migration_sources s where not exists(select 1 from legacy_adjudication_migrations m where m.project_id=s.project_id))",[],|row|row.get(0)).unwrap_or(0);
+    let pending:i64=conn.query_row("select exists(select 1 from authority_migration_sources s where not exists(select 1 from legacy_adjudication_migrations m where m.project_id=s.project_id and m.source_generation=s.source_generation and m.source_ledger_digest=s.source_ledger_digest))",[],|row|row.get(0)).unwrap_or(0);
     if pending == 1 {
         let tx = conn.unchecked_transaction()?;
         migrate_legacy_review_candidates(&tx)
             .context("pending schema-11 migration failed while normalizing legacy review state")?;
         let project = project_id(&tx)?;
-        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project]).context("pending schema-11 migration failed while recording completion")?;
+        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select s.project_id,s.source_ledger_digest,s.source_generation,current_timestamp from authority_migration_sources s where s.project_id=?1 and not exists(select 1 from legacy_adjudication_migrations m where m.project_id=s.project_id and m.source_generation=s.source_generation)",params![project]).context("pending schema-11 migration failed while recording completion")?;
         tx.commit()
             .context("pending schema-11 migration failed while committing")?;
     }
     Ok(())
 }
 
-pub(crate) fn open_authority_migration_project(root: &Path) -> Result<Connection> {
-    let ledger_path = default_ledger_path(root);
-    if !ledger_path.exists() {
-        bail!("project is not initialized; run agent-workbench init");
+fn validate_schema12_owner_decisions(conn: &Connection, project: i64) -> Result<()> {
+    for (table, target_column, target_table) in [
+        (
+            "review_adjudication_decisions",
+            "review_run_id",
+            "review_runs",
+        ),
+        ("finding_disposition_decisions", "finding_id", "findings"),
+        (
+            "verification_adjudication_decisions",
+            "closure_attempt_id",
+            "closure_attempts",
+        ),
+    ] {
+        let missing_target: Option<String> = conn
+            .query_row(
+                &format!(
+                    "select d.id||':'||d.{target_column} from {table} d left join {target_table} t on t.id=d.{target_column} where d.project_id=?1 and (t.id is null or t.project_id!=d.project_id) order by d.id limit 1"
+                ),
+                params![project],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rows) = missing_target {
+            bail!("schema-12 decision contradiction: {table} missing target rows {rows}");
+        }
+        let contradiction: Option<String> = conn
+            .query_row(
+                &format!(
+                    "select cast({target_column} as text)||':'||group_concat(id,',')
+                     from {table} d
+                     where project_id=?1 and not exists(select 1 from {table} n where n.predecessor_id=d.id)
+                     group by {target_column} having count(*)>1 order by {target_column} limit 1"
+                ),
+                params![project],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rows) = contradiction {
+            bail!("schema-12 decision contradiction: {table} current heads {rows}");
+        }
+        let broken_link: Option<String> = conn
+            .query_row(
+                &format!(
+                    "select d.id||':'||d.predecessor_id
+                     from {table} d left join {table} p on p.id=d.predecessor_id
+                     where d.project_id=?1 and d.predecessor_id is not null
+                       and (p.id is null or p.project_id!=d.project_id or p.{target_column}!=d.{target_column})
+                     order by d.id limit 1"
+                ),
+                params![project],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rows) = broken_link {
+            bail!("schema-12 decision contradiction: {table} predecessor rows {rows}");
+        }
+        let row_count: i64 = conn.query_row(
+            &format!("select count(*) from {table} where project_id=?1"),
+            params![project],
+            |row| row.get(0),
+        )?;
+        let cycle: Option<i64> = conn
+            .query_row(
+                &format!(
+                    "with recursive chain(start,current,next,depth) as (
+                         select id,id,predecessor_id,0 from {table} where project_id=?1
+                         union all
+                         select chain.start,p.id,p.predecessor_id,chain.depth+1
+                         from chain join {table} p on p.id=chain.next
+                         where chain.next is not null and chain.depth<=?2
+                     ) select start from chain where next=start limit 1"
+                ),
+                params![project, row_count],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(row) = cycle {
+            bail!("schema-12 decision contradiction: {table} predecessor cycle at row {row}");
+        }
     }
-    let conn = open_ledger(&ledger_path)?;
-    let source_generation = conn
-        .query_row(
-            "select coalesce(max(version),0) from schema_migrations",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0);
-    if source_generation == 11 {
-        let tx = conn.unchecked_transaction()?;
-        let project = project_id(&tx)?;
-        let digest =
-            super::adjudication_migration::legacy_source_digest(&tx, project, source_generation)?;
-        migrate(&tx)?;
-        tx.execute("insert or ignore into authority_migration_sources(project_id,source_ledger_digest,source_generation,created_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation])?;
-        tx.commit()?;
-    } else {
-        migrate(&conn)?;
+
+    let decisions = conn
+        .prepare(
+            "select id,decision_family,action,target_ref,decision_value from owner_decisions where project_id=?1 order by id",
+        )?
+        .query_map(params![project], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, family, action, target, value) in decisions {
+        let count: i64 = match (family.as_str(), action.as_str()) {
+            ("review", "adjudicate") => conn.query_row(
+                "select count(*) from review_adjudication_decisions where project_id=?1 and owner_decision_id=?2 and value=?3 and ?4='review_run:'||review_run_id",
+                params![project,id,value,target], |row| row.get(0))?,
+            ("review", "correct_terminal") => conn.query_row(
+                "select count(*) from review_correction_events e join owner_decisions historical on historical.id=e.historical_owner_decision_id where e.project_id=?1 and e.owner_decision_id=?2 and e.outcome=?3 and ?4='review_correction:'||historical.decision_handle||':'||e.boundary_handle",
+                params![project,id,value,target], |row| row.get(0))?,
+            ("finding", "adjudicate" | "dispose") => conn.query_row(
+                "select count(*) from finding_disposition_decisions where project_id=?1 and owner_decision_id=?2 and value=?3 and ?4='finding:'||finding_id",
+                params![project,id,value,target], |row| row.get(0))?,
+            ("finding", "reopen") => conn.query_row(
+                "select count(*) from finding_decision_epochs e join finding_decision_epochs prior on prior.project_id=e.project_id and prior.finding_id=e.finding_id and prior.epoch_number=e.epoch_number-1 and prior.status='terminal' and prior.terminal_decision_id is not null where e.project_id=?1 and e.reopen_decision_id=?2 and ?3='finding_epoch:'||e.finding_id||':'||(e.epoch_number-1) and ?4='reopened'",
+                params![project,id,target,value], |row| row.get(0))?,
+            ("verification", "adjudicate") => conn.query_row(
+                "select count(*) from verification_adjudication_decisions where project_id=?1 and owner_decision_id=?2 and value=?3 and ?4='closure_attempt:'||closure_attempt_id",
+                params![project,id,value,target], |row| row.get(0))?,
+            _ => bail!("schema-12 decision contradiction: owner_decision {id} has unsupported mapping {family}/{action}"),
+        };
+        if count != 1 {
+            bail!(
+                "schema-12 decision contradiction: owner_decision {id} maps to {count} projections"
+            );
+        }
+        let foreign_projection_count: i64 = match (family.as_str(), action.as_str()) {
+            ("review", "adjudicate") => conn.query_row(
+                "select (select count(*) from finding_disposition_decisions where owner_decision_id=?1)+(select count(*) from verification_adjudication_decisions where owner_decision_id=?1)+(select count(*) from review_correction_events where owner_decision_id=?1)+(select count(*) from finding_decision_epochs where terminal_decision_id=?1 or reopen_decision_id=?1)",params![id],|row|row.get(0))?,
+            ("review", "correct_terminal") => conn.query_row(
+                "select (select count(*) from review_adjudication_decisions where owner_decision_id=?1)+(select count(*) from finding_disposition_decisions where owner_decision_id=?1)+(select count(*) from verification_adjudication_decisions where owner_decision_id=?1)+(select count(*) from finding_decision_epochs where terminal_decision_id=?1 or reopen_decision_id=?1)",params![id],|row|row.get(0))?,
+            ("finding", "adjudicate" | "dispose") => conn.query_row(
+                "select (select count(*) from review_adjudication_decisions where owner_decision_id=?1)+(select count(*) from verification_adjudication_decisions where owner_decision_id=?1)+(select count(*) from review_correction_events where owner_decision_id=?1)+(select count(*) from finding_decision_epochs where reopen_decision_id=?1)",params![id],|row|row.get(0))?,
+            ("finding", "reopen") => conn.query_row(
+                "select (select count(*) from review_adjudication_decisions where owner_decision_id=?1)+(select count(*) from finding_disposition_decisions where owner_decision_id=?1)+(select count(*) from verification_adjudication_decisions where owner_decision_id=?1)+(select count(*) from review_correction_events where owner_decision_id=?1)+(select count(*) from finding_decision_epochs where terminal_decision_id=?1)",params![id],|row|row.get(0))?,
+            ("verification", "adjudicate") => conn.query_row(
+                "select (select count(*) from review_adjudication_decisions where owner_decision_id=?1)+(select count(*) from finding_disposition_decisions where owner_decision_id=?1)+(select count(*) from review_correction_events where owner_decision_id=?1)+(select count(*) from finding_decision_epochs where terminal_decision_id=?1 or reopen_decision_id=?1)",params![id],|row|row.get(0))?,
+            _ => 0,
+        };
+        if foreign_projection_count != 0 {
+            bail!(
+                "schema-12 decision contradiction: owner_decision {id} has {foreign_projection_count} foreign projection rows"
+            );
+        }
     }
-    Ok(conn)
+    let finding_lifecycle: Option<String> = conn.query_row(
+        r#"select d.id||':'||f.id from finding_disposition_decisions d
+           join findings f on f.id=d.finding_id
+           where d.project_id=?1
+             and not exists(select 1 from finding_disposition_decisions n where n.predecessor_id=d.id)
+             and ((d.value in ('rejected','authority_disposed')
+                   and not exists(select 1 from finding_decision_epochs e where e.finding_id=f.id and e.terminal_decision_id=d.owner_decision_id))
+                  or (d.value not in ('rejected','authority_disposed')
+                      and exists(select 1 from finding_decision_epochs e where e.finding_id=f.id and e.terminal_decision_id=d.owner_decision_id)))
+           order by d.id limit 1"#,
+        params![project], |row| row.get(0)).optional()?;
+    if let Some(rows) = finding_lifecycle {
+        bail!("schema-12 decision/lifecycle contradiction: finding decision rows {rows}");
+    }
+    let verification_lifecycle: Option<String> = conn.query_row(
+        r#"select d.id||':'||a.id from verification_adjudication_decisions d
+           join closure_attempts a on a.id=d.closure_attempt_id
+           left join finding_verifications v on v.id=(select max(id) from finding_verifications where closure_attempt_id=a.id)
+           where d.project_id=?1
+             and not exists(select 1 from verification_adjudication_decisions n where n.predecessor_id=d.id)
+             and ((d.value='accepted' and (v.id is null or a.result is not v.result))
+                  or (d.value!='accepted' and a.result is not null))
+           order by d.id limit 1"#,
+        params![project], |row| row.get(0)).optional()?;
+    if let Some(rows) = verification_lifecycle {
+        bail!("schema-12 decision/lifecycle contradiction: verification decision rows {rows}");
+    }
+    Ok(())
 }
 
 pub(super) fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
@@ -133,31 +312,23 @@ pub(super) fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         return Ok(true);
     }
     if !table_exists(conn, "closure_attempts")?
-        || !table_exists(conn, "authority_principals")?
-        || !table_exists(conn, "authority_grant_epochs")?
-        || !table_exists(conn, "authority_bootstrap_journals")?
-        || !table_exists(conn, "review_provenance_records")?
         || !table_exists(conn, "review_adjudication_decisions")?
         || !table_exists(conn, "finding_disposition_decisions")?
         || !table_exists(conn, "verification_adjudication_decisions")?
         || !table_exists(conn, "finding_lifecycle_events")?
-        || !table_exists(conn, "decision_continuations")?
         || !table_exists(conn, "review_correction_events")?
         || !table_exists(conn, "review_boundary_snapshots")?
         || !table_exists(conn, "review_correction_recovery_obligations")?
         || !table_exists(conn, "finding_decision_epochs")?
-        || !table_exists(conn, "legacy_reviewer_bindings")?
         || !table_exists(conn, "legacy_claim_audits")?
+        || !table_exists(conn, "legacy_signed_review_effects")?
         || !table_exists(conn, "legacy_finding_audits")?
         || !table_exists(conn, "legacy_migration_candidates")?
         || !table_exists(conn, "legacy_migration_candidate_members")?
         || !table_exists(conn, "legacy_migration_edges")?
         || !table_exists(conn, "legacy_migration_projections")?
-        || !table_exists(conn, "authority_bootstrap_targets")?
         || !table_exists(conn, "authority_migration_sources")?
         || !table_exists(conn, "legacy_adjudication_migrations")?
-        || !table_exists(conn, "owner_decision_grants")?
-        || !table_exists(conn, "decision_capabilities")?
         || !table_exists(conn, "owner_decisions")?
         || !table_exists(conn, "finding_remediation_bindings")?
         || !table_exists(conn, "finding_remediation_recovery_epochs")?
@@ -168,9 +339,6 @@ pub(super) fn ledger_needs_migration(conn: &Connection) -> Result<bool> {
         || !table_exists(conn, "correction_completion_inheritance_sources")?
         || !table_exists(conn, "correction_completion_inheritance_evidence")?
     {
-        return Ok(true);
-    }
-    if !table_has_column(conn, "authority_assertions", "envelope_cbor")? {
         return Ok(true);
     }
     let current_task_gates: bool = conn.query_row(
@@ -376,6 +544,8 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_review_correction_project_insert;
         drop trigger if exists trg_review_boundary_project_insert;
         drop trigger if exists trg_finding_epoch_project_insert;
+        drop trigger if exists trg_owner_decision_immutable_update;
+        drop trigger if exists trg_owner_decision_immutable_delete;
         drop view if exists valid_completion_inheritance_sources;
         "#,
     )?;
@@ -395,6 +565,8 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         .context("schema migration failed while preparing phase review targets")?;
     execute_schema_batches(conn)
         .context("schema migration failed while installing schema batches")?;
+    preserve_signed_review_effects(conn)
+        .context("schema migration failed while preserving accepted review history")?;
     ensure_column(
         conn,
         "legacy_migration_candidates",
@@ -670,19 +842,18 @@ fn migrate_legacy_review_candidates(conn: &Connection) -> Result<()> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
-    let mut targets = Vec::new();
     for (
         run,
         clean,
         count,
         status,
         target,
-        work,
+        _work,
         _work_status,
         _design_status,
-        run_type,
+        _run_type,
         plan_id,
-        design_context,
+        _design_context,
     ) in rows
     {
         let already_migrated: i64 = conn.query_row(
@@ -693,26 +864,28 @@ fn migrate_legacy_review_candidates(conn: &Connection) -> Result<()> {
         if already_migrated == 1 {
             continue;
         }
-        let mut principals=conn.prepare("select distinct reviewer_principal_id from review_agent_invocations where project_id=?1 and review_run_id=?2 and reviewer_principal_id is not null and review_provenance_id is not null")?.query_map(params![project,run],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let reviewer_digests=conn.prepare("select distinct lower(legacy_source_reviewer_digest) from review_agent_invocations where project_id=?1 and review_run_id=?2 and length(legacy_source_reviewer_digest)=64")?.query_map(params![project,run],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        for reviewer_digest in reviewer_digests {
-            let bound=conn.prepare("select distinct b.principal_id from legacy_reviewer_bindings b join authority_migration_sources s on s.project_id=b.project_id and s.source_ledger_digest=b.source_ledger_digest and s.source_generation=b.source_generation where b.project_id=?1 and b.source_generation=11 and b.source_reviewer_digest=?2")?.query_map(params![project,reviewer_digest],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            principals.extend(bound);
-        }
-        principals.sort_unstable();
-        principals.dedup();
-        let resolution = match principals.as_slice() {
-            [] => "unbound",
-            [_] => "trusted",
-            _ => "ambiguous",
+        let trusted_provenance: i64 = conn.query_row(
+            r#"select exists(
+                   select 1 from review_runs r
+                   where r.project_id=?1 and r.id=?2
+                     and trim(coalesce(r.review_provenance_ref,''))!=''
+                     and (
+                       r.review_provenance='human_review'
+                       or (r.review_provenance='external_agent' and exists(
+                         select 1 from review_agent_invocations i
+                         where i.project_id=r.project_id and i.review_run_id=r.id
+                           and trim(coalesce(i.external_agent_id,''))!=''
+                       ))
+                     )
+               )"#,
+            params![project, run],
+            |row| row.get(0),
+        )?;
+        let resolution = if trusted_provenance == 1 {
+            "trusted"
+        } else {
+            "unbound"
         };
-        if let [principal] = principals.as_slice() {
-            let updated=conn.execute("update review_agent_invocations set reviewer_principal_id=?1,claim=case when claim is null then case when ?2=1 then 'clean' when ?3>0 then 'findings' else 'inconclusive' end else claim end,target_context=coalesce(target_context,?4),purpose=coalesce(purpose,'new_unbiased_review') where project_id=?5 and review_run_id=?6 and reviewer_principal_id is null",params![principal,clean,count,target,project,run])?;
-            let exists:i64=conn.query_row("select exists(select 1 from review_agent_invocations where project_id=?1 and review_run_id=?2 and reviewer_principal_id=?3)",params![project,run,principal],|row|row.get(0))?;
-            if updated == 0 && exists == 0 {
-                conn.execute("insert into review_agent_invocations(project_id,review_plan_id,review_run_id,reviewer_principal_id,target_context,purpose,claim,run_type,agent_label,status,finished_at) values(?1,?2,?3,?4,?5,'new_unbiased_review',case when ?6=1 then 'clean' when ?7>0 then 'findings' else 'inconclusive' end,?8,'schema-11-migration','completed',current_timestamp)",params![project,plan_id,run,principal,target,clean,count,run_type])?;
-            }
-        }
         let findings: i64 = conn.query_row(
             "select count(*) from findings where project_id=?1 and review_run_id=?2",
             params![project, run],
@@ -772,87 +945,95 @@ fn migrate_legacy_review_candidates(conn: &Connection) -> Result<()> {
                 params![if resolution == "trusted" { "blocked" } else { "open" }, project, plan_id],
             )?;
         }
-        if let ("trusted", 1, Some(boundary)) = (resolution, clean, consumed_boundary) {
-            let prior_adjudication: i64 = conn.query_row("select exists(select 1 from review_adjudication_decisions where project_id=?1 and review_run_id=?2)",params![project,run],|row|row.get(0))?;
-            if prior_adjudication == 1 {
-                continue;
-            }
-            let owner = format!("work_unit:{work}");
-            let claim = format!("review_run:{run}");
-            let context = if design_context.len() == 64 {
-                design_context
-            } else {
-                domain_digest(
-                    b"agent-workbench:legacy-context-v1\0",
-                    &CanonicalValue::string(&target),
-                )
-            };
-            targets.push((owner, boundary, claim, context));
-        }
     }
     super::adjudication_migration::record_candidate_projections(conn, project)?;
-    let existing: i64 = conn.query_row(
-        "select count(*) from authority_grant_epochs where project_id=?1",
-        params![project],
-        |row| row.get(0),
-    )?;
-    if !targets.is_empty() && existing == 0 {
-        targets.sort();
-        let encoded_targets = CanonicalValue::Array(
-            targets
-                .iter()
-                .map(|(o, b, c, x)| {
-                    CanonicalValue::object([
-                        ("owner", CanonicalValue::string(o)),
-                        ("boundary", CanonicalValue::string(b)),
-                        ("claim", CanonicalValue::string(c)),
-                        ("context", CanonicalValue::string(x)),
-                    ])
-                })
-                .collect(),
-        );
-        let (source_digest,source_generation):(String,i64)=conn.query_row("select source_ledger_digest,source_generation from authority_migration_sources where project_id=?1",params![project],|row|Ok((row.get(0)?,row.get(1)?)))?;
-        let bindings=conn.prepare("select binding_handle||':'||payload_digest from legacy_reviewer_bindings where project_id=?1 order by binding_handle")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let resolutions=conn.prepare("select content_digest||':'||reviewer_resolution from legacy_claim_audits where project_id=?1 order by content_digest")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let owners = conn
-            .prepare("select id||':'||status from work_units where project_id=?1 order by id")?
-            .query_map(params![project], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let projections=conn.prepare("select c.content_digest||':'||p.stratum||':'||p.mapping_row||':'||p.after_lifecycle from legacy_migration_projections p join legacy_migration_candidates c on c.id=p.candidate_id where p.project_id=?1 order by c.content_digest,p.stratum")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let adjudications=conn.prepare("select decision_handle||':'||decision_value from owner_decisions where project_id=?1 order by decision_handle")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let corrections=conn.prepare("select snapshot_handle||':'||status||':'||coalesce(invalidated_at,'') from review_boundary_snapshots where project_id=?1 order by snapshot_handle")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let prior_epochs=conn.prepare("select epoch_digest||':'||status from authority_grant_epochs where project_id=?1 order by epoch_digest")?.query_map(params![project],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let strings = |values: Vec<String>| {
-            CanonicalValue::Array(values.into_iter().map(CanonicalValue::String).collect())
+    Ok(())
+}
+
+fn preserve_signed_review_effects(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "owner_decisions")?
+        || !table_exists(conn, "review_adjudication_decisions")?
+        || !table_exists(conn, "legacy_claim_audits")?
+    {
+        return Ok(());
+    }
+    let rows = conn
+        .prepare(
+            r#"select r.project_id,r.id,o.id,r.target_ref,p.stage,p.review_type,p.design_version_id,p.work_unit_id,
+                      coalesce(v.status,''),coalesce(w.status,'')
+               from review_runs r
+               join review_plans p on p.id=r.review_plan_id
+               join work_units w on w.id=p.work_unit_id
+               left join design_versions v on v.id=p.design_version_id
+               join review_adjudication_decisions d on d.project_id=r.project_id and d.review_run_id=r.id
+               join owner_decisions o on o.id=d.owner_decision_id
+               where r.status='completed' and p.status='clean' and d.value='accepted'
+                 and o.capability_id is not null and o.principal_id is not null
+                 and not exists(select 1 from review_adjudication_decisions n where n.predecessor_id=d.id)
+               order by r.project_id,r.id"#,
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (
+        project,
+        run,
+        owner_decision,
+        target,
+        stage,
+        review_type,
+        design,
+        work,
+        design_status,
+        work_status,
+    ) in rows
+    {
+        let context_kind = match (stage.as_str(), review_type.as_str()) {
+            ("design-ready", "design_review") => Some("design-review"),
+            ("implementation-ready", "design_task_decomposition") => {
+                Some("design-task-decomposition")
+            }
+            ("close-ready", "design_implementation_diff") => Some("design-implementation-diff"),
+            ("close-ready", "implementation_review") => Some("implementation-review"),
+            _ => None,
         };
-        let snapshot = CanonicalValue::object([
-            ("source_digest", CanonicalValue::string(&source_digest)),
-            (
-                "source_generation",
-                CanonicalValue::Integer(source_generation),
-            ),
-            ("bindings", strings(bindings)),
-            ("reviewer_resolutions", strings(resolutions)),
-            ("owners", strings(owners)),
-            ("plan_gate_projections", strings(projections)),
-            ("adjudications", strings(adjudications)),
-            ("corrections", strings(corrections)),
-            ("prior_epochs", strings(prior_epochs)),
-            ("targets", encoded_targets),
-        ]);
-        let epoch_digest = domain_digest(b"agent-workbench:bootstrap-epoch-v2\0", &snapshot);
-        let trust = conn.query_row(
-            "select coalesce(min(a.trust_digest),?1) from authority_assertions a",
-            params!["00".repeat(32)],
-            |row| row.get::<_, String>(0),
-        )?;
-        conn.execute("insert into authority_grant_epochs(project_id,epoch_digest,trust_digest,status,created_at) values(?1,?2,?3,'open',current_timestamp)",params![project,epoch_digest,trust])?;
-        let epoch = conn.last_insert_rowid();
-        for (owner, boundary, claim, context) in targets {
-            let handle =
-                format!("bootstrap_target:{project}:{epoch}:{owner}:{boundary}:{claim}:{context}");
-            conn.execute("insert into authority_bootstrap_targets(project_id,epoch_id,target_handle,owner_ref,boundary_handle,claim_handle,context_digest,status,created_at) values(?1,?2,?3,?4,?5,?6,?7,'pending',current_timestamp)",params![project,epoch,handle,owner,boundary,claim,context])?;
+        let current_target = if let (Some(kind), Some(design)) = (context_kind, design) {
+            design_status == "approved"
+                && target.as_deref()
+                    == Some(review_context_ref(kind, Some(design), Some(work)).as_str())
+        } else {
+            matches!(work_status.as_str(), "open" | "blocked")
+                && target.as_deref() == Some(format!("work_unit:{work}").as_str())
+        };
+        if !current_target {
+            continue;
         }
+        let digest = domain_digest(
+            b"agent-workbench:preserved-signed-review-effect-v1\0",
+            &CanonicalValue::object([
+                ("project", CanonicalValue::Integer(project)),
+                ("run", CanonicalValue::Integer(run)),
+                ("owner_decision", CanonicalValue::Integer(owner_decision)),
+            ]),
+        );
+        conn.execute(
+            r#"insert or ignore into legacy_signed_review_effects(
+                   project_id,review_run_id,owner_decision_id,content_digest,created_at
+               ) values(?1,?2,?3,?4,current_timestamp)"#,
+            params![project, run, owner_decision, digest],
+        )?;
     }
     Ok(())
 }
@@ -924,6 +1105,40 @@ fn prepare_adjudication_for_schema(conn: &Connection) -> Result<()> {
             "text not null default 'open'",
         )?;
         ensure_column(conn, "findings", "close_reason", "text")?;
+    }
+    if table_exists(conn, "owner_decisions")? {
+        let capability_required: i64 = conn.query_row(
+            "select [notnull] from pragma_table_info('owner_decisions') where name='capability_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if capability_required == 1 {
+            conn.execute_batch(
+                r#"
+                create table owner_decisions_v13 (
+                    id integer primary key,
+                    project_id integer not null references projects(id) on delete cascade,
+                    decision_handle text not null,
+                    capability_id integer unique,
+                    principal_id integer,
+                    owner_ref text not null,
+                    target_ref text not null,
+                    decision_family text not null,
+                    action text not null,
+                    decision_value text not null,
+                    reason text not null,
+                    expected_current text not null,
+                    payload_digest text not null check(length(payload_digest)=64),
+                    created_at text not null,
+                    unique(project_id, decision_handle)
+                );
+                insert into owner_decisions_v13
+                select * from owner_decisions;
+                drop table owner_decisions;
+                alter table owner_decisions_v13 rename to owner_decisions;
+                "#,
+            )?;
+        }
     }
     Ok(())
 }

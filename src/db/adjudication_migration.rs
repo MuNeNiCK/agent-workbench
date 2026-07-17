@@ -25,6 +25,13 @@ pub(super) fn legacy_source_digest(
         "validation_runs",
         "acceptance_records",
         "authority_events",
+        "owner_decisions",
+        "review_adjudication_decisions",
+        "finding_disposition_decisions",
+        "verification_adjudication_decisions",
+        "review_correction_events",
+        "finding_decision_epochs",
+        "legacy_claim_audits",
         "design_versions",
     ] {
         if conn.query_row(
@@ -665,7 +672,7 @@ pub(super) fn record_candidate_projections(conn: &Connection, project: i64) -> R
                 } else if let Some(gate) = failed_gate {
                     format!("agent-workbench gate record --gate {gate} --help")
                 } else if let Some(plan) = unmet_plan {
-                    format!("agent-workbench review invocation request --plan {plan} --help")
+                    format!("agent-workbench review run add --plan {plan} --help")
                 } else {
                     "agent-workbench next".to_owned()
                 };

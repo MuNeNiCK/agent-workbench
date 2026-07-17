@@ -2,32 +2,12 @@ use clap::{ArgGroup, Args, Subcommand};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum MigrationCommand {
-    /// Bind a signed legacy reviewer identity for schema-11 migration.
-    Reviewer {
-        #[command(subcommand)]
-        command: MigrationReviewerCommand,
-    },
     /// Preserve task history across revisions and phases.
     #[command(name = "task-history")]
     TaskIdentity {
         #[command(subcommand)]
         command: TaskIdentityCommand,
     },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum MigrationReviewerCommand {
-    Bind(MigrationReviewerBindArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct MigrationReviewerBindArgs {
-    #[arg(long, value_parser = ["signed-envelope-v1"])]
-    pub(crate) provider: String,
-    #[arg(long)]
-    pub(crate) assertion: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Subcommand)]

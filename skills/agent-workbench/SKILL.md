@@ -61,13 +61,10 @@ Common command groups include:
 - `agent-workbench migration task-history audit`
 - `agent-workbench rules applicable --scope current`
 - `agent-workbench authority list`
-- `agent-workbench authority provider verify`
-- `agent-workbench authority assertion request`
-- `agent-workbench authority assertion assemble`
-- `agent-workbench authority assertion import`
-- `agent-workbench principal resolve`
-- `agent-workbench owner grant root-issue|delegate|revoke`
-- `agent-workbench decision capability issue`
+- `agent-workbench review run add`
+- `agent-workbench review adjudicate`
+- `agent-workbench finding decide`
+- `agent-workbench verification adjudicate`
 - `agent-workbench design init`
 - `agent-workbench design import`
 - `agent-workbench design refresh`
@@ -133,8 +130,6 @@ Common command groups include:
 - `agent-workbench review plan target add`
 - `agent-workbench review run add`
 - `agent-workbench review run list`
-- `agent-workbench review provenance issue`
-- `agent-workbench review invocation request|start|complete|fail|cancel`
 - `agent-workbench review adjudicate`
 - `agent-workbench finding add`
 - `agent-workbench finding classify`
@@ -256,11 +251,9 @@ from current managed project state.
   canonical task while preserving the phase's closed state; never create an
   open replacement phase for completed work. If the registered closure lacks these
   tokens, use authority-backed `closure supersede`; do not improvise commands.
-- After `closure ready`, generate `review-context finding-fix`, acquire trusted
-  reviewer provenance, and use the explicit invocation request/start/complete
-  lifecycle to record the independent verification claim. A different authorized
-  principal must then use a one-shot capability with `verification adjudicate`.
-  A resume review never replaces
+- After `closure ready`, generate `review-context finding-fix`, record the
+  independent verification claim with `review run add`, and record the owner's
+  separate decision with `verification adjudicate`. A resume review never replaces
   the later fresh unbiased completion review.
 - Use `agent-workbench rules applicable --scope current` before acting on a
   resumed or interrupted work unit.

@@ -5,9 +5,7 @@ mod correction_state;
 mod correction_transition;
 mod evaluation;
 mod findings;
-mod invocations;
 mod plans;
-mod result_stage;
 mod state;
 
 pub use adjudication::*;
@@ -16,10 +14,7 @@ pub(crate) use correction_contract::*;
 pub use correction_transition::*;
 pub use evaluation::*;
 pub use findings::*;
-pub(crate) use invocations::validate_invocation_plan_context;
-pub use invocations::*;
 pub use plans::*;
-pub use result_stage::*;
 pub use state::*;
 
 struct StoredReviewPlan {
@@ -273,7 +268,6 @@ pub struct ReviewPlanWaiverOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReviewRunOutcome {
     pub review_run_id: i64,
-    pub review_agent_invocation_id: i64,
     pub review_plan_id: i64,
     pub plan_status: String,
 }

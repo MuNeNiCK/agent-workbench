@@ -18,6 +18,367 @@ fn init_creates_ledger_and_project() {
 }
 
 #[test]
+fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migration() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "preserve accepted review", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "preserved-review",
+            review_type: "implementation_review",
+            max_fresh_agents: 2,
+            max_resume_agents: 0,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 1,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: false,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = crate::review::add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("accepted under schema 12 signing"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let stale_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: false,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let stale_run = crate::review::add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: stale_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("stale signed target"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(
+        "drop trigger if exists trg_review_run_target_update;
+         drop trigger if exists trg_review_run_plan_target_update;",
+    )
+    .unwrap();
+    conn.execute(
+        "update review_runs set target_ref='work_unit:999' where id=?1",
+        params![stale_run.review_run_id],
+    )
+    .unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger if exists trg_owner_decision_immutable_update;
+        drop trigger if exists trg_owner_decision_immutable_delete;
+        create table authority_principals(id integer primary key);
+        create table decision_capabilities(id integer primary key);
+        insert into authority_principals values(41);
+        insert into decision_capabilities values(42);
+        pragma legacy_alter_table=on;
+        alter table owner_decisions rename to owner_decisions_current;
+        pragma legacy_alter_table=off;
+        create table owner_decisions (
+            id integer primary key,
+            project_id integer not null references projects(id) on delete cascade,
+            decision_handle text not null,
+            capability_id integer not null unique references decision_capabilities(id),
+            principal_id integer not null references authority_principals(id),
+            owner_ref text not null,
+            target_ref text not null,
+            decision_family text not null,
+            action text not null,
+            decision_value text not null,
+            reason text not null,
+            expected_current text not null,
+            payload_digest text not null check(length(payload_digest)=64),
+            created_at text not null,
+            unique(project_id, decision_handle)
+        );
+        insert into owner_decisions
+        select * from owner_decisions_current;
+        drop table owner_decisions_current;
+        delete from schema_migrations where version=13;
+        insert into schema_migrations(version,applied_at) values(12,current_timestamp);
+        "#,
+    )
+    .unwrap();
+    conn.execute(
+        "insert into owner_decisions values(43,1,?1,42,41,?2,?3,'review','adjudicate','accepted','preserve signed history','pending',?4,current_timestamp)",
+        params![
+            "decision_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            format!("work_unit:{}", work.work_unit_id),
+            format!("review_run:{}", run.review_run_id),
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into review_adjudication_decisions(project_id,owner_decision_id,review_run_id,value,predecessor_id,created_at) values(1,43,?1,'accepted',null,current_timestamp)",
+        params![run.review_run_id],
+    )
+    .unwrap();
+    conn.execute("insert into decision_capabilities values(45)", [])
+        .unwrap();
+    conn.execute(
+        "insert into owner_decisions values(45,1,?1,45,41,?2,?3,'review','adjudicate','accepted','stale signed history','pending',?4,current_timestamp)",
+        params![
+            "decision_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            format!("work_unit:{}", work.work_unit_id),
+            format!("review_run:{}", stale_run.review_run_id),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into review_adjudication_decisions(project_id,owner_decision_id,review_run_id,value,predecessor_id,created_at) values(1,45,?1,'accepted',null,current_timestamp)",
+        params![stale_run.review_run_id],
+    )
+    .unwrap();
+    conn.execute("insert into decision_capabilities values(44)", [])
+        .unwrap();
+    conn.execute(
+        "insert into owner_decisions values(44,1,?1,44,41,?2,?3,'review','adjudicate','accepted','conflicting signed history','pending',?4,current_timestamp)",
+        params![
+            "decision_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            format!("work_unit:{}", work.work_unit_id),
+            format!("review_run:{}", run.review_run_id),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into review_adjudication_decisions(project_id,owner_decision_id,review_run_id,value,predecessor_id,created_at) values(1,44,?1,'accepted',null,current_timestamp)",
+        params![run.review_run_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update review_plans set status='clean' where id=?1",
+        params![plan.review_plan_id],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into legacy_claim_audits(project_id,review_run_id,candidate_kind,content_digest,reviewer_resolution,mapping_row,before_lifecycle,after_lifecycle,created_at) values(1,?1,'clean',?2,'unbound','completed_clean','completed','audit_only',current_timestamp)",
+        params![run.review_run_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into legacy_claim_audits(project_id,review_run_id,candidate_kind,content_digest,reviewer_resolution,mapping_row,before_lifecycle,after_lifecycle,created_at) values(1,?1,'clean',?2,'unbound','completed_clean','completed','audit_only',current_timestamp)",
+        params![stale_run.review_run_id, "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "drop trigger if exists trg_legacy_signed_review_effect_update;
+         drop trigger if exists trg_legacy_signed_review_effect_delete;
+         drop table legacy_signed_review_effects;
+         drop trigger if exists trg_schema_retirement_update;
+         drop trigger if exists trg_schema_retirement_delete;
+         drop table schema_retirement_records;",
+    )
+    .unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    drop(conn);
+
+    let contradiction = project_status(temp.path()).unwrap_err();
+    assert!(
+        contradiction
+            .to_string()
+            .contains("review_adjudication_decisions current heads"),
+        "{contradiction:#}"
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let rollback_state: (i64, i64, i64) = conn
+        .query_row(
+            "select (select max(version) from schema_migrations),(select count(*) from sqlite_schema where type='table' and name='schema_retirement_records'),(select count(*) from sqlite_schema where type='table' and name='legacy_signed_review_effects')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(rollback_state, (12, 0, 0));
+    conn.execute_batch(
+        "drop trigger if exists trg_review_adjudication_immutable_delete;
+         drop trigger if exists trg_owner_decision_immutable_delete;",
+    )
+    .unwrap();
+    conn.execute(
+        "delete from review_adjudication_decisions where owner_decision_id=44",
+        [],
+    )
+    .unwrap();
+    conn.execute("delete from owner_decisions where id=44", [])
+        .unwrap();
+    drop(conn);
+
+    let status = project_status(temp.path()).unwrap();
+    assert_eq!(status.schema_version, Some(13), "{status:?}");
+    assert_eq!(status.project_integrity.result, "clear");
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let preserved: (i64, i64, String, String) = conn
+        .query_row(
+            "select capability_id,principal_id,decision_value,reason from owner_decisions where id=43",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        preserved,
+        (42, 41, "accepted".into(), "preserve signed history".into())
+    );
+    let nullable: (i64, i64) = conn
+        .query_row(
+            "select (select [notnull] from pragma_table_info('owner_decisions') where name='capability_id'),(select [notnull] from pragma_table_info('owner_decisions') where name='principal_id')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(nullable, (0, 0));
+    let preserved_effect: String = conn
+        .query_row(
+            "select content_digest from legacy_signed_review_effects where review_run_id=?1",
+            params![run.review_run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved_effect.len(), 64);
+    let stale_effects: i64 = conn
+        .query_row(
+            "select count(*) from legacy_signed_review_effects where review_run_id=?1",
+            params![stale_run.review_run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale_effects, 0);
+    let original_audit: String = conn
+        .query_row(
+            "select reviewer_resolution from legacy_claim_audits where review_run_id=?1",
+            params![run.review_run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(original_audit, "unbound");
+    let retirement_journal: i64 = conn
+        .query_row(
+            "select count(*) from schema_retirement_records where source_generation=12",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retirement_journal, 1);
+    drop(conn);
+
+    let rejected = adjudicate_review(
+        temp.path(),
+        run.review_run_id,
+        AdjudicationInput {
+            decision: "rejected",
+            reason: "exercise preserved predecessor",
+            expected_current:
+                "decision_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        },
+    )
+    .unwrap();
+    adjudicate_review(
+        temp.path(),
+        run.review_run_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "restore preserved acceptance",
+            expected_current: &rejected.decision_handle,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let plan_status: String = conn
+        .query_row(
+            "select status from review_plans where id=?1",
+            params![plan.review_plan_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(plan_status, "clean");
+    drop(conn);
+    assert_eq!(
+        project_status(temp.path()).unwrap().schema_version,
+        Some(13)
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let exact_retry_counts: (i64, i64) = conn
+        .query_row(
+            "select (select count(*) from schema_retirement_records where source_generation=12),(select count(*) from legacy_signed_review_effects where review_run_id=?1)",
+            params![run.review_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(exact_retry_counts, (1, 1));
+    drop(conn);
+    if let Err(error) = plan_task_identity(temp.path(), None) {
+        assert!(
+            !error.to_string().contains("persisted families"),
+            "schema-12 inert audit tables must be accepted by the schema-13 profile: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn next_action_migrates_schema_before_querying_lifecycle_state() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

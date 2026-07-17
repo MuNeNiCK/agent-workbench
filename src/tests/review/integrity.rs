@@ -594,6 +594,19 @@ fn open_required_review_finding_blocks_next_action() {
         },
     )
     .unwrap();
+    adjudicate_verification(
+        temp.path(),
+        resume.review_run_id,
+        finding.finding_id,
+        noneligible_closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "accept verified design correction",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
     assert_eq!(
         list_findings(temp.path(), None).unwrap()[0].status,
         "closed"

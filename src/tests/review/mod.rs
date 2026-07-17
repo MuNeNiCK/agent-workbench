@@ -1,5 +1,6 @@
 use super::*;
 
+mod adjudication;
 mod integrity;
 mod policy;
 mod remediation;

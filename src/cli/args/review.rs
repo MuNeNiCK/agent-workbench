@@ -9,18 +9,6 @@ pub(crate) enum ReviewCommand {
         #[command(subcommand)]
         command: ReviewCorrectionCommand,
     },
-    Invocation {
-        #[command(subcommand)]
-        command: ReviewInvocationCommand,
-    },
-    Provenance {
-        #[command(subcommand)]
-        command: ReviewProvenanceCommand,
-    },
-    Result {
-        #[command(subcommand)]
-        command: ReviewResultCommand,
-    },
     Scope {
         #[command(subcommand)]
         command: ReviewScopeCommand,
@@ -55,80 +43,7 @@ pub(crate) struct ReviewCorrectionAddArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) capability: String,
-    #[arg(long)]
     pub(crate) expected_boundary_current: String,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ReviewResultCommand {
-    Stage(ReviewResultStageArgs),
-    FindingAdd(ReviewResultFindingAddArgs),
-    Complete(ReviewResultCompleteArgs),
-    Cancel(ReviewResultCancelArgs),
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewResultStageArgs {
-    #[arg(long)]
-    pub(crate) invocation: i64,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewResultFindingAddArgs {
-    pub(crate) stage_handle: String,
-    #[arg(long = "type")]
-    pub(crate) finding_type: String,
-    #[arg(long)]
-    pub(crate) severity: String,
-    #[arg(long)]
-    pub(crate) description: String,
-    #[arg(long)]
-    pub(crate) requirement: Option<i64>,
-    #[arg(long)]
-    pub(crate) task: Option<i64>,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewResultCompleteArgs {
-    pub(crate) stage_handle: String,
-    #[arg(long)]
-    pub(crate) claim: String,
-    #[arg(long)]
-    pub(crate) expected_findings: i64,
-    #[arg(long)]
-    pub(crate) summary: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) invocation_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewResultCancelArgs {
-    pub(crate) stage_handle: String,
-    #[arg(long)]
-    pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Args)]
@@ -139,102 +54,7 @@ pub(crate) struct ReviewAdjudicateArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) capability: String,
-    #[arg(long)]
     pub(crate) expected_current: String,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ReviewInvocationCommand {
-    Request(ReviewInvocationRequestArgs),
-    Start(ReviewInvocationStartArgs),
-    Complete(ReviewInvocationCompleteArgs),
-    Fail(ReviewInvocationEndArgs),
-    Cancel(ReviewInvocationEndArgs),
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewInvocationRequestArgs {
-    #[arg(long)]
-    pub(crate) plan: i64,
-    #[arg(long)]
-    pub(crate) target: String,
-    #[arg(long)]
-    pub(crate) reviewer: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-    #[arg(long)]
-    pub(crate) provenance: String,
-    #[arg(long)]
-    pub(crate) purpose: String,
-    #[arg(long)]
-    pub(crate) expected_plan_current: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewInvocationStartArgs {
-    pub(crate) invocation_id: i64,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewInvocationCompleteArgs {
-    pub(crate) invocation_id: i64,
-    #[arg(long)]
-    pub(crate) claim: Option<String>,
-    #[arg(long)]
-    pub(crate) verification_claim: Option<String>,
-    #[arg(long)]
-    pub(crate) attempt: Option<i64>,
-    #[arg(long)]
-    pub(crate) summary: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-#[derive(Debug, Args)]
-pub(crate) struct ReviewInvocationEndArgs {
-    pub(crate) invocation_id: i64,
-    #[arg(long)]
-    pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ReviewProvenanceCommand {
-    Issue(ReviewProvenanceIssueArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ReviewProvenanceIssueArgs {
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) assertion: String,
-    #[arg(long)]
-    pub(crate) plan: i64,
-    #[arg(long)]
-    pub(crate) target: String,
-    #[arg(long = "kind")]
-    pub(crate) provenance_kind: String,
-    #[arg(long = "purpose")]
-    pub(crate) review_purpose: String,
-    #[arg(long)]
-    pub(crate) reference_digest: String,
-    #[arg(long)]
-    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -398,10 +218,6 @@ pub(crate) struct ReviewRunAddArgs {
     pub(crate) provenance_ref: Option<String>,
     #[arg(long)]
     pub(crate) finding_result: Option<String>,
-    #[arg(long)]
-    pub(crate) reviewer: Option<String>,
-    #[arg(long)]
-    pub(crate) idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -430,10 +246,6 @@ pub(crate) struct FindingReopenArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) capability: String,
-    #[arg(long)]
     pub(crate) expected_current: String,
 }
 
@@ -444,10 +256,6 @@ pub(crate) struct FindingDecideArgs {
     pub(crate) decision: String,
     #[arg(long)]
     pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) capability: String,
     #[arg(long)]
     pub(crate) expected_current: String,
 }
@@ -470,10 +278,6 @@ pub(crate) struct VerificationAdjudicateArgs {
     pub(crate) decision: String,
     #[arg(long)]
     pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) principal: String,
-    #[arg(long)]
-    pub(crate) capability: String,
     #[arg(long)]
     pub(crate) expected_current: String,
 }

@@ -23,18 +23,29 @@ if grep -Eq 'contents:[[:space:]]*write|workflow_dispatch:|gh release (create|up
 fi
 
 for command in \
-  "authority assertion request" \
-  "authority assertion assemble" \
-  "owner grant" \
-  "principal resolve" \
-  "review provenance issue" \
-  "review invocation" \
+  "review run add" \
   "review adjudicate" \
   "finding decide" \
-  "verification adjudicate" \
-  "decision capability issue"
+  "finding verify" \
+  "verification adjudicate"
 do
   target/debug/agent-workbench $command --help >/dev/null
+done
+
+for retired in \
+  "authority assertion" \
+  "authority provider" \
+  "authority grant" \
+  "owner grant" \
+  "principal resolve" \
+  "review provenance" \
+  "review invocation" \
+  "decision capability"
+do
+  if target/debug/agent-workbench $retired --help >/dev/null 2>&1; then
+    echo "retired authority command remains public: $retired" >&2
+    exit 1
+  fi
 done
 
 echo "public contract: pass"

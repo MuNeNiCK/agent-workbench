@@ -32,10 +32,10 @@ printf '%s\n' agent-workbench/CLI_VERSION agent-workbench/LICENSE agent-workbenc
 while IFS= read -r member; do mkdir -p "$stage/skill/$(dirname "$member")"; if test "$member" = agent-workbench/LICENSE; then cp LICENSE "$stage/skill/$member"; else cp "skills/$member" "$stage/skill/$member"; fi; done < "$skill_members"
 
 docs_members="$stage/docs-members.txt"
-printf '%s\n' LICENSE README.md mkdocs.yml requirements.txt content/agent-skills.md content/concepts.md \
+printf '%s\n' CHANGELOG.md LICENSE README.md mkdocs.yml requirements.txt content/agent-skills.md content/concepts.md \
   content/design-packages.md content/index.md content/operations.md content/quick-start.md \
   content/reference.md content/workflows.md > "$docs_members"
-while IFS= read -r member; do mkdir -p "$stage/docs/$(dirname "$member")"; if test "$member" = LICENSE; then cp LICENSE "$stage/docs/$member"; else cp "docs/$member" "$stage/docs/$member"; fi; done < "$docs_members"
+while IFS= read -r member; do mkdir -p "$stage/docs/$(dirname "$member")"; if test "$member" = LICENSE || test "$member" = CHANGELOG.md; then cp "$member" "$stage/docs/$member"; else cp "docs/$member" "$stage/docs/$member"; fi; done < "$docs_members"
 
 archive() { directory="$1"; name="$2"; shift 2; tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -C "$directory" -cf - "$@" | gzip -n > "$out/$name"; }
 archive "$stage/binary" "agent-workbench-${tag}-linux-x86_64.tar.gz" agent-workbench

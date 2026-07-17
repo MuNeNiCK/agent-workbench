@@ -168,19 +168,6 @@ create table if not exists review_agent_invocations (
     project_id integer not null references projects(id) on delete cascade,
     review_plan_id integer references review_plans(id),
     review_run_id integer references review_runs(id),
-    invocation_handle text,
-    reviewer_principal_id integer references authority_principals(id),
-    review_provenance_id integer references review_provenance_records(id),
-    target_context text,
-    purpose text check(purpose is null or purpose in ('new_unbiased_review','finding_fix_verification')),
-    request_idempotency_key text,
-    request_payload_digest text,
-    transition_idempotency_key text,
-    claim text check(claim is null or claim in ('clean','findings','inconclusive')),
-    verification_claim text check(verification_claim is null or verification_claim in ('verified','not_fixed','needs_evidence')),
-    closure_attempt_id integer references closure_attempts(id),
-    result_summary text,
-    terminal_reason text,
     run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
     agent_label text,
     external_agent_id text,
@@ -188,83 +175,6 @@ create table if not exists review_agent_invocations (
     started_at text,
     finished_at text
 );
-
-create unique index if not exists idx_review_invocation_handle on review_agent_invocations(project_id,invocation_handle) where invocation_handle is not null;
-drop index if exists idx_review_invocation_request_key;
-create unique index if not exists idx_review_invocation_request_key on review_agent_invocations(project_id,review_plan_id,target_context,reviewer_principal_id,request_idempotency_key) where request_idempotency_key is not null;
-
-create table if not exists review_invocation_transition_audits (
-    id integer primary key,
-    project_id integer not null references projects(id) on delete cascade,
-    invocation_id integer not null references review_agent_invocations(id),
-    principal_id integer not null references authority_principals(id),
-    command text not null check(command in ('start','complete','fail','cancel')),
-    idempotency_key text not null,
-    payload_digest text not null check(length(payload_digest)=64),
-    resulting_state text not null check(resulting_state in ('running','completed','failed','cancelled')),
-    review_run_id integer references review_runs(id),
-    created_at text not null,
-    unique(project_id,command,invocation_id,principal_id,idempotency_key)
-);
-create trigger if not exists trg_invocation_transition_audit_immutable_update before update on review_invocation_transition_audits begin select raise(abort,'invocation transition audits are append-only'); end;
-create trigger if not exists trg_invocation_transition_audit_immutable_delete before delete on review_invocation_transition_audits begin select raise(abort,'invocation transition audits are append-only'); end;
-
-create table if not exists review_result_stages (
-    id integer primary key,
-    project_id integer not null references projects(id) on delete cascade,
-    stage_handle text not null,
-    invocation_id integer not null references review_agent_invocations(id),
-    reviewer_principal_id integer not null references authority_principals(id),
-    status text not null check(status in ('staging','completed','cancelled')),
-    version integer not null check(version>=0),
-    version_handle text not null,
-    create_idempotency_key text not null,
-    create_payload_digest text not null check(length(create_payload_digest)=64),
-    review_run_id integer references review_runs(id),
-    terminal_reason text,
-    created_at text not null,
-    completed_at text,
-    unique(project_id,stage_handle),
-    unique(project_id,invocation_id,reviewer_principal_id,create_idempotency_key)
-);
-create unique index if not exists idx_active_review_result_stage on review_result_stages(project_id,invocation_id) where status='staging';
-create table if not exists review_result_stage_items (
-    id integer primary key,
-    project_id integer not null references projects(id) on delete cascade,
-    stage_id integer not null references review_result_stages(id),
-    item_handle text not null,
-    item_version integer not null check(item_version>0),
-    finding_type text not null,
-    severity text not null,
-    description text not null,
-    design_requirement_id integer references design_requirements(id),
-    task_id integer references tasks(id),
-    created_at text not null,
-    unique(project_id,item_handle),
-    unique(stage_id,item_version)
-);
-create table if not exists review_result_stage_audits (
-    id integer primary key,
-    project_id integer not null references projects(id) on delete cascade,
-    stage_id integer not null references review_result_stages(id),
-    principal_id integer not null references authority_principals(id),
-    command text not null check(command in ('finding_add','complete','cancel')),
-    idempotency_key text not null,
-    payload_digest text not null check(length(payload_digest)=64),
-    result_handle text not null,
-    created_at text not null,
-    unique(project_id,stage_id,principal_id,command,idempotency_key)
-);
-create trigger if not exists trg_result_stage_item_immutable_update before update on review_result_stage_items begin select raise(abort,'review result stage items are append-only'); end;
-create trigger if not exists trg_result_stage_item_immutable_delete before delete on review_result_stage_items begin select raise(abort,'review result stage items are append-only'); end;
-create trigger if not exists trg_result_stage_audit_immutable_update before update on review_result_stage_audits begin select raise(abort,'review result stage audits are append-only'); end;
-create trigger if not exists trg_result_stage_audit_immutable_delete before delete on review_result_stage_audits begin select raise(abort,'review result stage audits are append-only'); end;
-
-create trigger if not exists trg_review_invocation_closed_transition
-before update of status on review_agent_invocations for each row
-when not ((old.status='requested' and new.status in ('running','completed','failed','cancelled'))
-       or (old.status='running' and new.status in ('completed','failed','cancelled')))
-begin select raise(abort,'review invocation transition is not allowed'); end;
 
 create table if not exists findings (
     id integer primary key,

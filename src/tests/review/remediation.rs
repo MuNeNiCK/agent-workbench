@@ -511,6 +511,84 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
         },
     )
     .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let advisory_state: (Option<String>, String, String) = conn
+        .query_row(
+            "select a.result,c.status,f.lifecycle_state from closure_attempts a join closures c on c.id=a.closure_id join findings f on f.id=c.finding_id where a.id=?1",
+            params![attempt.attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        advisory_state,
+        (
+            None,
+            "ready_for_verification".into(),
+            "awaiting_verification".into()
+        )
+    );
+    drop(conn);
+    let evidence = adjudicate_verification(
+        temp.path(),
+        failed_resume.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "needs_evidence",
+            reason: "request more evidence without applying the claim",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let still_advisory: (Option<String>, String) = conn
+        .query_row(
+            "select a.result,f.lifecycle_state from closure_attempts a join closures c on c.id=a.closure_id join findings f on f.id=c.finding_id where a.id=?1",
+            params![attempt.attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(still_advisory, (None, "awaiting_verification".into()));
+    drop(conn);
+    let accepted_input = AdjudicationInput {
+        decision: "accepted",
+        reason: "accept exact not-fixed claim",
+        expected_current: &evidence.decision_handle,
+    };
+    let accepted = adjudicate_verification(
+        temp.path(),
+        failed_resume.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        accepted_input.clone(),
+    )
+    .unwrap();
+    let retry = adjudicate_verification(
+        temp.path(),
+        failed_resume.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        accepted_input,
+    )
+    .unwrap();
+    assert_eq!(retry.decision_handle, accepted.decision_handle);
+    let stale = adjudicate_verification(
+        temp.path(),
+        failed_resume.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "rejected",
+            reason: "stale verification decision",
+            expected_current: "pending",
+        },
+    )
+    .unwrap_err();
+    assert!(stale.to_string().contains("expected_current_stale"));
     assert_eq!(list_findings(temp.path(), None).unwrap()[0].status, "open");
     assert!(matches!(
         next_action(temp.path()).unwrap(),
@@ -577,6 +655,29 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
             closure_id: closure.closure_id,
             result: "verified",
             notes: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let advisory_state: (Option<String>, String) = conn
+        .query_row(
+            "select a.result,f.lifecycle_state from closure_attempts a join closures c on c.id=a.closure_id join findings f on f.id=c.finding_id where a.id=?1",
+            params![retry_attempt.attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(advisory_state, (None, "awaiting_verification".into()));
+    drop(conn);
+    adjudicate_verification(
+        temp.path(),
+        verified_resume.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        retry_attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "accept exact verified claim",
+            expected_current: "pending",
         },
     )
     .unwrap();
@@ -739,6 +840,19 @@ fn zero_resume_quota_still_allows_exactly_one_required_attempt_review() {
             closure_id: closure.closure_id,
             result: "verified",
             notes: None,
+        },
+    )
+    .unwrap();
+    adjudicate_verification(
+        temp.path(),
+        verified.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "accept the exact verified attempt",
+            expected_current: "pending",
         },
     )
     .unwrap();

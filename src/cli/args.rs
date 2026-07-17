@@ -170,16 +170,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AuthorityCommand,
     },
-    /// Resolve trusted provider subjects into project-local principals.
-    Principal {
-        #[command(subcommand)]
-        command: PrincipalCommand,
-    },
-    /// Manage authenticated owner decision grants.
-    Owner {
-        #[command(subcommand)]
-        command: OwnerCommand,
-    },
     /// Manage KPT reviews.
     Kpt {
         #[command(subcommand)]

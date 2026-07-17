@@ -6,40 +6,12 @@ use rusqlite::{OptionalExtension, params};
 use crate::db::{open_existing_project, project_id};
 use crate::rules::{RuleBindingInput, insert_rule_binding, scope_type_for};
 
-mod capabilities;
-mod capability_validation;
 mod decision_projection_support;
-mod grants;
-mod ingress;
-mod provenance;
-mod safe_file;
-pub mod signed_envelope;
-mod trust_store;
+mod owner_decisions;
 
-pub use capabilities::{
-    CapabilityIssueRequest, CapabilityOutcome, DecisionContinuationApplyRequest,
-    DecisionContinuationOutcome, DecisionOutcome as OwnerDecisionOutcome,
-    DecisionRequest as OwnerDecisionRequest, apply_decision_continuation, issue_capability,
-    present_decision, show_decision_continuation,
+pub use owner_decisions::{
+    DecisionOutcome as OwnerDecisionOutcome, OwnerDecisionRequest, record_owner_decision,
 };
-pub use grants::{
-    DelegateGrantRequest, GrantOutcome, RootGrantRequest, delegate_grant, issue_root_grant,
-    revoke_grant, revoke_grant_as,
-};
-pub use ingress::{
-    AssertionImportOutcome, AssertionRequestOutcome, PrincipalResolutionOutcome,
-    assemble_assertion, create_assertion_request, import_assertion, resolve_principal,
-    verify_provider,
-};
-pub use provenance::{
-    LegacyReviewerBindingOutcome, LegacyReviewerBindingRequest, ReviewProvenanceIssueRequest,
-    ReviewProvenanceOutcome, bind_legacy_reviewer, issue_review_provenance,
-};
-pub use signed_envelope::{
-    CborValue, UnsignedEnvelopeRequest, closed_set, digest_reference, parse_hex,
-    parse_rfc3339_seconds, subject_value, target_value,
-};
-pub use trust_store::TRUST_STORE_PATH;
 
 pub fn add_authority_event(
     root: &Path,

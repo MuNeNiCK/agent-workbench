@@ -537,13 +537,11 @@ pub fn add_review_run_with_finding_result(
             invocation_status,
         ],
     )?;
-    let review_agent_invocation_id = tx.last_insert_rowid();
     let plan_status = evaluate_plan_status(&tx, project_id, plan.id, &policy)?;
     tx.commit()?;
 
     Ok(ReviewRunOutcome {
         review_run_id,
-        review_agent_invocation_id,
         review_plan_id: plan.id,
         plan_status,
     })

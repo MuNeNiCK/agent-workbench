@@ -25,45 +25,20 @@ fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
 }
 
 #[test]
-fn authority_invocation_and_adjudication_have_recursive_help() {
+fn review_and_owner_decisions_have_simple_help() {
     let temp = tempfile::tempdir().unwrap();
     for (path, needles) in [
         (
-            &["authority", "assertion", "request", "--help"][..],
-            &[
-                "root-grant",
-                "capability-issue",
-                "grant-delegate",
-                "grant-revoke",
-                "review-provenance",
-                "legacy-reviewer-binding",
-            ][..],
-        ),
-        (
-            &["owner", "grant", "--help"][..],
-            &["root-issue", "delegate", "revoke"][..],
-        ),
-        (
-            &["review", "invocation", "--help"][..],
-            &["request", "start", "complete", "fail", "cancel"][..],
+            &["review", "run", "add", "--help"][..],
+            &["--plan", "--type", "--purpose", "--provenance-ref"][..],
         ),
         (
             &["review", "adjudicate", "--help"][..],
-            &[
-                "--decision",
-                "--principal",
-                "--capability",
-                "--expected-current",
-            ][..],
+            &["--decision", "--reason", "--expected-current"][..],
         ),
         (
             &["finding", "decide", "--help"][..],
-            &[
-                "--decision",
-                "--principal",
-                "--capability",
-                "--expected-current",
-            ][..],
+            &["--decision", "--reason", "--expected-current"][..],
         ),
         (
             &["verification", "adjudicate", "--help"][..],
@@ -74,6 +49,16 @@ fn authority_invocation_and_adjudication_have_recursive_help() {
         for needle in needles {
             assert!(output.contains(needle), "{path:?} missing {needle}");
         }
+        assert!(!output.contains("--principal"));
+        assert!(!output.contains("--capability"));
+    }
+    for retired in [
+        &["authority", "assertion", "--help"][..],
+        &["owner", "grant", "--help"][..],
+        &["principal", "resolve", "--help"][..],
+        &["review", "invocation", "--help"][..],
+    ] {
+        assert!(!aw(temp.path(), retired).status.success());
     }
 }
 

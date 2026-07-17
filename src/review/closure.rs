@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::db::{current_phase_blocker, open_existing_project, project_id};
 
-use super::{correction_contract::*, evaluation::*, *};
+use super::{correction_contract::*, *};
 
 pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureReadyOutcome> {
     require_text(
@@ -271,6 +271,19 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
     tx.execute(
         "update closures set status = 'ready_for_verification' where id = ?1",
         params![input.closure_id],
+    )?;
+    let prior_lifecycle: String = tx.query_row(
+        "select lifecycle_state from findings where project_id=?1 and id=?2",
+        params![project_id, finding_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "update findings set lifecycle_state='awaiting_verification' where project_id=?1 and id=?2",
+        params![project_id, finding_id],
+    )?;
+    tx.execute(
+        "insert into finding_lifecycle_events(project_id,finding_id,owner_decision_id,from_state,to_state,effect,created_at) values(?1,?2,null,?3,'awaiting_verification','closure_ready',current_timestamp)",
+        params![project_id, finding_id, prior_lifecycle],
     )?;
     if let Some(session_id) = correction_session_id {
         tx.execute(
@@ -735,38 +748,6 @@ pub fn add_finding_verification(
         ],
     )?;
     let finding_verification_id = tx.last_insert_rowid();
-    tx.execute(
-        "update closure_attempts set result = ?1, resolved_at = current_timestamp where id = ?2",
-        params![input.result, attempt_id],
-    )?;
-    if input.result == "verified" {
-        tx.execute(
-            "update findings set status = 'closed' where id = ?1 and project_id = ?2",
-            params![input.finding_id, project_id],
-        )?;
-        tx.execute(
-            "update closures set status = 'verified' where id = ?1",
-            params![input.closure_id],
-        )?;
-    } else {
-        tx.execute(
-            "update closures set status = 'registered' where id = ?1",
-            params![input.closure_id],
-        )?;
-        tx.execute(
-            "update correction_sessions set status = 'active', completed_at = null where id = (select max(id) from correction_sessions where closure_id = ?1 and status = 'completed')",
-            params![input.closure_id],
-        )?;
-    }
-    let fresh_watermark: i64 =
-        tx.query_row("select coalesce(max(id), 0) from review_runs", [], |row| {
-            row.get(0)
-        })?;
-    tx.execute(
-        "update review_plans set fresh_review_after_run_id = ?1 where id = (select review_plan_id from review_runs where id = ?2)",
-        params![fresh_watermark, input.review_run_id],
-    )?;
-    refresh_plan_for_run(&tx, project_id, input.review_run_id)?;
     tx.commit()?;
     Ok(FindingVerificationOutcome {
         finding_verification_id,

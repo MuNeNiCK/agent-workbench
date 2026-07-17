@@ -1,4 +1,4 @@
-use crate::authority::{OwnerDecisionOutcome, OwnerDecisionRequest, present_decision};
+use crate::authority::{OwnerDecisionOutcome, OwnerDecisionRequest, record_owner_decision};
 use crate::db::{open_existing_project, project_id};
 use anyhow::{Context, Result, bail};
 use rusqlite::params;
@@ -8,8 +8,6 @@ use std::path::Path;
 pub struct AdjudicationInput<'a> {
     pub decision: &'a str,
     pub reason: &'a str,
-    pub principal: &'a str,
-    pub capability: &'a str,
     pub expected_current: &'a str,
 }
 
@@ -24,12 +22,10 @@ pub fn adjudicate_review(
     let conn = open_existing_project(root)?;
     let project = project_id(&conn)?;
     let owner:i64=conn.query_row("select p.work_unit_id from review_runs r join review_plans p on p.id=r.review_plan_id where r.project_id=?1 and r.id=?2 and r.status='completed'",params![project,run_id],|row|row.get(0)).context("review claim not found")?;
-    present_decision(
+    record_owner_decision(
         root,
         OwnerDecisionRequest {
             command_kind: "review adjudicate",
-            principal_handle: input.principal,
-            capability_handle: input.capability,
             owner_ref: &format!("work_unit:{owner}"),
             target_ref: &format!("review_run:{run_id}"),
             decision_family: "review",
@@ -57,12 +53,10 @@ pub fn correct_terminal_review(
         params![project, decision],
         |row| row.get(0),
     ).context("historical review decision not found")?;
-    present_decision(
+    record_owner_decision(
         root,
         OwnerDecisionRequest {
             command_kind: "review correction add",
-            principal_handle: input.principal,
-            capability_handle: input.capability,
             owner_ref: &format!("work_unit:{owner}"),
             target_ref: &format!("review_correction:{decision}:{boundary}"),
             decision_family: "review",
@@ -83,12 +77,10 @@ pub fn reopen_finding_epoch(
     let conn = open_existing_project(root)?;
     let project = project_id(&conn)?;
     let owner:i64=conn.query_row("select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2 and f.lifecycle_state='closed'",params![project,finding],|row|row.get(0)).context("terminal finding not found")?;
-    present_decision(
+    record_owner_decision(
         root,
         OwnerDecisionRequest {
             command_kind: "finding reopen",
-            principal_handle: input.principal,
-            capability_handle: input.capability,
             owner_ref: &format!("work_unit:{owner}"),
             target_ref: &format!("finding_epoch:{finding}:{epoch}"),
             decision_family: "finding",
@@ -118,12 +110,10 @@ pub fn decide_finding(
     let conn = open_existing_project(root)?;
     let project = project_id(&conn)?;
     let owner:i64=conn.query_row("select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2",params![project,finding_id],|row|row.get(0)).context("finding not found")?;
-    present_decision(
+    record_owner_decision(
         root,
         OwnerDecisionRequest {
             command_kind: "finding decide",
-            principal_handle: input.principal,
-            capability_handle: input.capability,
             owner_ref: &format!("work_unit:{owner}"),
             target_ref: &format!("finding:{finding_id}"),
             decision_family: "finding",
@@ -152,12 +142,10 @@ pub fn adjudicate_verification(
     let conn = open_existing_project(root)?;
     let project = project_id(&conn)?;
     let owner:i64=conn.query_row("select p.work_unit_id from review_runs r join review_plans p on p.id=r.review_plan_id join finding_verifications v on v.review_run_id=r.id join closure_attempts a on a.id=?5 and a.closure_id=?4 where r.project_id=?1 and r.id=?2 and v.finding_id=?3 and v.closure_id=?4",params![project,run,finding,closure,attempt],|row|row.get(0)).context("verification context does not bind one run/finding/closure/attempt")?;
-    present_decision(
+    record_owner_decision(
         root,
         OwnerDecisionRequest {
             command_kind: "verification adjudicate",
-            principal_handle: input.principal,
-            capability_handle: input.capability,
             owner_ref: &format!("work_unit:{owner}"),
             target_ref: &format!("closure_attempt:{attempt}"),
             decision_family: "verification",

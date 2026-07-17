@@ -1,13 +1,12 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use super::capabilities::DecisionRequest;
-use super::signed_envelope::parse_hex;
+use super::owner_decisions::OwnerDecisionRequest;
 
 pub(super) fn expected_current_for_target(
     conn: &rusqlite::Connection,
     project: i64,
-    request: &DecisionRequest<'_>,
+    request: &OwnerDecisionRequest<'_>,
 ) -> Result<Option<String>> {
     if request.action == "correct_terminal" {
         let (historical, boundary) = parse_review_correction_target(request.target_ref)?;
@@ -17,18 +16,7 @@ pub(super) fn expected_current_for_target(
         let (finding, epoch) = parse_finding_epoch_target(request.target_ref)?;
         return conn.query_row("select od.decision_handle from finding_decision_epochs e join owner_decisions od on od.id=e.terminal_decision_id where e.project_id=?1 and e.finding_id=?2 and e.epoch_number=?3 and e.status='terminal'",params![project,finding,epoch],|row|row.get(0)).optional().map_err(Into::into);
     }
-    if request.action == "bootstrap_adjudicate" {
-        return Ok(None);
-    }
     conn.query_row("select decision_handle from owner_decisions where project_id=?1 and owner_ref=?2 and target_ref=?3 and decision_family=?4 order by id desc limit 1",params![project,request.owner_ref,request.target_ref,request.decision_family],|row|row.get(0)).optional().map_err(Into::into)
-}
-
-pub(super) fn handle_digest(value: &str) -> Result<[u8; 32]> {
-    let suffix = value
-        .rsplit('_')
-        .next()
-        .context("expected current handle has no digest")?;
-    parse_hex::<32>(suffix, "expected current")
 }
 
 pub(super) fn parse_review_correction_target(target: &str) -> Result<(&str, &str)> {
@@ -56,7 +44,7 @@ pub(super) fn apply_review_correction(
     conn: &rusqlite::Connection,
     project: i64,
     owner_decision_id: i64,
-    request: &DecisionRequest<'_>,
+    request: &OwnerDecisionRequest<'_>,
 ) -> Result<()> {
     if !matches!(
         request.decision_value,
@@ -95,9 +83,6 @@ pub(super) fn apply_review_correction(
             conn.execute("insert into work_unit_events(work_unit_id,work_unit_activation_id,event_type,reason,status_domain,previous_status,next_status,created_at) values(?1,?2,'invalidated',?3,'activation',?4,'suspended',current_timestamp)",params![work,activation,format!("terminal review correction at {boundary}"),status])?;
         }
     }
-    conn.execute("update decision_capabilities set status='revoked' where project_id=?1 and status='active' and (owner_ref=?2 or target_ref in(select 'review_run:'||id from review_runs where project_id=?1 and review_plan_id=?3))",params![project,owner,plan_id])?;
-    conn.execute("update authority_bootstrap_targets set status='retired',resolved_at=current_timestamp where project_id=?1 and boundary_handle=?2 and status in ('pending','satisfied')",params![project,boundary])?;
-    conn.execute("update decision_capabilities set status='revoked' where project_id=?1 and status='active' and target_ref in(select target_handle from authority_bootstrap_targets where project_id=?1 and boundary_handle=?2)",params![project,boundary])?;
     Ok(())
 }
 
@@ -105,7 +90,7 @@ pub(super) fn apply_finding_reopen(
     conn: &rusqlite::Connection,
     project: i64,
     owner_decision_id: i64,
-    request: &DecisionRequest<'_>,
+    request: &OwnerDecisionRequest<'_>,
 ) -> Result<()> {
     if request.decision_value != "reopened" {
         bail!("finding reopen outcome is fixed");
@@ -118,32 +103,5 @@ pub(super) fn apply_finding_reopen(
     conn.execute("insert into finding_decision_epochs(project_id,finding_id,epoch_number,reopen_decision_id,status,created_at) values(?1,?2,?3,?4,'open',current_timestamp)",params![project,finding,epoch+1,owner_decision_id])?;
     conn.execute("update findings set lifecycle_state='open',status='open',close_reason=null where project_id=?1 and id=?2",params![project,finding])?;
     conn.execute("insert into finding_lifecycle_events(project_id,finding_id,owner_decision_id,from_state,to_state,effect,created_at) values(?1,?2,?3,'closed','open','authority_reopen',current_timestamp)",params![project,finding,owner_decision_id])?;
-    Ok(())
-}
-
-pub(super) fn apply_bootstrap_adjudication(
-    conn: &rusqlite::Connection,
-    project: i64,
-    _owner_decision_id: i64,
-    request: &DecisionRequest<'_>,
-) -> Result<()> {
-    if !matches!(
-        request.decision_value,
-        "accepted" | "rejected" | "needs_evidence"
-    ) {
-        bail!("bootstrap decision is not allowed");
-    }
-    let target:Option<(i64,String)>=conn.query_row("select epoch_id,status from authority_bootstrap_targets where project_id=?1 and target_handle=?2",params![project,request.target_ref],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-    let (epoch, status) = target.context("bootstrap target not found")?;
-    if status != "pending" {
-        bail!("bootstrap target is not pending");
-    }
-    if request.decision_value == "accepted" {
-        conn.execute("update authority_bootstrap_targets set status='satisfied',resolved_at=current_timestamp where project_id=?1 and target_handle=?2 and status='pending'",params![project,request.target_ref])?;
-        let pending:i64=conn.query_row("select count(*) from authority_bootstrap_targets where project_id=?1 and epoch_id=?2 and status='pending'",params![project,epoch],|row|row.get(0))?;
-        if pending == 0 {
-            conn.execute("update authority_grant_epochs set status='closed',closed_at=current_timestamp where project_id=?1 and id=?2 and status='open'",params![project,epoch])?;
-        }
-    }
     Ok(())
 }
