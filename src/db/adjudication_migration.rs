@@ -337,7 +337,7 @@ pub(super) fn normalize_schema11_adjudication(conn: &Connection, project: i64) -
             member,
         )?;
         if let Some(authority) = authority {
-            insert_member_for_root(
+            insert_shared_member_for_first_root(
                 conn,
                 project,
                 "findings",
@@ -358,7 +358,7 @@ pub(super) fn normalize_schema11_adjudication(conn: &Connection, project: i64) -
             member,
         )?;
         if let Some(authority) = authority {
-            insert_member_for_root(
+            insert_shared_member_for_first_root(
                 conn,
                 project,
                 "review_plans",
@@ -755,13 +755,44 @@ fn insert_member_for_root(
         .optional()?;
     if let Some(existing) = existing {
         if existing != candidate.0 {
-            bail!("migration ambiguity: ambiguous_candidate_membership");
+            bail!(
+                "migration ambiguity: ambiguous_candidate_membership: source_table={member_table} source_row_id={member_row} existing_candidate_id={existing} requested_candidate_id={}",
+                candidate.0
+            );
         }
         return Ok(());
     }
     let digest = source_member_digest(conn, member_table, member_row)?;
     conn.execute("insert into legacy_migration_candidate_members(project_id,candidate_id,source_table,source_row_id,member_digest,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",params![project,candidate.0,member_table,member_row,digest])?;
     Ok(())
+}
+
+fn insert_shared_member_for_first_root(
+    conn: &Connection,
+    project: i64,
+    root_table: &str,
+    root_row: i64,
+    member_table: &str,
+    member_row: i64,
+) -> Result<()> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "select candidate_id from legacy_migration_candidate_members where project_id=?1 and source_table=?2 and source_row_id=?3",
+            params![project, member_table, member_row],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(());
+    }
+    insert_member_for_root(
+        conn,
+        project,
+        root_table,
+        root_row,
+        member_table,
+        member_row,
+    )
 }
 
 fn source_member_digest(conn: &Connection, table: &str, row_id: i64) -> Result<String> {
@@ -857,11 +888,16 @@ fn validate_candidate_membership(conn: &Connection, project: i64) -> Result<()> 
         ),
     ] {
         let query = format!(
-            "select count(*) from ({source}) source where not exists(select 1 from legacy_migration_candidate_members m where m.project_id=?1 and m.source_table='{table}' and m.source_row_id=source.id)"
+            "select source.id from ({source}) source where not exists(select 1 from legacy_migration_candidate_members m where m.project_id=?1 and m.source_table='{table}' and m.source_row_id=source.id) order by source.id"
         );
-        let missing: i64 = conn.query_row(&query, params![project], |row| row.get(0))?;
-        if missing != 0 {
-            bail!("migration ambiguity: ambiguous_candidate_membership");
+        let missing = conn
+            .prepare(&query)?
+            .query_map(params![project], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !missing.is_empty() {
+            bail!(
+                "migration ambiguity: ambiguous_candidate_membership: source_table={table} source_row_ids={missing:?}"
+            );
         }
     }
     Ok(())
@@ -896,7 +932,7 @@ fn insert_edge_for_members(
             ("target", CanonicalValue::string(&target_base)),
         ]),
     );
-    conn.execute("insert into legacy_migration_edges(project_id,edge_kind,source_candidate_id,target_candidate_id,edge_digest,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",params![project,kind,source.0,target.0,digest])?;
+    conn.execute("insert or ignore into legacy_migration_edges(project_id,edge_kind,source_candidate_id,target_candidate_id,edge_digest,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",params![project,kind,source.0,target.0,digest])?;
     Ok(())
 }
 
@@ -969,4 +1005,74 @@ mod candidate {
 }
 fn find_candidate(conn: &Connection, project: i64, table: &str, row: i64) -> Result<candidate::Id> {
     conn.query_row("select candidate_id from legacy_migration_candidate_members where project_id=?1 and source_table=?2 and source_row_id=?3",params![project,table,row],|r|r.get(0)).optional()?.map(candidate::Id).context("typed migration edge target is missing")
+}
+
+#[cfg(test)]
+mod normalization_regression_tests {
+    use super::*;
+
+    fn fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "create table roots(id integer primary key, state text not null);\
+             create table authority_events(id integer primary key, summary text not null);\
+             create table legacy_migration_candidates(\
+               id integer primary key, project_id integer not null, candidate_kind text not null,\
+               candidate_handle text not null, base_digest text not null, content_digest text not null,\
+               created_at text not null, unique(project_id,candidate_handle));\
+             create table legacy_migration_candidate_members(\
+               id integer primary key, project_id integer not null, candidate_id integer not null,\
+               source_table text not null, source_row_id integer not null, member_digest text not null,\
+               created_at text not null, unique(project_id,source_table,source_row_id));\
+             create table legacy_migration_edges(\
+               id integer primary key, project_id integer not null, edge_kind text not null,\
+               source_candidate_id integer not null, target_candidate_id integer not null,\
+               edge_digest text not null, created_at text not null,\
+               unique(project_id,edge_kind,source_candidate_id,target_candidate_id));\
+             insert into roots values(1,'open'),(2,'open');\
+             insert into authority_events values(1,'shared authority');",
+        )
+        .unwrap();
+        insert_candidate(&conn, 1, "roots", 1, "work_owner", "open").unwrap();
+        insert_candidate(&conn, 1, "roots", 2, "work_owner", "open").unwrap();
+        conn
+    }
+
+    #[test]
+    fn shared_authority_is_assigned_once_in_deterministic_first_root() {
+        let conn = fixture();
+        insert_shared_member_for_first_root(&conn, 1, "roots", 1, "authority_events", 1).unwrap();
+        insert_shared_member_for_first_root(&conn, 1, "roots", 2, "authority_events", 1).unwrap();
+
+        let memberships: i64 = conn
+            .query_row(
+                "select count(*) from legacy_migration_candidate_members where project_id=1 and source_table='authority_events' and source_row_id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let first_candidate = find_candidate(&conn, 1, "roots", 1).unwrap().0;
+        let assigned_candidate: i64 = conn
+            .query_row(
+                "select candidate_id from legacy_migration_candidate_members where project_id=1 and source_table='authority_events' and source_row_id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(memberships, 1);
+        assert_eq!(assigned_candidate, first_candidate);
+    }
+
+    #[test]
+    fn repeated_source_relations_collapse_to_one_normalized_edge() {
+        let conn = fixture();
+        insert_edge_for_members(&conn, 1, "work_depends_on", "roots", 1, "roots", 2).unwrap();
+        insert_edge_for_members(&conn, 1, "work_depends_on", "roots", 1, "roots", 2).unwrap();
+        let edges: i64 = conn
+            .query_row("select count(*) from legacy_migration_edges", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(edges, 1);
+    }
 }

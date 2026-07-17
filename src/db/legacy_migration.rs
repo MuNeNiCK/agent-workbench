@@ -489,9 +489,11 @@ pub(super) fn migrate_review_runs_phase_targets(conn: &Connection) -> Result<()>
 
     conn.execute_batch(
         r#"
-        pragma foreign_keys = off;
+        pragma legacy_alter_table = on;
+        alter table review_runs rename to review_runs_old;
+        pragma legacy_alter_table = off;
 
-        create table review_runs_new (
+        create table review_runs (
             id integer primary key,
             project_id integer not null references projects(id) on delete cascade,
             review_scope_id integer references review_scopes(id),
@@ -528,7 +530,7 @@ pub(super) fn migrate_review_runs_phase_targets(conn: &Connection) -> Result<()>
             )
         );
 
-        insert into review_runs_new(
+        insert into review_runs(
             id, project_id, review_scope_id, review_plan_id, run_type, run_purpose,
             target_type, design_version_id, design_requirement_id, task_id,
             work_unit_id, phase_id, repository_snapshot_id, file_path, symbol,
@@ -543,12 +545,9 @@ pub(super) fn migrate_review_runs_phase_targets(conn: &Connection) -> Result<()>
             target_ref, prompt_deviations, result_summary, new_findings_count,
             carried_findings_checked, clean_run, review_provenance,
             review_provenance_ref, status, created_at
-        from review_runs;
+        from review_runs_old;
 
-        drop table review_runs;
-        alter table review_runs_new rename to review_runs;
-
-        pragma foreign_keys = on;
+        drop table review_runs_old;
         "#,
     )?;
 

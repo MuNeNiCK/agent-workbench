@@ -63,23 +63,29 @@ pub(super) fn migrate_if_needed(conn: &Connection) -> Result<()> {
         let project = project_id(&tx)?;
         let digest =
             super::adjudication_migration::legacy_source_digest(&tx, project, source_generation)?;
-        migrate(&tx)?;
-        tx.execute("insert or ignore into authority_migration_sources(project_id,source_ledger_digest,source_generation,created_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation])?;
-        migrate_legacy_review_candidates(&tx)?;
-        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project])?;
-        tx.commit()?;
+        migrate(&tx).context("schema-11 migration failed while installing schema 12")?;
+        tx.execute("insert or ignore into authority_migration_sources(project_id,source_ledger_digest,source_generation,created_at) values(?1,?2,?3,current_timestamp)",params![project,digest,source_generation]).context("schema-11 migration failed while recording the source ledger")?;
+        migrate_legacy_review_candidates(&tx)
+            .context("schema-11 migration failed while normalizing legacy review state")?;
+        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project]).context("schema-11 migration failed while recording completion")?;
+        tx.commit()
+            .context("schema-11 migration failed while committing")?;
         return Ok(());
     }
     if ledger_needs_migration(conn)? {
-        migrate(conn)?;
+        migrate(conn).with_context(|| {
+            format!("migration from schema generation {source_generation} failed while installing the current schema")
+        })?;
     }
     let pending:i64=conn.query_row("select exists(select 1 from authority_migration_sources s where not exists(select 1 from legacy_adjudication_migrations m where m.project_id=s.project_id))",[],|row|row.get(0)).unwrap_or(0);
     if pending == 1 {
         let tx = conn.unchecked_transaction()?;
-        migrate_legacy_review_candidates(&tx)?;
+        migrate_legacy_review_candidates(&tx)
+            .context("pending schema-11 migration failed while normalizing legacy review state")?;
         let project = project_id(&tx)?;
-        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project])?;
-        tx.commit()?;
+        tx.execute("insert into legacy_adjudication_migrations(project_id,source_ledger_digest,source_generation,completed_at) select project_id,source_ledger_digest,source_generation,current_timestamp from authority_migration_sources where project_id=?1",params![project]).context("pending schema-11 migration failed while recording completion")?;
+        tx.commit()
+            .context("pending schema-11 migration failed while committing")?;
     }
     Ok(())
 }
@@ -306,9 +312,32 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     if !conn.is_autocommit() {
         return migrate_steps(conn);
     }
-    let transaction = conn.unchecked_transaction()?;
-    migrate_steps(&transaction)?;
-    transaction.commit()?;
+    run_atomic_schema_migration(conn, migrate_steps)
+}
+
+fn run_atomic_schema_migration(
+    conn: &Connection,
+    operation: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<()> {
+    let foreign_keys_enabled: i64 =
+        conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let migration_result = (|| -> Result<()> {
+        let transaction = conn.unchecked_transaction()?;
+        operation(&transaction)?;
+        let foreign_key_violations: i64 =
+            transaction.query_row("select count(*) from pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        if foreign_key_violations != 0 {
+            bail!("schema migration produced {foreign_key_violations} foreign key violation(s)");
+        }
+        transaction.commit()?;
+        Ok(())
+    })();
+    let restore_result = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled != 0);
+    migration_result?;
+    restore_result?;
     Ok(())
 }
 
@@ -350,14 +379,22 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         drop view if exists valid_completion_inheritance_sources;
         "#,
     )?;
-    prepare_acceptance_records_for_schema(conn)?;
-    migrate_completion_identity_link_kind(conn)?;
-    prepare_review_runs_for_schema(conn)?;
-    prepare_review_invocations_for_schema(conn)?;
-    prepare_adjudication_for_schema(conn)?;
-    prepare_project_scoped_ledger_rows_for_schema(conn)?;
-    drop_phase_review_target_reference_triggers(conn)?;
-    execute_schema_batches(conn)?;
+    prepare_acceptance_records_for_schema(conn)
+        .context("schema migration failed while preparing acceptance records")?;
+    migrate_completion_identity_link_kind(conn)
+        .context("schema migration failed while preparing completion identity links")?;
+    prepare_review_runs_for_schema(conn)
+        .context("schema migration failed while preparing review runs")?;
+    prepare_review_invocations_for_schema(conn)
+        .context("schema migration failed while preparing review invocations")?;
+    prepare_adjudication_for_schema(conn)
+        .context("schema migration failed while preparing adjudication records")?;
+    prepare_project_scoped_ledger_rows_for_schema(conn)
+        .context("schema migration failed while preparing project-scoped rows")?;
+    drop_phase_review_target_reference_triggers(conn)
+        .context("schema migration failed while preparing phase review targets")?;
+    execute_schema_batches(conn)
+        .context("schema migration failed while installing schema batches")?;
     ensure_column(
         conn,
         "legacy_migration_candidates",
@@ -402,10 +439,13 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_correction_alias_immutable_delete;
         "#,
     )?;
-    migrate_acceptance_records(conn)?;
-    repair_acceptance_record_references(conn)?;
-    migrate_repository_snapshot_comparisons(conn)?;
-    migrate_kpt_items(conn)?;
+    migrate_acceptance_records(conn)
+        .context("schema migration failed while migrating acceptance records")?;
+    repair_acceptance_record_references(conn)
+        .context("schema migration failed while repairing acceptance references")?;
+    migrate_repository_snapshot_comparisons(conn)
+        .context("schema migration failed while migrating repository comparisons")?;
+    migrate_kpt_items(conn).context("schema migration failed while migrating KPT items")?;
     conn.execute_batch(
         "drop trigger if exists trg_review_adjudication_project_insert;
          drop trigger if exists trg_finding_disposition_project_insert;
@@ -414,22 +454,30 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
          drop trigger if exists trg_review_boundary_project_insert;
          drop trigger if exists trg_finding_epoch_project_insert;",
     )?;
-    migrate_review_runs(conn)?;
-    migrate_resume_check_items(conn)?;
+    migrate_review_runs(conn).context("schema migration failed while migrating review runs")?;
+    migrate_resume_check_items(conn)
+        .context("schema migration failed while migrating resume checks")?;
     validate_project_scoped_ledger_links(conn)?;
     validate_review_required_links(conn)?;
-    refresh_review_integrity_triggers(conn)?;
-    refresh_ledger_integrity_triggers(conn)?;
-    ensure_phase_schema(conn)?;
-    migrate_review_runs_phase_targets(conn)?;
+    refresh_review_integrity_triggers(conn)
+        .context("schema migration failed while refreshing review integrity triggers")?;
+    refresh_ledger_integrity_triggers(conn)
+        .context("schema migration failed while refreshing ledger integrity triggers")?;
+    ensure_phase_schema(conn).context("schema migration failed while ensuring phase schema")?;
+    migrate_review_runs_phase_targets(conn)
+        .context("schema migration failed while migrating phase review targets")?;
     conn.execute_batch(
         "drop trigger if exists trg_verification_adjudication_project_insert;
          drop trigger if exists trg_finding_epoch_project_insert;",
     )?;
-    ensure_closure_lifecycle_schema(conn)?;
-    ensure_phase_review_target_reference_triggers(conn)?;
-    execute_schema_batches(conn)?;
-    ensure_phase_review_target_reference_triggers(conn)?;
+    ensure_closure_lifecycle_schema(conn)
+        .context("schema migration failed while ensuring closure lifecycle schema")?;
+    ensure_phase_review_target_reference_triggers(conn)
+        .context("schema migration failed while installing phase target references")?;
+    execute_schema_batches(conn)
+        .context("schema migration failed while reinstalling schema batches")?;
+    ensure_phase_review_target_reference_triggers(conn)
+        .context("schema migration failed while refreshing phase target references")?;
     ensure_column(conn, "work_record_forks", "source_git_commit_sha", "text")?;
     ensure_column(conn, "work_records", "project_id", "integer")?;
     ensure_column(conn, "command_usages", "project_id", "integer")?;
@@ -878,4 +926,84 @@ fn prepare_adjudication_for_schema(conn: &Connection) -> Result<()> {
         ensure_column(conn, "findings", "close_reason", "text")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod atomic_schema_migration_tests {
+    use super::*;
+
+    #[test]
+    fn rebuilds_a_referenced_table_atomically_and_restores_foreign_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(
+            "create table parent(id integer primary key, value text not null);\
+             create table child(id integer primary key, parent_id integer not null references parent(id));\
+             insert into parent values(1,'before');\
+             insert into child values(1,1);",
+        )
+        .unwrap();
+
+        run_atomic_schema_migration(&conn, |tx| {
+            tx.execute_batch(
+                "pragma legacy_alter_table=on;\
+                 alter table parent rename to parent_old;\
+                 pragma legacy_alter_table=off;\
+                 create table parent(id integer primary key, value text not null, added text);\
+                 insert into parent(id,value) select id,value from parent_old;\
+                 drop table parent_old;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let foreign_keys: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let violations: i64 = conn
+            .query_row("select count(*) from pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let child_parent: i64 = conn
+            .query_row("select parent_id from child where id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(violations, 0);
+        assert_eq!(child_parent, 1);
+    }
+
+    #[test]
+    fn rolls_back_when_a_rebuild_leaves_a_foreign_key_violation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(
+            "create table parent(id integer primary key);\
+             create table child(id integer primary key, parent_id integer not null references parent(id));\
+             insert into parent values(1);\
+             insert into child values(1,1);",
+        )
+        .unwrap();
+
+        let error = run_atomic_schema_migration(&conn, |tx| {
+            tx.execute("delete from parent", [])?;
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("foreign key violation"));
+        assert_eq!(
+            conn.query_row("select count(*) from parent", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 }
