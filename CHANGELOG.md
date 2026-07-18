@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- v0.1.20 was withdrawn. It is not a supported release and has no tag or GitHub
+  Release because its reduced schema removed established Agent Workbench use
+  cases.
+- Restore the complete work, Phase, Design Package, review, evidence,
+  correction/KPT, repository, and record workflows after the withdrawn change.
+- Add explicit `update inspect`, staged `update apply`, and reversible `update
+  restore` commands. Ordinary status and lifecycle commands no longer apply
+  schema migrations as a side effect.
+- Make required Phase review recovery executable from both `phase close-ready`
+  and the owner resolver, with an exact reasoned `review plan waive` command and
+  no separate authority-event requirement.
+- Let trace-aware resume retain the authority references captured at suspend
+  while loading newer user directions, instead of blocking on every addition.
+- Keep historical review plans, validation gates, and superseded Design Package
+  approvals out of the current applicable-rule set.
+
 ## v0.1.19 — 2026-07-18
 
 - Restore simple review claims and separate owner decisions without signatures,
