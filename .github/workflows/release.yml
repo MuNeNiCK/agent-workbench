@@ -67,7 +67,7 @@ jobs:
           plan_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan add --work-unit "$work_id" --type implementation_review --stage close-ready --required --policy "$policy_id" | sed -n 's/^review_plan_id: //p')"
           run_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review run add --plan "$plan_id" --type fresh --purpose new_unbiased_review --clean --provenance external_agent --provenance-ref release-exercise:review --external-agent-id release-exercise-agent | sed -n 's/^review_run_id: //p')"
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review adjudicate "$run_id" --decision accepted --reason 'release exercise accepted' --expected-current pending >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan list | grep -F ' clean]' >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan list | grep -F ':clean required=true]' >/dev/null
           scripts/check-release-ledger-compatibility.sh "$binary"
 
       - name: Confirm observer-only boundary
