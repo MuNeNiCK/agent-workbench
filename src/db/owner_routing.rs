@@ -42,6 +42,30 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                     review_blocker.expect("urgent review blocker"),
                 ));
             }
+            if let Some(action) =
+                crate::phases::phase_review_lifecycle_action(conn, owner_id, None)?
+            {
+                return Ok(owner_action_from_blocker(
+                    owner_id,
+                    title,
+                    PhaseBlocker {
+                        kind: "required_phase_review".to_string(),
+                        review_plan_id: Some(action.review_plan_id),
+                        work_unit_id: Some(owner_id),
+                        review_type: Some(action.review_type),
+                        stage: Some(action.stage),
+                        review_run_id: None,
+                        finding_id: None,
+                        severity: None,
+                        classification: None,
+                        description: format!(
+                            "phase {} has an incomplete required review plan",
+                            action.phase_id
+                        ),
+                        next_action: action.action,
+                    },
+                ));
+            }
             if let Some(blocker) = owner_dependency_blocker(conn, owner_id)? {
                 return Ok(owner_action_from_blocker(owner_id, title, blocker));
             }

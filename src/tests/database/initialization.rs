@@ -238,11 +238,10 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     drop(conn);
 
-    let contradiction = project_status(temp.path()).unwrap_err();
+    let inspection = inspect_update(temp.path()).unwrap();
+    let contradiction = apply_update(temp.path(), &inspection.current_identity).unwrap_err();
     assert!(
-        contradiction
-            .to_string()
-            .contains("review_adjudication_decisions current heads"),
+        format!("{contradiction:#}").contains("review_adjudication_decisions current heads"),
         "{contradiction:#}"
     );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
@@ -268,6 +267,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
         .unwrap();
     drop(conn);
 
+    apply_test_update(temp.path());
     let status = project_status(temp.path()).unwrap();
     assert_eq!(status.schema_version, Some(13), "{status:?}");
     assert_eq!(status.project_integrity.result, "clear");
@@ -379,7 +379,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
 }
 
 #[test]
-fn next_action_migrates_schema_before_querying_lifecycle_state() {
+fn next_action_requires_explicit_update_before_querying_lifecycle_state() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
@@ -400,7 +400,25 @@ fn next_action_migrates_schema_before_querying_lifecycle_state() {
     drop(conn);
 
     let action = next_action(temp.path()).unwrap();
-    assert_eq!(action, NextAction::NoOpenWorkUnit);
+    let NextAction::ProjectIntegrityBlocked { integrity } = action else {
+        panic!("legacy state must require explicit update");
+    };
+    assert!(
+        integrity
+            .predicates
+            .iter()
+            .any(|item| item.next_action.as_deref().is_some_and(|action| {
+                action.starts_with("agent-workbench update apply --expected-current ")
+            }))
+    );
+    let inspection = inspect_update(temp.path()).unwrap();
+    let outcome = apply_update(temp.path(), &inspection.current_identity).unwrap();
+    assert!(!outcome.already_applied);
+    assert_eq!(outcome.backup_identity, inspection.current_identity);
+    assert_eq!(
+        next_action(temp.path()).unwrap(),
+        NextAction::NoOpenWorkUnit
+    );
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
         Some(SCHEMA_VERSION)

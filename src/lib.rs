@@ -15,6 +15,7 @@ mod review_context;
 mod rules;
 mod task_identity;
 mod traceability;
+mod update;
 mod work;
 
 pub use authority::{
@@ -150,6 +151,10 @@ pub use traceability::{
     implementation_ready, list_checklist_items, list_checklists, list_implementation_evidence,
     list_stale_records, list_task_derivations, list_validation_gate_context, list_validation_runs,
     select_validation_gate,
+};
+pub use update::{
+    UpdateApplyOutcome, UpdateInspection, UpdateRestoreOutcome, apply_update, inspect_update,
+    restore_update,
 };
 pub use work::{
     CloseOutcome, CloseReadyItem, CloseReadyOutcome, FollowUpOutcome, InterruptOutcome,

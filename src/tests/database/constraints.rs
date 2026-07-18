@@ -60,7 +60,7 @@ fn init_migrates_existing_kpt_item_status_constraint() {
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
         r#"
@@ -164,7 +164,7 @@ fn init_migrates_existing_review_run_type_purpose_constraint() {
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let stale_trigger_refs: i64 = conn
         .query_row(

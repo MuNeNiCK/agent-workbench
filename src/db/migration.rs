@@ -47,11 +47,10 @@ pub(crate) fn open_existing_project(root: &Path) -> Result<Connection> {
     let conn = integrity
         .connection
         .context("integrity evaluator lost ledger connection")?;
-    migrate_if_needed(&conn)?;
     Ok(conn)
 }
 
-pub(super) fn migrate_if_needed(conn: &Connection) -> Result<()> {
+pub(crate) fn apply_pending_update(conn: &Connection) -> Result<()> {
     let source_generation = conn
         .query_row(
             "select coalesce(max(version),0) from schema_migrations",
@@ -125,6 +124,176 @@ pub(super) fn migrate_if_needed(conn: &Connection) -> Result<()> {
             .context("pending schema-11 migration failed while committing")?;
     }
     Ok(())
+}
+
+pub(crate) fn project_requires_update(conn: &Connection) -> Result<bool> {
+    Ok(!pending_update_changes(conn)?.is_empty())
+}
+
+pub(crate) fn pending_update_changes(conn: &Connection) -> Result<Vec<String>> {
+    let mut changes = Vec::new();
+    if ledger_needs_migration(conn)? {
+        changes.extend(schema_profile_update_reasons(conn)?);
+        if changes.is_empty() {
+            changes.push("schema_or_profile_update".to_string());
+        }
+    }
+    if !table_exists(conn, "authority_migration_sources")?
+        || !table_exists(conn, "legacy_adjudication_migrations")?
+    {
+        return Ok(changes);
+    }
+    let pending: bool = conn.query_row(
+        r#"
+        select exists(
+          select 1 from authority_migration_sources source
+          where not exists(
+            select 1 from legacy_adjudication_migrations applied
+            where applied.project_id=source.project_id
+              and applied.source_generation=source.source_generation
+              and applied.source_ledger_digest=source.source_ledger_digest
+          )
+        )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if pending {
+        changes.push("legacy_review_normalization".to_string());
+    }
+    Ok(changes)
+}
+
+fn schema_profile_update_reasons(conn: &Connection) -> Result<Vec<String>> {
+    let mut reasons = Vec::new();
+    let version = conn
+        .query_row(
+            "select version from schema_migrations order by version desc limit 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    if version < SCHEMA_VERSION {
+        reasons.push(format!("schema_{version}_to_{SCHEMA_VERSION}"));
+    }
+    for table in [
+        "closure_attempts",
+        "review_adjudication_decisions",
+        "finding_disposition_decisions",
+        "verification_adjudication_decisions",
+        "finding_lifecycle_events",
+        "review_correction_events",
+        "review_boundary_snapshots",
+        "review_correction_recovery_obligations",
+        "finding_decision_epochs",
+        "legacy_claim_audits",
+        "legacy_signed_review_effects",
+        "legacy_finding_audits",
+        "legacy_migration_candidates",
+        "legacy_migration_candidate_members",
+        "legacy_migration_edges",
+        "legacy_migration_projections",
+        "authority_migration_sources",
+        "legacy_adjudication_migrations",
+        "owner_decisions",
+        "finding_remediation_bindings",
+        "finding_remediation_recovery_epochs",
+        "correction_sessions",
+        "correction_tokens",
+        "correction_transition_aliases",
+        "correction_application_identity_links",
+        "correction_completion_inheritance_sources",
+        "correction_completion_inheritance_evidence",
+    ] {
+        if !table_exists(conn, table)? {
+            reasons.push(format!("missing_table:{table}"));
+        }
+    }
+    let current_task_gates: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='view' and name='current_task_validation_gates')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !current_task_gates {
+        reasons.push("current_task_validation_gates_view".to_string());
+    }
+    let inheritance_current: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='view' and name='valid_completion_inheritance_sources' and sql like '%mapping.design_requirement_id=source.current_requirement_id%' and sql like '%candidate_version.version_number%' and sql like '%left join command_usages usage%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !inheritance_current {
+        reasons.push("completion_inheritance_view".to_string());
+    }
+    let correction_current: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert' and sql like '%phase_dependency_max%') and exists(select 1 from sqlite_schema where type='trigger' and name='trg_completion_source_insert' and sql like '%candidate_version.version_number%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !correction_current {
+        reasons.push("correction_transition_profile".to_string());
+    }
+    let correction_status_current: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_session_status_update') and exists(select 1 from sqlite_schema where type='trigger' and name='trg_correction_token_status_update')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !correction_status_current {
+        reasons.push("correction_status_profile".to_string());
+    }
+    for (trigger, marker) in [
+        (
+            "trg_correction_application_links_insert",
+            "work_phase_task_memberships",
+        ),
+        ("trg_correction_alias_links_insert", "@superseded-task/"),
+        ("trg_correction_identity_link_insert", "completion_source"),
+    ] {
+        let current: bool = conn.query_row(
+            "select exists(select 1 from sqlite_schema where type='trigger' and name=?1 and sql like '%'||?2||'%')",
+            params![trigger, marker],
+            |row| row.get(0),
+        )?;
+        if !current {
+            reasons.push(format!("trigger_profile:{trigger}"));
+        }
+    }
+    let completion_identity_kind: bool = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='table' and name='correction_application_identity_links' and sql like '%completion_source%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !completion_identity_kind {
+        reasons.push("completion_identity_profile".to_string());
+    }
+    if table_exists(conn, "acceptance_records")?
+        && !table_has_column(conn, "acceptance_records", "coverage_item_id")?
+    {
+        reasons.push("acceptance_coverage_column".to_string());
+    }
+    let broken_acceptance_refs: i64 = conn.query_row(
+        "select count(*) from sqlite_schema where sql like '%acceptance_records_old%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if broken_acceptance_refs > 0 {
+        reasons.push("acceptance_reference_repair".to_string());
+    }
+    if table_exists(conn, "acceptance_records")? && acceptance_records_needs_migration(conn)? {
+        reasons.push("acceptance_record_profile".to_string());
+    }
+    if table_exists(conn, "review_runs")?
+        && !table_has_column(conn, "review_runs", "review_provenance")?
+    {
+        reasons.push("review_provenance_column".to_string());
+    }
+    if table_exists(conn, "closures")?
+        && !table_has_column(conn, "closures", "supersession_reason")?
+    {
+        reasons.push("closure_supersession_column".to_string());
+    }
+    Ok(reasons)
 }
 
 fn validate_schema12_owner_decisions(conn: &Connection, project: i64) -> Result<()> {
@@ -532,6 +701,9 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_correction_alias_links_insert;
         drop trigger if exists trg_correction_alias_immutable_update;
         drop trigger if exists trg_correction_alias_immutable_delete;
+        drop trigger if exists trg_correction_identity_link_insert;
+        drop trigger if exists trg_correction_identity_link_immutable_update;
+        drop trigger if exists trg_correction_identity_link_immutable_delete;
         drop trigger if exists trg_completion_source_insert;
         drop trigger if exists trg_completion_evidence_insert;
         drop trigger if exists trg_completion_source_immutable_update;
@@ -609,6 +781,9 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_correction_alias_links_insert;
         drop trigger if exists trg_correction_alias_immutable_update;
         drop trigger if exists trg_correction_alias_immutable_delete;
+        drop trigger if exists trg_correction_identity_link_insert;
+        drop trigger if exists trg_correction_identity_link_immutable_update;
+        drop trigger if exists trg_correction_identity_link_immutable_delete;
         "#,
     )?;
     migrate_acceptance_records(conn)

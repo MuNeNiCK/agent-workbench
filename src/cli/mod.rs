@@ -19,8 +19,8 @@ mod work;
 use args::*;
 
 use agent_workbench::{
-    NextAction, OwnerAction, PhaseBlocker, ProjectIntegrityStatus, init_project, next_action,
-    project_status,
+    NextAction, OwnerAction, PhaseBlocker, ProjectIntegrityStatus, apply_update, init_project,
+    inspect_update, next_action, project_status, restore_update,
 };
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -40,6 +40,39 @@ pub(crate) fn run() -> Result<()> {
                 init_project(&root)?;
                 println!("initialized project state");
             }
+            Command::Update { command } => match command {
+                UpdateCommand::Inspect => {
+                    let inspection = inspect_update(&root)?;
+                    println!("current_identity: {}", inspection.current_identity);
+                    if inspection.pending_changes.is_empty() {
+                        println!("update_required: false");
+                    } else {
+                        println!("update_required: true");
+                        for change in inspection.pending_changes {
+                            println!("pending_change: {change}");
+                        }
+                    }
+                    for backup in inspection.restorable_backups {
+                        println!("backup: {backup}");
+                    }
+                }
+                UpdateCommand::Apply(args) => {
+                    let outcome = apply_update(&root, &args.expected_current)?;
+                    println!("source_identity: {}", outcome.source_identity);
+                    println!("result_identity: {}", outcome.result_identity);
+                    println!("backup_identity: {}", outcome.backup_identity);
+                    println!("already_applied: {}", outcome.already_applied);
+                }
+                UpdateCommand::Restore(args) => {
+                    let outcome = restore_update(&root, &args.backup, &args.expected_current)?;
+                    println!("restored_identity: {}", outcome.restored_identity);
+                    println!(
+                        "recovery_backup_identity: {}",
+                        outcome.recovery_backup_identity
+                    );
+                    println!("already_applied: {}", outcome.already_applied);
+                }
+            },
             Command::Status => {
                 let status = project_status(&root)?;
                 if !status.initialized {

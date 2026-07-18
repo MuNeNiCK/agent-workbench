@@ -419,3 +419,32 @@ fn suspend_and_resume_round_trip() {
         NextAction::ContinueActive { .. }
     ));
 }
+
+#[test]
+fn trace_aware_resume_loads_new_authority_without_invalidating_the_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let started = start_work(temp.path(), "resume with newer user direction", None).unwrap();
+    suspend_work(
+        temp.path(),
+        "await direction",
+        "continue with current rules",
+    )
+    .unwrap();
+    add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test"),
+            summary: "new direction recorded while work is suspended",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+
+    let check = resume_check(temp.path(), "trace-aware").unwrap();
+    assert_eq!(check.result, "allowed");
+    let resumed = resume_work(temp.path(), check.resume_check_id).unwrap();
+    assert_eq!(resumed.activation_id, started.activation_id);
+}

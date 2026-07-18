@@ -149,8 +149,6 @@ pub(crate) struct ReviewPlanWaiveArgs {
     pub(crate) review_plan_id: i64,
     #[arg(long)]
     pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) authority: i64,
 }
 
 #[derive(Debug, Subcommand)]

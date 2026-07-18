@@ -12,6 +12,11 @@ mod repository;
 mod review;
 mod work;
 
+fn apply_test_update(root: &std::path::Path) -> UpdateApplyOutcome {
+    let inspection = inspect_update(root).unwrap();
+    apply_update(root, &inspection.current_identity).unwrap()
+}
+
 fn add_review_run(
     root: &std::path::Path,
     input: NewReviewRun<'_>,

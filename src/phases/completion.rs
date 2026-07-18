@@ -390,6 +390,110 @@ pub(super) fn count_incomplete_phase_reviews(
     Ok(incomplete)
 }
 
+pub(crate) fn phase_review_lifecycle_action(
+    conn: &rusqlite::Connection,
+    work_unit_id: i64,
+    only_phase_id: Option<i64>,
+) -> Result<Option<PhaseReviewLifecycleAction>> {
+    let mut stmt = conn.prepare(
+        r#"
+        select p.id, rp.id, rp.review_type, rp.stage, rp.status,
+               rp.design_version_id, rp.work_unit_id,
+               coalesce(pol.required_consecutive_clean_fresh_runs, 1)
+        from work_phases p
+        join work_phase_review_targets target on target.phase_id=p.id
+        join review_plans rp on rp.id=target.review_plan_id
+        left join review_policies pol on pol.id=rp.review_policy_id
+        where p.work_unit_id=?1 and (?2 is null or p.id=?2) and p.status='open'
+          and rp.required=1
+          and not exists (
+            select 1 from acceptance_records ar
+            where ar.target_type='review_plan' and ar.review_plan_id=rp.id
+              and ar.status='approved'
+              and ar.acceptance_type in ('explicit_exception','stale_accepted')
+          )
+        order by p.phase_order,p.id,rp.id
+        "#,
+    )?;
+    let rows = stmt
+        .query_map(params![work_unit_id, only_phase_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                PhaseReviewPlan {
+                    id: row.get(1)?,
+                    review_type: row.get(2)?,
+                    stage: row.get(3)?,
+                    design_version_id: row.get(5)?,
+                    work_unit_id: row.get(6)?,
+                    required_clean_fresh_runs: row.get(7)?,
+                },
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (phase_id, plan, status) in rows {
+        if phase_review_plan_is_complete(conn, phase_id, &plan)? {
+            continue;
+        }
+        let sibling_complete = phase_review_sibling_is_complete(conn, phase_id, &plan)?;
+        if matches!(status.as_str(), "exhausted" | "needs_user_decision")
+            || (status == "blocked" && sibling_complete)
+        {
+            return Ok(Some(PhaseReviewLifecycleAction {
+                phase_id,
+                review_plan_id: plan.id,
+                review_type: plan.review_type,
+                stage: plan.stage,
+                action: format!(
+                    "agent-workbench review plan waive {} --reason \"<reason>\"",
+                    plan.id
+                ),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn phase_review_sibling_is_complete(
+    conn: &rusqlite::Connection,
+    phase_id: i64,
+    plan: &PhaseReviewPlan,
+) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        r#"
+        select sibling.id,sibling.review_type,sibling.stage,sibling.design_version_id,
+               sibling.work_unit_id,coalesce(pol.required_consecutive_clean_fresh_runs,1)
+        from work_phase_review_targets target
+        join review_plans sibling on sibling.id=target.review_plan_id
+        left join review_policies pol on pol.id=sibling.review_policy_id
+        where target.phase_id=?1 and sibling.id!=?2 and sibling.required=1
+          and sibling.review_type=?3 and sibling.stage=?4
+        order by sibling.id desc
+        "#,
+    )?;
+    let siblings = stmt
+        .query_map(
+            params![phase_id, plan.id, plan.review_type, plan.stage],
+            |row| {
+                Ok(PhaseReviewPlan {
+                    id: row.get(0)?,
+                    review_type: row.get(1)?,
+                    stage: row.get(2)?,
+                    design_version_id: row.get(3)?,
+                    work_unit_id: row.get(4)?,
+                    required_clean_fresh_runs: row.get(5)?,
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for sibling in siblings {
+        if phase_review_plan_is_complete(conn, phase_id, &sibling)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn phase_review_plan_is_complete(
     conn: &rusqlite::Connection,
     phase_id: i64,

@@ -178,7 +178,7 @@ pub(super) fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(exists)
 }
 
-pub(super) fn ensure_project(conn: &Connection, root: &Path) -> Result<()> {
+pub(crate) fn ensure_project(conn: &Connection, root: &Path) -> Result<()> {
     let root_path = root
         .canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
@@ -201,7 +201,7 @@ pub(super) fn ensure_project(conn: &Connection, root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
+pub(crate) fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result<()> {
     let agents_path = root.join("AGENTS.md");
     if !agents_path.exists() {
         return Ok(());
@@ -281,7 +281,7 @@ pub(super) fn sync_agents_md_authority(conn: &Connection, root: &Path) -> Result
     Ok(())
 }
 
-pub(super) fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
+pub(crate) fn sync_commit_message_policy(conn: &Connection) -> Result<()> {
     let project_id = project_id(conn)?;
     let source = "agent-workbench:commit-message";
     let summary = "Commit subjects must use `prefix: message` and must not contain internal milestone names or the literal review token.";

@@ -633,6 +633,7 @@ pub fn phase_close_ready(root: &Path, phase_id: i64) -> Result<PhaseCloseReadyOu
         )
     });
     let incomplete_reviews = count_incomplete_phase_reviews(&conn, phase_id)?;
+    let review_action = phase_review_lifecycle_action(&conn, phase.work_unit_id, Some(phase_id))?;
     items.push(if incomplete_reviews == 0 {
         PhaseCloseReadyItem::pass(
             "phase_reviews_clean",
@@ -641,7 +642,10 @@ pub fn phase_close_ready(root: &Path, phase_id: i64) -> Result<PhaseCloseReadyOu
     } else {
         PhaseCloseReadyItem::fail(
             "phase_reviews_clean",
-            "record clean phase review runs or waive approved exceptions",
+            review_action
+                .as_ref()
+                .map(|action| action.action.as_str())
+                .unwrap_or("record a clean phase review run for the printed review context"),
             format!("{incomplete_reviews} required phase review plans incomplete"),
         )
     });

@@ -166,7 +166,6 @@ pub struct NewReviewPlanTarget<'a> {
 pub struct ReviewPlanWaiver<'a> {
     pub review_plan_id: i64,
     pub reason: &'a str,
-    pub approval_authority_event_id: i64,
 }
 
 pub struct NewReviewRun<'a> {
@@ -262,7 +261,6 @@ pub struct ReviewPlanTargetOutcome {
 pub struct ReviewPlanWaiverOutcome {
     pub review_plan_id: i64,
     pub acceptance_record_id: i64,
-    pub authority_event_id: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

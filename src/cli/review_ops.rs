@@ -179,7 +179,6 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                     ReviewPlanWaiver {
                         review_plan_id: args.review_plan_id,
                         reason: &args.reason,
-                        approval_authority_event_id: args.authority,
                     },
                 )?;
                 println!("waived review plan");

@@ -20,7 +20,7 @@ items.
 | repeated user corrections are active | start a KPT review or record explicit deferral through user authority and acceptance |
 | required close review is missing | add `design_implementation_diff` and `implementation_review` plans, build review contexts, run fresh reviews |
 | required close review has stale or missing context evidence | use the classified review blocker output and pass its printed plan and target values to the shown `review run add` command |
-| required review plan was created for the wrong scope or is intentionally not required | record authority, then `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>` |
+| required review plan was created for the wrong scope or is intentionally not required | `agent-workbench review plan waive <review-plan-id> --reason "<reason>"` |
 | valid close-ready review finding has no closure | add a complete closure contract with surfaces, fix plan, tests, and verification plan |
 | finding is in scoped remediation | implement the printed closure contract, test it, then run `closure ready` |
 | eligible finding owner is inactive | run the exact printed `agent-workbench work remediate --finding <id>`; do not use generic activation |
@@ -58,7 +58,7 @@ agent-workbench acceptance add --target rule:<shadowed-rule-id> --type explicit_
 For an intentionally waived review plan:
 
 ```sh
-agent-workbench review plan waive <review-plan-id> --reason "<why the plan is not required>" --authority <authority-event-id>
+agent-workbench review plan waive <review-plan-id> --reason "<why the plan is not required>"
 ```
 
 For stale design-derived records:

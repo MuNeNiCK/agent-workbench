@@ -191,8 +191,6 @@ fn acceptance_success_confirmations_do_not_expose_target_ids() {
             &plan.review_plan_id.to_string(),
             "--reason",
             "approved",
-            "--authority",
-            &authority.authority_event_id.to_string(),
         ],
     );
 

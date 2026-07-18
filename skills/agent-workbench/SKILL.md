@@ -48,6 +48,9 @@ The wrapped CLI is the command authority. Use `agent-workbench help` and
 Common command groups include:
 
 - `agent-workbench init`
+- `agent-workbench update inspect`
+- `agent-workbench update apply --expected-current <identity>`
+- `agent-workbench update restore --backup <handle> --expected-current <identity>`
 - `agent-workbench status`
 - `agent-workbench next`
 - `agent-workbench doctor validation-links`
@@ -339,8 +342,8 @@ from current managed project state.
   Self-recorded clean runs must not be used to satisfy readiness gates.
 - If a required review plan was created for the wrong scope, is no longer
   required, or is intentionally superseded, do not inspect or alter private
-  managed state. Record the authority event, then run
-  `agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
+  managed state. Run `agent-workbench review plan waive <review-plan-id>
+  --reason "<reason>"`. The reasoned user action is the audit record.
 - For final completion checks, use a fresh unbiased review unless the user
   explicitly asks only for resume verification of known findings. Do not use a
   resume review as the final completion signal by default.

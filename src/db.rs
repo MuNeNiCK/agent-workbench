@@ -26,6 +26,7 @@ pub(crate) const SCHEMA_VERSION: i64 = 13;
 
 pub(crate) use migration::*;
 pub(crate) use mutation::*;
+pub(crate) use project::{ensure_project, sync_agents_md_authority, sync_commit_message_policy};
 pub(crate) use runtime::*;
 pub use status::*;
 

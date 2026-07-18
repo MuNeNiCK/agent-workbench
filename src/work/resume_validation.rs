@@ -95,8 +95,11 @@ pub(super) fn evaluate_resume_ready(
     if let Some(trace_counts) = trace_counts {
         let active_tasks_current = snapshot.active_task_ids.as_deref().unwrap_or("")
             == snapshot_active_task_ids(conn, target.work_unit_id)?;
-        let authority_refs_current =
-            snapshot.authority_refs.as_deref().unwrap_or("") == snapshot_authority_refs(conn)?;
+        let current_authority_refs = snapshot_authority_refs(conn)?;
+        let authority_refs_current = snapshot_entries_still_current(
+            snapshot.authority_refs.as_deref().unwrap_or(""),
+            &current_authority_refs,
+        );
         let review_scope_refs_current = snapshot.review_scope_refs.as_deref().unwrap_or("")
             == snapshot_review_scope_refs(conn, target.work_unit_id)?;
         let open_findings_current = snapshot.open_findings.as_deref().unwrap_or("")
@@ -110,7 +113,8 @@ pub(super) fn evaluate_resume_ready(
             (
                 "authority_refs_current",
                 authority_refs_current,
-                "active authority refs match suspend snapshot".to_string(),
+                "authority refs captured at suspend remain active; newer refs are loaded on resume"
+                    .to_string(),
             ),
             (
                 "review_scope_refs_current",

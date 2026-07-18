@@ -3,8 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::db::{current_phase_blocker, open_existing_project, project_id};
-use crate::design::{NewGeneralAcceptance, add_general_acceptance_in};
+use crate::db::{open_existing_project, project_id};
 use crate::rules::{RuleBindingInput, insert_rule_binding};
 
 use super::{evaluation::*, *};
@@ -300,78 +299,66 @@ pub fn waive_review_plan(
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let blocker = current_phase_blocker(&tx)?;
-    let mut resolver_next = None;
-    let selected = if let Some(blocker) = blocker.as_ref() {
-        blocker.review_plan_id == Some(input.review_plan_id)
-            && blocker
-                .next_action
-                .contains(&format!("review plan waive {}", input.review_plan_id))
-    } else {
-        let selected_plan: Option<i64> = tx
-            .query_row(
-                r#"
-                select p.id from review_plans p
-                join work_unit_activations active on active.work_unit_id=p.work_unit_id
-                  and active.status in ('active','resumed')
-                where p.project_id=?1 and p.required=1 and p.status!='clean'
-                  and (
-                    p.design_version_id is null
-                    or exists (
-                      select 1
-                      from task_derivations td
-                      join design_requirements r on r.id=td.design_requirement_id
-                      join design_versions v on v.id=r.design_version_id
-                      join design_packages package on package.id=v.design_package_id
-                      join tasks t on t.id=td.task_id
-                      where r.design_version_id=p.design_version_id
-                        and t.work_unit_id=p.work_unit_id
-                        and td.status in ('active','stale')
-                        and package.current_design_version_id=r.design_version_id
-                    )
-                  )
-                  and not exists (
-                    select 1 from acceptance_records ar
-                    where ar.target_type='review_plan' and ar.review_plan_id=p.id
-                      and ar.status='approved'
-                      and ar.acceptance_type in ('explicit_exception','stale_accepted')
-                  )
-                order by case p.stage when 'design-ready' then 0 when 'implementation-ready' then 1 when 'close-ready' then 2 else 3 end, p.id
-                limit 1
-                "#,
-                params![project_id],
-                |row| row.get(0),
+    let waivable = tx.query_row(
+        r#"
+        select exists(
+          select 1 from review_plans p
+          where p.id=?1 and p.project_id=?2 and p.required=1 and p.status!='clean'
+            and (
+              p.design_version_id is null
+              or exists (
+                select 1
+                from task_derivations td
+                join design_requirements r on r.id=td.design_requirement_id
+                join design_versions v on v.id=r.design_version_id
+                join design_packages package on package.id=v.design_package_id
+                join tasks t on t.id=td.task_id
+                where r.design_version_id=p.design_version_id
+                  and t.work_unit_id=p.work_unit_id
+                  and td.status in ('active','stale')
+                  and package.current_design_version_id=r.design_version_id
+              )
             )
-            .optional()?;
-        if let Some(review_plan_id) = selected_plan {
-            resolver_next = Some(format!("review plan waive {review_plan_id}"));
-        }
-        selected_plan == Some(input.review_plan_id)
-    };
-    if !selected {
-        let next = blocker
-            .as_ref()
-            .map(|blocker| blocker.next_action.clone())
-            .or(resolver_next)
-            .unwrap_or_else(|| "complete the resolver-selected lifecycle action".to_string());
-        bail!("review plan waive is not selected; next: {next}");
-    }
-    let target = format!("review-plan:{}", input.review_plan_id);
-    let outcome = add_general_acceptance_in(
-        &tx,
-        project_id,
-        NewGeneralAcceptance {
-            target: &target,
-            acceptance_type: "explicit_exception",
-            reason: input.reason,
-            approval_authority_event_id: input.approval_authority_event_id,
-        },
+            and not exists (
+              select 1 from acceptance_records ar
+              where ar.target_type='review_plan' and ar.review_plan_id=p.id
+                and ar.status='approved'
+                and ar.acceptance_type in ('explicit_exception','stale_accepted')
+            )
+        )
+        "#,
+        params![input.review_plan_id, project_id],
+        |row| row.get::<_, bool>(0),
     )?;
+    if !waivable {
+        bail!(
+            "review plan {} is not a current required incomplete plan",
+            input.review_plan_id
+        );
+    }
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id,target_type,review_plan_id,acceptance_type,reason,scope,
+            created_by,status,approved_at,created_at,review_impact
+        ) values (
+            ?1,'review_plan',?2,'explicit_exception',?3,?4,
+            'user','approved',current_timestamp,current_timestamp,
+            'user waived a current required incomplete review plan'
+        )
+        "#,
+        params![
+            project_id,
+            input.review_plan_id,
+            input.reason,
+            format!("review-plan:{}", input.review_plan_id)
+        ],
+    )?;
+    let acceptance_record_id = tx.last_insert_rowid();
     tx.commit()?;
     Ok(ReviewPlanWaiverOutcome {
         review_plan_id: input.review_plan_id,
-        acceptance_record_id: outcome.acceptance_record_id,
-        authority_event_id: outcome.authority_event_id,
+        acceptance_record_id,
     })
 }
 

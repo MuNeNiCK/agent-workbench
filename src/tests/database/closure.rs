@@ -23,6 +23,7 @@ fn v10_to_v11_migration_installs_completion_inheritance_schema() {
     .unwrap();
     drop(conn);
 
+    apply_test_update(temp.path());
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
         Some(SCHEMA_VERSION)
@@ -152,6 +153,7 @@ fn current_legacy_inheritance_view_is_rebuilt_atomically_and_once() {
     );
     drop(conn);
 
+    apply_test_update(temp.path());
     let conn = crate::db::open_existing_project(temp.path()).unwrap();
     assert_eq!(
         conn.query_row(
@@ -445,8 +447,8 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
+    apply_test_update(temp.path());
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let older_status: String = conn
         .query_row(

@@ -37,7 +37,15 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
             .with_context(|| format!("failed to create directory {}", directory.display()))?;
     }
 
+    let existing = ledger_path
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > 0);
     let conn = open_ledger(&ledger_path)?;
+    if existing && project_requires_update(&conn)? {
+        anyhow::bail!(
+            "existing project state requires an explicit update; run agent-workbench update inspect"
+        );
+    }
     migrate(&conn)?;
     ensure_project(&conn, root)?;
     sync_agents_md_authority(&conn, root)?;
@@ -91,7 +99,6 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
     let conn = integrity
         .connection
         .context("integrity evaluator lost ledger connection")?;
-    migrate_if_needed(&conn)?;
     let project_name = conn
         .query_row("select name from projects order by id limit 1", [], |row| {
             row.get::<_, String>(0)
@@ -145,7 +152,6 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     let conn = integrity
         .connection
         .context("integrity evaluator lost ledger connection")?;
-    migrate_if_needed(&conn)?;
     let owners = current_owner_actions(&conn)?;
     if owners.len() > 1 || owners.iter().any(|owner| owner.blocker_kind.is_some()) {
         return Ok(NextAction::OwnerActions { owners });

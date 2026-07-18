@@ -135,6 +135,38 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
         where rb.project_id = ?1
           and rb.status = 'active'
           and (
+            rb.scope_type!='design_package'
+            or rb.authority_event_id is null
+            or exists (
+              select 1 from design_packages dp
+              join design_versions dv on dv.id=dp.current_design_version_id
+              where dp.design_key=rb.scope_key
+                and dv.approved_by_authority_event_id=rb.authority_event_id
+            )
+          )
+          and (
+            rb.validation_gate_id is null
+            or exists (
+              select 1 from current_task_validation_gates vg
+              left join validation_gate_templates gt on gt.id=vg.template_id
+              left join design_versions dv on dv.id=gt.design_version_id
+              left join design_packages dp on dp.id=dv.design_package_id
+              where vg.id=rb.validation_gate_id
+                and (gt.id is null or dp.current_design_version_id=gt.design_version_id)
+            )
+          )
+          and (
+            rb.review_plan_id is null
+            or exists (
+              select 1 from review_plans rp
+              left join design_versions dv on dv.id=rp.design_version_id
+              left join design_packages dp on dp.id=dv.design_package_id
+              where rp.id=rb.review_plan_id
+                and (rp.design_version_id is null
+                  or dp.current_design_version_id=rp.design_version_id)
+            )
+          )
+          and (
             rb.scope_type = 'project'
             or rb.scope_type = 'design_package'
             or rb.scope_key = ?2

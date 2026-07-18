@@ -133,14 +133,11 @@ fn review_plan_waiver_skips_non_current_design_plan() {
     };
     let obsolete = plan(first.design_version_id, "obsolete design");
     let selected = plan(current.design_version_id, "current design");
-    let authority = approval_authority_event(temp.path());
-
     let waived = waive_review_plan(
         temp.path(),
         ReviewPlanWaiver {
             review_plan_id: selected.review_plan_id,
             reason: "current plan exception",
-            approval_authority_event_id: authority,
         },
     )
     .unwrap();
@@ -151,12 +148,11 @@ fn review_plan_waiver_skips_non_current_design_plan() {
             ReviewPlanWaiver {
                 review_plan_id: obsolete.review_plan_id,
                 reason: "obsolete plan must not be selected",
-                approval_authority_event_id: authority,
             },
         )
         .unwrap_err()
         .to_string()
-        .contains("review plan waive is not selected")
+        .contains("is not a current required incomplete plan")
     );
 }
 
@@ -231,12 +227,152 @@ fn review_plan_waiver_skips_earlier_clean_plan() {
         ReviewPlanWaiver {
             review_plan_id: open.review_plan_id,
             reason: "review capacity exhausted",
-            approval_authority_event_id: approval_authority_event(temp.path()),
         },
     )
     .unwrap();
 
     assert_eq!(waived.review_plan_id, open.review_plan_id);
+}
+
+#[test]
+fn phase_review_waiver_does_not_depend_on_the_global_resolver_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "phase review lifecycle", None).unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "review",
+            title: "Review",
+            kind: "implementation",
+            order: 1,
+            reason: Some("regression fixture"),
+        },
+    )
+    .unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "phase-waiver-regression",
+            review_type: "implementation_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 1,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 1,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let add_plan = |scope| {
+        add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: Some(scope),
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: Some(policy.review_policy_id),
+                review_scope_id: None,
+            },
+        )
+        .unwrap()
+    };
+    let exhausted = add_plan("original phase review");
+    let replacement = add_plan("replacement phase review");
+    for plan_id in [exhausted.review_plan_id, replacement.review_plan_id] {
+        add_phase_review_target(temp.path(), plan_id, phase.phase_id).unwrap();
+    }
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: replacement.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!("phase:{}", phase.phase_id)),
+            prompt_deviations: None,
+            result_summary: Some("clean replacement"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: Some("fresh-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output"),
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update review_plans set status='exhausted' where id=?1",
+        params![exhausted.review_plan_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update work_units set status='blocked' where id=?1",
+        params![work.work_unit_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let before = phase_close_ready(temp.path(), phase.phase_id).unwrap();
+    let review_gate = before
+        .items
+        .iter()
+        .find(|item| item.name == "phase_reviews_clean")
+        .unwrap();
+    assert_eq!(review_gate.result, "fail");
+    assert_eq!(
+        review_gate.blocking_action.as_deref(),
+        Some(
+            format!(
+                "agent-workbench review plan waive {} --reason \"<reason>\"",
+                exhausted.review_plan_id
+            )
+            .as_str()
+        )
+    );
+    let status = project_status(temp.path()).unwrap();
+    assert_eq!(
+        status
+            .owner_actions
+            .iter()
+            .find(|owner| owner.owner_id == work.work_unit_id)
+            .unwrap()
+            .next_action,
+        review_gate.blocking_action.as_deref().unwrap()
+    );
+    waive_review_plan(
+        temp.path(),
+        ReviewPlanWaiver {
+            review_plan_id: exhausted.review_plan_id,
+            reason: "replaced by the clean review for the same phase",
+        },
+    )
+    .unwrap();
+    let after = phase_close_ready(temp.path(), phase.phase_id).unwrap();
+    assert_eq!(
+        after
+            .items
+            .iter()
+            .find(|item| item.name == "phase_reviews_clean")
+            .unwrap()
+            .result,
+        "pass"
+    );
 }
 
 #[test]

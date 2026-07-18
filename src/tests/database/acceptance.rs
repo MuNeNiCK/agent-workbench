@@ -43,7 +43,7 @@ fn init_migrates_existing_acceptance_records_shape() {
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
         r#"
@@ -127,6 +127,9 @@ fn status_migrates_existing_acceptance_records_shape_without_reinit() {
         .unwrap();
     drop(conn);
 
+    let blocked = project_status(temp.path()).unwrap();
+    assert_eq!(blocked.project_integrity.result, "blocked");
+    apply_test_update(temp.path());
     let status = project_status(temp.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let schema_sql: String = conn
@@ -168,7 +171,7 @@ fn init_repairs_acceptance_record_references_rewritten_by_legacy_rename() {
         .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let broken_count: i64 = conn
         .query_row(

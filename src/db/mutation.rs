@@ -59,9 +59,7 @@ pub(super) fn finding_next_action(state: FindingActionState<'_>) -> String {
         );
     }
     if matches!(plan_status, "exhausted" | "needs_user_decision") {
-        return format!(
-            "agent-workbench authority event add --type user_instruction --summary \"review plan decision\" --scope \"review-plan:{review_plan_id}\"; then agent-workbench review plan waive {review_plan_id} --reason \"<reason>\" --authority <authority-event-id>"
-        );
+        return format!("agent-workbench review plan waive {review_plan_id} --reason \"<reason>\"");
     }
     if !plan_required || plan_accepted {
         return format!(

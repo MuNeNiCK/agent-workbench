@@ -102,10 +102,11 @@ fn init_rejects_legacy_cross_project_work_record_links() {
     .unwrap();
     drop(conn);
 
-    let result = init_project(temp.path());
+    let inspection = inspect_update(temp.path()).unwrap();
+    let result = apply_update(temp.path(), &inspection.current_identity);
 
     assert!(result.is_err());
-    let error = result.unwrap_err().to_string();
+    let error = format!("{:#}", result.unwrap_err());
     assert!(
         error.contains("work_record_commands contains cross-project links"),
         "{error}"
@@ -165,10 +166,11 @@ fn init_rejects_legacy_links_with_missing_repository_parent_rows() {
     .unwrap();
     drop(conn);
 
-    let result = init_project(temp.path());
+    let inspection = inspect_update(temp.path()).unwrap();
+    let result = apply_update(temp.path(), &inspection.current_identity);
 
     assert!(result.is_err());
-    let error = result.unwrap_err().to_string();
+    let error = format!("{:#}", result.unwrap_err());
     assert!(
         error.contains("command_usages contains rows without a valid project_id"),
         "{error}"
@@ -235,10 +237,11 @@ fn init_rejects_legacy_links_with_missing_repository_parent_rows() {
     .unwrap();
     drop(conn);
 
-    let result = init_project(temp.path());
+    let inspection = inspect_update(temp.path()).unwrap();
+    let result = apply_update(temp.path(), &inspection.current_identity);
 
     assert!(result.is_err());
-    let error = result.unwrap_err().to_string();
+    let error = format!("{:#}", result.unwrap_err());
     assert!(
         error.contains("work_record_commits contains invalid git links"),
         "{error}"
@@ -352,7 +355,7 @@ fn init_marks_pre_marker_work_record_git_links_as_auto_linked() {
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
 
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let commit_auto_linked: i64 = conn
@@ -473,7 +476,7 @@ fn init_preserves_intermediate_auto_linked_repository_scope() {
     .unwrap();
     drop(conn);
 
-    init_project(temp.path()).unwrap();
+    apply_test_update(temp.path());
 
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let markers: (i64, i64) = conn

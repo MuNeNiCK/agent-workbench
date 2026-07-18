@@ -376,4 +376,25 @@ fn current_scope_rules_include_review_policy_and_validation_gate_rules() {
             && rule.review_policy_id == plan.review_policy_id
             && rule.review_plan_id == Some(plan.review_plan_id)
     }));
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update validation_gates set status='closed' where id=?1",
+        params![gate.validation_gate_id],
+    )
+    .unwrap();
+    drop(conn);
+    let current_rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("current"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        current_rules
+            .iter()
+            .all(|rule| rule.validation_gate_id != Some(gate.validation_gate_id))
+    );
 }

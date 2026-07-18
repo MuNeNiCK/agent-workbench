@@ -1,5 +1,32 @@
 # Reference
 
+## Explicit state recovery
+
+`agent-workbench update inspect` prints the exact identity of the installed
+project state and the content-addressed backups available to the project.
+
+When `status` or `next` reports that an update is required, apply it only
+against that inspected identity:
+
+```bash
+agent-workbench update apply --expected-current <current-identity>
+```
+
+The update runs against a staged copy, preserves the source as a
+content-addressed backup, validates the result, and replaces the project state
+only after the complete update succeeds. Ordinary commands do not apply it.
+
+Restore a verified backup only against the identity just inspected:
+
+```bash
+agent-workbench update restore --backup <backup-handle> --expected-current <current-identity>
+```
+
+Restore verifies the backup hash, recognized schema, SQLite integrity,
+foreign keys, and project identity. Before atomic replacement it preserves the
+current state as another content-addressed recovery backup. Repeating an already
+applied restore is safe.
+
 ## Installed skill wrapper
 
 The installed skill includes `scripts/agent-workbench.sh`.
@@ -99,7 +126,7 @@ so agents do not create unbound implementation work.
 
 If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run
-`agent-workbench review plan waive <review-plan-id> --reason "<reason>" --authority <authority-event-id>`.
+`agent-workbench review plan waive <review-plan-id> --reason "<reason>"`.
 This records an approved exception that readiness gates understand without
 private-state changes outside the CLI.
 

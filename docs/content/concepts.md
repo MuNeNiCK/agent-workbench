@@ -1,5 +1,32 @@
 # Concepts
 
+## Product principles
+
+Agent Workbench is an operational layer for coding agents, not a substitute for
+the user's product decisions. Its durable state must preserve the original work,
+accepted design decisions, user corrections, and the evidence needed to resume
+without switching to whichever problem is most recent.
+
+The following are compatibility requirements:
+
+- Simplifying the implementation must not silently remove a supported use case
+  or CLI capability. A replacement must preserve the observable workflow and be
+  documented before the old surface is removed.
+- A gate and the lifecycle resolver must agree. Every recovery action printed by
+  a gate must be executable in that same state, with the exact target and command
+  needed to make progress.
+- Ordinary status, planning, and lifecycle commands must not rewrite the schema
+  as a side effect. Incompatible state changes use an explicit `update` command
+  with inspection, a staged atomic update, a content-addressed backup, integrity
+  checks, and a reversible restore.
+- New mechanisms require a concrete user need that existing ordinary commands
+  cannot meet. Review evidence and owner decisions need clear audit records, but
+  the default local workflow does not require signing keys, trust stores,
+  capabilities, system paths, or an external administrator.
+- Historical releases are evidence for regression analysis, not the product
+  specification. Current documented use cases, accepted design, corrections,
+  and tests define the behavior that must be preserved.
+
 ## Project state
 
 Agent Workbench keeps structured operational state inside the project. It is

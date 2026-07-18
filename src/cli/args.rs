@@ -33,6 +33,11 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Initialize managed project state.
     Init,
+    /// Inspect or restore versioned project state.
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
     /// Print public project status.
     Status,
     /// Print the next suggested action.
@@ -197,4 +202,28 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ExportCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum UpdateCommand {
+    /// Print the current identity and available content-addressed backups.
+    Inspect,
+    /// Apply the pending schema/state update after inspecting current identity.
+    Apply(UpdateApplyArgs),
+    /// Atomically restore a verified content-addressed backup.
+    Restore(UpdateRestoreArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UpdateApplyArgs {
+    #[arg(long)]
+    pub(crate) expected_current: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UpdateRestoreArgs {
+    #[arg(long)]
+    pub(crate) backup: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }

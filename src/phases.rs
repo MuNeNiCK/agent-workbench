@@ -2,6 +2,7 @@ mod completion;
 mod operations;
 mod rescope;
 
+pub(crate) use completion::phase_review_lifecycle_action;
 use completion::*;
 pub use operations::*;
 use rescope::*;
@@ -198,6 +199,14 @@ struct PhaseReviewPlan {
     design_version_id: Option<i64>,
     work_unit_id: i64,
     required_clean_fresh_runs: i64,
+}
+
+pub(crate) struct PhaseReviewLifecycleAction {
+    pub(crate) phase_id: i64,
+    pub(crate) review_plan_id: i64,
+    pub(crate) review_type: String,
+    pub(crate) stage: String,
+    pub(crate) action: String,
 }
 
 #[derive(Debug)]
