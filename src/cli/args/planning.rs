@@ -6,8 +6,17 @@ use clap::{Args, Subcommand};
 pub(crate) enum TaskCommand {
     Add(TaskAddArgs),
     List(TaskListArgs),
+    Block(TaskTransitionArgs),
+    Unblock(TaskTransitionArgs),
     Close(TaskCloseArgs),
     AcceptOutOfScope(TaskAcceptOutOfScopeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TaskTransitionArgs {
+    pub(crate) task_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -20,13 +29,6 @@ pub(crate) enum PhaseCommand {
         #[command(subcommand)]
         command: PhaseDependencyCommand,
     },
-    Trace {
-        #[command(subcommand)]
-        command: PhaseTraceCommand,
-    },
-    Inventory(PhaseInventoryArgs),
-    Rescope(PhaseRescopeArgs),
-    Split(PhaseSplitArgs),
     CloseReady(PhaseCloseReadyArgs),
     Close(PhaseCloseArgs),
     AcceptOutOfScope(PhaseAcceptOutOfScopeArgs),
@@ -109,62 +111,9 @@ pub(crate) struct PhaseDependencyAcceptArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum PhaseTraceCommand {
-    List(PhaseTraceListArgs),
-    Decide(PhaseTraceDecideArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PhaseTraceListArgs {
-    pub(crate) phase_id: i64,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PhaseTraceDecideArgs {
+    pub(crate) expected_current: String,
     #[arg(long)]
-    pub(crate) phase: i64,
-    #[arg(long)]
-    pub(crate) record: String,
-    #[arg(long)]
-    pub(crate) decision: String,
-    #[arg(long)]
-    pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) authority: i64,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PhaseInventoryArgs {
-    pub(crate) phase_id: i64,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PhaseRescopeArgs {
-    #[arg(long)]
-    pub(crate) phase: i64,
-    #[arg(long)]
-    pub(crate) to_work_unit: i64,
-    #[arg(long, default_value = "require-decisions")]
-    pub(crate) shared_record_policy: String,
-    #[arg(long)]
-    pub(crate) dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PhaseSplitArgs {
-    pub(crate) phase_id: i64,
-    #[arg(long)]
-    pub(crate) title: String,
-    #[arg(long)]
-    pub(crate) reason: String,
-    #[arg(long, default_value = "require-decisions")]
-    pub(crate) shared_record_policy: String,
-    #[arg(long)]
-    pub(crate) dry_run: bool,
+    pub(crate) risk: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -187,7 +136,9 @@ pub(crate) struct PhaseAcceptOutOfScopeArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) risk: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -325,10 +276,6 @@ pub(crate) struct GateTemplateListArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum TraceCommand {
     DeriveTask(TraceDeriveTaskArgs),
-    Derivation {
-        #[command(subcommand)]
-        command: TraceDerivationCommand,
-    },
 }
 
 #[derive(Debug, Args)]
@@ -347,17 +294,6 @@ pub(crate) struct TraceDeriveTaskArgs {
     pub(crate) item_title: Option<String>,
     #[arg(long)]
     pub(crate) completion_condition: Option<String>,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum TraceDerivationCommand {
-    List(TraceDerivationListArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct TraceDerivationListArgs {
-    #[arg(long)]
-    pub(crate) design: i64,
 }
 
 #[derive(Debug, Subcommand)]

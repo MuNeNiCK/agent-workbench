@@ -29,25 +29,43 @@ pub(super) fn collapse_existing_canonical_membership(
     }
     let phase = conn
         .query_row(
-            r#"select p.id from work_phase_task_memberships m
+            r#"select p.id,p.status,p.design_version_id,
+                      (select design_version_id from design_requirements where id=?4)
+               from work_phase_task_memberships m
                join work_phases p on p.id=m.phase_id
                where m.task_id=?1 and m.project_id=?2 and p.project_id=?2
-                 and p.work_unit_id=?3 and p.status='closed'"#,
+                 and p.work_unit_id=?3"#,
             params![
                 identity.canonical_task_id,
                 identity.project_id,
-                identity.work_unit_id
+                identity.work_unit_id,
+                identity.current_requirement_id
             ],
-            |row| row.get::<_, i64>(0),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
         )
         .optional()?;
-    let Some(phase_id) = phase else {
+    let Some((phase_id, phase_status, phase_design_version_id, current_design_version_id)) = phase
+    else {
         bail!(
             "canonical task is already phase-assigned for {}",
             identity.requirement_key
         );
     };
-    replace_historical_memberships(conn, identity, phase_id)?;
+    if phase_status == "closed" {
+        replace_historical_memberships(conn, identity, phase_id)?;
+    } else if phase_design_version_id == Some(current_design_version_id) {
+        bail!(
+            "canonical task is already phase-assigned for {}",
+            identity.requirement_key
+        );
+    }
     Ok(true)
 }
 

@@ -7,23 +7,6 @@ It gives agents a project-local SQLite ledger for work units, design packages,
 tasks, traceability, validation gates, repository evidence, reusable commands,
 review loops, KPT checks, and work records.
 
-v0.1.16 separates trusted reviewer claims from owner decisions. The closed
-`signed-envelope-v1` ingress resolves canonical principals; immutable owner
-grants issue exact one-shot capabilities for review, finding, and verification
-adjudication. Reviewer labels and legacy result flags never become authority.
-
-Valid close-review findings support a scoped remediation interval: register the
-closure contract, implement the fix while the finding stays open, then require
-an exact-context resume review and verification before a later fresh completion
-review.
-
-Legacy ledgers that fail migration with invalid validation-run links have an
-official recovery path. Run `agent-workbench doctor validation-links` for a
-read-only plan, then `agent-workbench doctor validation-links --repair`. Repair
-creates a project-local backup, records immutable field-level audit entries,
-and commits only after normal migration and integrity validation pass. Direct
-SQLite edits are neither required nor recommended.
-
 ## Install
 
 Requirements: Linux x86_64 with GitHub CLI `gh skill`, `curl`, `sed`, `tar`,

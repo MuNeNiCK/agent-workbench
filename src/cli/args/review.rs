@@ -4,15 +4,7 @@ use clap::{Args, Subcommand};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ReviewCommand {
-    Adjudicate(ReviewAdjudicateArgs),
-    Correction {
-        #[command(subcommand)]
-        command: ReviewCorrectionCommand,
-    },
-    Scope {
-        #[command(subcommand)]
-        command: ReviewScopeCommand,
-    },
+    Decide(ReviewDecideArgs),
     Policy {
         #[command(subcommand)]
         command: ReviewPolicyCommand,
@@ -47,8 +39,10 @@ pub(crate) struct ReviewCorrectionAddArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct ReviewAdjudicateArgs {
-    pub(crate) run_id: i64,
+pub(crate) struct ReviewDecideArgs {
+    pub(crate) claim_id: i64,
+    #[arg(long)]
+    pub(crate) plan: i64,
     #[arg(long)]
     pub(crate) decision: String,
     #[arg(long)]
@@ -110,13 +104,8 @@ pub(crate) struct ReviewPolicyAddArgs {
 pub(crate) enum ReviewPlanCommand {
     Add(ReviewPlanAddArgs),
     List,
-    Context(ReviewPlanContextArgs),
     /// Record an approved exception for a required review plan.
     Waive(ReviewPlanWaiveArgs),
-    Target {
-        #[command(subcommand)]
-        command: ReviewPlanTargetCommand,
-    },
 }
 
 #[derive(Debug, Args)]
@@ -135,6 +124,8 @@ pub(crate) struct ReviewPlanAddArgs {
     pub(crate) policy: Option<i64>,
     #[arg(long)]
     pub(crate) review_scope: Option<i64>,
+    #[arg(long)]
+    pub(crate) phase: Option<i64>,
     #[arg(long, default_value_t = true)]
     pub(crate) required: bool,
 }
@@ -150,7 +141,9 @@ pub(crate) struct ReviewPlanWaiveArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) risk: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,13 +222,21 @@ pub(crate) struct ReviewRunListArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum FindingCommand {
     Decide(FindingDecideArgs),
-    Reopen(FindingReopenArgs),
     Add(FindingAddArgs),
-    Classify(FindingClassifyArgs),
     List(FindingListArgs),
     Verify(FindingVerifyArgs),
-    /// Accept an open finding out of scope using recorded authority.
+    Remediate(FindingRemediateArgs),
+    /// Accept an open finding out of scope with an audited reason and risk.
     AcceptOutOfScope(FindingAcceptOutOfScopeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct FindingRemediateArgs {
+    pub(crate) finding_id: i64,
+    #[arg(long, conflicts_with = "replace_work")]
+    pub(crate) work: Option<i64>,
+    #[arg(long, conflicts_with = "work")]
+    pub(crate) replace_work: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -252,6 +253,12 @@ pub(crate) struct FindingReopenArgs {
 #[derive(Debug, Args)]
 pub(crate) struct FindingDecideArgs {
     pub(crate) finding_id: i64,
+    #[arg(long)]
+    pub(crate) closure: i64,
+    #[arg(long)]
+    pub(crate) attempt: i64,
+    #[arg(long)]
+    pub(crate) claim: i64,
     #[arg(long)]
     pub(crate) decision: String,
     #[arg(long)]
@@ -288,13 +295,15 @@ pub(crate) struct FindingAcceptOutOfScopeArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) risk: String,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct FindingAddArgs {
     #[arg(long)]
-    pub(crate) run: i64,
+    pub(crate) run: Option<i64>,
     #[arg(long = "type")]
     pub(crate) finding_type: String,
     #[arg(long)]
@@ -323,13 +332,17 @@ pub(crate) struct FindingListArgs {
 #[derive(Debug, Args)]
 pub(crate) struct FindingVerifyArgs {
     #[arg(long)]
-    pub(crate) run: i64,
-    #[arg(long)]
     pub(crate) finding: i64,
     #[arg(long)]
     pub(crate) closure: i64,
     #[arg(long)]
+    pub(crate) attempt: i64,
+    #[arg(long)]
     pub(crate) result: String,
+    #[arg(long, default_value = "external-verifier")]
+    pub(crate) producer: String,
+    #[arg(long, default_value = "current-closure-scope")]
+    pub(crate) scope_digest: String,
     #[arg(long)]
     pub(crate) notes: Option<String>,
 }
@@ -337,11 +350,6 @@ pub(crate) struct FindingVerifyArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ClosureCommand {
     Add(ClosureAddArgs),
-    CorrectionBegin(ClosureCorrectionBeginArgs),
-    Transition {
-        #[command(subcommand)]
-        command: ClosureTransitionCommand,
-    },
     Ready(ClosureReadyArgs),
     Supersede(ClosureSupersedeArgs),
 }
@@ -394,7 +402,7 @@ pub(crate) struct ClosureSupersedeArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
+    pub(crate) expected_current: String,
     #[arg(long)]
     pub(crate) citations: Option<String>,
 }
@@ -428,6 +436,14 @@ pub(crate) struct ClosureAddArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum AcceptanceCommand {
     Add(AcceptanceAddArgs),
+    Revoke(AcceptanceRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AcceptanceRevokeArgs {
+    pub(crate) acceptance_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]
@@ -443,13 +459,12 @@ pub(crate) struct AcceptanceAddArgs {
     #[arg(long)]
     pub(crate) reason: String,
     #[arg(long)]
-    pub(crate) authority: i64,
+    pub(crate) risk: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum KptCommand {
     Start(KptStartArgs),
-    List(KptListArgs),
     Close(KptCloseArgs),
     Item {
         #[command(subcommand)]
@@ -485,6 +500,14 @@ pub(crate) enum KptItemCommand {
     Add(KptItemAddArgs),
     List(KptItemListArgs),
     Convert(Box<KptItemConvertArgs>),
+    Dismiss(KptItemDismissArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct KptItemDismissArgs {
+    pub(crate) item: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Args)]
@@ -647,6 +670,8 @@ pub(crate) struct StaleRecordDispositionArgs {
     pub(crate) record_id: i64,
     #[arg(long)]
     pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }
 
 #[derive(Debug, Args)]

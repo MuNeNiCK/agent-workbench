@@ -160,7 +160,7 @@ fn reconciliation_inherits_completed_membership_from_closed_phase() {
         )
         .unwrap();
         db.execute(
-            "insert into work_phase_events(project_id,phase_id,event_type,reason,next_status,created_at) values (1,?1,'closed','fixture','closed',current_timestamp)",
+            "insert into work_phase_events(project_id,phase_id,event_type,reason,next_status,created_at) values (1,?1,'closed','fixture','closed',(select closed_at from work_phases where id=?1))",
             params![phase.phase_id],
         )
         .unwrap();

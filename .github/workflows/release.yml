@@ -39,6 +39,13 @@ jobs:
         run: |
           set -eu
           scripts/build-release-assets.sh "$GITHUB_REF_NAME" "$PWD/dist"
+          metadata="dist/agent-workbench-${GITHUB_REF_NAME}-release-metadata.json"
+          jq -e --arg tag "$GITHUB_REF_NAME" --arg commit "$(git rev-parse HEAD)" '
+            .tag == $tag and .version == ($tag | ltrimstr("v")) and
+            .commit == $commit and .peeled_tag_commit == $commit and
+            .schema.source_version == 13 and .schema.target_version == 14 and
+            (.schema.source_profiles | length) == 4 and (.assets | length) == 5
+          ' "$metadata" >/dev/null
           test "$(tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-linux-x86_64.tar.gz")" = agent-workbench
           if tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-skill.tar.gz" | grep -E '(^|/)\.agent-workbench/|(^|/)\.agents/' ; then exit 1; fi
           if tar -tzf "dist/agent-workbench-${GITHUB_REF_NAME}-docs.tar.gz" | grep -E '(^|/)\.agent-workbench/|(^|/)\.agents/' ; then exit 1; fi
@@ -59,15 +66,14 @@ jobs:
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" init
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" status | grep -Fx initialized >/dev/null
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" review run add --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review adjudicate --help >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review decide --help >/dev/null
           AGENT_WORKBENCH_BIN="$binary" "$wrapper" finding decide --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" verification adjudicate --help >/dev/null
-          work_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" work start 'release exercise' | sed -n 's/^work_unit_id: //p')"
-          policy_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review policy add --name release-exercise --type implementation_review | sed -n 's/^review_policy_id: //p')"
-          plan_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan add --work-unit "$work_id" --type implementation_review --stage close-ready --required --policy "$policy_id" | sed -n 's/^review_plan_id: //p')"
-          run_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review run add --plan "$plan_id" --type fresh --purpose new_unbiased_review --clean --provenance external_agent --provenance-ref release-exercise:review --external-agent-id release-exercise-agent | sed -n 's/^review_run_id: //p')"
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review adjudicate "$run_id" --decision accepted --reason 'release exercise accepted' --expected-current pending >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan list | grep -F ':clean required=true]' >/dev/null
+          work_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" work start 'release exercise' | sed -n 's/^handle: work://p')"
+          policy_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review policy add --name release-exercise --type implementation_review | sed -n 's/^handle: review_policy://p')"
+          plan_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan add --work-unit "$work_id" --type implementation_review --stage close-ready --required --policy "$policy_id" | sed -n 's/^handle: review_plan://p')"
+          claim_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review run add --plan "$plan_id" --type fresh --purpose new_unbiased_review --clean --provenance external_agent --provenance-ref release-exercise:review --external-agent-id release-exercise-agent | sed -n 's/^claim_handle: claim://p')"
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review decide "$claim_id" --plan "$plan_id" --decision accept --reason 'release exercise accepted' --expected-current none >/dev/null
+          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan list | grep -Fx 'state: clean' >/dev/null
           scripts/check-release-ledger-compatibility.sh "$binary"
 
       - name: Confirm observer-only boundary
