@@ -2,12 +2,16 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod authority;
 mod evidence;
+mod migration;
 mod planning;
 mod review;
 mod work;
 
+pub(crate) use authority::*;
 pub(crate) use evidence::*;
+pub(crate) use migration::*;
 pub(crate) use planning::*;
 pub(crate) use review::*;
 pub(crate) use work::*;
@@ -29,16 +33,19 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Initialize managed project state.
     Init,
-    /// Explicitly inspect, reset, or restore the project ledger.
-    Update(UpdateArgs),
     /// Print public project status.
     Status,
     /// Print the next suggested action.
     Next,
-    /// Diagnose project-state integrity without changing it.
+    /// Diagnose and repair supported compatibility problems.
     Doctor {
         #[command(subcommand)]
         command: DoctorCommand,
+    },
+    /// Migrate supported historical project state.
+    Migration {
+        #[command(subcommand)]
+        command: MigrationCommand,
     },
     /// Manage work units and activation state.
     Work {
@@ -61,6 +68,11 @@ pub(crate) enum Command {
     Command {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+    /// Record Git evidence using the design-level CLI spelling.
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
     },
     /// Query applicable rules.
     Rules {
@@ -87,6 +99,11 @@ pub(crate) enum Command {
     Phase {
         #[command(subcommand)]
         command: PhaseCommand,
+    },
+    /// Manage project decisions.
+    Decision {
+        #[command(subcommand)]
+        command: DecisionCommand,
     },
     /// Manage design package drafts.
     Design {
@@ -133,6 +150,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: FindingCommand,
     },
+    /// Adjudicate immutable verification claims.
+    Verification {
+        #[command(subcommand)]
+        command: VerificationCommand,
+    },
     /// Manage finding closure records.
     Closure {
         #[command(subcommand)]
@@ -142,6 +164,11 @@ pub(crate) enum Command {
     Acceptance {
         #[command(subcommand)]
         command: AcceptanceCommand,
+    },
+    /// Manage authority events.
+    Authority {
+        #[command(subcommand)]
+        command: AuthorityCommand,
     },
     /// Manage KPT reviews.
     Kpt {
@@ -170,33 +197,4 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ExportCommand,
     },
-}
-
-#[derive(Debug, clap::Args)]
-pub(crate) struct UpdateArgs {
-    /// Print the supported reset plan without changing any file.
-    #[arg(long, conflicts_with = "reset")]
-    pub(crate) dry_run: bool,
-    /// Replace a supported schema-13 ledger with a fresh schema-14 ledger.
-    #[arg(long, conflicts_with = "dry_run")]
-    pub(crate) reset: bool,
-    /// Required reason stored in the reset audit.
-    #[arg(long, requires = "reset")]
-    pub(crate) reason: Option<String>,
-    #[command(subcommand)]
-    pub(crate) command: Option<UpdateCommand>,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum UpdateCommand {
-    /// Restore a verified content-addressed backup byte-for-byte.
-    Restore(UpdateRestoreArgs),
-}
-
-#[derive(Debug, clap::Args)]
-pub(crate) struct UpdateRestoreArgs {
-    #[arg(long)]
-    pub(crate) backup: String,
-    #[arg(long)]
-    pub(crate) expected_current: String,
 }

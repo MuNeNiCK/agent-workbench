@@ -6,42 +6,6 @@ use clap::{Args, Subcommand};
 pub(crate) enum CorrectionCommand {
     Add(CorrectionAddArgs),
     List(CorrectionListArgs),
-    LinkRequirement(CorrectionLinkRequirementArgs),
-    LinkValidation(CorrectionLinkValidationArgs),
-    Resolve(CorrectionResolveArgs),
-    Except(CorrectionExceptArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CorrectionLinkRequirementArgs {
-    pub(crate) correction_id: i64,
-    #[arg(long)]
-    pub(crate) requirement: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CorrectionLinkValidationArgs {
-    pub(crate) correction_id: i64,
-    #[arg(long)]
-    pub(crate) usage: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CorrectionResolveArgs {
-    pub(crate) correction_id: i64,
-    #[arg(long)]
-    pub(crate) reason: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CorrectionExceptArgs {
-    pub(crate) correction_id: i64,
-    #[arg(long)]
-    pub(crate) expected_current: String,
-    #[arg(long)]
-    pub(crate) reason: String,
-    #[arg(long)]
-    pub(crate) risk: String,
 }
 
 #[derive(Debug, Args)]
@@ -68,9 +32,11 @@ pub(crate) struct CorrectionListArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum MemoryCommand {
-    Add(CommandAddArgs),
-    Prefer(CommandStateArgs),
-    Fix(CommandStateArgs),
+    Fixed {
+        #[command(subcommand)]
+        command: FixedCommand,
+    },
+    Prefer(CommandPreferArgs),
     Deprecate(CommandDeprecateArgs),
     Usage {
         #[command(subcommand)]
@@ -81,25 +47,6 @@ pub(crate) enum MemoryCommand {
         command: CommandDeviationCommand,
     },
     List(CommandListArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CommandAddArgs {
-    #[arg(long)]
-    pub(crate) name: String,
-    #[arg(long = "type", default_value = "validation")]
-    pub(crate) command_type: String,
-    #[arg(long, default_value = "project")]
-    pub(crate) scope: String,
-    #[arg(long)]
-    pub(crate) command: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CommandStateArgs {
-    pub(crate) profile_id: i64,
-    #[arg(long)]
-    pub(crate) reason: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -141,7 +88,8 @@ pub(crate) struct CommandPreferArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct CommandDeprecateArgs {
-    pub(crate) profile_id: i64,
+    #[arg(long)]
+    pub(crate) name: String,
     #[arg(long)]
     pub(crate) reason: String,
 }
@@ -156,14 +104,15 @@ pub(crate) struct CommandListArgs {
 pub(crate) enum CommandUsageCommand {
     Add(CommandUsageAddArgs),
     List(CommandUsageListArgs),
+    Promote(CommandUsagePromoteArgs),
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct CommandUsageAddArgs {
     #[arg(long)]
-    pub(crate) profile: i64,
+    pub(crate) profile: Option<String>,
     #[arg(long)]
-    pub(crate) command: String,
+    pub(crate) command: Option<String>,
     #[arg(long, default_value = "unknown")]
     pub(crate) result: String,
     #[arg(long)]
@@ -172,8 +121,6 @@ pub(crate) struct CommandUsageAddArgs {
     pub(crate) work_unit: Option<i64>,
     #[arg(long)]
     pub(crate) snapshot: Option<i64>,
-    #[arg(long)]
-    pub(crate) output_digest: String,
 }
 
 #[derive(Debug, Args)]
@@ -247,6 +194,10 @@ pub(crate) enum WorkRecordCommand {
     File {
         #[command(subcommand)]
         command: WorkRecordFileCommand,
+    },
+    Link {
+        #[command(subcommand)]
+        command: WorkRecordLinkCommand,
     },
 }
 
@@ -362,6 +313,10 @@ pub(crate) enum RepositoryCommand {
         #[command(subcommand)]
         command: RepositorySnapshotCommand,
     },
+    Dirty {
+        #[command(subcommand)]
+        command: RepositoryDirtyCommand,
+    },
     Classify {
         #[command(subcommand)]
         command: RepositoryClassifyCommand,
@@ -395,12 +350,6 @@ pub(crate) struct RepositoryAddArgs {
 pub(crate) enum RepositorySnapshotCommand {
     Add(RepositorySnapshotAddArgs),
     List(RepositorySnapshotListArgs),
-    Finalize(RepositorySnapshotFinalizeArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct RepositorySnapshotFinalizeArgs {
-    pub(crate) snapshot_id: i64,
 }
 
 #[derive(Debug, Args)]
@@ -417,8 +366,6 @@ pub(crate) struct RepositorySnapshotAddArgs {
     pub(crate) status: Option<String>,
     #[arg(long)]
     pub(crate) clean: bool,
-    #[arg(long = "change", value_name = "PATH=DIGEST")]
-    pub(crate) changes: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -463,12 +410,6 @@ pub(crate) struct RepositoryClassifyAddArgs {
     pub(crate) reason: String,
     #[arg(long)]
     pub(crate) acceptance: Option<i64>,
-    #[arg(long)]
-    pub(crate) accept_exception: bool,
-    #[arg(long)]
-    pub(crate) expected_current: Option<String>,
-    #[arg(long)]
-    pub(crate) risk: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -479,7 +420,7 @@ pub(crate) enum RepositoryCommitCommand {
 #[derive(Debug, Args)]
 pub(crate) struct RepositoryCommitAddArgs {
     #[arg(long)]
-    pub(crate) snapshot: i64,
+    pub(crate) repository: String,
     #[arg(long, alias = "commit")]
     pub(crate) sha: String,
     #[arg(long)]
@@ -494,8 +435,6 @@ pub(crate) struct RepositoryCommitAddArgs {
     pub(crate) committed_at: Option<String>,
     #[arg(long)]
     pub(crate) parents: Option<String>,
-    #[arg(long, default_value = "recorded-commit")]
-    pub(crate) content_digest: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -506,7 +445,7 @@ pub(crate) enum RepositoryFileCommand {
 #[derive(Debug, Args)]
 pub(crate) struct RepositoryFileAddArgs {
     #[arg(long)]
-    pub(crate) snapshot: i64,
+    pub(crate) commit: i64,
     #[arg(long)]
     pub(crate) repository: Option<String>,
     #[arg(long)]

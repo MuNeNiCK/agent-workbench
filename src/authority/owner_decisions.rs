@@ -305,14 +305,11 @@ fn apply_decision_projection(
                             "update closures set status='registered' where project_id=?1 and id=?2",
                             params![project, closure_id],
                         )?;
-                        conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
                         conn.execute("update correction_sessions set status='active',completed_at=null where id=(select max(id) from correction_sessions where project_id=?1 and closure_id=?2 and status='completed')",params![project,closure_id])?;
                     }
                     _ => bail!("unsupported verification claim"),
                 }
-                if claim == "verified" {
-                    conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
-                }
+                conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
                 let next = if claim == "verified" {
                     "closed"
                 } else {

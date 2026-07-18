@@ -21,4 +21,8 @@ fn ok(root: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("stdout must be utf-8")
 }
 
-mod runtime14;
+mod migration;
+mod phase;
+mod review;
+mod smoke;
+mod work;

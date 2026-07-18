@@ -297,14 +297,55 @@ pub(super) fn decompose_design_with_checklist_in(
             ],
         )?;
         created_derivations += 1;
-        created_validation_gates += ensure_validation_gates_for_task(
+        let gate_templates = validation_gate_templates_for_requirement(
             conn,
             project_id,
             input.design_version_id,
-            input.work_unit_id,
             requirement.id,
-            task_id,
         )?;
+        for template in gate_templates {
+            conn.execute(
+                r#"
+                insert into validation_gates(
+                    project_id, gate_key, template_id, work_unit_id, task_id,
+                    design_requirement_id, command, expected_result,
+                    selected_before_edit, status, created_at
+                )
+                values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'active', current_timestamp)
+                "#,
+                params![
+                    project_id,
+                    template.gate_key,
+                    template.id,
+                    input.work_unit_id,
+                    task_id,
+                    requirement.id,
+                    template.command,
+                    template.expected_result,
+                ],
+            )?;
+            let validation_gate_id = conn.last_insert_rowid();
+            let work_scope = input.work_unit_id.to_string();
+            insert_rule_binding(
+                conn,
+                RuleBindingInput {
+                    project_id,
+                    rule_source_type: "validation_gate",
+                    authority_event_id: None,
+                    user_correction_id: None,
+                    command_profile_id: None,
+                    review_policy_id: None,
+                    review_plan_id: None,
+                    work_unit_id: Some(input.work_unit_id),
+                    validation_gate_id: Some(validation_gate_id),
+                    acceptance_record_id: None,
+                    scope_type: "work_unit",
+                    scope_key: Some(&work_scope),
+                    precedence: 62,
+                },
+            )?;
+            created_validation_gates += 1;
+        }
     }
     Ok(DesignDecompositionOutcome {
         design_version_id: input.design_version_id,
@@ -314,75 +355,6 @@ pub(super) fn decompose_design_with_checklist_in(
         created_derivations,
         created_validation_gates,
     })
-}
-
-pub(super) fn ensure_validation_gates_for_task(
-    conn: &rusqlite::Connection,
-    project_id: i64,
-    design_version_id: i64,
-    work_unit_id: i64,
-    requirement_id: i64,
-    task_id: i64,
-) -> Result<i64> {
-    let gate_templates = validation_gate_templates_for_requirement(
-        conn,
-        project_id,
-        design_version_id,
-        requirement_id,
-    )?;
-    let mut created = 0;
-    for template in gate_templates {
-        let exists: bool = conn.query_row(
-            "select exists(select 1 from validation_gates where project_id=?1 and template_id=?2 and work_unit_id=?3 and task_id=?4 and design_requirement_id=?5 and status='active')",
-            params![project_id, template.id, work_unit_id, task_id, requirement_id],
-            |row| row.get(0),
-        )?;
-        if exists {
-            continue;
-        }
-        conn.execute(
-            r#"
-            insert into validation_gates(
-                project_id, gate_key, template_id, work_unit_id, task_id,
-                design_requirement_id, command, expected_result,
-                selected_before_edit, status, created_at
-            )
-            values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'active', current_timestamp)
-            "#,
-            params![
-                project_id,
-                template.gate_key,
-                template.id,
-                work_unit_id,
-                task_id,
-                requirement_id,
-                template.command,
-                template.expected_result,
-            ],
-        )?;
-        let validation_gate_id = conn.last_insert_rowid();
-        let work_scope = work_unit_id.to_string();
-        insert_rule_binding(
-            conn,
-            RuleBindingInput {
-                project_id,
-                rule_source_type: "validation_gate",
-                authority_event_id: None,
-                user_correction_id: None,
-                command_profile_id: None,
-                review_policy_id: None,
-                review_plan_id: None,
-                work_unit_id: Some(work_unit_id),
-                validation_gate_id: Some(validation_gate_id),
-                acceptance_record_id: None,
-                scope_type: "work_unit",
-                scope_key: Some(&work_scope),
-                precedence: 62,
-            },
-        )?;
-        created += 1;
-    }
-    Ok(created)
 }
 
 pub(super) fn reusable_unchanged_baseline_task(

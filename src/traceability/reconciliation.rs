@@ -159,7 +159,6 @@ pub(crate) fn reconcile_design_in(
               left join validation_gate_template_requirements gm
                 on gm.validation_gate_template_id=gt.id and gm.design_requirement_id=r.id
               where vg.task_id=t.id and vg.design_requirement_id=r.id
-                and vg.status='active'
                 and (vg.project_id!=?3 or vg.work_unit_id!=?4
                   or vg.id not in (select id from current_task_validation_gates)
                   or gt.design_version_id!=?2 or gt.status!='active' or gm.id is null
@@ -210,7 +209,7 @@ pub(crate) fn reconcile_design_in(
         where ci.checklist_id=?1 and r.design_version_id=?2
           and (select count(*) from current_task_validation_gates vg
                where vg.task_id=ci.task_id and vg.design_requirement_id=r.id)
-              >
+              !=
               (select count(*) from validation_gate_template_requirements gm
                join validation_gate_templates gt on gt.id=gm.validation_gate_template_id
                where gm.design_requirement_id=r.id and gt.design_version_id=?2 and gt.status='active')
@@ -349,25 +348,6 @@ pub(crate) fn reconcile_design_in(
         Some(canonical_checklist_id),
         false,
     )?;
-    let canonical_items = {
-        let mut stmt = conn.prepare(
-            "select design_requirement_id,task_id from checklist_items where checklist_id=?1 order by item_order",
-        )?;
-        stmt.query_map(params![canonical_checklist_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    for (requirement_id, task_id) in canonical_items {
-        ensure_validation_gates_for_task(
-            conn,
-            project_id,
-            design_version_id,
-            work_unit_id,
-            requirement_id,
-            task_id,
-        )?;
-    }
     let completion_inheritances = inherit_closed_phase_memberships_in(
         conn,
         project_id,

@@ -2,21 +2,6 @@
 
 ## Unreleased
 
-## v0.1.20 — 2026-07-18
-
-- Replace the accumulated schema 13 workflow with the smaller schema 14 state
-  model and one resolver shared by status, next, gates, and mutations.
-- Add the explicit breaking `update --reset --reason` path for supported
-  v0.1.19 schema 13 ledgers. Reset creates a verified content-addressed backup,
-  imports no legacy domain state, and supports byte-identical `update restore`.
-- Fix blocked required review plans so a reasoned owner waiver is the same
-  executable action in `next`, phase close-ready, and the waiver mutation,
-  without signatures, trust stores, capabilities, or administrator setup.
-- Use semantic suspend snapshots and explicit work, phase, review, finding,
-  correction, KPT, command, repository, and evidence lifecycles.
-- Remove the legacy `migration`, `authority`, top-level `verification`, generic
-  `decision`, duplicate `git`, and mutating doctor command surfaces.
-
 ## v0.1.19 — 2026-07-18
 
 - Restore simple review claims and separate owner decisions without signatures,
