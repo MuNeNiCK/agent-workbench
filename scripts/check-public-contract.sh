@@ -33,9 +33,11 @@ AGENT_WORKBENCH_UNDER_TEST="$workbench_binary" \
   AGENT_WORKBENCH_DOCS_UNDER_TEST="$root/docs" \
   cargo test --locked --test command_line
 
-if ! diff -qr skills/agent-workbench .agents/skills/agent-workbench >/dev/null; then
-  echo "installed skill differs from the release skill" >&2
-  exit 1
+if test -d .agents/skills/agent-workbench; then
+  if ! diff -qr skills/agent-workbench .agents/skills/agent-workbench >/dev/null; then
+    echo "installed skill differs from the release skill" >&2
+    exit 1
+  fi
 fi
 
 echo "public contract: pass"

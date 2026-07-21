@@ -1,5 +1,11 @@
 # Release history
 
+## v0.1.22 — 2026-07-22
+
+- Make public-contract verification treat the project-local installed Skill
+  copy as optional in clean source checkouts while still requiring exact
+  equality when that copy exists.
+
 ## v0.1.21 — 2026-07-22
 
 - v0.1.20 was withdrawn. It is not a supported release and has no tag or GitHub
