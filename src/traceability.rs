@@ -82,6 +82,12 @@ pub struct TaskDerivationListQuery {
     pub work_unit_id: Option<i64>,
 }
 
+pub struct TaskDerivationListFilter {
+    pub design_version_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub work_unit_id: Option<i64>,
+}
+
 pub struct ImplementationReadyCheck {
     pub design_version_id: Option<i64>,
 }
@@ -182,6 +188,7 @@ pub struct ImplementationEvidenceListQuery {
     pub task_id: Option<i64>,
     pub design_version_id: Option<i64>,
     pub work_unit_id: Option<i64>,
+    pub evidence_type: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -223,6 +230,11 @@ pub struct ChecklistRecord {
     pub status: String,
     pub item_count: i64,
     pub closed_count: i64,
+}
+
+pub struct ChecklistListFilter<'a> {
+    pub status: Option<&'a str>,
+    pub work_unit_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -355,6 +367,7 @@ pub struct ValidationRunRecord {
     pub artifact_hash: Option<String>,
     pub notes: Option<String>,
     pub created_at: String,
+    pub retired: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]

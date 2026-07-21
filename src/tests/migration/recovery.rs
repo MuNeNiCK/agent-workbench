@@ -215,12 +215,20 @@ fn ambiguous_owner_requires_bound_authority_and_decision() {
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let materialized: (i64, i64) = conn
         .query_row(
-            "select count(*),count(source_design_requirement_id) from task_revisions",
+            "select count(*),count(source_design_requirement_id) from task_revisions where status='current'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     assert_eq!(materialized, (2, 2));
+    let retired_manual: i64 = conn
+        .query_row(
+            "select count(*) from task_revisions revision join task_identities identity on identity.id=revision.task_identity_id where revision.status='retired' and identity.status='retired' and identity.kind='manual'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retired_manual, 2);
     drop(conn);
     let audit: serde_json::Value =
         serde_json::from_str(&audit_task_identity(temp.path(), Some(owner)).unwrap().json).unwrap();

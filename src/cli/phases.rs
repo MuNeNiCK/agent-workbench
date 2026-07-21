@@ -57,7 +57,13 @@ pub(crate) fn handle_phase(root: &Path, command: PhaseCommand) -> Result<()> {
                 println!("dependency_id: {}", outcome.dependency_id);
             }
             PhaseDependencyCommand::List(args) => {
-                let records = list_phase_dependencies(root, args.work_unit)?;
+                let records = list_phase_dependencies_filtered(
+                    root,
+                    PhaseDependencyListFilter {
+                        work_unit_id: args.work_unit,
+                        phase_id: args.phase,
+                    },
+                )?;
                 if records.is_empty() {
                     println!("no phase dependencies");
                 }

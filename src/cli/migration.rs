@@ -3,16 +3,36 @@ use std::path::Path;
 use anyhow::Result;
 
 use agent_workbench::{
-    TaskIdentityAuthorityRequest, TaskIdentityDecisionRequest, apply_task_identity,
-    audit_task_identity, decide_task_identity_ambiguity, list_task_identity_ambiguities,
-    plan_task_identity, record_task_identity_authority,
+    ReviewerMigrationBinding, TaskIdentityAuthorityRequest, TaskIdentityDecisionRequest,
+    apply_task_identity, audit_task_identity, bind_migration_reviewer,
+    decide_task_identity_ambiguity, list_task_identity_ambiguities, plan_task_identity,
+    record_task_identity_authority,
 };
 
-use super::args::{MigrationCommand, TaskIdentityCommand};
+use super::args::{MigrationCommand, ReviewerMigrationCommand, TaskIdentityCommand};
 
 pub(crate) fn handle(root: &Path, command: MigrationCommand) -> Result<()> {
     match command {
         MigrationCommand::TaskIdentity { command } => handle_task_identity(root, command),
+        MigrationCommand::Reviewer { command } => match command {
+            ReviewerMigrationCommand::Bind(args) => {
+                let outcome = bind_migration_reviewer(
+                    root,
+                    ReviewerMigrationBinding {
+                        source_reviewer_ref: &args.source_reviewer_ref,
+                        agent_label: &args.agent_label,
+                        external_agent_id: &args.external_agent_id,
+                        provenance_ref: &args.provenance_ref,
+                        authority_event_id: args.authority,
+                    },
+                )?;
+                println!("binding_handle: {}", outcome.binding_handle);
+                println!("source_reviewer: {}", outcome.source_reviewer_ref);
+                println!("status: {}", outcome.status);
+                println!("idempotent: {}", outcome.idempotent);
+                Ok(())
+            }
+        },
     }
 }
 

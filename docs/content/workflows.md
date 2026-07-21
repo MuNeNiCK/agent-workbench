@@ -47,10 +47,10 @@ the current same-owner finding set. It never reactivates an old suspension.
 Blocked owners require `work unblock`; closed or abandoned owners require an
 authority-backed `work reopen` followed by the still-mandatory remediation bind.
 
-Generate the printed `review-context finding-fix`, resolve a provider-verified
-reviewer principal and provenance record, then use `review invocation
+Generate the printed `review-context finding-fix`, run an external or human
+review with recorded project-local provenance, then use `review invocation
 request|start|complete`. The verification claim remains advisory until a
-different authorized owner presents an exact one-shot capability through
+separate owner decision accepts that exact current result through
 `verification adjudicate`. Failed
 verification returns to remediation with a new attempt. Verified or
 authority-disposed findings still require a later fresh unbiased clean review.
@@ -91,9 +91,11 @@ When work is based on design requirements:
 1. Convert design notes into a Design Package.
 2. Import the package into managed project state.
 3. Run design review.
-4. Decompose requirements into tasks and checklists.
+4. Import and validate a persistent Decomposition Plan for the approved Design
+   Version. Revise it when validation reports a semantic conflict.
 5. Run task decomposition review.
-6. Start implementation only after implementation readiness passes.
+6. Apply the exact reviewed Plan and start implementation only after
+   implementation readiness passes.
 7. Continue, resume, or activate the same work unit that owns the decomposed
    records. The agent should follow the exact next action printed by
    `agent-workbench next`; it should not open an unrelated new work unit after
@@ -104,6 +106,12 @@ When work is based on design requirements:
    decomposition.
 
 This keeps the agent from implementing stale or unreviewed design material.
+Use `decomposition show`, `decomposition import`, `decomposition validate`,
+`decomposition revise`, `decomposition apply`, and `decomposition reconcile`
+for the normal lifecycle. A successor retains lineage to the Plan it replaces.
+`decompose design` remains an automatic compatibility path that creates the
+generated graph and matching applied Plan atomically; it does not replace the
+Plan review or readiness gates.
 When stale records remain intentionally, record the disposition with
 `stale accept` or, for closeable stale records such as selected validation
 gates, `stale close`.
@@ -129,11 +137,13 @@ using phase-scoped review context. A phase closes with `phase close-ready` and
 
 Before closing work, the agent should run close readiness.
 
-Review authority is deliberately split. A trusted reviewer principal creates an
-immutable claim through an invocation; an owner principal with a current
-OwnerDecisionGrant issues one exact DecisionCapability and uses `review
-adjudicate`, `finding decide`, or `verification adjudicate`. Stored reviewer
-labels, legacy result flags, and review output never create owner authority.
+Review responsibility is deliberately split. An external agent or human creates
+an immutable claim through an invocation with project-local provenance; a
+separate owner records the decision for that exact current result through
+`review adjudicate`, `finding decide`, or `verification adjudicate`. Stored
+reviewer labels, legacy result flags, and review output never create an owner
+decision by themselves. No cryptographic setup or external administrator is
+part of this workflow.
 
 Close readiness can require:
 

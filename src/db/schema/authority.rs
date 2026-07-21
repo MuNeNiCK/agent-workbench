@@ -28,7 +28,7 @@ create table if not exists legacy_claim_audits (
     mapping_row text not null, before_lifecycle text not null, after_lifecycle text not null, created_at text not null,
     unique(project_id,review_run_id)
 );
-create table if not exists legacy_signed_review_effects (
+create table if not exists legacy_review_acceptance_migrations (
     id integer primary key, project_id integer not null references projects(id) on delete cascade,
     review_run_id integer not null references review_runs(id), owner_decision_id integer not null references owner_decisions(id),
     content_digest text not null check(length(content_digest)=64), created_at text not null,
@@ -80,10 +80,10 @@ create trigger if not exists trg_legacy_projection_delete before delete on legac
 
 create trigger if not exists trg_legacy_claim_audit_immutable
 before update on legacy_claim_audits begin select raise(abort,'legacy claim audits are append-only'); end;
-create trigger if not exists trg_legacy_signed_review_effect_update
-before update on legacy_signed_review_effects begin select raise(abort,'legacy signed review effects are append-only'); end;
-create trigger if not exists trg_legacy_signed_review_effect_delete
-before delete on legacy_signed_review_effects begin select raise(abort,'legacy signed review effects are append-only'); end;
+create trigger if not exists trg_legacy_review_acceptance_migration_update
+before update on legacy_review_acceptance_migrations begin select raise(abort,'legacy review acceptance migrations are append-only'); end;
+create trigger if not exists trg_legacy_review_acceptance_migration_delete
+before delete on legacy_review_acceptance_migrations begin select raise(abort,'legacy review acceptance migrations are append-only'); end;
 create trigger if not exists trg_legacy_finding_audit_immutable
 before update on legacy_finding_audits begin select raise(abort,'legacy finding audits are append-only'); end;
 
@@ -91,8 +91,6 @@ create table if not exists owner_decisions (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
     decision_handle text not null,
-    capability_id integer unique,
-    principal_id integer,
     owner_ref text not null,
     target_ref text not null,
     decision_family text not null,

@@ -220,7 +220,14 @@ pub fn list_review_plans(root: &Path) -> Result<Vec<ReviewPlanRecord>> {
         r#"
         select
             id, work_unit_id, design_version_id, review_type, required,
-            stage, scope, review_policy_id, review_scope_id, status
+            stage, scope, review_policy_id, review_scope_id,
+            case when exists(select 1 from acceptance_records supersession
+                             where supersession.target_type='review_plan'
+                               and supersession.review_plan_id=review_plans.id
+                               and supersession.status='approved'
+                               and supersession.acceptance_type='stale_accepted'
+                               and supersession.review_impact like 'superseded_by_review_plan:%')
+                 then 'superseded' else status end
         from review_plans
         where project_id = ?1
         order by id
@@ -241,6 +248,132 @@ pub fn list_review_plans(root: &Path) -> Result<Vec<ReviewPlanRecord>> {
         })
     })?;
     collect_rows(rows)
+}
+
+pub fn supersede_review_plan(
+    root: &Path,
+    input: ReviewPlanSupersession<'_>,
+) -> Result<ReviewPlanSupersessionOutcome> {
+    require_text(
+        Some(input.reason),
+        "review plan supersede requires --reason",
+    )?;
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    super::closure::ensure_active_acceptance_authority(&tx, project_id, input.authority_event_id)?;
+    let compatible: bool = tx.query_row(
+        r#"
+        select exists(
+          select 1 from review_plans predecessor
+          join review_plans successor
+            on successor.project_id=predecessor.project_id
+           and successor.work_unit_id=predecessor.work_unit_id
+           and successor.review_type=predecessor.review_type
+           and successor.stage=predecessor.stage
+           and coalesce(successor.scope,'')=coalesce(predecessor.scope,'')
+          where predecessor.id=?1 and successor.id=?2
+            and predecessor.project_id=?3
+            and predecessor.required=1
+            and predecessor.status in ('open','blocked','exhausted','needs_user_decision')
+            and successor.status in ('open','clean')
+            and (
+              successor.design_version_id is predecessor.design_version_id
+              or exists(
+                select 1 from design_versions predecessor_design
+                join design_versions next_design_version
+                  on next_design_version.design_package_id=predecessor_design.design_package_id
+                where predecessor_design.id=predecessor.design_version_id
+                  and next_design_version.id=successor.design_version_id
+                  and next_design_version.version_number>=predecessor_design.version_number
+                  and next_design_version.status='approved'
+              )
+            )
+        )
+        "#,
+        params![
+            input.predecessor_plan_id,
+            input.successor_plan_id,
+            project_id
+        ],
+        |row| row.get(0),
+    )?;
+    if !compatible {
+        bail!("review plan successor is not compatible with the predecessor owner and scope");
+    }
+    let unmapped_targets: i64 = tx.query_row(
+        r#"
+        with predecessor_targets as (
+          select target_type,design_version_id,design_requirement_id,task_id,
+                 work_unit_id,null as phase_id,repository_snapshot_id,file_path,symbol
+          from review_plan_targets where review_plan_id=?1
+          union all
+          select 'phase',null,null,null,null,phase_id,null,null,null
+          from work_phase_review_targets where review_plan_id=?1
+        ), successor_targets as (
+          select target_type,design_version_id,design_requirement_id,task_id,
+                 work_unit_id,null as phase_id,repository_snapshot_id,file_path,symbol
+          from review_plan_targets where review_plan_id=?2
+          union all
+          select 'phase',null,null,null,null,phase_id,null,null,null
+          from work_phase_review_targets where review_plan_id=?2
+        )
+        select count(*) from predecessor_targets predecessor_target
+        where 1=1
+          and not exists(
+            select 1 from successor_targets successor_target
+            where successor_target.target_type=predecessor_target.target_type
+              and (
+                (predecessor_target.target_type='design_version' and exists(
+                  select 1 from design_versions predecessor_design
+                  join design_versions next_design_version
+                    on next_design_version.design_package_id=predecessor_design.design_package_id
+                  where predecessor_design.id=predecessor_target.design_version_id
+                    and next_design_version.id=successor_target.design_version_id
+                    and next_design_version.version_number>=predecessor_design.version_number
+                ))
+                or (predecessor_target.target_type!='design_version'
+                    and successor_target.design_requirement_id is predecessor_target.design_requirement_id
+                    and successor_target.task_id is predecessor_target.task_id
+                    and successor_target.work_unit_id is predecessor_target.work_unit_id
+                    and successor_target.phase_id is predecessor_target.phase_id
+                    and successor_target.repository_snapshot_id is predecessor_target.repository_snapshot_id
+                    and successor_target.file_path is predecessor_target.file_path
+                    and successor_target.symbol is predecessor_target.symbol)
+              )
+          )
+        "#,
+        params![input.predecessor_plan_id, input.successor_plan_id],
+        |row| row.get(0),
+    )?;
+    if unmapped_targets != 0 {
+        bail!("review plan successor does not map every predecessor target");
+    }
+    tx.execute(
+        r#"
+        insert into acceptance_records(
+            project_id,target_type,review_plan_id,acceptance_type,reason,scope,
+            created_by,status,approved_by_authority_event_id,approved_at,created_at,review_impact
+        ) values(?1,'review_plan',?2,'stale_accepted',?3,'review-plan-supersession',
+                 'user','approved',?4,current_timestamp,current_timestamp,?5)
+        "#,
+        params![
+            project_id,
+            input.predecessor_plan_id,
+            input.reason.trim(),
+            input.authority_event_id,
+            format!("superseded_by_review_plan:{}", input.successor_plan_id)
+        ],
+    )?;
+    tx.execute(
+        "update review_plans set status='not_required' where id=?1 and project_id=?2",
+        params![input.predecessor_plan_id, project_id],
+    )?;
+    tx.commit()?;
+    Ok(ReviewPlanSupersessionOutcome {
+        predecessor_plan_id: input.predecessor_plan_id,
+        successor_plan_id: input.successor_plan_id,
+    })
 }
 
 pub fn list_review_plan_targets(
@@ -446,7 +579,7 @@ pub fn add_review_run_with_finding_result(
     validate_review_run_result(&input)?;
     validate_finding_fix_run(&tx, project_id, &plan, &input, finding_fix_result)?;
     let target = resolve_run_target(&tx, project_id, &plan, input.target_ref)?;
-    validate_gate_context_target(&plan, &input, &target)?;
+    validate_gate_context_target(&tx, &plan, &input, &target)?;
     enforce_run_allowed(&tx, &policy, &plan, input.run_type, input.target_ref)?;
     if input.run_type == "resume"
         && input.new_findings_count > 0
@@ -604,8 +737,41 @@ pub(super) fn validate_finding_fix_run(
         join closures c on c.id = a.closure_id
         join findings f on f.id = c.finding_id
         join review_runs source on source.id = f.review_run_id
+        join review_plans source_plan on source_plan.id = source.review_plan_id
+        join review_plans candidate_plan on candidate_plan.id = ?2
         where a.project_id = ?1
-          and source.review_plan_id = ?2
+          and candidate_plan.project_id = a.project_id
+          and candidate_plan.work_unit_id = source_plan.work_unit_id
+          and candidate_plan.review_type = source_plan.review_type
+          and candidate_plan.stage = source_plan.stage
+          and (
+            exists(
+              select 1 from finding_design_recoveries recovery
+              where recovery.project_id=?1
+                and recovery.successor_closure_id=c.id
+                and recovery.successor_attempt_id=a.id
+                and recovery.successor_design_version_id=candidate_plan.design_version_id
+            )
+            or (
+              not exists(
+                select 1 from finding_design_recoveries recovery
+                where recovery.project_id=?1 and recovery.successor_closure_id=c.id
+              )
+              and (
+                candidate_plan.design_version_id is source_plan.design_version_id
+                or exists(
+                  select 1 from design_versions source_design
+                  join design_versions candidate_design
+                    on candidate_design.design_package_id=source_design.design_package_id
+                  where source_design.id=source_plan.design_version_id
+                    and candidate_design.id=candidate_plan.design_version_id
+                    and candidate_design.version_number>=source_design.version_number
+                    and candidate_design.status='approved'
+                )
+              )
+            )
+          )
+          and coalesce(candidate_plan.scope, '') = coalesce(source_plan.scope, '')
           and c.status = 'ready_for_verification'
           and a.result is null
           and ?3 = 'review-context:finding-fix:finding=' || f.id

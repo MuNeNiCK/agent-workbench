@@ -37,10 +37,31 @@ pub struct DecisionOutcome {
     pub decision_handle: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct StoredDecisionOutcome {
+    pub(crate) owner_decision_id: i64,
+    pub(crate) decision_handle: String,
+}
+
 pub fn record_owner_decision(
     root: &Path,
     request: OwnerDecisionRequest<'_>,
 ) -> Result<DecisionOutcome> {
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let project = project_id(&tx)?;
+    let outcome = record_owner_decision_in(&tx, project, request)?;
+    tx.commit()?;
+    Ok(DecisionOutcome {
+        decision_handle: outcome.decision_handle,
+    })
+}
+
+pub(crate) fn record_owner_decision_in(
+    conn: &rusqlite::Connection,
+    project: i64,
+    request: OwnerDecisionRequest<'_>,
+) -> Result<StoredDecisionOutcome> {
     let valid_action = matches!(
         (request.decision_family, request.action),
         ("review", "adjudicate" | "correct_terminal")
@@ -50,7 +71,8 @@ pub fn record_owner_decision(
     if !valid_action {
         bail!("unsupported decision family/action");
     }
-    if request.owner_ref.trim().is_empty()
+    if request.command_kind.trim().is_empty()
+        || request.owner_ref.trim().is_empty()
         || request.target_ref.trim().is_empty()
         || request.reason.trim().is_empty()
         || request.expected_current.trim().is_empty()
@@ -58,7 +80,6 @@ pub fn record_owner_decision(
         bail!("owner decision fields must not be empty");
     }
     let payload = CanonicalValue::object([
-        ("command", CanonicalValue::string(request.command_kind)),
         ("owner", CanonicalValue::string(request.owner_ref)),
         ("target", CanonicalValue::string(request.target_ref)),
         ("family", CanonicalValue::string(request.decision_family)),
@@ -72,38 +93,67 @@ pub fn record_owner_decision(
     ]);
     let decision = DecisionHandle::derive(b"agent-workbench:owner-decision-v1\0", &payload);
     let payload_digest = domain_digest(b"agent-workbench:owner-decision-payload-v1\0", &payload);
-    let mut conn = open_existing_project(root)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let project = project_id(&tx)?;
-    if let Some(handle) = tx
+    if let Some((owner_decision_id, handle)) = conn
         .query_row(
-            "select decision_handle from owner_decisions where project_id=?1 and decision_handle=?2",
-            params![project, decision.as_str()],
-            |row| row.get(0),
+            "select id,decision_handle from owner_decisions where project_id=?1 and owner_ref=?2 and target_ref=?3 and decision_family=?4 and action=?5 and decision_value=?6 and reason=?7 and expected_current=?8 order by id limit 1",
+            params![
+                project,
+                request.owner_ref,
+                request.target_ref,
+                request.decision_family,
+                request.action,
+                request.decision_value,
+                request.reason,
+                request.expected_current
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
     {
-        tx.commit()?;
-        return Ok(DecisionOutcome { decision_handle: handle });
+        return Ok(StoredDecisionOutcome {
+            owner_decision_id,
+            decision_handle: handle,
+        });
     }
-    let current = expected_current_for_target(&tx, project, &request)?;
+    if let Some((owner_decision_id, handle)) = conn
+        .query_row(
+            "select id,decision_handle from owner_decisions where project_id=?1 and decision_handle=?2",
+            params![project, decision.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    {
+        return Ok(StoredDecisionOutcome {
+            owner_decision_id,
+            decision_handle: handle,
+        });
+    }
+    let current = expected_current_for_target(conn, project, &request)?;
     if (request.expected_current == "pending" && current.is_some())
         || (request.expected_current != "pending"
             && current.as_deref() != Some(request.expected_current))
     {
         bail!("expected_current_stale");
     }
-    tx.execute(
-        r#"insert into owner_decisions(project_id,decision_handle,capability_id,principal_id,owner_ref,target_ref,decision_family,action,decision_value,reason,expected_current,payload_digest,created_at)
-           values(?1,?2,null,null,?3,?4,?5,?6,?7,?8,?9,?10,current_timestamp)"#,
+    conn.execute(
+        r#"insert into owner_decisions(project_id,decision_handle,owner_ref,target_ref,decision_family,action,decision_value,reason,expected_current,payload_digest,created_at)
+           values(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,current_timestamp)"#,
         params![project,decision.as_str(),request.owner_ref,request.target_ref,request.decision_family,request.action,request.decision_value,request.reason,request.expected_current,payload_digest],
     )?;
-    let owner_decision_id = tx.last_insert_rowid();
-    apply_decision_projection(&tx, project, owner_decision_id, &request)?;
-    tx.commit()?;
-    Ok(DecisionOutcome {
+    let owner_decision_id = conn.last_insert_rowid();
+    apply_decision_projection(conn, project, owner_decision_id, &request)?;
+    Ok(StoredDecisionOutcome {
+        owner_decision_id,
         decision_handle: decision.as_str().to_string(),
     })
+}
+
+pub(crate) fn current_owner_decision(
+    conn: &rusqlite::Connection,
+    project: i64,
+    request: &OwnerDecisionRequest<'_>,
+) -> Result<Option<String>> {
+    expected_current_for_target(conn, project, request)
 }
 
 fn apply_decision_projection(
@@ -125,7 +175,7 @@ fn apply_decision_projection(
             }
             let run = parse_target_id(request.target_ref, "review_run:")?;
             let audit_only: i64 = conn.query_row(
-                "select exists(select 1 from legacy_claim_audits where project_id=?1 and review_run_id=?2 and reviewer_resolution in ('unbound','ambiguous') and not exists(select 1 from legacy_signed_review_effects s where s.project_id=?1 and s.review_run_id=?2))",
+                "select exists(select 1 from legacy_claim_audits where project_id=?1 and review_run_id=?2 and reviewer_resolution in ('unbound','ambiguous'))",
                 params![project, run],
                 |row| row.get(0),
             )?;
@@ -254,8 +304,7 @@ fn apply_decision_projection(
             if matches!(request.decision_value, "rejected" | "authority_disposed") {
                 conn.execute("update findings set lifecycle_state='closed',status='closed',close_reason=?1 where project_id=?2 and id=?3",params![request.decision_value,project,finding])?;
                 conn.execute("insert into finding_lifecycle_events(project_id,finding_id,owner_decision_id,from_state,to_state,effect,created_at) values(?1,?2,?3,?4,'closed',?5,current_timestamp)",params![project,finding,owner_decision_id,current_state,request.decision_value])?;
-                let epoch:i64=conn.query_row("select coalesce(max(epoch_number),0)+1 from finding_decision_epochs where project_id=?1 and finding_id=?2",params![project,finding],|row|row.get(0))?;
-                conn.execute("insert into finding_decision_epochs(project_id,finding_id,epoch_number,terminal_decision_id,status,created_at) values(?1,?2,?3,?4,'terminal',current_timestamp)",params![project,finding,epoch,owner_decision_id])?;
+                terminalize_finding_epoch(conn, project, finding, owner_decision_id)?;
             } else if invalidate_derived_permissions {
                 conn.execute("update findings set lifecycle_state='open',status='open',close_reason=null where project_id=?1 and id=?2",params![project,finding])?;
                 conn.execute("insert into finding_lifecycle_events(project_id,finding_id,owner_decision_id,from_state,to_state,effect,created_at) values(?1,?2,?3,?4,'open','derived_permission_invalidated',current_timestamp)",params![project,finding,owner_decision_id,current_state])?;
@@ -298,6 +347,7 @@ fn apply_decision_projection(
                             "update closures set status='verified' where project_id=?1 and id=?2",
                             params![project, closure_id],
                         )?;
+                        terminalize_finding_epoch(conn, project, finding_id, owner_decision_id)?;
                     }
                     "not_fixed" | "needs_evidence" => {
                         conn.execute("update findings set lifecycle_state='remediating' where project_id=?1 and id=?2",params![project,finding_id])?;
@@ -305,11 +355,14 @@ fn apply_decision_projection(
                             "update closures set status='registered' where project_id=?1 and id=?2",
                             params![project, closure_id],
                         )?;
+                        conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
                         conn.execute("update correction_sessions set status='active',completed_at=null where id=(select max(id) from correction_sessions where project_id=?1 and closure_id=?2 and status='completed')",params![project,closure_id])?;
                     }
                     _ => bail!("unsupported verification claim"),
                 }
-                conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
+                if claim == "verified" {
+                    conn.execute("update closure_attempts set result=?1,resolved_at=current_timestamp where project_id=?2 and id=?3 and result is null",params![claim,project,attempt])?;
+                }
                 let next = if claim == "verified" {
                     "closed"
                 } else {
@@ -345,9 +398,6 @@ fn trusted_review_run(conn: &rusqlite::Connection, project: i64, run: i64) -> Re
                    select 1 from legacy_claim_audits l
                    where l.project_id=r.project_id and l.review_run_id=r.id
                      and l.reviewer_resolution='trusted'
-               ) or exists(
-                   select 1 from legacy_signed_review_effects s
-                   where s.project_id=r.project_id and s.review_run_id=r.id
                )
            from review_runs r where r.project_id=?1 and r.id=?2"#,
         params![project, run],

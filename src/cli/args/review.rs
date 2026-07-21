@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ReviewCommand {
@@ -8,6 +8,18 @@ pub(crate) enum ReviewCommand {
     Correction {
         #[command(subcommand)]
         command: ReviewCorrectionCommand,
+    },
+    Provenance {
+        #[command(subcommand)]
+        command: ReviewProvenanceCommand,
+    },
+    Invocation {
+        #[command(subcommand)]
+        command: ReviewInvocationCommand,
+    },
+    Result {
+        #[command(subcommand)]
+        command: ReviewResultCommand,
     },
     Scope {
         #[command(subcommand)]
@@ -25,6 +37,155 @@ pub(crate) enum ReviewCommand {
         #[command(subcommand)]
         command: ReviewRunCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReviewProvenanceCommand {
+    Issue(ReviewProvenanceIssueArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewProvenanceIssueArgs {
+    #[arg(long)]
+    pub(crate) reviewer: String,
+    #[arg(long)]
+    pub(crate) plan: i64,
+    #[arg(long)]
+    pub(crate) target: String,
+    #[arg(long, default_value = "external_agent")]
+    pub(crate) kind: String,
+    #[arg(long)]
+    pub(crate) purpose: String,
+    #[arg(long)]
+    pub(crate) reference: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReviewInvocationCommand {
+    Request(ReviewInvocationRequestArgs),
+    Start(ReviewInvocationStartArgs),
+    Complete(ReviewInvocationCompleteArgs),
+    Fail(ReviewInvocationEndArgs),
+    Cancel(ReviewInvocationEndArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewInvocationRequestArgs {
+    #[arg(long)]
+    pub(crate) plan: i64,
+    #[arg(long)]
+    pub(crate) target: String,
+    #[arg(long)]
+    pub(crate) reviewer: String,
+    #[arg(long)]
+    pub(crate) provenance: String,
+    #[arg(long)]
+    pub(crate) purpose: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+    #[arg(long, default_value = "open")]
+    pub(crate) expected_plan_current: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewInvocationStartArgs {
+    pub(crate) invocation_id: i64,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewInvocationCompleteArgs {
+    pub(crate) invocation_id: i64,
+    #[arg(long)]
+    pub(crate) claim: Option<String>,
+    #[arg(long)]
+    pub(crate) verification_claim: Option<String>,
+    #[arg(long)]
+    pub(crate) attempt: Option<i64>,
+    #[arg(long)]
+    pub(crate) summary: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewInvocationEndArgs {
+    pub(crate) invocation_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReviewResultCommand {
+    Stage(ReviewResultStageArgs),
+    FindingAdd(ReviewResultFindingAddArgs),
+    Complete(ReviewResultCompleteArgs),
+    Cancel(ReviewResultCancelArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewResultStageArgs {
+    pub(crate) invocation_id: i64,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewResultFindingAddArgs {
+    pub(crate) stage_handle: String,
+    #[arg(long = "type")]
+    pub(crate) finding_type: String,
+    #[arg(long)]
+    pub(crate) severity: String,
+    #[arg(long)]
+    pub(crate) description: String,
+    #[arg(long)]
+    pub(crate) requirement: Option<i64>,
+    #[arg(long)]
+    pub(crate) task: Option<i64>,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewResultCompleteArgs {
+    pub(crate) stage_handle: String,
+    #[arg(long)]
+    pub(crate) expected_findings: i64,
+    #[arg(long)]
+    pub(crate) summary: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) invocation_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewResultCancelArgs {
+    pub(crate) stage_handle: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -113,6 +274,8 @@ pub(crate) enum ReviewPlanCommand {
     Context(ReviewPlanContextArgs),
     /// Record an approved exception for a required review plan.
     Waive(ReviewPlanWaiveArgs),
+    /// Replace an obsolete required plan with a compatible successor.
+    Supersede(ReviewPlanSupersedeArgs),
     Target {
         #[command(subcommand)]
         command: ReviewPlanTargetCommand,
@@ -135,7 +298,7 @@ pub(crate) struct ReviewPlanAddArgs {
     pub(crate) policy: Option<i64>,
     #[arg(long)]
     pub(crate) review_scope: Option<i64>,
-    #[arg(long, default_value_t = true)]
+    #[arg(long)]
     pub(crate) required: bool,
 }
 
@@ -147,6 +310,17 @@ pub(crate) struct ReviewPlanContextArgs {
 #[derive(Debug, Args)]
 pub(crate) struct ReviewPlanWaiveArgs {
     pub(crate) review_plan_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewPlanSupersedeArgs {
+    pub(crate) review_plan_id: i64,
+    #[arg(long = "by")]
+    pub(crate) successor_plan_id: i64,
+    #[arg(long)]
+    pub(crate) authority: i64,
     #[arg(long)]
     pub(crate) reason: String,
 }
@@ -228,12 +402,32 @@ pub(crate) struct ReviewRunListArgs {
 pub(crate) enum FindingCommand {
     Decide(FindingDecideArgs),
     Reopen(FindingReopenArgs),
+    Recover(FindingRecoverArgs),
     Add(FindingAddArgs),
     Classify(FindingClassifyArgs),
     List(FindingListArgs),
     Verify(FindingVerifyArgs),
     /// Accept an open finding out of scope using recorded authority.
     AcceptOutOfScope(FindingAcceptOutOfScopeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct FindingRecoverArgs {
+    pub(crate) finding_id: i64,
+    #[arg(long)]
+    pub(crate) epoch: i64,
+    #[arg(long)]
+    pub(crate) evidence: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) package_current: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
 }
 
 #[derive(Debug, Args)]
@@ -308,14 +502,22 @@ pub(crate) struct FindingAddArgs {
 #[derive(Debug, Args)]
 pub(crate) struct FindingClassifyArgs {
     pub(crate) finding_id: i64,
-    #[arg(long)]
-    pub(crate) classification: String,
+    #[arg(long, conflicts_with = "decision")]
+    pub(crate) classification: Option<String>,
+    #[arg(long, value_parser = ["accepted", "rejected"], requires_all = ["reason", "expected_current"], conflicts_with = "classification")]
+    pub(crate) decision: Option<String>,
+    #[arg(long, requires = "decision")]
+    pub(crate) reason: Option<String>,
+    #[arg(long, requires = "decision")]
+    pub(crate) expected_current: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct FindingListArgs {
-    #[arg(long)]
+    #[arg(long, value_parser = ["open", "closed"])]
     pub(crate) status: Option<String>,
+    #[arg(long)]
+    pub(crate) run: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -326,6 +528,8 @@ pub(crate) struct FindingVerifyArgs {
     pub(crate) finding: i64,
     #[arg(long)]
     pub(crate) closure: i64,
+    #[arg(long)]
+    pub(crate) attempt: Option<i64>,
     #[arg(long)]
     pub(crate) result: String,
     #[arg(long)]
@@ -483,6 +687,18 @@ pub(crate) enum KptItemCommand {
     Add(KptItemAddArgs),
     List(KptItemListArgs),
     Convert(Box<KptItemConvertArgs>),
+    Dismiss(KptItemDismissArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct KptItemDismissArgs {
+    pub(crate) item: i64,
+    #[arg(long)]
+    pub(crate) authority: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }
 
 #[derive(Debug, Args)]
@@ -510,29 +726,29 @@ pub(crate) struct KptItemListArgs {
 #[derive(Debug, Args)]
 pub(crate) struct KptItemConvertArgs {
     #[arg(long)]
-    pub(crate) item: i64,
-    #[arg(long = "to")]
-    pub(crate) target_type: String,
+    pub(crate) item: Option<i64>,
+    #[arg(long = "to", value_enum)]
+    pub(crate) target_type: KptConversionTargetArg,
     #[arg(long)]
     pub(crate) title: Option<String>,
     #[arg(long)]
     pub(crate) details: Option<String>,
-    #[arg(long, default_value = "medium")]
-    pub(crate) priority: String,
+    #[arg(long)]
+    pub(crate) priority: Option<String>,
     #[arg(long)]
     pub(crate) work_unit: Option<i64>,
     #[arg(long)]
     pub(crate) name: Option<String>,
     #[arg(long)]
     pub(crate) command: Option<String>,
-    #[arg(long, default_value = "other")]
-    pub(crate) command_type: String,
+    #[arg(long)]
+    pub(crate) command_type: Option<String>,
     #[arg(long)]
     pub(crate) scope: Option<String>,
-    #[arg(long, default_value = "candidate")]
-    pub(crate) command_status: String,
-    #[arg(long, default_value = "context_dependent")]
-    pub(crate) stability: String,
+    #[arg(long)]
+    pub(crate) command_status: Option<String>,
+    #[arg(long)]
+    pub(crate) stability: Option<String>,
     #[arg(long)]
     pub(crate) timeout: Option<String>,
     #[arg(long)]
@@ -541,26 +757,26 @@ pub(crate) struct KptItemConvertArgs {
     pub(crate) authority: Option<i64>,
     #[arg(long = "review-type")]
     pub(crate) review_type: Option<String>,
-    #[arg(long, default_value_t = 1)]
-    pub(crate) fresh_clean: i64,
-    #[arg(long, default_value_t = 0)]
-    pub(crate) resume_clean: i64,
-    #[arg(long, default_value_t = 1)]
-    pub(crate) max_fresh_agents: i64,
-    #[arg(long, default_value_t = 1)]
-    pub(crate) max_resume_agents: i64,
-    #[arg(long, default_value_t = 1)]
-    pub(crate) max_parallel_agents: i64,
-    #[arg(long, default_value = "none")]
-    pub(crate) stop_on_severity: String,
+    #[arg(long)]
+    pub(crate) fresh_clean: Option<i64>,
+    #[arg(long)]
+    pub(crate) resume_clean: Option<i64>,
+    #[arg(long)]
+    pub(crate) max_fresh_agents: Option<i64>,
+    #[arg(long)]
+    pub(crate) max_resume_agents: Option<i64>,
+    #[arg(long)]
+    pub(crate) max_parallel_agents: Option<i64>,
+    #[arg(long)]
+    pub(crate) stop_on_severity: Option<String>,
     #[arg(long, default_value_t = false)]
     pub(crate) allow_new_findings_in_resume: bool,
-    #[arg(long, default_value = "review_plan")]
-    pub(crate) run_count_scope: String,
-    #[arg(long, default_value = "fresh")]
-    pub(crate) default_run_mode: String,
-    #[arg(long, default_value = "block")]
-    pub(crate) on_max_agents_exceeded: String,
+    #[arg(long)]
+    pub(crate) run_count_scope: Option<String>,
+    #[arg(long)]
+    pub(crate) default_run_mode: Option<String>,
+    #[arg(long)]
+    pub(crate) on_max_agents_exceeded: Option<String>,
     #[arg(long)]
     pub(crate) decision_key: Option<String>,
     #[arg(long)]
@@ -573,15 +789,130 @@ pub(crate) struct KptItemConvertArgs {
     pub(crate) design_version: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum KptConversionTargetArg {
+    Rule,
+    Correction,
+    Task,
+    #[value(alias = "command_profile")]
+    CommandProfile,
+    #[value(alias = "review_policy")]
+    ReviewPolicy,
+    Decision,
+    #[value(alias = "design_version")]
+    DesignVersion,
+}
+
+impl KptConversionTargetArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Correction => "correction",
+            Self::Task => "task",
+            Self::CommandProfile => "command-profile",
+            Self::ReviewPolicy => "review-policy",
+            Self::Decision => "decision",
+            Self::DesignVersion => "design-version",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum DecomposeCommand {
     Design(DecomposeDesignArgs),
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum DecompositionCommand {
+    /// Register the first immutable plan revision for a design-package/work slot.
+    Import(DecompositionImportArgs),
+    /// Revalidate one exact draft or incomplete plan revision.
+    Validate(DecompositionValidateArgs),
+    /// Publish a project-owned document-backed successor revision without replacing an applied Plan.
+    Revise(DecompositionReviseArgs),
+    Apply(DecompositionApplyArgs),
+    Show(DecompositionShowArgs),
+    Reconcile(DecompositionReconcileArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionImportArgs {
+    #[arg(long = "design-version", alias = "design")]
+    pub(crate) design_version_id: i64,
+    #[arg(long = "work", alias = "work-unit")]
+    pub(crate) work_unit_id: i64,
+    #[arg(long)]
+    pub(crate) plan: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) expected_content: Option<String>,
+    #[arg(long)]
+    pub(crate) draft: bool,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionValidateArgs {
+    pub(crate) plan_id: i64,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionReviseArgs {
+    pub(crate) plan_id: i64,
+    #[arg(long)]
+    pub(crate) plan: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) expected_content: Option<String>,
+    #[arg(long)]
+    pub(crate) draft: bool,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionApplyArgs {
+    pub(crate) design_version_id: i64,
+    #[arg(long = "work", alias = "work-unit")]
+    pub(crate) work_unit_id: i64,
+    #[arg(long)]
+    pub(crate) plan: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionShowArgs {
+    #[arg(long = "design-version", alias = "design")]
+    pub(crate) design_version_id: i64,
+    #[arg(long = "work", alias = "work-unit")]
+    pub(crate) work_unit_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecompositionReconcileArgs {
+    pub(crate) design_version_id: i64,
+    #[arg(long = "work", alias = "work-unit")]
+    pub(crate) work_unit_id: i64,
+    #[arg(long)]
+    pub(crate) plan: PathBuf,
+    #[arg(long)]
+    pub(crate) closure: i64,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct DecomposeDesignArgs {
     pub(crate) design_version_id: i64,
-    #[arg(long)]
+    #[arg(long = "work", visible_alias = "work-unit")]
     pub(crate) work_unit: i64,
     #[arg(long)]
     pub(crate) checklist_title: Option<String>,
@@ -601,8 +932,10 @@ pub(crate) enum ChecklistCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct ChecklistListArgs {
-    #[arg(long)]
+    #[arg(long, value_parser = ["active", "stale", "closed"])]
     pub(crate) status: Option<String>,
+    #[arg(long)]
+    pub(crate) work: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -618,9 +951,11 @@ pub(crate) enum ChecklistItemCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct ChecklistItemListArgs {
+    #[arg(value_name = "CHECKLIST", conflicts_with = "checklist")]
+    pub(crate) checklist_positional: Option<i64>,
     #[arg(long)]
     pub(crate) checklist: Option<i64>,
-    #[arg(long)]
+    #[arg(long, value_parser = ["open", "blocked", "closed", "accepted_out_of_scope"])]
     pub(crate) status: Option<String>,
 }
 
@@ -632,11 +967,23 @@ pub(crate) struct ChecklistItemCloseArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum StaleCommand {
     /// List stale design-derived records.
-    List,
+    List(StaleListArgs),
     /// Accept a stale record without changing its underlying status.
     Accept(StaleRecordDispositionArgs),
     /// Close a stale record that has a closed lifecycle state.
     Close(StaleRecordDispositionArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct StaleListArgs {
+    #[arg(long = "type", value_parser = [
+        "task_derivation",
+        "checklist",
+        "validation_gate",
+        "coverage_item",
+        "review_plan"
+    ])]
+    pub(crate) record_type: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -651,7 +998,7 @@ pub(crate) struct StaleRecordDispositionArgs {
 pub(crate) struct ReviewContextArgs {
     pub(crate) kind: String,
     #[arg(long)]
-    pub(crate) design_version: Option<i64>,
+    pub(crate) design_version: Option<String>,
     #[arg(long)]
     pub(crate) work_unit: Option<i64>,
     #[arg(long)]
@@ -672,16 +1019,24 @@ pub(crate) enum ExportCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct ExportDesignArgs {
-    #[arg(long)]
-    pub(crate) design: i64,
+    #[arg(value_name = "DESIGN_VERSION", conflicts_with = "design")]
+    pub(crate) design_positional: Option<i64>,
+    #[arg(long, conflicts_with = "design_positional")]
+    pub(crate) design: Option<i64>,
+    #[arg(long, value_parser = ["public", "project-internal", "sensitive"])]
+    pub(crate) classification: Option<String>,
     #[arg(long)]
     pub(crate) output: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ExportPlanArgs {
-    #[arg(long)]
-    pub(crate) design: i64,
+    #[arg(value_name = "WORK", conflicts_with = "design")]
+    pub(crate) work_positional: Option<i64>,
+    #[arg(long, conflicts_with = "work_positional")]
+    pub(crate) design: Option<i64>,
+    #[arg(long, value_parser = ["public", "project-internal", "sensitive"])]
+    pub(crate) classification: Option<String>,
     #[arg(long)]
     pub(crate) output: PathBuf,
 }

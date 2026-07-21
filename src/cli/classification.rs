@@ -25,6 +25,7 @@ pub(super) fn publication_class(command: &Command) -> PublicationClass {
         | Command::Design { .. }
         | Command::Acceptance { .. }
         | Command::Decompose { .. }
+        | Command::Decomposition { .. }
         | Command::Checklist { .. }
         | Command::Stale { .. }
         | Command::Export { .. }
@@ -49,7 +50,11 @@ pub(super) fn publication_class(command: &Command) -> PublicationClass {
         Command::Decision { command } => {
             matches!(
                 command,
-                DecisionCommand::List(_) | DecisionCommand::Search(_)
+                DecisionCommand::List(_)
+                    | DecisionCommand::Search(_)
+                    | DecisionCommand::Continuation {
+                        command: DecisionContinuationCommand::Show(_),
+                    }
             )
         }
         Command::Review { command } => review(command),

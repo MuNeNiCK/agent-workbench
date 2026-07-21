@@ -8,7 +8,118 @@ use sha2::{Digest, Sha256};
 
 use super::{correction_state::*, *};
 
-pub(super) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionToken>> {
+const BASE64URL_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+pub(crate) fn encode_opaque_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        encoded.push(BASE64URL_ALPHABET[(first >> 2) as usize] as char);
+        let second_index = (first & 0x03) << 4 | chunk.get(1).copied().unwrap_or(0) >> 4;
+        encoded.push(BASE64URL_ALPHABET[second_index as usize] as char);
+        if let Some(second) = chunk.get(1).copied() {
+            let third_index = (second & 0x0f) << 2 | chunk.get(2).copied().unwrap_or(0) >> 6;
+            encoded.push(BASE64URL_ALPHABET[third_index as usize] as char);
+        }
+        if let Some(third) = chunk.get(2).copied() {
+            encoded.push(BASE64URL_ALPHABET[(third & 0x3f) as usize] as char);
+        }
+    }
+    format!("b64:{encoded}")
+}
+
+#[cfg(test)]
+pub(crate) fn encode_opaque_task_ref(value: &str) -> String {
+    format!("@task/{}", encode_opaque_component(value))
+}
+
+pub(crate) fn decode_opaque_component(value: &str, label: &str) -> Result<String> {
+    let encoded = value
+        .strip_prefix("b64:")
+        .with_context(|| format!("{label} requires a b64: canonical opaque component"))?;
+    if encoded.is_empty() || encoded.len() % 4 == 1 {
+        bail!("{label} has an invalid base64url length");
+    }
+    let mut bytes = Vec::with_capacity(encoded.len() * 3 / 4);
+    let mut accumulator = 0_u16;
+    let mut bit_count = 0_u8;
+    for byte in encoded.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => bail!("{label} is not unpadded base64url"),
+        };
+        accumulator = accumulator << 6 | u16::from(value);
+        bit_count += 6;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            bytes.push((accumulator >> bit_count) as u8);
+            accumulator &= (1_u16 << bit_count) - 1;
+        }
+    }
+    if accumulator != 0 {
+        bail!("{label} has noncanonical trailing bits");
+    }
+    let decoded =
+        String::from_utf8(bytes).with_context(|| format!("{label} is not valid UTF-8"))?;
+    if encode_opaque_component(&decoded) != value {
+        bail!("{label} is not canonically encoded");
+    }
+    Ok(decoded)
+}
+
+pub(super) fn decode_opaque_task_ref(value: &str) -> Result<Option<String>> {
+    let Some(component) = value.strip_prefix("@task/") else {
+        return Ok(None);
+    };
+    decode_opaque_component(component, "task reference").map(Some)
+}
+
+pub(crate) fn parse_decomposition_reconciliation_target(
+    target: &str,
+) -> Result<(i64, i64, String)> {
+    let parts = target.split('/').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!(
+            "decomposition-plan-reconcile target requires design/work/b64:<project-relative-plan-path>"
+        );
+    }
+    let design = parse_positive_decimal(parts[0])?;
+    let work = parse_positive_decimal(parts[1])?;
+    let path = decode_opaque_component(parts[2], "Decomposition Plan path")?;
+    validate_project_relative_markdown_path(&path)?;
+    Ok((design, work, path))
+}
+
+fn parse_positive_decimal(value: &str) -> Result<i64> {
+    let parsed = value.parse::<i64>()?;
+    if parsed <= 0 || value != parsed.to_string() {
+        bail!("transition ids and order must be positive")
+    }
+    Ok(parsed)
+}
+
+fn validate_project_relative_markdown_path(value: &str) -> Result<()> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || path.is_absolute()
+        || value.contains('\\')
+        || !value.ends_with(".md")
+        || value
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+    {
+        bail!("Decomposition Plan path must be a contained project-relative Markdown path");
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionToken>> {
     let mut parsed = Vec::new();
     let mut phase_aliases = Vec::<String>::new();
     let mut has_decomposition = false;
@@ -26,6 +137,7 @@ pub(super) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionTo
                 verb,
                 "design-decompose"
                     | "design-reconcile"
+                    | "decomposition-plan-reconcile"
                     | "task-accept-out-of-scope"
                     | "phase-create"
                     | "phase-assign"
@@ -51,7 +163,10 @@ pub(super) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionTo
             if !transition_effects.insert(effect_key) {
                 bail!("duplicate correction transition effect is not allowed");
             }
-            if matches!(verb, "design-decompose" | "design-reconcile") {
+            if matches!(
+                verb,
+                "design-decompose" | "design-reconcile" | "decomposition-plan-reconcile"
+            ) {
                 has_decomposition = true;
             }
             if verb == "phase-create" {
@@ -68,6 +183,11 @@ pub(super) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionTo
         let kind = parts.next().unwrap_or_default();
         let operation = parts.next().unwrap_or_default();
         let target = parts.next().unwrap_or_default();
+        if kind == "repository" {
+            bail!(
+                "repository surfaces are not source-correction authority; use a scoped implementation remediation closure"
+            );
+        }
         if !matches!(kind, "design" | "plan" | "docs" | "workflow")
             || !matches!(operation, "edit" | "create" | "delete")
             || target.is_empty()
@@ -111,13 +231,7 @@ pub(super) fn validate_correction_transition_target(
     has_decomposition: bool,
     phase_aliases: &[String],
 ) -> Result<()> {
-    let positive = |value: &str| -> Result<i64> {
-        let parsed = value.parse::<i64>()?;
-        if parsed <= 0 || value != parsed.to_string() {
-            bail!("transition ids and order must be positive")
-        }
-        Ok(parsed)
-    };
+    let positive = parse_positive_decimal;
     let valid_phase_ref = |value: &str| {
         phase_aliases.iter().any(|alias| alias == value)
             || value.parse::<i64>().is_ok_and(|id| id > 0)
@@ -131,6 +245,9 @@ pub(super) fn validate_correction_transition_target(
             positive(parts[0])?;
             positive(parts[1])?;
         }
+        "decomposition-plan-reconcile" => {
+            parse_decomposition_reconciliation_target(target)?;
+        }
         "design-reconcile" => {
             let parts = target.split('/').collect::<Vec<_>>();
             if parts.len() != 3 {
@@ -141,18 +258,14 @@ pub(super) fn validate_correction_transition_target(
             positive(parts[2])?;
         }
         "task-accept-out-of-scope" => {
-            if target.starts_with("@task/") {
-                let key = target.trim_start_matches("@task/");
-                if !has_decomposition
-                    || key.is_empty()
-                    || !key
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
-                {
+            if decode_opaque_task_ref(target)?.is_some() {
+                if !has_decomposition {
                     bail!(
-                        "task alias requires an earlier design decomposition or reconciliation token"
+                        "opaque task reference requires an earlier design decomposition or reconciliation token"
                     )
                 }
+            } else if target.starts_with("@task/") {
+                bail!("task reference requires canonical @task/b64:<opaque-key> syntax")
             } else {
                 positive(target)?;
             }
@@ -189,18 +302,14 @@ pub(super) fn validate_correction_transition_target(
             if !valid_phase_ref(phase) {
                 bail!("phase assignment requires an earlier same-closure phase alias")
             }
-            if task.starts_with("@task/") {
-                let key = task.trim_start_matches("@task/");
-                if !has_decomposition
-                    || key.is_empty()
-                    || !key
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
-                {
+            if decode_opaque_task_ref(task)?.is_some() {
+                if !has_decomposition {
                     bail!(
-                        "task alias requires an earlier design decomposition or reconciliation token"
+                        "opaque task reference requires an earlier design decomposition or reconciliation token"
                     )
                 }
+            } else if task.starts_with("@task/") {
+                bail!("task reference requires canonical @task/b64:<opaque-key> syntax")
             } else {
                 positive(task)?;
             }
@@ -362,19 +471,33 @@ pub(super) fn validate_correction_transition_preflight(
         match operation.as_str() {
             "design-decompose" => {
                 let (design, work) = parse_pair(&target)?;
-                if work != work_unit_id || design_version_id != Some(design) {
+                if work != work_unit_id
+                    || !correction_design_accepts(conn, design_version_id, design)?
+                {
                     bail!("design-decompose target is outside the correction owner or design");
                 }
                 crate::traceability::validate_design_decomposition_in(
                     conn, project_id, design, work,
                 )?;
             }
+            "decomposition-plan-reconcile" => {
+                let (design, work, _) = parse_decomposition_reconciliation_target(&target)?;
+                if work != work_unit_id
+                    || !correction_design_accepts(conn, design_version_id, design)?
+                {
+                    bail!(
+                        "decomposition-plan-reconcile target is outside the correction owner or design"
+                    );
+                }
+            }
             "design-reconcile" => {
                 let parts = target.split('/').collect::<Vec<_>>();
                 let design = parts[0].parse::<i64>()?;
                 let work = parts[1].parse::<i64>()?;
                 let checklist = parts[2].parse::<i64>()?;
-                if work != work_unit_id || design_version_id != Some(design) {
+                if work != work_unit_id
+                    || !correction_design_accepts(conn, design_version_id, design)?
+                {
                     bail!("design-reconcile target is outside the correction owner or design");
                 }
                 crate::traceability::validate_design_decomposition_scope_in(
@@ -388,7 +511,7 @@ pub(super) fn validate_correction_transition_preflight(
                 .optional()?
                 .context("canonical reconciliation checklist is outside the correction owner or design")?;
             }
-            "task-accept-out-of-scope" if !target.starts_with("@task/") => {
+            "task-accept-out-of-scope" if decode_opaque_task_ref(&target)?.is_none() => {
                 let task_id = target.parse::<i64>()?;
                 conn.query_row(
                     r#"select 1 from tasks t
@@ -416,7 +539,9 @@ pub(super) fn validate_correction_transition_preflight(
                 }
                 let work = parts[0].parse::<i64>()?;
                 let design = parts[1].parse::<i64>()?;
-                if work != work_unit_id || design_version_id != Some(design) {
+                if work != work_unit_id
+                    || !correction_design_accepts(conn, design_version_id, design)?
+                {
                     bail!("phase-create target is outside the correction owner or design");
                 }
             }
@@ -427,7 +552,7 @@ pub(super) fn validate_correction_transition_preflight(
                 if !phase.starts_with('@') {
                     resolve_phase_ref(conn, 0, 0, work_unit_id, phase)?;
                 }
-                if !task.starts_with("@task/") {
+                if decode_opaque_task_ref(task)?.is_none() {
                     let task_id = task.parse::<i64>()?;
                     conn.query_row(
                         "select 1 from tasks where id=?1 and work_unit_id=?2 and status in ('open','blocked')",
@@ -464,6 +589,32 @@ pub(super) fn validate_correction_transition_preflight(
     Ok(())
 }
 
+pub(super) fn correction_design_accepts(
+    conn: &rusqlite::Connection,
+    source_design: Option<i64>,
+    target_design: i64,
+) -> Result<bool> {
+    let Some(source_design) = source_design else {
+        return Ok(false);
+    };
+    conn.query_row(
+        r#"
+        select exists(
+          select 1
+          from design_versions source
+          join design_versions target
+            on target.design_package_id=source.design_package_id
+          where source.id=?1 and target.id=?2
+            and target.version_number>=source.version_number
+            and target.status='approved'
+        )
+        "#,
+        params![source_design, target_design],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub(super) fn record_correction_tokens(
     conn: &rusqlite::Connection,
     root: &Path,
@@ -476,6 +627,7 @@ pub(super) fn record_correction_tokens(
     if tokens.is_empty() {
         bail!("correction contract has no typed surfaces");
     }
+    validate_reconciliation_surface_bindings(root, design_root, &tokens)?;
     validate_declared_stale_order(conn, project_id, &tokens)?;
     for (index, token) in tokens.iter().enumerate() {
         let (pre_state, pre_hash) = match token.kind.as_str() {
@@ -521,6 +673,103 @@ pub(super) fn record_correction_tokens(
         )?;
     }
     Ok(tokens.len() as i64)
+}
+
+fn validate_reconciliation_surface_bindings(
+    root: &Path,
+    design_root: Option<&str>,
+    tokens: &[CorrectionToken],
+) -> Result<()> {
+    for transition in tokens.iter().filter(|token| {
+        token.kind == "transition" && token.operation == "decomposition-plan-reconcile"
+    }) {
+        let (_, _, project_relative_path) =
+            parse_decomposition_reconciliation_target(&transition.target)?;
+        let package_root = design_root.context(
+            "Decomposition Plan reconciliation requires an exact imported design package",
+        )?;
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("project root does not exist: {}", root.display()))?;
+        let package_path = if Path::new(package_root).is_absolute() {
+            PathBuf::from(package_root)
+        } else {
+            root.join(package_root)
+        };
+        let canonical_package = package_path.canonicalize().with_context(|| {
+            format!(
+                "correction Design Package does not exist: {}",
+                package_path.display()
+            )
+        })?;
+        let expected_prefix = canonical_package
+            .strip_prefix(&canonical_root)
+            .context("correction Design Package is outside the selected project")?;
+        let relative_plan = Path::new(&project_relative_path)
+            .strip_prefix(expected_prefix)
+            .context("Decomposition Plan path is outside the correction Design Package")?;
+        let relative_plan = relative_plan.to_string_lossy();
+        let file_token = tokens.iter().find(|token| {
+            token.kind == "file"
+                && matches!(token.operation.as_str(), "edit" | "create")
+                && token.target == format!("design:{relative_plan}")
+        });
+        let file_token = file_token.context(
+            "decomposition-plan-reconcile path requires a same-closure design edit or create surface",
+        )?;
+        let resolved = correction_file_path(root, design_root, file_token)?;
+        let resolved_relative = if resolved.exists() {
+            resolved.canonicalize()?
+        } else {
+            resolved
+        };
+        let resolved_relative = resolved_relative
+            .strip_prefix(&canonical_root)
+            .context("Decomposition Plan path escaped the project root")?;
+        if resolved_relative != Path::new(&project_relative_path) {
+            bail!("encoded Decomposition Plan path does not match its design correction surface");
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn effective_file_pre_hash(
+    conn: &rusqlite::Connection,
+    closure_id: i64,
+    operation: &str,
+    target: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        r#"
+        with recursive inherited(closure_id, depth) as (
+          select ?1, 0
+          union all
+          select predecessor.id, inherited.depth + 1
+          from inherited
+          join closures predecessor
+            on predecessor.superseded_by_closure_id=inherited.closure_id
+          where exists(
+            select 1 from correction_tokens token
+            where token.closure_id=predecessor.id
+              and token.token_kind='file'
+              and token.operation=?2
+              and token.target=?3
+          )
+        )
+        select token.pre_hash
+        from inherited
+        join correction_tokens token on token.closure_id=inherited.closure_id
+          and token.token_kind='file'
+          and token.operation=?2
+          and token.target=?3
+        order by inherited.depth desc, token.token_ordinal
+        limit 1
+        "#,
+        params![closure_id, operation, target],
+        |row| row.get(0),
+    )
+    .optional()?
+    .context("correction file token has no effective precondition")
 }
 
 pub(super) fn transition_pre_state(
@@ -606,7 +855,7 @@ pub(super) fn correction_file_path(
         "design" | "plan" => root.join(design_root.context(
             "design and plan correction surfaces require an exact imported design package",
         )?),
-        "docs" | "workflow" => root.to_path_buf(),
+        "docs" | "workflow" | "repository" => root.to_path_buf(),
         _ => bail!("invalid stored correction file kind"),
     };
     let canonical_base = base

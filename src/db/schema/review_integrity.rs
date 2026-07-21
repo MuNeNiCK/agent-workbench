@@ -186,11 +186,29 @@ when new.project_id != (select project_id from review_runs where id = new.review
   or new.finding_id != (select finding_id from closures where id = new.closure_id)
   or (select run_type from review_runs where id = new.review_run_id) != 'resume'
   or (select run_purpose from review_runs where id = new.review_run_id) != 'finding_fix_verification'
-  or (select review_plan_id from review_runs where id = new.review_run_id) != (
-      select source_run.review_plan_id
-      from findings f
+  or not exists (
+      select 1 from findings f
       join review_runs source_run on source_run.id = f.review_run_id
+      join review_plans source_plan on source_plan.id = source_run.review_plan_id
+      join review_runs verifier_run on verifier_run.id = new.review_run_id
+      join review_plans verifier_plan on verifier_plan.id = verifier_run.review_plan_id
       where f.id = new.finding_id
+        and verifier_plan.work_unit_id = source_plan.work_unit_id
+        and verifier_plan.review_type = source_plan.review_type
+        and verifier_plan.stage = source_plan.stage
+        and (
+          verifier_plan.design_version_id is source_plan.design_version_id
+          or exists(
+            select 1 from design_versions source_design
+            join design_versions verifier_design
+              on verifier_design.design_package_id=source_design.design_package_id
+            where source_design.id=source_plan.design_version_id
+              and verifier_design.id=verifier_plan.design_version_id
+              and verifier_design.version_number>=source_design.version_number
+              and verifier_design.status='approved'
+          )
+        )
+        and coalesce(verifier_plan.scope, '') = coalesce(source_plan.scope, '')
   )
 begin
     select raise(abort, 'finding verification project_id must match referenced rows');
@@ -205,11 +223,29 @@ when new.project_id != (select project_id from review_runs where id = new.review
   or new.finding_id != (select finding_id from closures where id = new.closure_id)
   or (select run_type from review_runs where id = new.review_run_id) != 'resume'
   or (select run_purpose from review_runs where id = new.review_run_id) != 'finding_fix_verification'
-  or (select review_plan_id from review_runs where id = new.review_run_id) != (
-      select source_run.review_plan_id
-      from findings f
+  or not exists (
+      select 1 from findings f
       join review_runs source_run on source_run.id = f.review_run_id
+      join review_plans source_plan on source_plan.id = source_run.review_plan_id
+      join review_runs verifier_run on verifier_run.id = new.review_run_id
+      join review_plans verifier_plan on verifier_plan.id = verifier_run.review_plan_id
       where f.id = new.finding_id
+        and verifier_plan.work_unit_id = source_plan.work_unit_id
+        and verifier_plan.review_type = source_plan.review_type
+        and verifier_plan.stage = source_plan.stage
+        and (
+          verifier_plan.design_version_id is source_plan.design_version_id
+          or exists(
+            select 1 from design_versions source_design
+            join design_versions verifier_design
+              on verifier_design.design_package_id=source_design.design_package_id
+            where source_design.id=source_plan.design_version_id
+              and verifier_design.id=verifier_plan.design_version_id
+              and verifier_design.version_number>=source_design.version_number
+              and verifier_design.status='approved'
+          )
+        )
+        and coalesce(verifier_plan.scope, '') = coalesce(source_plan.scope, '')
   )
 begin
     select raise(abort, 'finding verification project_id must match referenced rows');

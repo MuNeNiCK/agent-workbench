@@ -18,7 +18,7 @@ fn init_creates_ledger_and_project() {
 }
 
 #[test]
-fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migration() {
+fn legacy_authorized_review_is_normalized_without_current_signature_authority() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "preserve accepted review", None).unwrap();
@@ -115,6 +115,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     )
     .unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    retain_core_storage_only(&conn);
     conn.pragma_update(None, "foreign_keys", false).unwrap();
     conn.execute_batch(
         "drop trigger if exists trg_review_run_target_update;
@@ -154,8 +155,13 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
             created_at text not null,
             unique(project_id, decision_handle)
         );
-        insert into owner_decisions
-        select * from owner_decisions_current;
+        insert into owner_decisions(
+            id,project_id,decision_handle,capability_id,principal_id,owner_ref,target_ref,
+            decision_family,action,decision_value,reason,expected_current,payload_digest,created_at
+        )
+        select id,project_id,decision_handle,null,null,owner_ref,target_ref,
+               decision_family,action,decision_value,reason,expected_current,payload_digest,created_at
+        from owner_decisions_current;
         drop table owner_decisions_current;
         delete from schema_migrations where version=13;
         insert into schema_migrations(version,applied_at) values(12,current_timestamp);
@@ -227,9 +233,9 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     )
     .unwrap();
     conn.execute_batch(
-        "drop trigger if exists trg_legacy_signed_review_effect_update;
-         drop trigger if exists trg_legacy_signed_review_effect_delete;
-         drop table legacy_signed_review_effects;
+        "drop trigger if exists trg_legacy_review_acceptance_migration_update;
+         drop trigger if exists trg_legacy_review_acceptance_migration_delete;
+         drop table legacy_review_acceptance_migrations;
          drop trigger if exists trg_schema_retirement_update;
          drop trigger if exists trg_schema_retirement_delete;
          drop table schema_retirement_records;",
@@ -247,7 +253,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let rollback_state: (i64, i64, i64) = conn
         .query_row(
-            "select (select max(version) from schema_migrations),(select count(*) from sqlite_schema where type='table' and name='schema_retirement_records'),(select count(*) from sqlite_schema where type='table' and name='legacy_signed_review_effects')",
+            "select (select max(version) from schema_migrations),(select count(*) from sqlite_schema where type='table' and name='schema_retirement_records'),(select count(*) from sqlite_schema where type='table' and name='legacy_review_acceptance_migrations')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -269,31 +275,39 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
 
     apply_test_update(temp.path());
     let status = project_status(temp.path()).unwrap();
-    assert_eq!(status.schema_version, Some(13), "{status:?}");
+    assert_eq!(status.schema_version, Some(SCHEMA_VERSION), "{status:?}");
     assert_eq!(status.project_integrity.result, "clear");
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let preserved: (i64, i64, String, String) = conn
+    let preserved: (String, String) = conn
         .query_row(
-            "select capability_id,principal_id,decision_value,reason from owner_decisions where id=43",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        preserved,
-        (42, 41, "accepted".into(), "preserve signed history".into())
-    );
-    let nullable: (i64, i64) = conn
-        .query_row(
-            "select (select [notnull] from pragma_table_info('owner_decisions') where name='capability_id'),(select [notnull] from pragma_table_info('owner_decisions') where name='principal_id')",
+            "select decision_value,reason from owner_decisions where id=43",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(nullable, (0, 0));
+    assert_eq!(
+        preserved,
+        ("accepted".into(), "preserve signed history".into())
+    );
+    let retired_authority_columns: i64 = conn
+        .query_row(
+            "select count(*) from pragma_table_info('owner_decisions') where name in ('capability_id','principal_id')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retired_authority_columns, 0);
+    let retired_reviewer_columns: i64 = conn
+        .query_row(
+            "select count(*) from pragma_table_info('review_agent_invocations') where name in ('reviewer_principal_id','review_provenance_id','legacy_source_reviewer_digest')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retired_reviewer_columns, 0);
     let preserved_effect: String = conn
         .query_row(
-            "select content_digest from legacy_signed_review_effects where review_run_id=?1",
+            "select content_digest from legacy_review_acceptance_migrations where review_run_id=?1",
             params![run.review_run_id],
             |row| row.get(0),
         )
@@ -301,7 +315,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     assert_eq!(preserved_effect.len(), 64);
     let stale_effects: i64 = conn
         .query_row(
-            "select count(*) from legacy_signed_review_effects where review_run_id=?1",
+            "select count(*) from legacy_review_acceptance_migrations where review_run_id=?1",
             params![stale_run.review_run_id],
             |row| row.get(0),
         )
@@ -325,27 +339,18 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     assert_eq!(retirement_journal, 1);
     drop(conn);
 
-    let rejected = adjudicate_review(
+    let inert = adjudicate_review(
         temp.path(),
         run.review_run_id,
         AdjudicationInput {
             decision: "rejected",
-            reason: "exercise preserved predecessor",
+            reason: "attempt to mutate inert legacy audit",
             expected_current:
                 "decision_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         },
     )
-    .unwrap();
-    adjudicate_review(
-        temp.path(),
-        run.review_run_id,
-        AdjudicationInput {
-            decision: "accepted",
-            reason: "restore preserved acceptance",
-            expected_current: &rejected.decision_handle,
-        },
-    )
-    .unwrap();
+    .unwrap_err();
+    assert!(inert.to_string().contains("legacy_claim_audit_only"));
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let plan_status: String = conn
         .query_row(
@@ -354,16 +359,46 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(plan_status, "clean");
+    assert_eq!(plan_status, "blocked");
+    drop(conn);
+    crate::review::add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("force plan reevaluation after inert migration"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "failed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let reevaluated_status: String = conn
+        .query_row(
+            "select status from review_plans where id=?1",
+            params![plan.review_plan_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reevaluated_status, "open");
     drop(conn);
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
-        Some(13)
+        Some(SCHEMA_VERSION)
     );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let exact_retry_counts: (i64, i64) = conn
         .query_row(
-            "select (select count(*) from schema_retirement_records where source_generation=12),(select count(*) from legacy_signed_review_effects where review_run_id=?1)",
+            "select (select count(*) from schema_retirement_records where source_generation=12),(select count(*) from legacy_review_acceptance_migrations where review_run_id=?1)",
             params![run.review_run_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -373,7 +408,7 @@ fn schema12_signed_decision_is_preserved_as_inert_audit_during_schema13_migratio
     if let Err(error) = plan_task_identity(temp.path(), None) {
         assert!(
             !error.to_string().contains("persisted families"),
-            "schema-12 inert audit tables must be accepted by the schema-13 profile: {error:#}"
+            "retained inert audit tables must be accepted by the current profile: {error:#}"
         );
     }
 }
@@ -383,6 +418,7 @@ fn next_action_requires_explicit_update_before_querying_lifecycle_state() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    retain_core_storage_only(&conn);
     conn.execute_batch(
         r#"
         drop trigger if exists trg_remediation_binding_insert;
@@ -392,8 +428,6 @@ fn next_action_requires_explicit_update_before_querying_lifecycle_state() {
         drop trigger if exists trg_correction_token_links_insert;
         drop table closure_attempts;
         alter table closures drop column status;
-        delete from schema_migrations where version in (11, 12);
-        insert or ignore into schema_migrations(version, applied_at) values (7, current_timestamp);
         "#,
     )
     .unwrap();
@@ -403,18 +437,21 @@ fn next_action_requires_explicit_update_before_querying_lifecycle_state() {
     let NextAction::ProjectIntegrityBlocked { integrity } = action else {
         panic!("legacy state must require explicit update");
     };
-    assert!(
-        integrity
-            .predicates
-            .iter()
-            .any(|item| item.next_action.as_deref().is_some_and(|action| {
-                action.starts_with("agent-workbench update apply --expected-current ")
-            }))
-    );
+    assert!(integrity.predicates.iter().any(|item| {
+        item.next_action
+            .as_deref()
+            .is_some_and(|action| action == "agent-workbench update inspect")
+    }));
     let inspection = inspect_update(temp.path()).unwrap();
     let outcome = apply_update(temp.path(), &inspection.current_identity).unwrap();
     assert!(!outcome.already_applied);
-    assert_eq!(outcome.backup_identity, inspection.current_identity);
+    assert_eq!(outcome.backup_identity.len(), 64);
+    assert!(
+        temp.path()
+            .join(".agent-workbench/update-backups")
+            .join(format!("{}.sqlite", outcome.backup_identity))
+            .is_file()
+    );
     assert_eq!(
         next_action(temp.path()).unwrap(),
         NextAction::NoOpenWorkUnit

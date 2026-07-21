@@ -1,233 +1,367 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use rusqlite::Connection;
 
-struct Family {
+struct SourceFamilyContract {
     name: &'static str,
     since_schema: i64,
-    until_schema: i64,
+    required_columns: &'static [&'static str],
+    ownership_foreign_keys: &'static [RequiredForeignKey],
 }
 
-const FAMILIES: &[Family] = &[
-    family("acceptance_records", 6, 13),
-    family("artifacts", 6, 13),
-    family("authority_assertions", 11, 12),
-    family("authority_bootstrap_journals", 11, 12),
-    family("authority_bootstrap_targets", 12, 12),
-    family("authority_grant_epochs", 11, 12),
-    family("authority_migration_sources", 12, 13),
-    family("authorities", 6, 13),
-    family("authority_events", 6, 13),
-    family("authority_principals", 11, 12),
-    family("authority_provider_snapshots", 11, 12),
-    family("authority_security_audits", 12, 12),
-    family("checklist_items", 6, 13),
-    family("checklists", 6, 13),
-    family("closure_attempts", 7, 13),
-    family("closures", 6, 13),
-    family("command_deviations", 6, 13),
-    family("command_profiles", 6, 13),
-    family("command_usages", 6, 13),
-    family("correction_application_identity_links", 10, 13),
-    family("correction_completion_inheritance_evidence", 11, 13),
-    family("correction_completion_inheritance_sources", 11, 13),
-    family("correction_sessions", 9, 13),
-    family("correction_tokens", 9, 13),
-    family("correction_transition_aliases", 9, 13),
-    family("correction_transition_applications", 9, 13),
-    family("coverage_items", 6, 13),
-    family("decisions", 6, 13),
-    family("decision_capabilities", 11, 12),
-    family("capability_consumption_audits", 12, 12),
-    family("capability_issue_audits", 12, 12),
-    family("design_decisions", 6, 13),
-    family("design_files", 6, 13),
-    family("design_packages", 6, 13),
-    family("design_requirements", 6, 13),
-    family("design_versions", 6, 13),
-    family("finding_remediation_bindings", 9, 13),
-    family("finding_remediation_recovery_epochs", 9, 13),
-    family("finding_verifications", 6, 13),
-    family("finding_disposition_decisions", 11, 13),
-    family("finding_lifecycle_events", 11, 13),
-    family("findings", 6, 13),
-    family("git_commits", 6, 13),
-    family("git_file_changes", 6, 13),
-    family("implementation_evidence", 6, 13),
-    family("legacy_claim_audits", 12, 13),
-    family("legacy_adjudication_migrations", 12, 13),
-    family("legacy_finding_audits", 12, 13),
-    family("legacy_reviewer_bindings", 12, 12),
-    family("legacy_signed_review_effects", 13, 13),
-    family("legacy_migration_candidates", 12, 13),
-    family("legacy_migration_candidate_members", 12, 13),
-    family("legacy_migration_edges", 12, 13),
-    family("legacy_migration_projections", 12, 13),
-    family("decision_continuations", 12, 12),
-    family("review_correction_events", 12, 13),
-    family("review_boundary_snapshots", 12, 13),
-    family("review_correction_recovery_obligations", 12, 13),
-    family("finding_decision_epochs", 12, 13),
-    family("kpt_item_conversions", 6, 13),
-    family("kpt_items", 6, 13),
-    family("kpt_reviews", 6, 13),
-    family("owner_decision_grants", 11, 12),
-    family("owner_decisions", 11, 13),
-    family("projects", 6, 13),
-    family("repositories", 6, 13),
-    family("repository_dirty_entries", 6, 13),
-    family("repository_snapshot_comparisons", 6, 13),
-    family("repository_snapshots", 6, 13),
-    family("repository_state_classifications", 6, 13),
-    family("resume_check_items", 6, 13),
-    family("resume_checks", 6, 13),
-    family("review_agent_invocations", 6, 13),
-    family("review_invocation_transition_audits", 12, 12),
-    family("review_adjudication_decisions", 11, 13),
-    family("review_plan_targets", 6, 13),
-    family("review_plans", 6, 13),
-    family("review_policies", 6, 13),
-    family("review_provenance_records", 11, 12),
-    family("review_runs", 6, 13),
-    family("review_result_stage_audits", 12, 12),
-    family("review_result_stage_items", 12, 12),
-    family("review_result_stages", 12, 12),
-    family("review_scopes", 6, 13),
-    family("rule_bindings", 6, 13),
-    family("schema_migrations", 6, 13),
-    family("schema_retirement_records", 13, 13),
-    family("suspend_snapshots", 6, 13),
-    family("task_derivations", 6, 13),
-    family("tasks", 6, 13),
-    family("user_corrections", 6, 13),
-    family("validation_gate_template_requirements", 6, 13),
-    family("validation_gate_templates", 6, 13),
-    family("validation_gates", 6, 13),
-    family("validation_link_repair_changes", 8, 13),
-    family("validation_link_repair_runs", 8, 13),
-    family("validation_runs", 6, 13),
-    family("verification_adjudication_decisions", 11, 13),
-    family("work_phase_dependencies", 6, 13),
-    family("work_phase_events", 6, 13),
-    family("work_phase_review_targets", 6, 13),
-    family("work_phase_task_memberships", 6, 13),
-    family("work_phase_trace_decisions", 6, 13),
-    family("work_phases", 6, 13),
-    family("work_record_commands", 6, 13),
-    family("work_record_commits", 6, 13),
-    family("work_record_files", 6, 13),
-    family("work_record_forks", 6, 13),
-    family("work_records", 6, 13),
-    family("work_unit_activations", 6, 13),
-    family("work_unit_dependencies", 6, 13),
-    family("work_unit_events", 6, 13),
-    family("work_units", 6, 13),
-];
+struct RequiredForeignKey {
+    from: &'static str,
+    target: &'static str,
+    to: &'static str,
+}
 
-const TARGET_FAMILIES: &[&str] = &[
-    "task_completion_claims",
-    "task_completion_sources",
-    "task_identity_migration_audits",
-    "task_phase_memberships",
-    "task_phase_membership_sources",
-    "task_identity_dependencies",
-    "task_identity_dependency_sources",
-    "task_identities",
-    "task_revision_aliases",
-    "task_revisions",
-];
+const fn foreign_key(
+    from: &'static str,
+    target: &'static str,
+    to: &'static str,
+) -> RequiredForeignKey {
+    RequiredForeignKey { from, target, to }
+}
 
-// Schema 13 no longer uses these schema-12 security tables. Migrated ledgers
-// may retain them as immutable audit history; they are not task-history input.
-const INERT_SCHEMA12_AUDIT_FAMILIES: &[&str] = &[
-    "authority_assertions",
-    "authority_bootstrap_journals",
-    "authority_bootstrap_targets",
-    "authority_grant_epochs",
-    "authority_principals",
-    "authority_provider_snapshots",
-    "authority_security_audits",
-    "capability_consumption_audits",
-    "capability_issue_audits",
-    "decision_capabilities",
-    "decision_continuations",
-    "legacy_reviewer_bindings",
-    "owner_decision_grants",
-    "review_invocation_transition_audits",
-    "review_provenance_records",
-    "review_result_stage_audits",
-    "review_result_stage_items",
-    "review_result_stages",
-];
-
-const fn family(name: &'static str, since_schema: i64, until_schema: i64) -> Family {
-    Family {
+const fn family(
+    name: &'static str,
+    since_schema: i64,
+    required_columns: &'static [&'static str],
+    ownership_foreign_keys: &'static [RequiredForeignKey],
+) -> SourceFamilyContract {
+    SourceFamilyContract {
         name,
         since_schema,
-        until_schema,
+        required_columns,
+        ownership_foreign_keys,
     }
 }
+
+// This is the task-history input contract, not an inventory of the product's
+// storage. Adding an unrelated product relation must not change whether the
+// task-history migration can run or alter its source identity.
+const SOURCE_FAMILIES: &[SourceFamilyContract] = &[
+    family("projects", 6, &["id", "root_path"], &[]),
+    family(
+        "work_units",
+        6,
+        &["id", "project_id"],
+        &[foreign_key("project_id", "projects", "id")],
+    ),
+    family(
+        "tasks",
+        6,
+        &["id", "work_unit_id", "title", "details", "status"],
+        &[foreign_key("work_unit_id", "work_units", "id")],
+    ),
+    family(
+        "design_versions",
+        6,
+        &["id", "design_package_id", "version_number"],
+        &[],
+    ),
+    family(
+        "design_requirements",
+        6,
+        &[
+            "id",
+            "design_version_id",
+            "requirement_key",
+            "revision",
+            "requirement_text",
+            "priority",
+            "required_surfaces",
+            "status",
+        ],
+        &[foreign_key("design_version_id", "design_versions", "id")],
+    ),
+    family(
+        "task_derivations",
+        6,
+        &[
+            "id",
+            "task_id",
+            "design_requirement_id",
+            "checklist_item_id",
+            "status",
+        ],
+        &[
+            foreign_key("task_id", "tasks", "id"),
+            foreign_key("design_requirement_id", "design_requirements", "id"),
+        ],
+    ),
+    family(
+        "validation_gate_templates",
+        6,
+        &[
+            "id",
+            "design_version_id",
+            "gate_key",
+            "expected_result",
+            "stage",
+            "gate_text",
+        ],
+        &[foreign_key("design_version_id", "design_versions", "id")],
+    ),
+    family(
+        "validation_gate_template_requirements",
+        6,
+        &["id", "validation_gate_template_id", "design_requirement_id"],
+        &[
+            foreign_key(
+                "validation_gate_template_id",
+                "validation_gate_templates",
+                "id",
+            ),
+            foreign_key("design_requirement_id", "design_requirements", "id"),
+        ],
+    ),
+    family(
+        "work_phases",
+        6,
+        &["id", "work_unit_id", "status"],
+        &[foreign_key("work_unit_id", "work_units", "id")],
+    ),
+    family(
+        "work_phase_task_memberships",
+        6,
+        &["id", "phase_id", "task_id"],
+        &[
+            foreign_key("phase_id", "work_phases", "id"),
+            foreign_key("task_id", "tasks", "id"),
+        ],
+    ),
+    family(
+        "work_phase_dependencies",
+        6,
+        &["id", "from_phase_id", "to_phase_id", "status"],
+        &[
+            foreign_key("from_phase_id", "work_phases", "id"),
+            foreign_key("to_phase_id", "work_phases", "id"),
+        ],
+    ),
+    family(
+        "checklists",
+        6,
+        &["id", "work_unit_id", "status"],
+        &[foreign_key("work_unit_id", "work_units", "id")],
+    ),
+    family(
+        "checklist_items",
+        6,
+        &[
+            "id",
+            "checklist_id",
+            "design_requirement_id",
+            "task_id",
+            "item_order",
+            "status",
+        ],
+        &[
+            foreign_key("checklist_id", "checklists", "id"),
+            foreign_key("design_requirement_id", "design_requirements", "id"),
+            foreign_key("task_id", "tasks", "id"),
+        ],
+    ),
+    family(
+        "acceptance_records",
+        6,
+        &["id", "target_type", "checklist_item_id", "status"],
+        &[foreign_key("checklist_item_id", "checklist_items", "id")],
+    ),
+    family(
+        "implementation_evidence",
+        6,
+        &[
+            "id",
+            "task_id",
+            "evidence_type",
+            "commit_sha",
+            "file_path",
+            "line_ref",
+            "symbol",
+            "artifact_path",
+            "note",
+        ],
+        &[foreign_key("task_id", "tasks", "id")],
+    ),
+    family(
+        "coverage_items",
+        6,
+        &[
+            "id",
+            "work_unit_id",
+            "task_id",
+            "status",
+            "runtime_boundary_evidence",
+            "ux_boundary_evidence",
+            "lifecycle_boundary_evidence",
+            "tests_or_gates",
+            "missing_or_unverified",
+        ],
+        &[
+            foreign_key("work_unit_id", "work_units", "id"),
+            foreign_key("task_id", "tasks", "id"),
+        ],
+    ),
+    family(
+        "validation_gates",
+        6,
+        &["id", "work_unit_id", "task_id", "expected_result"],
+        &[
+            foreign_key("work_unit_id", "work_units", "id"),
+            foreign_key("task_id", "tasks", "id"),
+        ],
+    ),
+    family(
+        "validation_runs",
+        6,
+        &[
+            "id",
+            "validation_gate_id",
+            "work_unit_id",
+            "task_id",
+            "result",
+            "artifact_path",
+            "artifact_hash",
+            "notes",
+        ],
+        &[
+            foreign_key("validation_gate_id", "validation_gates", "id"),
+            foreign_key("work_unit_id", "work_units", "id"),
+            foreign_key("task_id", "tasks", "id"),
+        ],
+    ),
+    family(
+        "phase_epochs",
+        16,
+        &["id", "work_unit_id", "state"],
+        &[foreign_key("work_unit_id", "work_units", "id")],
+    ),
+    family(
+        "phase_epoch_sources",
+        16,
+        &["id", "phase_epoch_id", "source_phase_id"],
+        &[
+            foreign_key("phase_epoch_id", "phase_epochs", "id"),
+            foreign_key("source_phase_id", "work_phases", "id"),
+        ],
+    ),
+    family(
+        "phase_epoch_dependencies",
+        16,
+        &["id", "from_phase_epoch_id", "to_phase_epoch_id", "state"],
+        &[
+            foreign_key("from_phase_epoch_id", "phase_epochs", "id"),
+            foreign_key("to_phase_epoch_id", "phase_epochs", "id"),
+        ],
+    ),
+    family(
+        "phase_epoch_dependency_sources",
+        16,
+        &["id", "phase_epoch_dependency_id", "source_dependency_id"],
+        &[
+            foreign_key(
+                "phase_epoch_dependency_id",
+                "phase_epoch_dependencies",
+                "id",
+            ),
+            foreign_key("source_dependency_id", "work_phase_dependencies", "id"),
+        ],
+    ),
+    family(
+        "validation_link_retirements",
+        23,
+        &["id", "validation_run_id"],
+        &[foreign_key("validation_run_id", "validation_runs", "id")],
+    ),
+];
 
 pub(super) fn validate(conn: &Connection, schema_version: i64) -> Result<()> {
     if profile_id(schema_version).is_none() {
         bail!("task-history migration source profile is unsupported");
     }
-    let expected = expected_families(schema_version);
-    let mut statement = conn.prepare(
-        "select name from sqlite_schema where type='table' and name not like 'sqlite_%' order by name",
-    )?;
-    let mut actual = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
-    for target in TARGET_FAMILIES {
-        actual.remove(*target);
-    }
-    if schema_version == 13 {
-        for inert in INERT_SCHEMA12_AUDIT_FAMILIES {
-            actual.remove(*inert);
-        }
-    }
-    if actual != expected {
-        bail!(
-            "task-history migration source profile is unsupported (expected {} persisted families, found {})",
-            expected.len(),
-            actual.len()
-        );
+    for family in active_families(schema_version) {
+        validate_family(conn, family)?;
     }
     Ok(())
 }
 
-pub(super) fn profile_id(schema_version: i64) -> Option<&'static str> {
-    match schema_version {
-        6 => Some("task-history-source-v6"),
-        7 => Some("task-history-source-v7"),
-        8 => Some("task-history-source-v8"),
-        9 => Some("task-history-source-v9"),
-        10 => Some("task-history-source-v10"),
-        11 => Some("task-history-source-v11"),
-        12 => Some("task-history-source-v12"),
-        13 => Some("task-history-source-v13"),
-        _ => None,
+fn validate_family(conn: &Connection, family: &SourceFamilyContract) -> Result<()> {
+    let escaped = family.name.replace('"', "\"\"");
+    let mut statement = conn.prepare(&format!("pragma table_info(\"{escaped}\")"))?;
+    let columns = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+        })?
+        .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
+    if columns.is_empty() {
+        bail!(
+            "task-history migration source contract is not satisfied: required relation {} is absent",
+            family.name
+        );
     }
+    if columns.get("id").copied().unwrap_or_default() == 0 {
+        bail!(
+            "task-history migration source contract is not satisfied: relation {} has no stable identity",
+            family.name
+        );
+    }
+    let missing = family
+        .required_columns
+        .iter()
+        .filter(|column| !columns.contains_key(**column))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "task-history migration source contract is not satisfied: relation {} lacks required fields {}",
+            family.name,
+            missing.join(",")
+        );
+    }
+
+    let mut foreign_key_statement =
+        conn.prepare(&format!("pragma foreign_key_list(\"{escaped}\")"))?;
+    let foreign_keys = foreign_key_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    for required in family.ownership_foreign_keys {
+        if !foreign_keys.contains(&(
+            required.from.to_string(),
+            required.target.to_string(),
+            Some(required.to.to_string()),
+        )) {
+            bail!(
+                "task-history migration source contract is not satisfied: relation {} lost required ownership link",
+                family.name
+            );
+        }
+    }
+    Ok(())
 }
 
-fn expected_families(schema_version: i64) -> BTreeSet<String> {
-    FAMILIES
+pub(super) fn profile_id(schema_version: i64) -> Option<String> {
+    (6..=crate::db::SCHEMA_VERSION)
+        .contains(&schema_version)
+        .then(|| format!("task-history-source-v{schema_version}"))
+}
+
+fn active_families(schema_version: i64) -> impl Iterator<Item = &'static SourceFamilyContract> {
+    SOURCE_FAMILIES
         .iter()
-        .filter(|family| {
-            family.since_schema <= schema_version && schema_version <= family.until_schema
-        })
-        .map(|family| family.name.to_string())
-        .collect()
+        .filter(move |family| family.since_schema <= schema_version)
 }
 
 pub(super) fn source_families(schema_version: i64) -> Vec<&'static str> {
-    FAMILIES
-        .iter()
-        .filter(|family| {
-            family.since_schema <= schema_version && schema_version <= family.until_schema
-        })
+    active_families(schema_version)
         .map(|family| family.name)
         .collect()
 }

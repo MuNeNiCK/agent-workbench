@@ -343,13 +343,21 @@ fn add_dependencies(
             elements.push(dependency_ambiguity(group, AmbiguityCode::DependencySelf)?);
             continue;
         }
-        if group.states.len() > 1 {
+        let effective_states = group
+            .states
+            .keys()
+            .copied()
+            .filter(|state| *state != PlanStatus::Retired)
+            .collect::<BTreeSet<_>>();
+        if effective_states.len() > 1 {
             conflicting.insert((from.clone(), to.clone()));
             elements.push(dependency_ambiguity(group, AmbiguityCode::DependencyState)?);
         }
         let reverse = (to.clone(), from.clone());
         if (from, to) < (&reverse.0, &reverse.1)
+            && group.states.contains_key(&PlanStatus::Open)
             && let Some(reverse_group) = groups.get(&reverse)
+            && reverse_group.states.contains_key(&PlanStatus::Open)
         {
             conflicting.insert((from.clone(), to.clone()));
             conflicting.insert(reverse);
@@ -369,11 +377,12 @@ fn add_dependencies(
             continue;
         }
         let source_refs = dependency_refs(&group)?;
-        let (state, _dependency_ids) = group
+        let state = group
             .states
-            .into_iter()
-            .next()
-            .expect("readable dependency group has one state");
+            .keys()
+            .copied()
+            .find(|state| *state != PlanStatus::Retired)
+            .unwrap_or(PlanStatus::Retired);
         let payload = Payload::Dependency {
             from_task: from,
             to_task: to,
@@ -634,6 +643,7 @@ fn map_phase_status(status: super::super::status::PhaseState) -> PlanStatus {
         PhaseState::Closed => PlanStatus::Closed,
         PhaseState::OutOfScope => PlanStatus::OutOfScope,
         PhaseState::Split => PlanStatus::Split,
+        PhaseState::Superseded => PlanStatus::Retired,
     }
 }
 
@@ -643,5 +653,6 @@ fn map_dependency_status(status: super::super::status::DependencyState) -> PlanS
         DependencyState::Open => PlanStatus::Open,
         DependencyState::Completed => PlanStatus::Completed,
         DependencyState::OutOfScope => PlanStatus::OutOfScope,
+        DependencyState::Superseded => PlanStatus::Retired,
     }
 }

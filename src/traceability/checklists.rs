@@ -8,6 +8,19 @@ use crate::db::{ensure_unscoped_mutation_allowed, open_existing_project, project
 use super::*;
 
 pub fn list_checklists(root: &Path, status: Option<&str>) -> Result<Vec<ChecklistRecord>> {
+    list_checklists_filtered(
+        root,
+        ChecklistListFilter {
+            status,
+            work_unit_id: None,
+        },
+    )
+}
+
+pub fn list_checklists_filtered(
+    root: &Path,
+    filter: ChecklistListFilter<'_>,
+) -> Result<Vec<ChecklistRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
@@ -19,21 +32,25 @@ pub fn list_checklists(root: &Path, status: Option<&str>) -> Result<Vec<Checklis
         left join checklist_items ci on ci.checklist_id = c.id
         where c.project_id = ?1
           and (?2 is null or c.status = ?2)
+          and (?3 is null or c.work_unit_id = ?3)
         group by c.id, c.work_unit_id, c.design_version_id, c.title, c.status
         order by c.id
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, status], |row| {
-        Ok(ChecklistRecord {
-            id: row.get(0)?,
-            work_unit_id: row.get(1)?,
-            design_version_id: row.get(2)?,
-            title: row.get(3)?,
-            status: row.get(4)?,
-            item_count: row.get(5)?,
-            closed_count: row.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![project_id, filter.status, filter.work_unit_id],
+        |row| {
+            Ok(ChecklistRecord {
+                id: row.get(0)?,
+                work_unit_id: row.get(1)?,
+                design_version_id: row.get(2)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                item_count: row.get(5)?,
+                closed_count: row.get(6)?,
+            })
+        },
+    )?;
     let mut records = Vec::new();
     for row in rows {
         records.push(row?);
@@ -177,6 +194,26 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
                 and ar.acceptance_type = 'stale_accepted'
                 and ar.status = 'approved'
           )
+          and not exists (
+              select 1
+              from task_derivations replacement
+              join design_requirements replacement_requirement
+                on replacement_requirement.id=replacement.design_requirement_id
+              join design_versions replacement_version
+                on replacement_version.id=replacement_requirement.design_version_id
+              join design_packages package
+                on package.current_design_version_id=replacement_version.id
+              join design_versions source_version
+                on source_version.design_package_id=package.id
+               and source_version.id=dr.design_version_id
+              join tasks source_task on source_task.id=td.task_id
+              join tasks replacement_task on replacement_task.id=replacement.task_id
+              where replacement.project_id=td.project_id
+                and replacement.status!='stale'
+                and replacement_version.status='approved'
+                and replacement_requirement.requirement_key=dr.requirement_key
+                and replacement_task.work_unit_id is source_task.work_unit_id
+          )
         order by td.id
         "#,
         &mut records,
@@ -233,6 +270,31 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
                 and ar.stale_record_id = vg.id
                 and ar.acceptance_type = 'stale_accepted'
                 and ar.status = 'approved'
+          )
+          and not exists (
+              select 1
+              from validation_gates replacement
+              join design_requirements source_requirement
+                on source_requirement.id=vg.design_requirement_id
+              join design_requirements replacement_requirement
+                on replacement_requirement.id=replacement.design_requirement_id
+              join design_versions source_version
+                on source_version.id=source_requirement.design_version_id
+              join design_versions replacement_version
+                on replacement_version.id=replacement_requirement.design_version_id
+              join design_packages package
+                on package.id=source_version.design_package_id
+               and package.id=replacement_version.design_package_id
+               and package.current_design_version_id=replacement_version.id
+              left join tasks source_task on source_task.id=vg.task_id
+              left join tasks replacement_task on replacement_task.id=replacement.task_id
+              where replacement.project_id=vg.project_id
+                and replacement.status!='stale'
+                and replacement_version.status='approved'
+                and replacement.gate_key=vg.gate_key
+                and replacement_requirement.requirement_key=source_requirement.requirement_key
+                and coalesce(replacement.work_unit_id,replacement_task.work_unit_id,0)
+                    =coalesce(vg.work_unit_id,source_task.work_unit_id,0)
           )
         order by vg.id
         "#,
@@ -308,6 +370,17 @@ pub fn list_stale_records(root: &Path) -> Result<Vec<StaleRecord>> {
     Ok(records)
 }
 
+pub fn list_stale_records_filtered(
+    root: &Path,
+    record_type: Option<&str>,
+) -> Result<Vec<StaleRecord>> {
+    let mut records = list_stale_records(root)?;
+    if let Some(record_type) = record_type {
+        records.retain(|record| record.record_type == record_type);
+    }
+    Ok(records)
+}
+
 pub fn accept_stale_record(
     root: &Path,
     input: StaleRecordDisposition<'_>,
@@ -365,19 +438,53 @@ pub(crate) fn selected_stale_record_in(
     conn: &rusqlite::Connection,
     project_id: i64,
 ) -> Result<Option<(String, i64)>> {
+    Ok(selected_stale_record_with_owner_in(conn, project_id)?
+        .map(|(kind, record_id, _)| (kind, record_id)))
+}
+
+pub(crate) fn selected_stale_record_with_owner_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+) -> Result<Option<(String, i64, i64)>> {
     conn.query_row(
         r#"
-        select kind, record_id from (
+        select kind, record_id, work_id from (
           select 0 kind_rank, 'task_derivation' kind, td.id record_id,
                  r.design_version_id design_id, coalesce(t.work_unit_id, 0) work_id
           from task_derivations td
           join design_requirements r on r.id = td.design_requirement_id
           join tasks t on t.id = td.task_id
+          join work_units w on w.id=t.work_unit_id and w.status in ('open','blocked')
           where td.project_id = ?1 and td.status = 'stale'
             and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='task_derivation' and ar.stale_record_id=td.id and ar.status='approved')
+            and not exists(
+              select 1 from decomposition_reconciliation_tasks mapping
+              join decomposition_plans plan on plan.id=mapping.decomposition_plan_id
+              where mapping.source_task_id=td.task_id and plan.status='applied'
+            )
+            and not exists(
+              select 1
+              from task_derivations replacement
+              join design_requirements replacement_requirement
+                on replacement_requirement.id=replacement.design_requirement_id
+              join design_versions replacement_version
+                on replacement_version.id=replacement_requirement.design_version_id
+              join design_packages package
+                on package.current_design_version_id=replacement_version.id
+              join design_versions source_version
+                on source_version.design_package_id=package.id
+               and source_version.id=r.design_version_id
+              join tasks replacement_task on replacement_task.id=replacement.task_id
+              where replacement.project_id=td.project_id
+                and replacement.status!='stale'
+                and replacement_version.status='approved'
+                and replacement_requirement.requirement_key=r.requirement_key
+                and replacement_task.work_unit_id=t.work_unit_id
+            )
           union all
           select 1, 'checklist', c.id, c.design_version_id, c.work_unit_id
           from checklists c
+          join work_units w on w.id=c.work_unit_id and w.status in ('open','blocked')
           join checklist_items ci on ci.checklist_id=c.id
           join design_requirements r on r.id=ci.design_requirement_id
           join design_versions v on v.id=r.design_version_id
@@ -394,14 +501,63 @@ pub(crate) fn selected_stale_record_in(
               )
             ))
             and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='checklist' and ar.stale_record_id=c.id and ar.status='approved')
+            and not exists(
+              select 1 from decomposition_plans plan
+              where plan.status='applied'
+                and exists(
+                  select 1 from checklist_items item
+                  join decomposition_reconciliation_checklist_items mapping
+                    on mapping.source_checklist_item_id=item.id
+                   and mapping.decomposition_plan_id=plan.id
+                  where item.checklist_id=c.id
+                )
+                and not exists(
+                  select 1 from checklist_items item
+                  where item.checklist_id=c.id and not exists(
+                    select 1 from decomposition_reconciliation_checklist_items mapping
+                    where mapping.decomposition_plan_id=plan.id
+                      and mapping.source_checklist_item_id=item.id
+                  )
+                )
+            )
           union all
           select 2, 'validation_gate', vg.id, coalesce(r.design_version_id,0), coalesce(vg.work_unit_id,t.work_unit_id,0)
           from validation_gates vg left join design_requirements r on r.id=vg.design_requirement_id left join tasks t on t.id=vg.task_id
+          join work_units w on w.id=coalesce(vg.work_unit_id,t.work_unit_id) and w.status in ('open','blocked')
           where vg.project_id=?1 and vg.status='stale'
             and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='validation_gate' and ar.stale_record_id=vg.id and ar.status='approved')
+            and not exists(
+              select 1 from decomposition_reconciliation_gates mapping
+              join decomposition_plans plan on plan.id=mapping.decomposition_plan_id
+              where mapping.source_validation_gate_id=vg.id and plan.status='applied'
+            )
+            and not exists(
+              select 1
+              from validation_gates replacement
+              join design_requirements source_requirement
+                on source_requirement.id=vg.design_requirement_id
+              join design_requirements replacement_requirement
+                on replacement_requirement.id=replacement.design_requirement_id
+              join design_versions source_version
+                on source_version.id=source_requirement.design_version_id
+              join design_versions replacement_version
+                on replacement_version.id=replacement_requirement.design_version_id
+              join design_packages package
+                on package.id=source_version.design_package_id
+               and package.id=replacement_version.design_package_id
+               and package.current_design_version_id=replacement_version.id
+              left join tasks replacement_task on replacement_task.id=replacement.task_id
+              where replacement.project_id=vg.project_id
+                and replacement.status!='stale' and replacement.gate_key=vg.gate_key
+                and replacement_version.status='approved'
+                and replacement_requirement.requirement_key=source_requirement.requirement_key
+                and coalesce(replacement.work_unit_id,replacement_task.work_unit_id,0)
+                    =coalesce(vg.work_unit_id,t.work_unit_id,0)
+            )
           union all
           select 3, 'coverage_item', c.id, r.design_version_id, coalesce(c.work_unit_id,t.work_unit_id,0)
           from coverage_items c join design_requirements r on r.id=c.design_requirement_id left join tasks t on t.id=c.task_id
+          join work_units w on w.id=coalesce(c.work_unit_id,t.work_unit_id) and w.status in ('open','blocked')
           join design_versions v on v.id=r.design_version_id
           join design_packages p on p.id=v.design_package_id
           where c.project_id=?1 and c.status!='accepted_out_of_scope'
@@ -427,13 +583,14 @@ pub(crate) fn selected_stale_record_in(
           union all
           select 4, 'review_plan', rp.id, coalesce(rp.design_version_id,0), rp.work_unit_id
           from review_plans rp left join design_versions v on v.id=rp.design_version_id left join design_packages p on p.id=v.design_package_id
+          join work_units w on w.id=rp.work_unit_id and w.status in ('open','blocked')
           where rp.project_id=?1 and rp.status='blocked' and p.current_design_version_id != rp.design_version_id
             and not exists (select 1 from acceptance_records ar where ar.target_type='stale_record' and ar.stale_record_type='review_plan' and ar.stale_record_id=rp.id and ar.status='approved')
         ) ordered
         order by kind_rank, design_id, work_id, record_id limit 1
         "#,
         params![project_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
     .optional()
     .map_err(Into::into)
@@ -670,13 +827,14 @@ pub fn list_validation_gate_context(
             vg.id, vg.gate_key, r.requirement_key, vg.task_id, vg.status,
             latest.id, latest.command_usage_id, latest.repository_snapshot_id,
             latest.result, latest.artifact_path, latest.notes
-        from validation_gates vg
+        from current_task_validation_gates vg
         join design_requirements r on r.id = vg.design_requirement_id
         left join tasks t on t.id = vg.task_id
         left join validation_runs latest on latest.id = (
             select vr.id
             from validation_runs vr
             where vr.validation_gate_id = vg.id
+              and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
             order by vr.id desc
             limit 1
         )

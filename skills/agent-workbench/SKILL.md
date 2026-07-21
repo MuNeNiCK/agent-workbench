@@ -45,25 +45,43 @@ sh <installed-skill-dir>/scripts/agent-workbench.sh status
 
 The wrapped CLI is the command authority. Use `agent-workbench help` and
 `agent-workbench <command> --help` through the wrapper when exact syntax matters.
-Common command groups include:
+Supported command leaves are enumerated below. Reference recipes may show
+additional operands, but must resolve to one of these leaves:
 
 - `agent-workbench init`
 - `agent-workbench update inspect`
+- `agent-workbench update authority-record`
 - `agent-workbench update apply --expected-current <identity>`
+- `agent-workbench update decide <inspection> --choice <choice> --authority <event> --reason <reason> --expected-current <identity>`
+- `agent-workbench update apply <inspection> --expected-current <identity> --idempotency-key <key>`
 - `agent-workbench update restore --backup <handle> --expected-current <identity>`
+- `agent-workbench update restore --backup <handle> --expected-current <identity> --idempotency-key <key>`
+- `agent-workbench operator release candidate assemble --work <work-unit-id> --version <semver> --commit <reviewed-commit> --expected-current absent --idempotency-key <key>`
+- `agent-workbench operator release candidate inspect`
+- `agent-workbench operator release publish-source`
+- `agent-workbench operator release publish-assets`
+- `agent-workbench operator release verify-remote`
+- `agent-workbench operator release reconcile`
+- `agent-workbench operator release retry`
+- `agent-workbench operator release withdraw`
+- `agent-workbench operator release supersede`
 - `agent-workbench status`
 - `agent-workbench next`
 - `agent-workbench doctor validation-links`
 - `agent-workbench doctor validation-links --repair`
 - `agent-workbench doctor validation-links --audit`
+- `agent-workbench doctor validation-links repair`
+- `agent-workbench doctor validation-links retire`
 - `agent-workbench migration task-history plan`
 - `agent-workbench migration task-history ambiguity-list`
 - `agent-workbench migration task-history authority-record`
 - `agent-workbench migration task-history ambiguity-decide`
 - `agent-workbench migration task-history apply`
 - `agent-workbench migration task-history audit`
+- `agent-workbench migration reviewer bind`
 - `agent-workbench rules applicable --scope current`
 - `agent-workbench authority list`
+- `agent-workbench authority add`
 - `agent-workbench review run add`
 - `agent-workbench review adjudicate`
 - `agent-workbench finding decide`
@@ -72,6 +90,7 @@ Common command groups include:
 - `agent-workbench design import`
 - `agent-workbench design refresh`
 - `agent-workbench design approve`
+- `agent-workbench design inspect`
 - `agent-workbench requirement list`
 - `agent-workbench design-decision list`
 - `agent-workbench gate-template list`
@@ -80,7 +99,11 @@ Common command groups include:
 - `agent-workbench correction add`
 - `agent-workbench correction list`
 - `agent-workbench decision add`
+- `agent-workbench decision list`
 - `agent-workbench decision search`
+- `agent-workbench decision adjudicate`
+- `agent-workbench decision continuation show`
+- `agent-workbench decision continuation apply`
 - `agent-workbench command fixed add`
 - `agent-workbench command prefer`
 - `agent-workbench command list`
@@ -110,7 +133,14 @@ Common command groups include:
 - `agent-workbench phase close`
 - `agent-workbench phase accept-out-of-scope`
 - `agent-workbench decompose design`
+- `agent-workbench decomposition show`
+- `agent-workbench decomposition import`
+- `agent-workbench decomposition validate`
+- `agent-workbench decomposition revise`
+- `agent-workbench decomposition apply`
+- `agent-workbench decomposition reconcile`
 - `agent-workbench trace derive-task`
+- `agent-workbench trace derivation list`
 - `agent-workbench checklist list`
 - `agent-workbench checklist item list`
 - `agent-workbench checklist item close`
@@ -126,17 +156,34 @@ Common command groups include:
 - `agent-workbench gate record`
 - `agent-workbench gate run list`
 - `agent-workbench review scope start`
+- `agent-workbench review scope list`
 - `agent-workbench review policy add`
+- `agent-workbench review policy list`
 - `agent-workbench review plan add`
 - `agent-workbench review plan list`
+- `agent-workbench review plan context`
 - `agent-workbench review plan waive`
+- `agent-workbench review plan supersede`
 - `agent-workbench review plan target add`
+- `agent-workbench review correction add`
+- `agent-workbench review provenance issue`
+- `agent-workbench review invocation request`
+- `agent-workbench review invocation start`
+- `agent-workbench review invocation complete`
+- `agent-workbench review invocation fail`
+- `agent-workbench review invocation cancel`
+- `agent-workbench review result stage`
+- `agent-workbench review result finding-add`
+- `agent-workbench review result complete`
+- `agent-workbench review result cancel`
 - `agent-workbench review run add`
 - `agent-workbench review run list`
 - `agent-workbench review adjudicate`
 - `agent-workbench finding add`
 - `agent-workbench finding classify`
 - `agent-workbench finding decide`
+- `agent-workbench finding reopen`
+- `agent-workbench finding recover`
 - `agent-workbench finding list`
 - `agent-workbench finding verify`
 - `agent-workbench verification adjudicate`
@@ -148,7 +195,9 @@ Common command groups include:
 - `agent-workbench closure supersede`
 - `agent-workbench review-context`
 - `agent-workbench evidence add`
+- `agent-workbench evidence list`
 - `agent-workbench coverage add`
+- `agent-workbench coverage list`
 - `agent-workbench export design`
 - `agent-workbench export plan`
 - `agent-workbench repository add`
@@ -177,6 +226,7 @@ Common command groups include:
 - `agent-workbench work fork`
 - `agent-workbench resume-check --maturity basic|trace-aware|repo-aware`
 - `agent-workbench record create`
+- `agent-workbench record list`
 - `agent-workbench record command add`
 - `agent-workbench record commit add`
 - `agent-workbench record file add`
@@ -185,9 +235,12 @@ Common command groups include:
 - `agent-workbench record link file`
 - `agent-workbench record export <record-id> --output <path>`
 - `agent-workbench kpt start --from corrections`
+- `agent-workbench kpt list`
+- `agent-workbench kpt close`
 - `agent-workbench kpt item add`
 - `agent-workbench kpt item list`
 - `agent-workbench kpt item convert`
+- `agent-workbench kpt item dismiss`
 
 Load only the reference needed for the current operation:
 
@@ -296,14 +349,29 @@ from current managed project state.
   clean runs before relying on gates: `design_review` for `design-ready`,
   `design_task_decomposition` for `implementation-ready`, and both
   `design_implementation_diff` plus `implementation_review` for `close-ready`.
+- After a fresh design review claim, record the owner's separate
+  `review adjudicate` decision, run `gate design-ready --dry-run`, and explicitly
+  run `design approve <design-version-id>`. Do not import, generate, or apply a
+  Decomposition Plan for a merely imported Design Version.
+- For the canonical branch of an approved Design Version, run `decomposition
+  show`, follow its exact pathless or authored import/validate/revise actions,
+  obtain and owner-adjudicate the fresh `design_task_decomposition` review, then
+  run the exact `decomposition apply` action.
+- Installed `decompose design` is the sole compatibility branch after approval.
+  It intentionally preserves the atomic generated graph and matching applied
+  compatibility Plan before the review; do not apply it again. Obtain and
+  owner-adjudicate the same fresh exact-Plan review afterward. Neither branch
+  may rely on implementation-ready before that accepted review.
 - Design-derived implementation work must use explicit implementation
-  activation for the work unit produced by `decompose design`:
+  activation for the work unit owned by the applied Decomposition Plan:
   `work activate --implementation --design-version <design-version-id>
   <work-unit-id>`. `work start --implementation --design-version ...` and
   plain reserved aliases such as `work start implementation` are not valid
   implementation paths.
-- Use `decompose design` for normal design-to-plan conversion. Use
-  `trace derive-task` for explicit manual links or corrections.
+- Prefer the explicit Decomposition Plan lifecycle for normal design-to-plan
+  conversion. Use `decompose design` only as the installed compatibility entry,
+  and `trace derive-task` for explicit manual links or corrections; neither
+  bypasses approval, exact-Plan review, owner adjudication, or implementation readiness.
 - When an aggregate work unit needs internal scheduling or smaller reviewable
   chunks, use work phases instead of inventing task order from intuition. Create
   ordered phases with `phase create`, assign tasks with `phase assign`, inspect
@@ -347,6 +415,14 @@ from current managed project state.
 - For final completion checks, use a fresh unbiased review unless the user
   explicitly asks only for resume verification of known findings. Do not use a
   resume review as the final completion signal by default.
+- After close-ready, use only the main binary's `operator release` lifecycle to
+  publish a release. `candidate assemble` builds and binds the reviewed commit;
+  `candidate inspect` rechecks the exact local files; source, asset, and remote
+  steps then use the opaque revision and idempotency key printed by the
+  resolver. After an interrupted effect, run the printed `reconcile` command;
+  run `retry` only when reconciliation selected it. Never delete or overwrite a
+  remote tag or asset to escape a conflict. Build scripts and observer CI do
+  not establish release completion.
 - When asking a review agent whether the project is complete, include the skill
   package itself in the review scope. A project is not complete if the CLI and
   tests match the design but the installed skill cannot guide a fresh coding

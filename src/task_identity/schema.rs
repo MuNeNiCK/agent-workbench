@@ -1,4 +1,4 @@
-pub(super) const SQL: &str = r#"
+pub(crate) const SQL: &str = r#"
 create table if not exists task_identities (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
@@ -21,6 +21,18 @@ create table if not exists task_revisions (
     created_at text not null,
     unique(project_id,revision_digest)
 );
+
+create table if not exists task_revision_requirements (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    task_revision_id integer not null references task_revisions(id) on delete cascade,
+    design_requirement_id integer not null references design_requirements(id),
+    created_at text not null,
+    unique(project_id,task_revision_id,design_requirement_id)
+);
+
+create unique index if not exists task_revision_current_unique
+on task_revisions(project_id,task_identity_id) where status='current';
 
 create table if not exists task_revision_aliases (
     id integer primary key,
@@ -110,4 +122,28 @@ create table if not exists task_identity_migration_audits (
     created_at text not null,
     unique(project_id,owner_digest)
 );
+
+drop view if exists current_tasks;
+create view current_tasks as
+select task.*
+from tasks task
+where not exists(
+        select 1 from task_revision_aliases alias
+        where alias.historical_task_id=task.id
+      )
+   or exists(
+        select 1
+        from task_revision_aliases alias
+        join task_revisions revision on revision.id=alias.task_revision_id
+        where alias.historical_task_id=task.id and revision.status='current'
+      );
+
+drop view if exists current_task_validation_gates;
+create view current_task_validation_gates as
+select vg.*
+from validation_gates vg
+left join current_tasks task on task.id=vg.task_id
+where (vg.task_id is null and vg.status='active')
+   or (task.status in ('open','blocked') and vg.status='active')
+   or (task.status in ('closed','accepted_out_of_scope') and vg.status='closed');
 "#;

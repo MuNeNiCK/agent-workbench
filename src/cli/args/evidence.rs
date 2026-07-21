@@ -12,22 +12,28 @@ pub(crate) enum CorrectionCommand {
 pub(crate) struct CorrectionAddArgs {
     #[arg(long)]
     pub(crate) scope: String,
-    #[arg(long = "type")]
-    pub(crate) correction_type: String,
+    #[arg(long = "type", requires_all = ["pattern", "correction"], conflicts_with_all = ["source", "expected_change"])]
+    pub(crate) correction_type: Option<String>,
+    #[arg(long, requires = "correction_type", conflicts_with = "source")]
+    pub(crate) pattern: Option<String>,
+    #[arg(long, requires = "correction_type", conflicts_with = "expected_change")]
+    pub(crate) correction: Option<String>,
+    #[arg(long, requires = "expected_change", conflicts_with_all = ["correction_type", "pattern", "correction", "applies_to"])]
+    pub(crate) source: Option<String>,
+    #[arg(long, requires = "source", conflicts_with = "correction")]
+    pub(crate) expected_change: Option<String>,
+    #[arg(long, conflicts_with = "source")]
+    pub(crate) applies_to: Option<String>,
     #[arg(long)]
-    pub(crate) pattern: String,
-    #[arg(long)]
-    pub(crate) correction: String,
-    #[arg(long, default_value = "project")]
-    pub(crate) applies_to: String,
-    #[arg(long, default_value = "medium")]
-    pub(crate) severity: String,
+    pub(crate) severity: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct CorrectionListArgs {
     #[arg(long)]
     pub(crate) scope: Option<String>,
+    #[arg(long, value_parser = ["active", "superseded", "retired"])]
+    pub(crate) status: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -98,6 +104,8 @@ pub(crate) struct CommandDeprecateArgs {
 pub(crate) struct CommandListArgs {
     #[arg(long = "type")]
     pub(crate) command_type: Option<String>,
+    #[arg(long)]
+    pub(crate) scope: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -489,8 +497,10 @@ pub(crate) struct GitCommitAddArgs {
     pub(crate) sha_arg: Option<String>,
     #[arg(long, alias = "repo")]
     pub(crate) repository: String,
-    #[arg(long, alias = "commit")]
+    #[arg(long, visible_alias = "commit")]
     pub(crate) sha: Option<String>,
+    #[arg(long, conflicts_with_all = ["short", "subject", "author_name", "author_email", "committed_at", "parents"])]
+    pub(crate) note: Option<String>,
     #[arg(long)]
     pub(crate) short: Option<String>,
     #[arg(long)]
@@ -512,16 +522,18 @@ pub(crate) enum GitFileCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct GitFileAddArgs {
-    #[arg(long)]
-    pub(crate) commit: String,
+    #[arg(long, requires = "change_type", conflicts_with = "change")]
+    pub(crate) commit: Option<String>,
     #[arg(long)]
     pub(crate) repository: Option<String>,
     #[arg(long)]
     pub(crate) path: String,
     #[arg(long)]
     pub(crate) old_path: Option<String>,
-    #[arg(long = "type")]
-    pub(crate) change_type: String,
+    #[arg(long = "type", requires = "commit", conflicts_with = "change")]
+    pub(crate) change_type: Option<String>,
+    #[arg(long, requires = "repository", conflicts_with_all = ["commit", "change_type", "old_path", "additions", "deletions", "hash"])]
+    pub(crate) change: Option<String>,
     #[arg(long)]
     pub(crate) additions: Option<i64>,
     #[arg(long)]

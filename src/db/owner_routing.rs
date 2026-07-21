@@ -25,10 +25,13 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    owners
+    let mut actions = owners
         .into_iter()
         .map(|(owner_id, title, work_status)| {
             if let Some(blocker) = owner_stale_blocker(conn, owner_id)? {
+                return Ok(owner_action_from_blocker(owner_id, title, blocker));
+            }
+            if let Some(blocker) = owner_dependency_blocker(conn, owner_id)? {
                 return Ok(owner_action_from_blocker(owner_id, title, blocker));
             }
             let review_blocker = owner_review_blocker(conn, owner_id)?;
@@ -66,9 +69,6 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                     },
                 ));
             }
-            if let Some(blocker) = owner_dependency_blocker(conn, owner_id)? {
-                return Ok(owner_action_from_blocker(owner_id, title, blocker));
-            }
             if let Some(remediation) = remediations
                 .iter()
                 .find(|remediation| remediation.work_unit_id == owner_id)
@@ -76,12 +76,14 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                 return Ok(OwnerAction {
                     owner_type: "work_unit".to_string(),
                     owner_id,
+                    owner_handle: None,
                     title,
                     state: "finding_remediation".to_string(),
                     schedulable: true,
                     blocker_kind: Some("required_review_finding".to_string()),
                     description: remediation.description.clone(),
                     next_action: remediation.next_action.clone(),
+                    next_actions: vec![remediation.next_action.clone()],
                 });
             }
             if let Some(correction) = corrections
@@ -91,21 +93,27 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                 return Ok(OwnerAction {
                     owner_type: "work_unit".to_string(),
                     owner_id,
+                    owner_handle: None,
                     title,
                     state: "source_correction".to_string(),
                     schedulable: true,
                     blocker_kind: Some("required_review_finding".to_string()),
                     description: correction.description.clone(),
                     next_action: correction.next_action.clone(),
+                    next_actions: vec![correction.next_action.clone()],
                 });
             }
             if let Some(blocker) = review_blocker {
                 return Ok(owner_action_from_blocker(owner_id, title, blocker));
             }
+            if let Some(action) = owner_decomposition_action(conn, owner_id, &title)? {
+                return Ok(action);
+            }
             if work_status == "blocked" {
                 return Ok(OwnerAction {
                     owner_type: "work_unit".to_string(),
                     owner_id,
+                    owner_handle: None,
                     title,
                     state: "blocked".to_string(),
                     schedulable: true,
@@ -114,6 +122,9 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                     next_action: format!(
                         "agent-workbench work unblock {owner_id} --reason \"<reason>\""
                     ),
+                    next_actions: vec![format!(
+                        "agent-workbench work unblock {owner_id} --reason \"<reason>\""
+                    )],
                 });
             }
             let activation_status = conn
@@ -132,13 +143,16 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                 Some("suspended") if active_owner.is_some() => (
                     "schedulable",
                     "suspended owner is eligible after the current execution slot is released",
-                    "suspend the active owner, then agent-workbench resume-check --maturity trace-aware"
-                        .to_string(),
+                    format!(
+                        "suspend the active owner, then agent-workbench resume-check {owner_id} --maturity trace-aware"
+                    ),
                 ),
                 Some("suspended") => (
                     "suspended",
                     "owner can be revalidated for resume",
-                    "agent-workbench resume-check --maturity trace-aware".to_string(),
+                    format!(
+                        "agent-workbench resume-check {owner_id} --maturity trace-aware"
+                    ),
                 ),
                 _ if active_owner.is_some() => (
                     "schedulable",
@@ -156,27 +170,82 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
             Ok(OwnerAction {
                 owner_type: "work_unit".to_string(),
                 owner_id,
+                owner_handle: None,
                 title,
                 state: state.to_string(),
                 schedulable: true,
                 blocker_kind: None,
                 description: description.to_string(),
+                next_actions: vec![next_action.clone()],
                 next_action,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    for candidate in crate::release::active_release_candidates(conn, project_id)? {
+        actions.push(OwnerAction {
+            owner_type: "release_candidate".to_string(),
+            owner_id: candidate.candidate_id,
+            owner_handle: Some(candidate.candidate_handle),
+            title: candidate.version,
+            state: candidate.state,
+            schedulable: true,
+            blocker_kind: Some("release_candidate_action".to_string()),
+            description: candidate.description,
+            next_action: candidate.next_action.clone(),
+            next_actions: vec![candidate.next_action],
+        });
+    }
+    Ok(actions)
+}
+
+fn owner_decomposition_action(
+    conn: &Connection,
+    work_unit_id: i64,
+    title: &str,
+) -> Result<Option<OwnerAction>> {
+    let Some(resolution) = crate::decomposition::resolve_decomposition_owner(conn, work_unit_id)?
+    else {
+        return Ok(None);
+    };
+    if !resolution.blocks_work {
+        return Ok(None);
+    }
+    let next_action = resolution.actions[0].clone();
+    Ok(Some(OwnerAction {
+        owner_type: "work_unit".to_string(),
+        owner_id: work_unit_id,
+        owner_handle: None,
+        title: title.to_string(),
+        state: "obligation".to_string(),
+        schedulable: resolution
+            .actions
+            .iter()
+            .any(|action| action_is_schedulable(action)),
+        blocker_kind: Some("decomposition_plan_incomplete".to_string()),
+        description: resolution.issue.unwrap_or_else(|| {
+            format!(
+                "Decomposition Plan {} requires its {} lifecycle transition before it can authorize work",
+                resolution.plan_id, resolution.status
+            )
+        }),
+        next_action,
+        next_actions: resolution.actions,
+    }))
 }
 
 fn owner_action_from_blocker(owner_id: i64, title: String, blocker: PhaseBlocker) -> OwnerAction {
+    let next_action = blocker.next_action;
     OwnerAction {
         owner_type: "work_unit".to_string(),
         owner_id,
+        owner_handle: None,
         title,
         state: "obligation".to_string(),
-        schedulable: action_is_schedulable(&blocker.next_action),
+        schedulable: action_is_schedulable(&next_action),
         blocker_kind: Some(blocker.kind),
         description: blocker.description,
-        next_action: blocker.next_action,
+        next_actions: vec![next_action.clone()],
+        next_action,
     }
 }
 
@@ -188,13 +257,87 @@ fn owner_stale_blocker(conn: &Connection, owner_id: i64) -> Result<Option<PhaseB
               select 0 kind_rank, 'task_derivation' kind, td.id record_id, t.work_unit_id work_id
               from task_derivations td join tasks t on t.id=td.task_id
               where td.status='stale'
+                and not exists(
+                  select 1 from decomposition_reconciliation_tasks mapping
+                  join decomposition_plans plan on plan.id=mapping.decomposition_plan_id
+                  where mapping.source_task_id=td.task_id and plan.status='applied'
+                )
+                and not exists(
+                  select 1
+                  from task_derivations replacement
+                  join design_requirements source_requirement
+                    on source_requirement.id=td.design_requirement_id
+                  join design_requirements replacement_requirement
+                    on replacement_requirement.id=replacement.design_requirement_id
+                  join design_versions source_version
+                    on source_version.id=source_requirement.design_version_id
+                  join design_versions replacement_version
+                    on replacement_version.id=replacement_requirement.design_version_id
+                  join design_packages package
+                    on package.id=source_version.design_package_id
+                   and package.id=replacement_version.design_package_id
+                   and package.current_design_version_id=replacement_version.id
+                  join tasks replacement_task on replacement_task.id=replacement.task_id
+                  where replacement.project_id=td.project_id
+                    and replacement.status!='stale'
+                    and replacement_version.status='approved'
+                    and replacement_requirement.requirement_key=source_requirement.requirement_key
+                    and replacement_task.work_unit_id is t.work_unit_id
+                )
               union all
               select 1, 'checklist', c.id, c.work_unit_id
               from checklists c where c.status='stale'
+                and not exists(
+                  select 1 from decomposition_plans plan
+                  where plan.status='applied'
+                    and exists(
+                      select 1 from checklist_items item
+                      join decomposition_reconciliation_checklist_items mapping
+                        on mapping.source_checklist_item_id=item.id
+                       and mapping.decomposition_plan_id=plan.id
+                      where item.checklist_id=c.id
+                    )
+                    and not exists(
+                      select 1 from checklist_items item
+                      where item.checklist_id=c.id and not exists(
+                        select 1 from decomposition_reconciliation_checklist_items mapping
+                        where mapping.decomposition_plan_id=plan.id
+                          and mapping.source_checklist_item_id=item.id
+                      )
+                    )
+                )
               union all
               select 2, 'validation_gate', vg.id, coalesce(vg.work_unit_id,t.work_unit_id,0)
               from validation_gates vg left join tasks t on t.id=vg.task_id
               where vg.status='stale'
+                and not exists(
+                  select 1 from decomposition_reconciliation_gates mapping
+                  join decomposition_plans plan on plan.id=mapping.decomposition_plan_id
+                  where mapping.source_validation_gate_id=vg.id and plan.status='applied'
+                )
+                and not exists(
+                  select 1
+                  from validation_gates replacement
+                  join design_requirements source_requirement
+                    on source_requirement.id=vg.design_requirement_id
+                  join design_requirements replacement_requirement
+                    on replacement_requirement.id=replacement.design_requirement_id
+                  join design_versions source_version
+                    on source_version.id=source_requirement.design_version_id
+                  join design_versions replacement_version
+                    on replacement_version.id=replacement_requirement.design_version_id
+                  join design_packages package
+                    on package.id=source_version.design_package_id
+                   and package.id=replacement_version.design_package_id
+                   and package.current_design_version_id=replacement_version.id
+                  left join tasks replacement_task on replacement_task.id=replacement.task_id
+                  where replacement.project_id=vg.project_id
+                    and replacement.status!='stale' and replacement.gate_key=vg.gate_key
+                    and replacement_version.status='approved'
+                    and replacement_requirement.requirement_key=source_requirement.requirement_key
+                    and coalesce(replacement.work_unit_id,replacement_task.work_unit_id,0)
+                        =coalesce(vg.work_unit_id,t.work_unit_id,0)
+                )
               union all
               select 3, 'coverage_item', c.id, coalesce(c.work_unit_id,t.work_unit_id,0)
               from coverage_items c left join tasks t on t.id=c.task_id

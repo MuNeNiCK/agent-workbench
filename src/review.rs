@@ -1,20 +1,29 @@
 mod adjudication;
 mod closure;
+mod continuation;
 mod correction_contract;
 mod correction_state;
 mod correction_transition;
 mod evaluation;
 mod findings;
+mod orchestration;
 mod plans;
+mod recovery;
+mod reviewer_migration;
 mod state;
 
 pub use adjudication::*;
 pub use closure::*;
+pub use continuation::*;
 pub(crate) use correction_contract::*;
+pub(crate) use correction_state::transition_state_snapshot;
 pub use correction_transition::*;
 pub use evaluation::*;
 pub use findings::*;
+pub use orchestration::*;
 pub use plans::*;
+pub use recovery::*;
+pub use reviewer_migration::*;
 pub use state::*;
 
 struct StoredReviewPlan {
@@ -48,10 +57,10 @@ struct StoredFinding {
     status: String,
 }
 
-struct CorrectionToken {
-    kind: String,
-    operation: String,
-    target: String,
+pub(crate) struct CorrectionToken {
+    pub(crate) kind: String,
+    pub(crate) operation: String,
+    pub(crate) target: String,
 }
 
 struct StoredReviewRunPolicy {
@@ -236,6 +245,15 @@ pub struct NewFindingVerification<'a> {
     pub notes: Option<&'a str>,
 }
 
+pub struct NewFindingVerificationForAttempt<'a> {
+    pub review_run_id: i64,
+    pub finding_id: i64,
+    pub closure_id: i64,
+    pub closure_attempt_id: i64,
+    pub result: &'a str,
+    pub notes: Option<&'a str>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReviewScopeOutcome {
     pub review_scope_id: i64,
@@ -263,6 +281,19 @@ pub struct ReviewPlanWaiverOutcome {
     pub acceptance_record_id: i64,
 }
 
+pub struct ReviewPlanSupersession<'a> {
+    pub predecessor_plan_id: i64,
+    pub successor_plan_id: i64,
+    pub authority_event_id: i64,
+    pub reason: &'a str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReviewPlanSupersessionOutcome {
+    pub predecessor_plan_id: i64,
+    pub successor_plan_id: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReviewRunOutcome {
     pub review_run_id: i64,
@@ -278,6 +309,9 @@ pub struct FindingOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct FindingClassificationOutcome {
     pub finding_id: i64,
+    pub classification: String,
+    pub status: String,
+    pub existing: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -414,4 +448,11 @@ pub struct FindingRecord {
     pub description: String,
     pub classification: String,
     pub status: String,
+    pub terminal_epoch: Option<i64>,
+    pub current_decision_handle: Option<String>,
+}
+
+pub struct FindingListFilter<'a> {
+    pub status: Option<&'a str>,
+    pub review_run_id: Option<i64>,
 }

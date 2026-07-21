@@ -10,6 +10,7 @@ use crate::db::{
 pub fn add_task(root: &Path, input: NewTask<'_>) -> Result<TaskOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
+    let project = project_id(&tx)?;
     ensure_no_active_source_correction(&tx, "task add")?;
     let work_unit_id = match input.work_unit_id {
         Some(work_unit_id) => Some(work_unit_id),
@@ -33,11 +34,195 @@ pub fn add_task(root: &Path, input: NewTask<'_>) -> Result<TaskOutcome> {
         ],
     )?;
     let task_id = tx.last_insert_rowid();
+    if work_unit_id.is_some() {
+        crate::task_identity::materialize_manual_task(&tx, project, task_id)?;
+    }
     tx.commit()?;
 
     Ok(TaskOutcome {
         task_id,
         work_unit_id,
+    })
+}
+
+pub fn add_correction_support_task(
+    root: &Path,
+    input: CorrectionSupportTask<'_>,
+) -> Result<TaskOutcome> {
+    let work_unit_id = input
+        .task
+        .work_unit_id
+        .context("correction support task requires --work-unit")?;
+    if input
+        .task
+        .details
+        .is_none_or(|value| value.trim().is_empty())
+        || input
+            .task
+            .completion_condition
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        bail!("correction support task requires non-empty details and completion condition");
+    }
+    let mut db = open_existing_project(root)?;
+    let tx = db.transaction()?;
+    let project = project_id(&tx)?;
+    tx.query_row(
+        r#"
+        select 1
+        from correction_sessions session
+        join closures c on c.id=session.closure_id and c.finding_id=session.finding_id
+        join findings f on f.id=session.finding_id
+        join review_runs source_run on source_run.id=f.review_run_id
+        join review_plans source_plan on source_plan.id=source_run.review_plan_id
+        join work_phases phase on phase.id=?4
+        where session.project_id=?1 and session.closure_id=?2
+          and session.status in ('active','completed') and c.status='registered'
+          and f.status='open' and f.lifecycle_state in ('open','remediating')
+          and f.finding_type='design_task_gap'
+          and source_plan.work_unit_id=?3 and phase.work_unit_id=?3
+          and phase.design_version_id=source_plan.design_version_id
+          and phase.status in ('open','blocked')
+        "#,
+        params![project, input.closure_id, work_unit_id, input.phase_id],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context("active correction does not authorize this support task and phase")?;
+    tx.execute(
+        r#"
+        insert into tasks(
+            work_unit_id,title,priority,status,source,details,completion_condition
+        ) values(?1,?2,?3,'open',?4,?5,?6)
+        "#,
+        params![
+            work_unit_id,
+            input.task.title,
+            input.task.priority,
+            input.task.source,
+            input.task.details,
+            input.task.completion_condition
+        ],
+    )?;
+    let task_id = tx.last_insert_rowid();
+    crate::task_identity::materialize_manual_task(&tx, project, task_id)?;
+    crate::phases::assign_task_to_phase_in(&tx, project, input.phase_id, task_id)?;
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id,event_type,source,text_or_summary,scope,precedence,status,created_at
+        ) values(?1,'user_instruction','task add correction support',?2,?3,100,'active',current_timestamp)
+        "#,
+        params![
+            project,
+            format!(
+                "support task {task_id} added to phase {} under correction closure {}",
+                input.phase_id, input.closure_id
+            ),
+            format!("work-unit:{work_unit_id}")
+        ],
+    )?;
+    tx.commit()?;
+    Ok(TaskOutcome {
+        task_id,
+        work_unit_id: Some(work_unit_id),
+    })
+}
+
+pub fn revise_task_completion(
+    root: &Path,
+    input: TaskCompletionRevision<'_>,
+) -> Result<TaskCompletionRevisionOutcome> {
+    if input.details.trim().is_empty() || input.completion_condition.trim().is_empty() {
+        bail!("task details and completion condition must be non-empty");
+    }
+    let mut db = open_existing_project(root)?;
+    let tx = db.transaction()?;
+    let project = project_id(&tx)?;
+    let work_unit_id: i64 = tx
+        .query_row(
+            r#"
+            select distinct t.work_unit_id
+            from correction_sessions session
+            join closures c on c.id=session.closure_id and c.finding_id=session.finding_id
+            join findings f on f.id=session.finding_id
+            join review_runs source_run on source_run.id=f.review_run_id
+            join review_plans source_plan on source_plan.id=source_run.review_plan_id
+            join tasks t on t.id=?2
+            join task_derivations td on td.task_id=t.id and td.status='active'
+            join design_requirements requirement on requirement.id=td.design_requirement_id
+            where session.project_id=?1 and session.closure_id=?3
+              and session.status in ('active','completed')
+              and c.status='registered'
+              and f.status='open' and f.lifecycle_state in ('open','remediating')
+              and f.finding_type='design_task_gap'
+              and t.status in ('open','blocked')
+              and t.work_unit_id=source_plan.work_unit_id
+              and requirement.design_version_id=source_plan.design_version_id
+              and requirement.design_version_id=?4
+              and requirement.requirement_key=?5
+            "#,
+            params![
+                project,
+                input.task_id,
+                input.closure_id,
+                input.design_version_id,
+                input.requirement_key
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("active correction does not authorize this task completion revision")?;
+    tx.execute(
+        "update tasks set details=?1,completion_condition=?2 where id=?3",
+        params![
+            input.details.trim(),
+            input.completion_condition.trim(),
+            input.task_id
+        ],
+    )?;
+    let checklist_items_updated = tx.execute(
+        r#"
+        update checklist_items
+        set completion_condition=?1
+        where task_id=?2 and status in ('open','blocked')
+          and exists (
+            select 1 from task_derivations td
+            where td.checklist_item_id=checklist_items.id
+              and td.task_id=?2 and td.status='active'
+          )
+        "#,
+        params![input.completion_condition.trim(), input.task_id],
+    )? as i64;
+    if checklist_items_updated == 0 {
+        bail!("task has no active managed checklist item to revise");
+    }
+    crate::task_identity::revise_canonical_task(
+        &tx,
+        project,
+        input.task_id,
+        input.details.trim(),
+        input.completion_condition.trim(),
+    )?;
+    tx.execute(
+        r#"
+        insert into authority_events(
+            project_id,event_type,source,text_or_summary,scope,precedence,status,created_at
+        ) values(?1,'user_instruction','trace derive-task revise-completion',?2,?3,100,'active',current_timestamp)
+        "#,
+        params![
+            project,
+            format!(
+                "task {} completion revised under correction closure {}",
+                input.task_id, input.closure_id
+            ),
+            format!("work-unit:{work_unit_id}")
+        ],
+    )?;
+    tx.commit()?;
+    Ok(TaskCompletionRevisionOutcome {
+        task_id: input.task_id,
+        checklist_items_updated,
     })
 }
 
@@ -50,7 +235,7 @@ pub fn list_tasks(root: &Path, input: TaskListQuery<'_>) -> Result<Vec<TaskRecor
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, title, priority, status, source, closed_by_commit
-                from tasks
+                from current_tasks
                 where status = ?1 and work_unit_id = ?2
                 order by id
                 "#,
@@ -64,7 +249,7 @@ pub fn list_tasks(root: &Path, input: TaskListQuery<'_>) -> Result<Vec<TaskRecor
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, title, priority, status, source, closed_by_commit
-                from tasks
+                from current_tasks
                 where status = ?1
                 order by id
                 "#,
@@ -78,7 +263,7 @@ pub fn list_tasks(root: &Path, input: TaskListQuery<'_>) -> Result<Vec<TaskRecor
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, title, priority, status, source, closed_by_commit
-                from tasks
+                from current_tasks
                 where work_unit_id = ?1
                 order by id
                 "#,
@@ -92,7 +277,7 @@ pub fn list_tasks(root: &Path, input: TaskListQuery<'_>) -> Result<Vec<TaskRecor
             let mut stmt = conn.prepare(
                 r#"
                 select id, work_unit_id, title, priority, status, source, closed_by_commit
-                from tasks
+                from current_tasks
                 order by id
                 "#,
             )?;
@@ -131,13 +316,44 @@ pub fn close_task(root: &Path, task_id: i64, commit: Option<&str>) -> Result<Tas
     Ok(TaskCloseOutcome { task_id })
 }
 
-fn ensure_design_task_closure_ready(conn: &rusqlite::Connection, task_id: i64) -> Result<()> {
+pub(crate) fn ensure_design_task_closure_ready(
+    conn: &rusqlite::Connection,
+    task_id: i64,
+) -> Result<()> {
     let active_derivation_count: i64 = conn.query_row(
         "select count(*) from task_derivations where task_id = ?1 and status = 'active'",
         params![task_id],
         |row| row.get(0),
     )?;
     if active_derivation_count == 0 {
+        let design_support_contract: bool = conn.query_row(
+            r#"
+            select exists(
+              select 1 from tasks t
+              join work_phase_task_memberships membership on membership.task_id=t.id
+              join work_phases phase on phase.id=membership.phase_id
+              where t.id=?1 and t.source='design'
+                and t.status in ('open','blocked')
+                and nullif(trim(t.details),'') is not null
+                and nullif(trim(t.completion_condition),'') is not null
+                and phase.design_version_id is not null
+            )
+            "#,
+            params![task_id],
+            |row| row.get(0),
+        )?;
+        if design_support_contract {
+            let evidence_count: i64 = conn.query_row(
+                "select count(*) from implementation_evidence where task_id=?1",
+                params![task_id],
+                |row| row.get(0),
+            )?;
+            if evidence_count == 0 {
+                bail!(
+                    "cannot close design support task; task-bound implementation evidence is required"
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -622,6 +838,7 @@ fn ensure_verified_baseline_carry_forward_for_requirement(
                 and (
                     select result from validation_runs run
                     where run.validation_gate_id = selected.id
+                      and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=run.id)
                     order by run.id desc limit 1
                 ) = 'pass'
           )
@@ -874,6 +1091,27 @@ pub struct NewTask<'a> {
     pub work_unit_id: Option<i64>,
     pub details: Option<&'a str>,
     pub completion_condition: Option<&'a str>,
+}
+
+pub struct CorrectionSupportTask<'a> {
+    pub task: NewTask<'a>,
+    pub closure_id: i64,
+    pub phase_id: i64,
+}
+
+pub struct TaskCompletionRevision<'a> {
+    pub task_id: i64,
+    pub closure_id: i64,
+    pub design_version_id: i64,
+    pub requirement_key: &'a str,
+    pub details: &'a str,
+    pub completion_condition: &'a str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TaskCompletionRevisionOutcome {
+    pub task_id: i64,
+    pub checklist_items_updated: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]

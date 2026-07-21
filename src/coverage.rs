@@ -140,6 +140,20 @@ pub fn list_coverage_items(
     root: &Path,
     input: CoverageItemListQuery<'_>,
 ) -> Result<Vec<CoverageItemRecord>> {
+    list_coverage_items_filtered(
+        root,
+        CoverageItemListFilter {
+            design_version_id: Some(input.design_version_id),
+            status: input.status,
+            work_unit_id: input.work_unit_id,
+        },
+    )
+}
+
+pub fn list_coverage_items_filtered(
+    root: &Path,
+    input: CoverageItemListFilter<'_>,
+) -> Result<Vec<CoverageItemRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
@@ -151,7 +165,7 @@ pub fn list_coverage_items(
         join design_requirements r on r.id = c.design_requirement_id
         left join tasks t on t.id = c.task_id
         where c.project_id = ?1
-          and r.design_version_id = ?2
+          and (?2 is null or r.design_version_id = ?2)
           and (?3 is null or c.status = ?3)
           and (?4 is null or coalesce(c.work_unit_id, t.work_unit_id) = ?4)
         order by r.requirement_key, c.id
@@ -201,6 +215,12 @@ pub struct NewCoverageItem<'a> {
 
 pub struct CoverageItemListQuery<'a> {
     pub design_version_id: i64,
+    pub status: Option<&'a str>,
+    pub work_unit_id: Option<i64>,
+}
+
+pub struct CoverageItemListFilter<'a> {
+    pub design_version_id: Option<i64>,
     pub status: Option<&'a str>,
     pub work_unit_id: Option<i64>,
 }

@@ -11,6 +11,68 @@ pub struct AdjudicationInput<'a> {
     pub expected_current: &'a str,
 }
 
+pub fn adjudicate_owner(
+    root: &Path,
+    owner: &str,
+    target: i64,
+    input: AdjudicationInput<'_>,
+) -> Result<OwnerDecisionOutcome> {
+    if target <= 0 {
+        bail!("decision target must be a positive project reference");
+    }
+    if !matches!(input.decision, "accepted" | "rejected" | "needs_evidence") {
+        bail!("unsupported owner decision");
+    }
+    let conn = open_existing_project(root)?;
+    let project = project_id(&conn)?;
+    let (work, target_ref) = match owner {
+        "review" => {
+            let work: i64 = conn
+                .query_row(
+                    "select p.work_unit_id from review_runs r join review_plans p on p.id=r.review_plan_id where r.project_id=?1 and r.id=?2 and r.status='completed'",
+                    params![project, target],
+                    |row| row.get(0),
+                )
+                .context("review claim not found")?;
+            (work, format!("review_run:{target}"))
+        }
+        "finding" => {
+            let work: i64 = conn
+                .query_row(
+                    "select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2",
+                    params![project, target],
+                    |row| row.get(0),
+                )
+                .context("finding not found")?;
+            (work, format!("finding:{target}"))
+        }
+        "verification" => {
+            let work: i64 = conn
+                .query_row(
+                    "select p.work_unit_id from closure_attempts a join closures c on c.id=a.closure_id join findings f on f.id=c.finding_id join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where a.project_id=?1 and a.id=?2",
+                    params![project, target],
+                    |row| row.get(0),
+                )
+                .context("verification attempt not found")?;
+            (work, format!("closure_attempt:{target}"))
+        }
+        _ => bail!("unsupported decision owner"),
+    };
+    record_owner_decision(
+        root,
+        OwnerDecisionRequest {
+            command_kind: "decision adjudicate",
+            owner_ref: &format!("work_unit:{work}"),
+            target_ref: &target_ref,
+            decision_family: owner,
+            action: "adjudicate",
+            decision_value: input.decision,
+            reason: input.reason,
+            expected_current: input.expected_current,
+        },
+    )
+}
+
 pub fn adjudicate_review(
     root: &Path,
     run_id: i64,

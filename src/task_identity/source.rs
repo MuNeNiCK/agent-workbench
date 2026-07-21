@@ -309,15 +309,27 @@ fn read_gates(conn: &Connection, requirement_id: i64) -> Result<Vec<GateSource>>
 }
 
 fn read_memberships(conn: &Connection, task_id: i64) -> Result<Vec<MembershipSource>> {
-    let mut stmt = conn.prepare(
+    let sql = if source_table_exists(conn, "phase_epoch_sources")? {
+        r#"
+        select m.id,m.phase_id,
+               case when epoch.state='superseded' then 'superseded' else p.status end
+        from work_phase_task_memberships m
+        join work_phases p on p.id=m.phase_id
+        left join phase_epoch_sources source on source.source_phase_id=p.id
+        left join phase_epochs epoch on epoch.id=source.phase_epoch_id
+        where m.task_id=?1
+        order by m.phase_id,m.id
+        "#
+    } else {
         r#"
         select m.id,m.phase_id,p.status
         from work_phase_task_memberships m
         join work_phases p on p.id=m.phase_id
         where m.task_id=?1
         order by m.phase_id,m.id
-        "#,
-    )?;
+        "#
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(params![task_id], |row| {
             Ok((
@@ -339,7 +351,21 @@ fn read_memberships(conn: &Connection, task_id: i64) -> Result<Vec<MembershipSou
 }
 
 fn read_dependencies(conn: &Connection, owner_id: i64) -> Result<Vec<DependencySource>> {
-    let mut stmt = conn.prepare(
+    let sql = if source_table_exists(conn, "phase_epoch_dependency_sources")? {
+        r#"
+        select d.id,d.from_phase_id,d.to_phase_id,
+               case when epoch.state='invalidated' then 'invalidated' else d.status end
+        from work_phase_dependencies d
+        join work_phases source_phase on source_phase.id=d.from_phase_id
+        join work_phases target_phase on target_phase.id=d.to_phase_id
+        left join phase_epoch_dependency_sources epoch_source
+          on epoch_source.source_dependency_id=d.id
+        left join phase_epoch_dependencies epoch
+          on epoch.id=epoch_source.phase_epoch_dependency_id
+        where source_phase.work_unit_id=?1 and target_phase.work_unit_id=?1
+        order by d.from_phase_id,d.to_phase_id,d.id
+        "#
+    } else {
         r#"
         select d.id,d.from_phase_id,d.to_phase_id,d.status
         from work_phase_dependencies d
@@ -347,8 +373,9 @@ fn read_dependencies(conn: &Connection, owner_id: i64) -> Result<Vec<DependencyS
         join work_phases target on target.id=d.to_phase_id
         where source.work_unit_id=?1 and target.work_unit_id=?1
         order by d.from_phase_id,d.to_phase_id,d.id
-        "#,
-    )?;
+        "#
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(params![owner_id], |row| {
             Ok((
@@ -369,4 +396,13 @@ fn read_dependencies(conn: &Connection, owner_id: i64) -> Result<Vec<DependencyS
             })
         })
         .collect()
+}
+
+fn source_table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='table' and name=?1)",
+        [table],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }

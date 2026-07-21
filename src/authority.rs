@@ -12,6 +12,7 @@ mod owner_decisions;
 pub use owner_decisions::{
     DecisionOutcome as OwnerDecisionOutcome, OwnerDecisionRequest, record_owner_decision,
 };
+pub(crate) use owner_decisions::{current_owner_decision, record_owner_decision_in};
 
 pub fn add_authority_event(
     root: &Path,

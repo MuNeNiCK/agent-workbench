@@ -354,22 +354,64 @@ fn duplicate_historical_tasks_collapse_to_one_revision_with_all_aliases() {
     apply_task_identity(temp.path(), changed_owner, changed_plan_handle).unwrap();
 
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    for (table, expected) in [
-        ("task_identities", 1_i64),
-        ("task_revisions", 1),
-        ("task_revision_aliases", 2),
-        ("task_phase_memberships", 1),
-        ("task_phase_membership_sources", 2),
-        ("task_completion_claims", 1),
-        ("task_completion_sources", 1),
+    for (query, expected, label) in [
+        (
+            "select count(*) from task_identities where status='current'",
+            1_i64,
+            "current task identities",
+        ),
+        (
+            "select count(*) from task_identities where status='retired'",
+            2,
+            "retired task identities",
+        ),
+        (
+            "select count(*) from task_revisions where status='current'",
+            1,
+            "current task revisions",
+        ),
+        (
+            "select count(*) from task_revisions where status='retired'",
+            2,
+            "retired task revisions",
+        ),
+        (
+            "select count(*) from task_revision_aliases",
+            2,
+            "task aliases",
+        ),
+        (
+            "select count(*) from task_phase_memberships membership join task_identities identity on identity.id=membership.task_identity_id where identity.status='current'",
+            1,
+            "current phase memberships",
+        ),
+        (
+            "select count(*) from task_phase_membership_sources source join task_phase_memberships membership on membership.id=source.task_phase_membership_id join task_identities identity on identity.id=membership.task_identity_id where identity.status='current'",
+            2,
+            "current membership sources",
+        ),
+        (
+            "select count(*) from task_completion_claims claim join task_identities identity on identity.id=claim.task_identity_id where identity.status='current'",
+            1,
+            "current completion claims",
+        ),
+        (
+            "select count(*) from task_completion_sources source join task_completion_claims claim on claim.id=source.task_completion_claim_id join task_identities identity on identity.id=claim.task_identity_id where identity.status='current'",
+            1,
+            "current completion sources",
+        ),
     ] {
-        let count: i64 = conn
-            .query_row(&format!("select count(*) from {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(count, expected, "unexpected row count for {table}");
+        let count: i64 = conn.query_row(query, [], |row| row.get(0)).unwrap();
+        assert_eq!(count, expected, "unexpected row count for {label}");
     }
+    let preserved_lineage: i64 = conn
+        .query_row(
+            "select count(*) from phase_epoch_memberships current join phase_epoch_memberships predecessor on predecessor.id=current.predecessor_membership_id join task_identities identity on identity.id=predecessor.task_identity_id where current.state='closed' and predecessor.state='superseded' and identity.status='retired'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved_lineage, 1);
     let open_memberships: i64 = conn
             .query_row(
                 "select count(*) from task_phase_memberships where state!='closed' or boundary_revision_id is null",
@@ -378,6 +420,120 @@ fn duplicate_historical_tasks_collapse_to_one_revision_with_all_aliases() {
             )
             .unwrap();
     assert_eq!(open_memberships, 0);
+}
+
+#[test]
+fn one_design_identity_materializes_exactly_one_current_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work_with_options(
+        temp.path(),
+        WorkStart {
+            title: "revision lineage owner",
+            responsibility: None,
+            design_version_id: None,
+            implementation: false,
+        },
+    )
+    .unwrap();
+    let tasks = ["older requirement task", "current requirement task"].map(|title| {
+        add_task(
+            temp.path(),
+            NewTask {
+                work_unit_id: Some(work.work_unit_id),
+                title,
+                priority: "high",
+                source: "design",
+                details: None,
+                completion_condition: Some("done"),
+            },
+        )
+        .unwrap()
+    });
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        insert into design_packages(
+          id,project_id,design_key,package_id,title,root_path,format,version,
+          status,current_design_version_id,created_at,updated_at
+        ) values(1,1,'lineage','lineage','Revision lineage','design',
+                 'agent-workbench-design',1,'approved',2,current_timestamp,current_timestamp);
+        insert into design_versions(
+          id,project_id,design_package_id,version_number,source_ref,package_hash,
+          content_hash,package_path,manifest_path,format,manifest_version,status,
+          imported_at,approved_at
+        ) values
+          (1,1,1,1,'lineage-v1','p1','c1','design','design/design.yaml',
+           'agent-workbench-design',1,'superseded',current_timestamp,current_timestamp),
+          (2,1,1,2,'lineage-v2','p2','c2','design','design/design.yaml',
+           'agent-workbench-design',1,'approved',current_timestamp,current_timestamp);
+        insert into design_files(
+          id,project_id,design_package_id,design_version_id,section_key,relative_path,
+          content_hash,line_count
+        ) values
+          (1,1,1,1,'requirements','requirements.md','f1',1),
+          (2,1,1,2,'requirements','requirements.md','f2',1);
+        insert into design_requirements(
+          id,project_id,design_version_id,source_design_file_id,source_section,
+          requirement_key,revision,requirement_hash,requirement_text,priority,
+          required_surfaces,status,created_at
+        ) values
+          (1,1,1,1,'requirements','stable-operation',1,'r1','Stable operation v1',
+           'high','runtime','superseded',current_timestamp),
+          (2,1,2,2,'requirements','stable-operation',2,'r2','Stable operation v2',
+           'high','runtime','active',current_timestamp);
+        "#,
+    )
+    .unwrap();
+    for (requirement_id, task_id, status) in [
+        (1_i64, tasks[0].task_id, "stale"),
+        (2_i64, tasks[1].task_id, "active"),
+    ] {
+        conn.execute(
+            "insert into task_derivations(project_id,design_requirement_id,task_id,status,created_at) values(1,?1,?2,?3,current_timestamp)",
+            params![requirement_id, task_id, status],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let index: serde_json::Value =
+        serde_json::from_str(&plan_task_identity(temp.path(), None).unwrap().json).unwrap();
+    let owner = index["index"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["work_unit_id"] == work.work_unit_id)
+        .unwrap()["owner_handle"]
+        .as_str()
+        .unwrap();
+    let plan: serde_json::Value =
+        serde_json::from_str(&plan_task_identity(temp.path(), Some(owner)).unwrap().json).unwrap();
+    assert_eq!(plan["plan"]["task_identities"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["plan"]["revisions"].as_array().unwrap().len(), 2);
+    assert_eq!(plan["plan"]["aliases"].as_array().unwrap().len(), 2);
+    let plan_handle = plan["plan"]["plan_handle"].as_str().unwrap();
+    apply_task_identity(temp.path(), owner, plan_handle).unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let statuses = conn
+        .prepare(
+            "select revision.status from task_revisions revision join task_identities identity on identity.id=revision.task_identity_id where identity.owner_work_unit_id=?1 and identity.kind='design' order by revision.design_sequence",
+        )
+        .unwrap()
+        .query_map([work.work_unit_id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(statuses, vec!["historical", "current"]);
+    let alias_count: i64 = conn
+        .query_row(
+            "select count(*) from task_revision_aliases alias join task_revisions revision on revision.id=alias.task_revision_id join task_identities identity on identity.id=revision.task_identity_id where identity.owner_work_unit_id=?1 and identity.kind='design'",
+            [work.work_unit_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(alias_count, 2);
 }
 
 #[test]

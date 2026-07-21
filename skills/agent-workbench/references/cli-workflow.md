@@ -47,13 +47,22 @@ authority.
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required`.
 4. Build the design review context with
    `agent-workbench review-context design-review --design-version <design-version-id> --work-unit <work-unit-id>`,
-   then run an independent review agent and record its clean result with
-   `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>`.
+   then run an independent review agent, issue project-local provenance with
+   `review provenance issue`, request it with `review invocation request`, and
+   publish its clean claim with `review invocation complete --claim clean`.
+   Record the owner's separate decision with
+   `agent-workbench review adjudicate <review-run-id> --decision accepted --reason "<owner reason>" --expected-current pending`.
 5. Check design readiness with
    `agent-workbench gate design-ready --dry-run`.
-6. Decompose the design with
-   `agent-workbench decompose design <design-version-id> --work-unit <work-unit-id>`.
-7. Inspect generated planning state with
+6. Approve the exact reviewed version with
+   `agent-workbench design approve <design-version-id>`. A merely imported
+   Design Version cannot own a Decomposition Plan.
+7. Choose exactly one branch after approval. Canonical: inspect the slot with
+   `decomposition show`, execute its exact pathless/authored import, and follow
+   validate/revise until ready. Installed compatibility: run `decompose design`;
+   it intentionally publishes the established generated graph and matching
+   applied Plan now, and still requires the exact-Plan review below.
+8. Inspect generated planning state with
    `agent-workbench checklist list`,
    `agent-workbench requirement list --design <design-version-id>`, and
    `agent-workbench stale list`.
@@ -64,21 +73,25 @@ authority.
    Use `stale close` only for `task_derivation`, `checklist`, and
    `validation_gate`; use `stale accept` for stale `coverage_item` and
    `review_plan` records.
-8. Select validation gates with
+9. Select validation gates with
    `agent-workbench gate select --design <design-version-id> --template <gate-key> --requirement <requirement-key> --task <task-id>`
    when the decomposition did not already select the required gate. Add
    `--command-profile <name>` and `--timeout <duration>` when a fixed command
    profile should drive the gate.
-9. Add the required decomposition review plan with
+10. Add the required decomposition review plan with
    `agent-workbench review plan add --work-unit <work-unit-id> --type design_task_decomposition --stage implementation-ready --design-version <design-version-id> --required`.
-10. Build the decomposition review context with
+11. Build the decomposition review context with
     `agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>`,
-    then run an independent review agent and record its clean result with
-    `agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>`.
-11. Check implementation readiness with
+    then run an independent review agent and publish its project-local claim
+    through `review provenance issue`, `review invocation request`, and
+    `review invocation complete --claim clean`. Separately record the owner's
+    `review adjudicate` decision for that exact run.
+12. Canonical branch only: run the exact `decomposition apply` action. The
+    compatibility branch is already applied and must not run it again.
+13. Check implementation readiness with
    `agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run`.
-12. Run `agent-workbench next` and implement through the same work unit passed
-   to `decompose design` and the required review plans. If `next` reports a
+14. Run `agent-workbench next` and implement through the same work unit owned
+   by the applied Plan and the required review plans. If `next` reports a
    blocked phase, resolve the printed blocker first. If `next` reports an open
    inactive work unit, run the exact printed
    `agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`
@@ -86,7 +99,7 @@ authority.
    resume commands. Do not start an unrelated new work unit after decomposition.
    If `next` cannot identify the correct continue, activate, or resume command,
    report the workflow blocker instead of inspecting private managed state.
-13. Treat `task list` as an inventory. Follow explicit implementation plan,
+15. Treat `task list` as an inventory. Follow explicit implementation plan,
    dependency, wave, checklist, or requirement order. Do not invent a different
    task order from implementation intuition.
 
@@ -194,3 +207,20 @@ the supported CLI.
    `agent-workbench kpt item convert --to command-profile --command-status fixed`.
 11. Create or export work records when the user expects human-readable output.
 12. Close the work unit only after `close-ready` passes.
+
+## Publish a Release
+
+After the release work is closed and the reviewed commit is checked out cleanly,
+start the operator-owned lifecycle:
+
+```sh
+agent-workbench operator release candidate assemble --work <work-unit-id> --version <semver> --commit <reviewed-commit> --expected-current absent --idempotency-key <key>
+```
+
+Run the exact `next:` command returned by every step. The normal sequence is
+`candidate inspect`, `publish-source`, `publish-assets`, and `verify-remote`.
+Every command consumes the printed opaque revision and a unique idempotency key.
+After interruption, use the printed `reconcile` command. It probes without
+republishing: exact remote state advances, absence selects `retry`, and unequal
+state remains a conflict. `withdraw` and `supersede` require an active authority
+event and preserve all prior tags, assets, candidates, and audit history.

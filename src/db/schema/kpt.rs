@@ -38,6 +38,11 @@ create table if not exists kpt_item_conversions (
     design_version_id integer references design_versions(id),
     decision_id integer references decisions(id),
     user_correction_id integer references user_corrections(id),
+    item_revision text,
+    predecessor_handle text,
+    request_identity text,
+    receipt_identity text,
+    current_handle text,
     created_at text not null,
     check (
         (target_type = 'task' and task_id is not null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is null)
@@ -46,6 +51,10 @@ create table if not exists kpt_item_conversions (
         or (target_type = 'design_version' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is not null and decision_id is null and user_correction_id is null)
         or (target_type = 'decision' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is not null and user_correction_id is null)
         or (target_type = 'user_correction' and task_id is null and command_profile_id is null and review_policy_id is null and design_version_id is null and decision_id is null and user_correction_id is not null)
+    ),
+    check (
+        (item_revision is null and predecessor_handle is null and request_identity is null and receipt_identity is null and current_handle is null)
+        or (item_revision is not null and predecessor_handle is not null and request_identity is not null and receipt_identity is not null and current_handle is not null)
     )
 );
 
@@ -267,6 +276,7 @@ where old_version.design_package_id=current_version.design_package_id
        join validation_gate_templates old_template on old_template.id=old_gate.template_id
        join validation_gate_templates current_template on current_template.id=current_gate.template_id
        join validation_runs run on run.id=mapped.validation_run_id and run.validation_gate_id=old_gate.id and run.result='pass'
+         and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=run.id)
        left join command_usages usage on usage.id=run.command_usage_id and usage.result='pass'
        where mapped.inheritance_source_id=source.id and mapped.evidence_kind='validation_gate'
          and old_template.gate_key=current_template.gate_key and old_template.gate_hash=current_template.gate_hash
@@ -274,7 +284,7 @@ where old_version.design_package_id=current_version.design_package_id
            and usage.project_id=source.project_id and usage.work_unit_id=old_task.work_unit_id
            and usage.command=old_gate.command))
          and run.created_at<=phase.closed_at
-         and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at))
+         and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=candidate.id)))
       =(select count(*) from validation_gate_template_requirements mapping
         join validation_gate_templates template on template.id=mapping.validation_gate_template_id
         where mapping.design_requirement_id=source.current_requirement_id and template.status='active');

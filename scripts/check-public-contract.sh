@@ -3,6 +3,12 @@ set -eu
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 cd "$root"
+build_target="${CARGO_TARGET_DIR:-target}"
+case "$build_target" in
+  /*) ;;
+  *) build_target="$root/$build_target" ;;
+esac
+workbench_binary="$build_target/debug/agent-workbench"
 
 version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
 skill_version="$(sed -n '1{s/[[:space:]]//g;p;}' skills/agent-workbench/CLI_VERSION)"
@@ -22,30 +28,14 @@ if grep -Eq 'contents:[[:space:]]*write|workflow_dispatch:|gh release (create|up
   exit 1
 fi
 
-for command in \
-  "review run add" \
-  "review adjudicate" \
-  "finding decide" \
-  "finding verify" \
-  "verification adjudicate"
-do
-  target/debug/agent-workbench $command --help >/dev/null
-done
+AGENT_WORKBENCH_UNDER_TEST="$workbench_binary" \
+  AGENT_WORKBENCH_SKILL_UNDER_TEST="$root/skills/agent-workbench" \
+  AGENT_WORKBENCH_DOCS_UNDER_TEST="$root/docs" \
+  cargo test --locked --test command_line
 
-for retired in \
-  "authority assertion" \
-  "authority provider" \
-  "authority grant" \
-  "owner grant" \
-  "principal resolve" \
-  "review provenance" \
-  "review invocation" \
-  "decision capability"
-do
-  if target/debug/agent-workbench $retired --help >/dev/null 2>&1; then
-    echo "retired authority command remains public: $retired" >&2
-    exit 1
-  fi
-done
+if ! diff -qr skills/agent-workbench .agents/skills/agent-workbench >/dev/null; then
+  echo "installed skill differs from the release skill" >&2
+  exit 1
+fi
 
 echo "public contract: pass"

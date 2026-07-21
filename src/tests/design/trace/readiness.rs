@@ -237,7 +237,7 @@ fn implementation_ready_marks_selected_gate_stale_when_template_changes() {
             review_plan_id: plan.review_plan_id,
             run_type: "fresh",
             run_purpose: "new_unbiased_review",
-            target_ref: Some("work_unit:1"),
+            target_ref: Some("review-context:design-implementation-diff:design=1:work=1"),
             prompt_deviations: None,
             result_summary: Some("found implementation drift"),
             new_findings_count: 1,

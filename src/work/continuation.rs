@@ -15,9 +15,17 @@ pub fn resume_check_basic(root: &Path) -> Result<ResumeCheckOutcome> {
 }
 
 pub fn resume_check(root: &Path, maturity: &str) -> Result<ResumeCheckOutcome> {
+    resume_check_for(root, None, maturity)
+}
+
+pub fn resume_check_for(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    maturity: &str,
+) -> Result<ResumeCheckOutcome> {
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
-    let evaluation = evaluate_resume_ready(&tx, maturity)?;
+    let evaluation = evaluate_resume_ready_for(&tx, work_unit_id, maturity)?;
 
     tx.execute(
         r#"
@@ -81,8 +89,16 @@ pub fn resume_ready_basic(root: &Path) -> Result<ResumeReadyOutcome> {
 }
 
 pub fn resume_ready(root: &Path, maturity: &str) -> Result<ResumeReadyOutcome> {
+    resume_ready_for(root, None, maturity)
+}
+
+pub fn resume_ready_for(
+    root: &Path,
+    work_unit_id: Option<i64>,
+    maturity: &str,
+) -> Result<ResumeReadyOutcome> {
     let conn = open_existing_project(root)?;
-    match evaluate_resume_ready(&conn, maturity) {
+    match evaluate_resume_ready_for(&conn, work_unit_id, maturity) {
         Ok(evaluation) => Ok(ResumeReadyOutcome {
             work_unit_id: Some(evaluation.work_unit_id),
             activation_id: Some(evaluation.activation_id),
@@ -90,18 +106,23 @@ pub fn resume_ready(root: &Path, maturity: &str) -> Result<ResumeReadyOutcome> {
             blocking_reason: evaluation.blocking_reason,
             items: evaluation.items,
         }),
-        Err(error) if is_no_resume_target_error(&error) => Ok(ResumeReadyOutcome {
+        Err(error) if is_resume_target_resolution_error(&error) => Ok(ResumeReadyOutcome {
             work_unit_id: None,
             activation_id: None,
             result: "blocked".to_string(),
-            blocking_reason: Some("no suspended activation to resume".to_string()),
+            blocking_reason: Some(error.to_string()),
             items: vec![ResumeReadyItem {
                 name: "resume_target_suspended".to_string(),
                 result: "fail".to_string(),
                 blocking_action: Some(
-                    "suspend or complete current work before resuming".to_string(),
+                    error
+                        .to_string()
+                        .lines()
+                        .find_map(|line| line.strip_prefix("next: "))
+                        .unwrap_or("suspend or complete current work before resuming")
+                        .to_string(),
                 ),
-                details: "no suspended activation to resume".to_string(),
+                details: error.to_string(),
             }],
         }),
         Err(error) => Err(error),
@@ -188,6 +209,13 @@ pub(super) fn is_no_resume_target_error(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(|cause| cause.to_string() == "no suspended activation to resume")
+}
+
+fn is_resume_target_resolution_error(error: &anyhow::Error) -> bool {
+    is_no_resume_target_error(error)
+        || error
+            .chain()
+            .any(|cause| cause.to_string().starts_with("resume target unresolved:"))
 }
 
 pub fn resume_work(root: &Path, resume_check_id: i64) -> Result<ResumeOutcome> {

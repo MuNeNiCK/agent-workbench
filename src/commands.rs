@@ -195,41 +195,39 @@ pub fn list_command_profiles(
     root: &Path,
     command_type: Option<&str>,
 ) -> Result<Vec<CommandProfileRecord>> {
+    list_command_profiles_filtered(
+        root,
+        CommandProfileListFilter {
+            command_type,
+            scope: None,
+        },
+    )
+}
+
+pub fn list_command_profiles_filtered(
+    root: &Path,
+    filter: CommandProfileListFilter<'_>,
+) -> Result<Vec<CommandProfileRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select id, name, command_type, scope, status, command
+        from command_profiles
+        where project_id = ?1
+          and (?2 is null or command_type = ?2)
+          and (?3 is null or scope = ?3)
+        order by name
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![project_id, filter.command_type, filter.scope],
+        command_profile_record,
+    )?;
     let mut records = Vec::new();
-
-    match command_type {
-        Some(command_type) => {
-            let mut stmt = conn.prepare(
-                r#"
-                select id, name, command_type, scope, status, command
-                from command_profiles
-                where project_id = ?1 and command_type = ?2
-                order by name
-                "#,
-            )?;
-            let rows = stmt.query_map(params![project_id, command_type], command_profile_record)?;
-            for row in rows {
-                records.push(row?);
-            }
-        }
-        None => {
-            let mut stmt = conn.prepare(
-                r#"
-                select id, name, command_type, scope, status, command
-                from command_profiles
-                where project_id = ?1
-                order by name
-                "#,
-            )?;
-            let rows = stmt.query_map(params![project_id], command_profile_record)?;
-            for row in rows {
-                records.push(row?);
-            }
-        }
+    for row in rows {
+        records.push(row?);
     }
-
     Ok(records)
 }
 
@@ -569,6 +567,11 @@ pub struct NewCommandProfile<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct CommandOutcome {
     pub command_profile_id: i64,
+}
+
+pub struct CommandProfileListFilter<'a> {
+    pub command_type: Option<&'a str>,
+    pub scope: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

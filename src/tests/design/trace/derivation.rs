@@ -155,6 +155,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             task_id: None,
             design_version_id: Some(import.design_version_id),
             work_unit_id: None,
+            evidence_type: None,
         },
     )
     .unwrap();
@@ -217,6 +218,7 @@ fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
             task_id: None,
             design_version_id: Some(import.design_version_id),
             work_unit_id: None,
+            evidence_type: None,
         },
     )
     .unwrap();

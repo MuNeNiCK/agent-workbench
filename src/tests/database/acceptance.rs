@@ -16,6 +16,14 @@ fn init_migrates_existing_acceptance_records_shape() {
         insert into schema_migrations(version, applied_at)
         values (4, current_timestamp);
 
+        create table projects (
+            id integer primary key,
+            name text not null,
+            root_path text not null,
+            created_at text not null,
+            updated_at text not null
+        );
+
         create table acceptance_records (
             id integer primary key,
             project_id integer not null,
@@ -39,6 +47,11 @@ fn init_migrates_existing_acceptance_records_shape() {
             )
         );
         "#,
+    )
+    .unwrap();
+    conn.execute(
+        "insert into projects values(1,'existing-project',?1,current_timestamp,current_timestamp)",
+        [temp.path().to_string_lossy().as_ref()],
     )
     .unwrap();
     drop(conn);

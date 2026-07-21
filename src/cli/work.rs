@@ -5,8 +5,8 @@ use anyhow::Result;
 use super::args::{ResumeCheckArgs, WorkCommand};
 use agent_workbench::{
     NewWorkFork, WorkActivate, WorkForkSource, WorkReopen, WorkStart, abandon_work, activate_work,
-    block_work, close_active_work, create_follow_up_work, fork_work, interrupt_work,
-    remediate_work, reopen_work, resume_check, resume_work, start_work_with_options, suspend_work,
+    block_work, close_work, create_follow_up_work, fork_work, interrupt_work, remediate_work,
+    reopen_work, resume_check_for, resume_work, start_work_with_options, suspend_work,
     unblock_work,
 };
 
@@ -106,10 +106,20 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
             println!("activation_id: {}", outcome.activation_id);
         }
         WorkCommand::Close(args) => {
-            let outcome = close_active_work(root, &args.summary, args.commit.as_deref())?;
+            let outcome = close_work(
+                root,
+                args.work_unit_id,
+                &args.summary,
+                args.commit.as_deref(),
+            )?;
             println!("closed work unit");
             println!("work_unit_id: {}", outcome.work_unit_id);
-            println!("activation_id: {}", outcome.activation_id);
+            if let Some(activation_id) = outcome.activation_id {
+                println!("activation_id: {activation_id}");
+                println!("activation_effect: completed");
+            } else {
+                println!("activation_effect: none");
+            }
         }
         WorkCommand::Abandon(args) => {
             let outcome = abandon_work(root, args.work_unit_id, &args.reason)?;
@@ -194,7 +204,7 @@ pub(crate) fn handle(root: &Path, command: WorkCommand) -> Result<()> {
 }
 
 pub(crate) fn handle_resume_check(root: &Path, args: ResumeCheckArgs) -> Result<()> {
-    let outcome = resume_check(root, &args.maturity)?;
+    let outcome = resume_check_for(root, args.work_unit_id, &args.maturity)?;
     println!("resume_check_id: {}", outcome.resume_check_id);
     println!("result: {}", outcome.result);
     if let Some(reason) = outcome.blocking_reason {

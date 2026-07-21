@@ -1,4 +1,13 @@
 use super::*;
+use agent_workbench::default_ledger_path;
+use rusqlite::Connection;
+
+fn field<'a>(output: &'a str, key: &str) -> &'a str {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+        .unwrap_or_else(|| panic!("missing {key} in:\n{output}"))
+}
 
 #[test]
 fn task_history_migration_has_recursive_help_and_stays_explicit() {
@@ -103,4 +112,119 @@ fn task_history_migration_has_recursive_help_and_stays_explicit() {
     );
     let audit: serde_json::Value = serde_json::from_str(audit.lines().last().unwrap()).unwrap();
     assert_eq!(audit["records"][0]["result"], "applied");
+}
+
+#[test]
+fn reviewer_migration_binds_only_a_known_pending_source_with_local_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let family = ok(temp.path(), &["migration", "reviewer", "--help"]);
+    assert!(family.contains("bind"));
+    let bind_help = ok(temp.path(), &["migration", "reviewer", "bind", "--help"]);
+    for flag in [
+        "--agent-label",
+        "--external-agent-id",
+        "--provenance-ref",
+        "--authority",
+    ] {
+        assert!(bind_help.contains(flag));
+    }
+    for removed in ["signature", "principal", "capability", "trust"] {
+        assert!(!bind_help.contains(removed));
+    }
+
+    let digest = "a".repeat(64);
+    let source = format!("legacy-reviewer:{digest}");
+    let conn = Connection::open(default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into reviewer_migration_sources(project_id,source_reviewer_ref,source_reviewer_digest,status,created_at) values(1,?1,?2,'pending',current_timestamp)",
+        [&source, &digest],
+    )
+    .unwrap();
+    drop(conn);
+
+    let authority = ok(
+        temp.path(),
+        &[
+            "authority",
+            "event",
+            "add",
+            "--type",
+            "user_instruction",
+            "--summary",
+            "bind retained reviewer provenance",
+            "--scope",
+            "project",
+        ],
+    );
+    let authority = field(&authority, "authority_event_id");
+    let args = [
+        "migration",
+        "reviewer",
+        "bind",
+        source.as_str(),
+        "--agent-label",
+        "independent-reviewer",
+        "--external-agent-id",
+        "agent:reviewer-7",
+        "--provenance-ref",
+        "review-output:retained-7",
+        "--authority",
+        authority,
+    ];
+    let bound = ok(temp.path(), &args);
+    assert!(bound.contains("binding_handle: reviewer_binding_"));
+    assert!(bound.contains("status: bound"));
+    assert!(bound.contains("idempotent: false"));
+    let replay = ok(temp.path(), &args);
+    assert_eq!(
+        field(&bound, "binding_handle"),
+        field(&replay, "binding_handle")
+    );
+    assert!(replay.contains("idempotent: true"));
+
+    let changed = aw(
+        temp.path(),
+        &[
+            "migration",
+            "reviewer",
+            "bind",
+            &source,
+            "--agent-label",
+            "substituted-reviewer",
+            "--external-agent-id",
+            "agent:reviewer-7",
+            "--provenance-ref",
+            "review-output:retained-7",
+            "--authority",
+            authority,
+        ],
+    );
+    assert!(!changed.status.success());
+    assert!(
+        String::from_utf8_lossy(&changed.stderr)
+            .contains("reviewer_migration_source_already_bound")
+    );
+
+    let unknown = aw(
+        temp.path(),
+        &[
+            "migration",
+            "reviewer",
+            "bind",
+            &format!("legacy-reviewer:{}", "b".repeat(64)),
+            "--agent-label",
+            "unknown-reviewer",
+            "--external-agent-id",
+            "agent:unknown",
+            "--provenance-ref",
+            "review-output:unknown",
+            "--authority",
+            authority,
+        ],
+    );
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("reviewer_migration_source_not_found")
+    );
 }

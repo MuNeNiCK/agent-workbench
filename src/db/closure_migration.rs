@@ -3,6 +3,31 @@ use rusqlite::Connection;
 
 use super::project::*;
 
+pub(crate) const EMPTY_CORRECTION_DECOMPOSITION_TASK_MEMBERSHIP_VIEW_SQL: &str = r#"
+create view if not exists correction_decomposition_task_memberships as
+select cast(null as integer) correction_application_id,
+       cast(null as integer) task_id
+where 0;
+"#;
+
+pub(crate) fn install_correction_decomposition_task_membership_view(
+    conn: &Connection,
+) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        drop view if exists correction_decomposition_task_memberships;
+        create view correction_decomposition_task_memberships as
+        select transition.id correction_application_id,application.task_id
+        from correction_transition_applications transition
+        join decomposition_plans plan
+          on transition.result_ref='decomposition-plan:'||plan.id
+        join decomposition_applications application
+          on application.decomposition_plan_id=plan.id;
+        "#,
+    )?;
+    Ok(())
+}
+
 pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "closures")? {
         return Ok(());
@@ -59,8 +84,8 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
         drop trigger if exists trg_correction_alias_immutable_delete;
         "#,
     )?;
-    conn.execute_batch(
-        r#"
+    conn.execute_batch(EMPTY_CORRECTION_DECOMPOSITION_TASK_MEMBERSHIP_VIEW_SQL)?;
+    let lifecycle_schema = r#"
         create table if not exists closure_attempts (
             id integer primary key,
             project_id integer not null references projects(id) on delete cascade,
@@ -450,7 +475,8 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
             or not (
                 (new.token_kind='file' and new.operation in ('edit','create','delete'))
                 or (new.token_kind='transition' and new.operation in (
-                    'design-decompose','design-reconcile','task-accept-out-of-scope','phase-create',
+                    'design-decompose','design-reconcile','decomposition-plan-reconcile',
+                    'task-accept-out-of-scope','phase-create',
                     'phase-assign','phase-dependency-add','phase-dependency-satisfy',
                     'phase-dependency-accept','stale-accept','stale-close'
                 ))
@@ -461,6 +487,16 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                  and new.target not glob '*[^0-9/]*'
                  and cast(substr(new.target,1,instr(new.target,'/')-1) as integer)>0
                  and cast(substr(new.target,instr(new.target,'/')+1) as integer)>0)
+                or (new.operation='decomposition-plan-reconcile'
+                    and length(new.target)-length(replace(new.target,'/',''))=2
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')
+                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]')
+                    and json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') like 'b64:%'
+                    and length(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'))>4
+                    and substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),5) not glob '*[^A-Za-z0-9_-]*'
+                    and length(substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),5))%4!=1)
                 or (new.operation='design-reconcile'
                     and length(new.target)-length(replace(new.target,'/',''))=2
                     and new.target not glob '*[^0-9/]*'
@@ -469,9 +505,10 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                     and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') as integer)>0)
                 or (new.operation='task-accept-out-of-scope' and (
                     (new.target not glob '*[^0-9]*' and cast(new.target as integer)>0)
-                    or (new.target glob '@task/*' and length(new.target)>6
+                    or (new.target like '@task/b64:%' and length(new.target)>10
                         and length(new.target)-length(replace(new.target,'/',''))=1
-                        and substr(new.target,7) not glob '*[^A-Za-z0-9_-]*')
+                        and substr(new.target,11) not glob '*[^A-Za-z0-9_-]*'
+                        and length(substr(new.target,11))%4!=1)
                 ))
                 or (new.operation='phase-create'
                     and length(new.target)-length(replace(new.target,'/',''))=5
@@ -492,7 +529,7 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                 or (new.operation='phase-assign'
                     and length(new.target)-length(replace(new.target,'/','')) in (1,2)
                     and new.target not like '/%' and new.target not like '%/'
-                    and new.target not glob '*[^A-Za-z0-9_@/-]*'
+                    and new.target not glob '*[^A-Za-z0-9_@/:-]*'
                     and (json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') glob '@[a-z0-9_-]*'
                          or (cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
                              and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')))
@@ -503,7 +540,10 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                           and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]'))
                          or (length(new.target)-length(replace(new.target,'/',''))=2
                           and json_extract('["'||replace(new.target,'/','","')||'"]','$[1]')='@task'
-                          and json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') glob '[A-Za-z0-9_-]*')))
+                          and json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') like 'b64:%'
+                          and length(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'))>4
+                          and substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),5) not glob '*[^A-Za-z0-9_-]*'
+                          and length(substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),5))%4!=1)))
                 or (new.operation='phase-dependency-add'
                     and length(new.target)-length(replace(new.target,'/',''))=2
                     and (new.target like '%/blocks' or new.target like '%/requires')
@@ -548,14 +588,15 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
         before update of status, applied_at on correction_tokens
         for each row when
             old.status != 'pending'
-            or new.status != 'applied'
-            or (new.status='applied' and (
-                new.applied_at is null
-                or not exists (
+            or not (
+                (new.status='applied' and new.applied_at is not null
+                 and exists (
                     select 1 from correction_transition_applications application
                     where application.correction_token_id=old.id
-                )
-            ))
+                ))
+                or
+                (new.status='superseded' and new.applied_at is null)
+            )
         begin select raise(abort, 'invalid correction token status transition'); end;
 
         create trigger if not exists trg_correction_token_immutable_delete
@@ -609,8 +650,19 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                    )
                    and (
                      substr(token.target,instr(token.target,'/')+1)=cast(m.task_id as text)
-                     or exists(select 1 from correction_transition_aliases alias join correction_transition_applications earlier on earlier.id=alias.correction_application_id join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
-                       where alias.correction_session_id=new.correction_session_id and alias.alias=substr(token.target,instr(token.target,'/')+1) and alias.record_type='task' and alias.record_id=m.task_id and earlier_token.token_ordinal<token.token_ordinal)
+                     or exists(
+                       select 1
+                       from correction_transition_applications earlier
+                       join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
+                       left join checklist_items earlier_item
+                         on earlier.result_ref='checklist:'||earlier_item.checklist_id
+                       left join correction_decomposition_task_memberships earlier_plan_item
+                         on earlier_plan_item.correction_application_id=earlier.id
+                       where earlier.correction_session_id=new.correction_session_id
+                         and earlier_token.token_ordinal<token.token_ordinal
+                         and ((earlier_token.operation in ('design-decompose','design-reconcile') and earlier_item.task_id=m.task_id)
+                           or (earlier_token.operation='decomposition-plan-reconcile' and earlier_plan_item.task_id=m.task_id))
+                     )
                    )))
               or ((select operation from correction_tokens where id=new.correction_token_id)='phase-dependency-add'
                and exists(select 1 from work_phase_dependencies d join correction_tokens token on token.id=new.correction_token_id
@@ -637,12 +689,17 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                    and t.status='accepted_out_of_scope' and ar.status='approved'
                    and ar.approved_by_authority_event_id=new.authority_event_id
                    and (token.target=cast(t.id as text) or exists(
-                     select 1 from correction_transition_aliases alias
-                     join correction_transition_applications earlier on earlier.id=alias.correction_application_id
+                     select 1
+                     from correction_transition_applications earlier
                      join correction_tokens earlier_token on earlier_token.id=earlier.correction_token_id
-                     where alias.correction_session_id=new.correction_session_id
-                       and alias.alias=token.target and alias.record_type='task' and alias.record_id=t.id
+                     left join checklist_items earlier_item
+                       on earlier.result_ref='checklist:'||earlier_item.checklist_id
+                     left join correction_decomposition_task_memberships earlier_plan_item
+                       on earlier_plan_item.correction_application_id=earlier.id
+                     where earlier.correction_session_id=new.correction_session_id
                        and earlier_token.token_ordinal<token.token_ordinal
+                       and ((earlier_token.operation in ('design-decompose','design-reconcile') and earlier_item.task_id=t.id)
+                         or (earlier_token.operation='decomposition-plan-reconcile' and earlier_plan_item.task_id=t.id))
                    ))))
               or ((select operation from correction_tokens where id=new.correction_token_id) in ('stale-accept','stale-close')
                and exists(select 1 from acceptance_records ar join correction_tokens token on token.id=new.correction_token_id
@@ -658,6 +715,9 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                and exists(select 1 from checklists c join correction_tokens token on token.id=new.correction_token_id
                  where new.result_ref='checklist:'||c.id and c.project_id=new.project_id
                    and token.target=cast(c.design_version_id as text)||'/'||cast(c.work_unit_id as text)||'/'||cast(c.id as text)))
+              or ((select operation from correction_tokens where id=new.correction_token_id)='decomposition-plan-reconcile'
+               and new.result_ref glob 'decomposition-plan:[1-9]*'
+               and substr(new.result_ref,20) not glob '*[^0-9]*')
             )
         begin select raise(abort, 'invalid correction transition application links'); end;
 
@@ -800,8 +860,8 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
         create trigger if not exists trg_correction_alias_immutable_delete
         before delete on correction_transition_aliases
         begin select raise(abort, 'correction transition aliases are immutable'); end;
-        "#,
-    )?;
+        "#;
+    conn.execute_batch(lifecycle_schema)?;
 
     ensure_column(
         conn,

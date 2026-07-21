@@ -251,8 +251,10 @@ fn mediated_task_carry_forward_requires_verified_baseline_and_is_atomic() {
     .unwrap();
     classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
     let surface = format!(
-        "transition:design-decompose:{}/{},transition:task-accept-out-of-scope:@task/REQ-001",
-        current.design_version_id, work.work_unit_id
+        "transition:design-decompose:{}/{},transition:task-accept-out-of-scope:{}",
+        current.design_version_id,
+        work.work_unit_id,
+        crate::review::encode_opaque_task_ref("REQ-001")
     );
     let closure = add_closure(
         temp.path(),

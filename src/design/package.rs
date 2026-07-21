@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::db::{default_design_root, open_existing_project, project_id};
@@ -104,9 +104,20 @@ pub fn import_design_package(
     root: &Path,
     input: DesignPackageImport<'_>,
 ) -> Result<DesignPackageImportOutcome> {
-    validate_import_status(input.status)?;
     let mut conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let outcome = import_design_package_in(&tx, root, input)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub(crate) fn import_design_package_in(
+    conn: &Connection,
+    root: &Path,
+    input: DesignPackageImport<'_>,
+) -> Result<DesignPackageImportOutcome> {
+    validate_import_status(input.status)?;
+    let project_id = project_id(conn)?;
     let design_root = default_design_root(root);
     let package_path = resolve_package_path(root, input.package_path)?;
     ensure_package_path_is_under_design_root(root, &design_root, &package_path)?;
@@ -161,7 +172,7 @@ pub fn import_design_package(
         }
         if line_count > 1000
             && !design_file_exception_exists(
-                &conn,
+                conn,
                 project_id,
                 &manifest.id,
                 &design_file.relative_path,
@@ -189,8 +200,7 @@ pub fn import_design_package(
     let package_digest = package_hasher.finalize();
     let content_hash = hex_digest(&package_digest);
 
-    let tx = conn.transaction()?;
-    tx.execute(
+    conn.execute(
         r#"
         insert into design_packages(
             project_id, design_key, package_id, title, root_path, format, version,
@@ -219,12 +229,12 @@ pub fn import_design_package(
             input.status,
         ],
     )?;
-    let design_package_id: i64 = tx.query_row(
+    let design_package_id: i64 = conn.query_row(
         "select id from design_packages where project_id = ?1 and design_key = ?2",
         params![project_id, manifest.id],
         |row| row.get(0),
     )?;
-    let existing_version: Option<i64> = tx
+    let existing_version: Option<i64> = conn
         .query_row(
             "select id from design_versions where design_package_id = ?1 and content_hash = ?2",
             params![design_package_id, content_hash],
@@ -234,12 +244,12 @@ pub fn import_design_package(
     if existing_version.is_some() {
         bail!("design package content has already been imported");
     }
-    let version_number: i64 = tx.query_row(
+    let version_number: i64 = conn.query_row(
         "select coalesce(max(version_number), 0) + 1 from design_versions where design_package_id = ?1",
         params![design_package_id],
         |row| row.get(0),
     )?;
-    tx.execute(
+    conn.execute(
         r#"
         insert into design_versions(
             project_id, design_package_id, version_number, source_ref, package_hash,
@@ -262,12 +272,12 @@ pub fn import_design_package(
             input.status,
         ],
     )?;
-    let design_version_id = tx.last_insert_rowid();
+    let design_version_id = conn.last_insert_rowid();
     let mut requirement_count = 0usize;
     let mut decision_count = 0usize;
     let mut validation_gate_template_count = 0usize;
     for file in &imported_files {
-        tx.execute(
+        conn.execute(
             r#"
             insert into design_files(
                 project_id, design_package_id, design_version_id, section_key,
@@ -285,17 +295,17 @@ pub fn import_design_package(
                 file.line_count,
             ],
         )?;
-        let design_file_id = tx.last_insert_rowid();
+        let design_file_id = conn.last_insert_rowid();
         validate_agent_blocks_for_file(file)?;
         if file.section_key == "requirements" {
             let requirements =
-                extract_design_requirements(&tx, project_id, &manifest.id, &file.content, file)?;
+                extract_design_requirements(conn, project_id, &manifest.id, &file.content, file)?;
             requirement_count += requirements.len();
             for requirement in requirements {
                 warning_count += requirement.warning_count;
                 let supersedes_requirement_id =
-                    validate_requirement_version_transition(&tx, design_package_id, &requirement)?;
-                tx.execute(
+                    validate_requirement_version_transition(conn, design_package_id, &requirement)?;
+                conn.execute(
                     r#"
                     insert into design_requirements(
                         project_id, design_version_id, source_design_file_id,
@@ -326,7 +336,7 @@ pub fn import_design_package(
             let decisions = extract_design_decisions(&file.content, file)?;
             decision_count += decisions.len();
             for decision in decisions {
-                tx.execute(
+                conn.execute(
                     r#"
                     insert into design_decisions(
                         project_id, design_version_id, source_design_file_id,
@@ -354,7 +364,7 @@ pub fn import_design_package(
             let templates = extract_validation_gate_templates(&file.content, file)?;
             validation_gate_template_count += templates.len();
             for template in templates {
-                tx.execute(
+                conn.execute(
                     r#"
                     insert into validation_gate_templates(
                         project_id, design_version_id, source_design_file_id,
@@ -378,9 +388,9 @@ pub fn import_design_package(
                         template.status,
                     ],
                 )?;
-                let validation_gate_template_id = tx.last_insert_rowid();
+                let validation_gate_template_id = conn.last_insert_rowid();
                 insert_validation_gate_template_requirements(
-                    &tx,
+                    conn,
                     project_id,
                     design_version_id,
                     validation_gate_template_id,
@@ -389,8 +399,8 @@ pub fn import_design_package(
             }
         }
     }
-    mark_stale_links_for_design_version(&tx, project_id, design_package_id, design_version_id)?;
-    tx.execute(
+    mark_stale_links_for_design_version(conn, project_id, design_package_id, design_version_id)?;
+    conn.execute(
         r#"
         update design_packages
         set current_design_version_id = ?1, updated_at = current_timestamp
@@ -398,8 +408,6 @@ pub fn import_design_package(
         "#,
         params![design_version_id, design_package_id],
     )?;
-    tx.commit()?;
-
     Ok(DesignPackageImportOutcome {
         design_package_id,
         design_version_id,
@@ -411,4 +419,79 @@ pub fn import_design_package(
         validation_gate_template_count,
         warning_count,
     })
+}
+
+pub fn inspect_design_version(
+    root: &Path,
+    design_version_id: i64,
+) -> Result<DesignVersionInspection> {
+    inspect_design_version_ref(root, &design_version_id.to_string())
+}
+
+pub fn inspect_design_version_ref(
+    root: &Path,
+    design_version_ref: &str,
+) -> Result<DesignVersionInspection> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let design_version_id = resolve_design_version_ref_in(&conn, project_id, design_version_ref)?;
+    conn.query_row(
+        r#"
+        select version.id,version.version_number,version.status,
+               package.current_design_version_id=version.id,version.content_hash
+        from design_versions version
+        join design_packages package on package.id=version.design_package_id
+        where version.project_id=?1 and version.id=?2
+        "#,
+        params![project_id, design_version_id],
+        |row| {
+            Ok(DesignVersionInspection {
+                design_version_id: row.get(0)?,
+                version_number: row.get(1)?,
+                status: row.get(2)?,
+                current: row.get(3)?,
+                design_identity: row.get(4)?,
+            })
+        },
+    )
+    .optional()?
+    .context("design version not found")
+}
+
+pub(crate) fn resolve_design_version_ref_in(
+    conn: &Connection,
+    project_id: i64,
+    design_version_ref: &str,
+) -> Result<i64> {
+    let design_version_ref = design_version_ref.trim();
+    if design_version_ref.is_empty() {
+        bail!("design version reference must not be empty");
+    }
+    if let Ok(design_version_id) = design_version_ref.parse::<i64>() {
+        return conn
+            .query_row(
+                "select id from design_versions where project_id=?1 and id=?2",
+                params![project_id, design_version_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("design version not found");
+    }
+    conn.query_row(
+        r#"
+        select successor_design_version_id
+        from finding_design_recoveries
+        where project_id=?1 and successor_alias=?2
+        "#,
+        params![project_id, design_version_ref],
+        |row| row.get(0),
+    )
+    .optional()?
+    .with_context(|| format!("design version reference not found: {design_version_ref}"))
+}
+
+pub fn resolve_design_version_ref(root: &Path, design_version_ref: &str) -> Result<i64> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    resolve_design_version_ref_in(&conn, project_id, design_version_ref)
 }

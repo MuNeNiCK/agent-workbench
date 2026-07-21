@@ -163,11 +163,27 @@ create table if not exists review_runs (
     )
 );
 
+create index if not exists idx_review_runs_exact_target
+on review_runs(project_id,review_plan_id,target_ref,status,id)
+where target_ref is not null;
+
 create table if not exists review_agent_invocations (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
     review_plan_id integer references review_plans(id),
     review_run_id integer references review_runs(id),
+    invocation_handle text,
+    provenance_handle text,
+    target_context text,
+    purpose text,
+    request_idempotency_key text,
+    request_payload_digest text,
+    transition_idempotency_key text,
+    claim text,
+    verification_claim text,
+    closure_attempt_id integer references closure_attempts(id),
+    result_summary text,
+    terminal_reason text,
     run_type text not null check (run_type in ('fresh', 'resume', 'coverage')),
     agent_label text,
     external_agent_id text,
@@ -176,11 +192,119 @@ create table if not exists review_agent_invocations (
     finished_at text
 );
 
+create unique index if not exists idx_review_invocation_handle
+on review_agent_invocations(project_id,invocation_handle)
+where invocation_handle is not null;
+
+create unique index if not exists idx_review_invocation_external_request
+on review_agent_invocations(
+    project_id,review_plan_id,target_context,external_agent_id,request_idempotency_key
+)
+where request_idempotency_key is not null;
+
+create table if not exists review_provenance_claims (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    provenance_handle text not null,
+    reviewer_ref text not null,
+    review_plan_id integer not null references review_plans(id),
+    target_context text not null,
+    provenance_kind text not null check(provenance_kind in ('external_agent','human_review')),
+    review_purpose text not null check(review_purpose in ('new_unbiased_review','finding_fix_verification')),
+    source_reference text not null,
+    idempotency_key text not null,
+    payload_digest text not null check(length(payload_digest)=64),
+    created_at text not null,
+    unique(project_id,provenance_handle),
+    unique(project_id,review_plan_id,target_context,reviewer_ref,idempotency_key)
+);
+
+create table if not exists review_invocation_events (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    invocation_id integer not null references review_agent_invocations(id),
+    command text not null check(command in ('start','complete','fail','cancel')),
+    idempotency_key text not null,
+    payload_digest text not null check(length(payload_digest)=64),
+    resulting_state text not null check(resulting_state in ('running','completed','failed','cancelled')),
+    review_run_id integer references review_runs(id),
+    created_at text not null,
+    unique(project_id,invocation_id,command,idempotency_key)
+);
+
+create table if not exists review_result_drafts (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    draft_handle text not null,
+    invocation_id integer not null references review_agent_invocations(id),
+    reviewer_ref text not null,
+    status text not null check(status in ('staging','completed','cancelled')),
+    version integer not null check(version>=0),
+    version_handle text not null,
+    create_idempotency_key text not null,
+    create_payload_digest text not null check(length(create_payload_digest)=64),
+    review_run_id integer references review_runs(id),
+    terminal_reason text,
+    created_at text not null,
+    completed_at text,
+    unique(project_id,draft_handle),
+    unique(project_id,invocation_id,create_idempotency_key)
+);
+
+create unique index if not exists idx_active_review_result_draft
+on review_result_drafts(project_id,invocation_id)
+where status='staging';
+
+create table if not exists review_result_draft_items (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    draft_id integer not null references review_result_drafts(id),
+    item_handle text not null,
+    item_version integer not null check(item_version>0),
+    finding_type text not null,
+    severity text not null check(severity in ('critical','high','medium','low')),
+    description text not null,
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    created_at text not null,
+    unique(project_id,item_handle),
+    unique(draft_id,item_version)
+);
+
+create table if not exists review_result_draft_events (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    draft_id integer not null references review_result_drafts(id),
+    command text not null check(command in ('finding_add','complete','cancel')),
+    idempotency_key text not null,
+    payload_digest text not null check(length(payload_digest)=64),
+    result_handle text not null,
+    created_at text not null,
+    unique(project_id,draft_id,command,idempotency_key)
+);
+
+create trigger if not exists trg_review_provenance_claim_immutable_update
+before update on review_provenance_claims begin select raise(abort,'review provenance claims are append-only'); end;
+create trigger if not exists trg_review_provenance_claim_immutable_delete
+before delete on review_provenance_claims begin select raise(abort,'review provenance claims are append-only'); end;
+create trigger if not exists trg_review_invocation_event_immutable_update
+before update on review_invocation_events begin select raise(abort,'review invocation events are append-only'); end;
+create trigger if not exists trg_review_invocation_event_immutable_delete
+before delete on review_invocation_events begin select raise(abort,'review invocation events are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_immutable_update
+before update on review_result_draft_items begin select raise(abort,'review result draft items are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_immutable_delete
+before delete on review_result_draft_items begin select raise(abort,'review result draft items are append-only'); end;
+create trigger if not exists trg_review_result_draft_event_immutable_update
+before update on review_result_draft_events begin select raise(abort,'review result draft events are append-only'); end;
+create trigger if not exists trg_review_result_draft_event_immutable_delete
+before delete on review_result_draft_events begin select raise(abort,'review result draft events are append-only'); end;
+
 create table if not exists findings (
     id integer primary key,
     project_id integer not null references projects(id) on delete cascade,
     review_run_id integer not null references review_runs(id) on delete cascade,
-    finding_type text not null check (finding_type in ('design_finding', 'design_implementation_drift', 'design_task_gap', 'implementation_finding', 'coverage_finding')),
+    finding_type text not null check (finding_type in ('validation_finding', 'process_finding', 'security_finding', 'design_finding', 'design_implementation_drift', 'design_task_gap', 'implementation_finding', 'coverage_finding')),
     severity text not null check (severity in ('critical', 'high', 'medium', 'low')),
     description text not null,
     classification text not null default 'unclassified' check (classification in ('unclassified', 'valid', 'invalid', 'design_conflict', 'needs_evidence')),
@@ -265,9 +389,17 @@ begin select raise(abort,'review boundary snapshot identity is immutable'); end;
 create trigger if not exists trg_review_boundary_snapshot_delete before delete on review_boundary_snapshots begin select raise(abort,'review boundary snapshots are append-only'); end;
 create trigger if not exists trg_review_correction_obligation_update before update on review_correction_recovery_obligations begin select raise(abort,'review correction recovery obligations are append-only'); end;
 create trigger if not exists trg_review_correction_obligation_delete before delete on review_correction_recovery_obligations begin select raise(abort,'review correction recovery obligations are append-only'); end;
-create trigger if not exists trg_finding_epoch_immutable_update before update on finding_decision_epochs begin select raise(abort,'finding decision epochs are append-only'); end;
+create trigger if not exists trg_finding_epoch_immutable_update before update on finding_decision_epochs
+for each row when not (
+    old.status='open' and new.status='terminal'
+    and old.terminal_decision_id is null and new.terminal_decision_id is not null
+    and new.project_id=old.project_id and new.finding_id=old.finding_id
+    and new.epoch_number=old.epoch_number
+    and new.reopen_decision_id is old.reopen_decision_id
+    and new.created_at=old.created_at
+)
+begin select raise(abort,'finding decision epoch identity is immutable'); end;
 create trigger if not exists trg_finding_epoch_immutable_delete before delete on finding_decision_epochs begin select raise(abort,'finding decision epochs are append-only'); end;
-
 create trigger if not exists trg_review_adjudication_project_insert before insert on review_adjudication_decisions
 when not exists(select 1 from owner_decisions od join review_runs r on r.id=new.review_run_id where od.id=new.owner_decision_id and od.project_id=new.project_id and r.project_id=new.project_id)
 begin select raise(abort,'review adjudication project mismatch'); end;
@@ -285,7 +417,6 @@ when not exists(select 1 from findings f where f.id=new.finding_id and f.project
  or (new.terminal_decision_id is not null and not exists(select 1 from owner_decisions od where od.id=new.terminal_decision_id and od.project_id=new.project_id))
  or (new.reopen_decision_id is not null and not exists(select 1 from owner_decisions od where od.id=new.reopen_decision_id and od.project_id=new.project_id))
 begin select raise(abort,'finding epoch project mismatch'); end;
-
 create trigger if not exists trg_finding_review_type_insert
 before insert on findings
 for each row
@@ -295,7 +426,8 @@ when not exists (
     join review_plans p on p.id = r.review_plan_id
     where r.id = new.review_run_id
       and (
-          (p.review_type = 'design_review' and new.finding_type = 'design_finding')
+          new.finding_type in ('validation_finding', 'process_finding', 'security_finding')
+          or (p.review_type = 'design_review' and new.finding_type = 'design_finding')
           or (p.review_type = 'design_implementation_diff' and new.finding_type = 'design_implementation_drift')
           or (p.review_type = 'design_task_decomposition' and new.finding_type = 'design_task_gap')
           or (p.review_type = 'implementation_review' and new.finding_type in ('implementation_finding', 'coverage_finding'))
@@ -315,7 +447,8 @@ when not exists (
     join review_plans p on p.id = r.review_plan_id
     where r.id = new.review_run_id
       and (
-          (p.review_type = 'design_review' and new.finding_type = 'design_finding')
+          new.finding_type in ('validation_finding', 'process_finding', 'security_finding')
+          or (p.review_type = 'design_review' and new.finding_type = 'design_finding')
           or (p.review_type = 'design_implementation_diff' and new.finding_type = 'design_implementation_drift')
           or (p.review_type = 'design_task_decomposition' and new.finding_type = 'design_task_gap')
           or (p.review_type = 'implementation_review' and new.finding_type in ('implementation_finding', 'coverage_finding'))

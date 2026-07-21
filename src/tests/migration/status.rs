@@ -120,38 +120,56 @@ fn source_status_profiles_accept_only_deployed_values() {
 }
 
 #[test]
-fn source_profile_rejects_family_drift_and_unsupported_versions() {
+fn source_profile_ignores_unowned_storage_and_rejects_owned_contract_drift() {
     let extra = tempfile::tempdir().unwrap();
     init_project(extra.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(extra.path())).unwrap();
     conn.execute("create table unexpected_family(id integer primary key)", [])
         .unwrap();
     drop(conn);
-    assert!(
-        plan_task_identity(extra.path(), None)
-            .unwrap_err()
-            .to_string()
-            .contains("persisted families")
-    );
+    plan_task_identity(extra.path(), None)
+        .expect("unrelated product storage must not change the task-history contract");
 
     let missing = tempfile::tempdir().unwrap();
     init_project(missing.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(missing.path())).unwrap();
-    conn.execute("drop table kpt_item_conversions", []).unwrap();
+    conn.execute("drop table implementation_evidence", [])
+        .unwrap();
     drop(conn);
     assert!(
         plan_task_identity(missing.path(), None)
             .unwrap_err()
             .to_string()
-            .contains("persisted families")
+            .contains("required relation implementation_evidence is absent")
+    );
+
+    let changed = tempfile::tempdir().unwrap();
+    init_project(changed.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(changed.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        pragma foreign_keys=off;
+        alter table tasks rename to tasks_with_owner;
+        create table tasks as select * from tasks_with_owner;
+        drop table tasks_with_owner;
+        pragma foreign_keys=on;
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+    assert!(
+        plan_task_identity(changed.path(), None)
+            .unwrap_err()
+            .to_string()
+            .contains("stable identity")
     );
 
     let unsupported = tempfile::tempdir().unwrap();
     init_project(unsupported.path()).unwrap();
     let conn = open_ledger(&default_ledger_path(unsupported.path())).unwrap();
     conn.execute(
-        "insert into schema_migrations(version,applied_at) values(14,current_timestamp)",
-        [],
+        "insert into schema_migrations(version,applied_at) values(?1,current_timestamp)",
+        [SCHEMA_VERSION + 1],
     )
     .unwrap();
     drop(conn);

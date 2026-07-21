@@ -56,12 +56,13 @@ the checkout's already-built `target/debug/agent-workbench` or
 | `doctor validation-links` | Migration-independent diagnosis, atomic repair, and immutable repair audit for legacy validation links. |
 | `work` | Work-unit lifecycle and activation stack operations. |
 | `resume-check`, `gate resume-ready` | Recorded and read-only resume evaluation. |
-| `rules`, `correction`, `authority`, `principal`, `owner` | Project rules plus signed-envelope trusted ingress, canonical principals, and owner grants. |
+| `rules`, `correction`, `authority`, `owner` | Project-local rules, user/policy/design authority events, and separate owner decisions. |
 | `command` | Fixed/preferred command profiles, usage, promotion, and deviations. |
 | `record` | Structured work records and evidence links. |
 | `repository`, `git` | Repository snapshots, Git commits, file changes, and comparisons. |
 | `design`, `requirement`, `design-decision`, `gate-template` | Design package import and inspection. |
-| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability, checklist completion, and explicit stale record disposition. |
+| `decomposition` | Persistent Decomposition Plan import, validation, revision, application, reconciliation, and lineage inspection. |
+| `trace`, `decompose`, `checklist`, `stale` | Design-to-task traceability, the automatic compatibility path, checklist completion, and explicit stale record disposition. |
 | `phase` | Ordered work-phase grouping, phase dependencies, trace decisions, dry-run rescope/split, and phase close. |
 | `review`, `finding`, `verification`, `closure`, `review-context` | Trusted invocation claims, separate owner adjudication, findings, verification, closures, and focused context. |
 | `evidence`, `coverage`, `gate` | Implementation evidence, coverage, validation gates, and readiness checks. |
@@ -91,8 +92,9 @@ shadowed rule. If the override is intentional, record approval with
 
 New review results use `review provenance issue` followed by `review invocation
 request|start|complete`. Completion creates an immutable claim, not an owner
-decision. Design-derived readiness reads only an accepted adjudication made by a
-different principal through an exact grant-backed DecisionCapability. Legacy
+decision. Design-derived readiness reads only a separate project-local owner
+adjudication of that exact current result. No signing key, trust store, identity
+bootstrap, or external administrator setup is required. Legacy
 `review run add`, `finding classify`, and `finding verify` inputs do not confer
 authority.
 
@@ -119,10 +121,18 @@ must match exactly.
 | `resume-ready` | Suspended work can resume without stale or unresolved assumptions. |
 
 Design-derived implementation should use explicit activation for the work unit
-produced by `decompose design`:
+owned by the applied Decomposition Plan:
 `agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`.
 `agent-workbench work start --implementation --design-version ...` is rejected
 so agents do not create unbound implementation work.
+
+The normal design-to-work path is `decomposition show`, `decomposition import`,
+`decomposition validate` or `decomposition revise` as directed, independent
+review of the exact Plan, `decomposition apply`, and `decomposition reconcile`
+when a successor Plan changes an applied graph. The Plan and its successor
+lineage are persistent project state. `decompose design` remains the automatic
+compatibility path; it creates the generated graph and matching applied Plan
+atomically, but does not bypass review or readiness.
 
 If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run

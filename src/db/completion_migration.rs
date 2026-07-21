@@ -116,6 +116,7 @@ for each row when
     or (new.evidence_kind='validation_gate' and not exists(
         select 1 from validation_gates old_gate join validation_gates current_gate on current_gate.id=new.canonical_record_id
         join validation_runs run on run.id=new.validation_run_id and run.validation_gate_id=old_gate.id and run.result='pass'
+          and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=run.id)
         join correction_completion_inheritance_sources source on source.id=new.inheritance_source_id
         join validation_gate_templates old_template on old_template.id=old_gate.template_id
         join validation_gate_templates current_template on current_template.id=current_gate.template_id
@@ -130,7 +131,7 @@ for each row when
               where usage.id=run.command_usage_id and usage.project_id=source.project_id
                 and usage.work_unit_id=(select work_unit_id from tasks where id=source.source_task_id)
                 and usage.command=old_gate.command and usage.result='pass')))
-          and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at)))
+          and run.id=(select max(candidate.id) from validation_runs candidate where candidate.validation_gate_id=old_gate.id and candidate.created_at<=phase.closed_at and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=candidate.id))))
 begin select raise(abort, 'invalid completion inheritance evidence ownership'); end;
 "#,
     )?;

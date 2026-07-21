@@ -290,6 +290,20 @@ pub(super) fn migrate_kpt_items(conn: &Connection) -> Result<()> {
         )
         .optional()?;
     let conversion_sql = conversion_sql.unwrap_or_default();
+    let complete_lifecycle: bool = conn.query_row(
+        r#"
+        select
+          exists(select 1 from pragma_table_info('kpt_item_conversions') where name='kpt_rule_id')
+          and exists(select 1 from sqlite_schema where type='table' and name='kpt_item_sources')
+          and exists(select 1 from sqlite_schema where type='table' and name='kpt_rules')
+          and exists(select 1 from sqlite_schema where type='table' and name='kpt_item_dismissals')
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if complete_lifecycle {
+        return Ok(());
+    }
     if table_sql.contains("'converted'")
         && table_sql.contains("linked_review_finding_id integer references findings")
         && conversion_sql.contains("review_policy_id integer references review_policies")
@@ -301,12 +315,44 @@ pub(super) fn migrate_kpt_items(conn: &Connection) -> Result<()> {
 
     conn.execute_batch(
         r#"
+        drop trigger if exists trg_kpt_rule_project_insert;
+        drop trigger if exists trg_kpt_rule_restricted_update;
+        drop trigger if exists trg_kpt_rule_immutable_delete;
+        drop trigger if exists trg_kpt_dismissal_links_insert;
+        drop trigger if exists trg_kpt_dismissal_immutable_update;
+        drop trigger if exists trg_kpt_dismissal_immutable_delete;
+        drop trigger if exists trg_kpt_item_source_immutable_update;
+        drop trigger if exists trg_kpt_item_source_immutable_delete;
+        drop trigger if exists trg_kpt_item_conversion_project_insert;
+        drop trigger if exists trg_kpt_item_conversion_project_update;
+        drop trigger if exists trg_kpt_item_conversion_immutable_delete;
+        "#,
+    )?;
+    for table in ["kpt_item_sources", "kpt_rules", "kpt_item_dismissals"] {
+        let exists: bool = conn.query_row(
+            "select exists(select 1 from sqlite_schema where type='table' and name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        let count: i64 = conn.query_row(&format!("select count(*) from {table}"), [], |row| {
+            row.get(0)
+        })?;
+        if count != 0 {
+            bail!("incomplete KPT lifecycle has nonempty dependent records");
+        }
+        conn.execute(&format!("drop table {table}"), [])?;
+    }
+
+    conn.execute_batch(
+        r#"
         pragma foreign_keys = off;
 
         alter table kpt_item_conversions rename to kpt_item_conversions_old;
-        alter table kpt_items rename to kpt_items_old;
 
-        create table kpt_items (
+        create table kpt_items_new (
             id integer primary key,
             kpt_review_id integer not null references kpt_reviews(id) on delete cascade,
             item_type text not null check (item_type in ('keep', 'problem', 'try')),
@@ -322,7 +368,7 @@ pub(super) fn migrate_kpt_items(conn: &Connection) -> Result<()> {
             created_at text not null
         );
 
-        insert into kpt_items(
+        insert into kpt_items_new(
             id, kpt_review_id, item_type, title, details, severity,
             linked_user_correction_id, linked_command_profile_id,
             linked_review_finding_id, linked_task_id, proposed_action, status, created_at
@@ -331,7 +377,10 @@ pub(super) fn migrate_kpt_items(conn: &Connection) -> Result<()> {
             id, kpt_review_id, item_type, title, details, severity,
             linked_user_correction_id, linked_command_profile_id,
             linked_review_finding_id, linked_task_id, proposed_action, status, created_at
-        from kpt_items_old;
+        from kpt_items;
+
+        drop table kpt_items;
+        alter table kpt_items_new rename to kpt_items;
 
         create table kpt_item_conversions (
             id integer primary key,
@@ -364,7 +413,6 @@ pub(super) fn migrate_kpt_items(conn: &Connection) -> Result<()> {
         from kpt_item_conversions_old;
 
         drop table kpt_item_conversions_old;
-        drop table kpt_items_old;
 
         pragma foreign_keys = on;
         "#,

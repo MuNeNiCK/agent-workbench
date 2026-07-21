@@ -527,6 +527,32 @@ pub fn resolve_git_commit_id(root: &Path, commit: &str) -> Result<i64> {
     }
 }
 
+pub fn resolve_repository_head_commit(root: &Path, repository: &str) -> Result<i64> {
+    let conn = open_existing_project(root)?;
+    let project = project_id(&conn)?;
+    conn.query_row(
+        r#"
+        select git_commit.id
+        from repositories repository
+        join git_commits git_commit
+          on git_commit.repository_id=repository.id
+         and git_commit.commit_sha=repository.current_head
+        where repository.project_id=?1
+          and (cast(repository.id as text)=?2 or repository.name=?2 or repository.path=?2)
+        order by git_commit.id desc
+        limit 1
+        "#,
+        params![project, repository],
+        |row| row.get(0),
+    )
+    .optional()?
+    .with_context(|| {
+        format!(
+            "repository {repository} has no recorded commit for its current head; next: agent-workbench git commit add --repository {repository} --commit <commit>"
+        )
+    })
+}
+
 pub struct NewRepository<'a> {
     pub name: &'a str,
     pub path: &'a str,

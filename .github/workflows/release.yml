@@ -56,19 +56,9 @@ jobs:
           wrapper="$candidate/skill/agent-workbench/scripts/agent-workbench.sh"
           chmod +x "$binary" "$wrapper"
           test "$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --version)" = "agent-workbench ${tag#v}"
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" init
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" status | grep -Fx initialized >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review run add --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" review adjudicate --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" finding decide --help >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" verification adjudicate --help >/dev/null
-          work_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" work start 'release exercise' | sed -n 's/^work_unit_id: //p')"
-          policy_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review policy add --name release-exercise --type implementation_review | sed -n 's/^review_policy_id: //p')"
-          plan_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan add --work-unit "$work_id" --type implementation_review --stage close-ready --required --policy "$policy_id" | sed -n 's/^review_plan_id: //p')"
-          run_id="$(AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review run add --plan "$plan_id" --type fresh --purpose new_unbiased_review --clean --provenance external_agent --provenance-ref release-exercise:review --external-agent-id release-exercise-agent | sed -n 's/^review_run_id: //p')"
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review adjudicate "$run_id" --decision accepted --reason 'release exercise accepted' --expected-current pending >/dev/null
-          AGENT_WORKBENCH_BIN="$binary" "$wrapper" --root "$project" review plan list | grep -F ':clean required=true]' >/dev/null
-          scripts/check-release-ledger-compatibility.sh "$binary"
+          AGENT_WORKBENCH_UNDER_TEST="$binary" \
+            AGENT_WORKBENCH_SKILL_UNDER_TEST="$candidate/skill/agent-workbench" \
+            cargo test --locked --test command_line
 
       - name: Confirm observer-only boundary
         run: git diff --exit-code

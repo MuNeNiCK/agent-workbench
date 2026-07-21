@@ -72,9 +72,10 @@ struct CloseProcessState {
     rule_conflict_count: i64,
     fixed_command_count: i64,
     missing_fixed_command_usage_count: i64,
-    invalid_commit_message_count: i64,
     repeated_correction_count: i64,
+    unsettled_repeated_correction_count: i64,
     open_kpt_review_count: i64,
+    unsettled_kpt_item_count: i64,
     work_record_count: i64,
     work_record_evidence_link_count: i64,
 }
@@ -197,6 +198,16 @@ pub struct InterruptOutcome {
 pub struct CloseOutcome {
     pub work_unit_id: i64,
     pub activation_id: i64,
+}
+
+/// Result of the canonical owner-qualified close operation.
+///
+/// `activation_id` is absent when the open work had no current activation. The
+/// legacy `close_active_work` adapter retains its activation-required result.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CloseWorkOutcome {
+    pub work_unit_id: i64,
+    pub activation_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

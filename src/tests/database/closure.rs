@@ -438,6 +438,9 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
         drop trigger if exists trg_correction_session_links_insert;
         drop trigger if exists trg_correction_session_status_update;
         drop trigger if exists trg_correction_token_links_insert;
+        drop trigger if exists trg_finding_verification_project_insert;
+        drop trigger if exists trg_finding_verification_project_update;
+        drop table finding_design_recoveries;
         drop table closure_attempts;
         alter table closures drop column status;
         delete from schema_migrations where version in (11, 12);

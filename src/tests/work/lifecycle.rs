@@ -1,4 +1,182 @@
+use std::path::Path;
+
 use super::*;
+
+#[test]
+fn explicit_close_without_activation_leaves_unrelated_active_owner_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let active = start_work(temp.path(), "unrelated active owner", None).unwrap();
+    let inactive_work_unit_id = {
+        let conn = crate::db::open_existing_project(temp.path()).unwrap();
+        let project = crate::db::project_id(&conn).unwrap();
+        conn.execute(
+            "insert into work_units(project_id,title,status,started_at) values(?1,'migrated inactive owner','open',current_timestamp)",
+            rusqlite::params![project],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: Some(inactive_work_unit_id),
+            topic: "inactive owner completed",
+            work_performed: Some("validated the owner without an activation"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+
+    let ready = close_ready_for(temp.path(), inactive_work_unit_id).unwrap();
+    assert_eq!(ready.result, "pass");
+    assert_eq!(ready.activation_id, None);
+    let closed = close_work(
+        temp.path(),
+        Some(inactive_work_unit_id),
+        "inactive owner complete",
+        None,
+    )
+    .unwrap();
+    assert_eq!(closed.work_unit_id, inactive_work_unit_id);
+    assert_eq!(closed.activation_id, None);
+
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    let inactive_status: String = conn
+        .query_row(
+            "select status from work_units where id=?1",
+            [inactive_work_unit_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let active_status: String = conn
+        .query_row(
+            "select status from work_unit_activations where id=?1",
+            [active.activation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(inactive_status, "closed");
+    assert_eq!(active_status, "active");
+}
+
+#[test]
+fn incomplete_decomposition_is_the_owner_action_and_cannot_select_a_phase() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "incomplete decomposition owner", None).unwrap();
+    let package = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "incomplete-owner",
+            title: "Incomplete Owner",
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        requirement_doc_without_validation("REQ", "Public obligation", "high"),
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "existing obligation",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: Some("preserve behavior"),
+            completion_condition: Some("behavior observed"),
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ",
+            task_id: task.task_id,
+            derivation_reason: Some("existing decomposition"),
+            checklist_title: Some("existing checklist"),
+            item_title: Some("existing boundary"),
+            completion_condition: Some("behavior observed"),
+        },
+    )
+    .unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            key: "existing",
+            title: "Existing",
+            kind: "implementation",
+            order: 1,
+            reason: Some("existing schedule"),
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(temp.path(), phase.phase_id, task.task_id).unwrap();
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    crate::decomposition::install_uncovered_derived_bundles(&conn, &[]).unwrap();
+    drop(conn);
+
+    let NextAction::OwnerActions { owners } = next_action(temp.path()).unwrap() else {
+        panic!("incomplete decomposition must be selected as an owner action");
+    };
+    let owner = owners
+        .iter()
+        .find(|owner| owner.owner_id == work.work_unit_id)
+        .unwrap();
+    assert_eq!(
+        owner.blocker_kind.as_deref(),
+        Some("decomposition_plan_incomplete")
+    );
+    assert!(
+        owner
+            .next_action
+            .starts_with("agent-workbench decomposition validate ")
+    );
+    assert_eq!(owner.next_actions.len(), 2);
+    assert_eq!(owner.next_actions[0], owner.next_action);
+    assert!(owner.next_actions[1].starts_with("agent-workbench decomposition revise "));
+    assert!(!owner.next_actions[1].contains(" --plan "));
+    assert!(!owner.next_actions[1].ends_with(" --help"));
+
+    let current = show_decomposition_plan(
+        temp.path(),
+        DecompositionPlanQuery {
+            design_version_id: design.design_version_id,
+            work_unit_id: work.work_unit_id,
+        },
+    )
+    .unwrap();
+    let source_path = current.source_path.as_deref().unwrap();
+    assert!(temp.path().join(source_path).is_file());
+    let revised = revise_decomposition_plan(
+        temp.path(),
+        DecompositionRevise {
+            plan_id: current.id,
+            plan_path: Path::new(source_path),
+            draft: false,
+            expected_current: &current.current_identity,
+            idempotency_key: &format!("revise-{}-{}", current.id, current.revision),
+        },
+    )
+    .unwrap();
+    assert_eq!(revised.plan.predecessor_id, Some(current.id));
+    assert_eq!(revised.plan.status, "incomplete");
+}
 
 #[test]
 fn owner_routing_ignores_replacement_backed_stale_coverage() {
@@ -87,6 +265,55 @@ fn owner_routing_ignores_replacement_backed_stale_coverage() {
         },
     )
     .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let requirement_id: i64 = conn
+        .query_row(
+            "select id from design_requirements where design_version_id=?1 and requirement_key='storage'",
+            [design.design_version_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut stale_gate_id = None;
+    for status in ["stale", "active"] {
+        conn.execute(
+            "insert into validation_gates(project_id,gate_key,work_unit_id,task_id,design_requirement_id,expected_result,status,created_at) values(1,'storage-gate',?1,?2,?3,'storage remains observable',?4,current_timestamp)",
+            params![work.work_unit_id, task.task_id, requirement_id, status],
+        )
+        .unwrap();
+        if status == "stale" {
+            stale_gate_id = Some(conn.last_insert_rowid());
+        }
+    }
+    drop(conn);
+    let stale_gate_id = stale_gate_id.unwrap();
+
+    let unapproved = next_action(temp.path()).unwrap();
+    assert!(matches!(
+        unapproved,
+        NextAction::OwnerActions { ref owners }
+            if owners.iter().any(|owner| {
+                owner.owner_id == work.work_unit_id
+                    && owner.blocker_kind.as_deref() == Some("stale_design")
+                    && owner.next_action.contains(&format!("stale accept validation_gate {stale_gate_id}"))
+            })
+    ));
+    assert!(
+        list_stale_records(temp.path())
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record.record_type == "validation_gate" && record.id == stale_gate_id
+            })
+    );
+
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: design.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
 
     let next = next_action(temp.path()).unwrap();
     assert_eq!(
@@ -103,6 +330,185 @@ fn owner_routing_ignores_replacement_backed_stale_coverage() {
         },
         "replacement-backed stale coverage item {} must not enter owner routing",
         predecessor.coverage_item_id
+    );
+    assert!(
+        !list_stale_records(temp.path())
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record.record_type == "validation_gate" && record.id == stale_gate_id
+            })
+    );
+    let readiness = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(design.design_version_id),
+        },
+    )
+    .unwrap();
+    assert!(
+        readiness
+            .items
+            .iter()
+            .any(|item| { item.name == "validation_gates_current" && item.result == "pass" })
+    );
+}
+
+#[test]
+fn owner_routing_ignores_replacement_backed_stale_task_derivation() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "derivation replacement", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "replacement-backed task",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("derivation is current"),
+        },
+    )
+    .unwrap();
+    let package = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "derivation-routing",
+            title: "Derivation Routing",
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        requirement_doc("storage", "Preserve storage behavior", "high"),
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let predecessor = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "storage",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        requirement_doc("storage", "Preserve updated storage behavior", "high"),
+    )
+    .unwrap();
+    let successor = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: successor.design_version_id,
+            requirement_key: "storage",
+            task_id: task.task_id,
+            derivation_reason: Some("current replacement"),
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='stale' where id=?1",
+        [predecessor.task_derivation_id],
+    )
+    .unwrap();
+    let project = crate::db::project_id(&conn).unwrap();
+    assert_eq!(
+        crate::traceability::selected_stale_record_in(&conn, project).unwrap(),
+        Some((
+            "task_derivation".to_string(),
+            predecessor.task_derivation_id
+        ))
+    );
+    drop(conn);
+    assert!(
+        list_stale_records(temp.path())
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record.record_type == "task_derivation"
+                    && record.id == predecessor.task_derivation_id
+            })
+    );
+    let unapproved_readiness = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(successor.design_version_id),
+        },
+    )
+    .unwrap();
+    assert!(
+        unapproved_readiness
+            .items
+            .iter()
+            .any(|item| { item.name == "design_version_approved" && item.result == "fail" }),
+        "{:#?}",
+        unapproved_readiness.items
+    );
+
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: successor.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert_ne!(
+        crate::traceability::selected_stale_record_in(&conn, project).unwrap(),
+        Some((
+            "task_derivation".to_string(),
+            predecessor.task_derivation_id
+        ))
+    );
+    drop(conn);
+    assert!(
+        !list_stale_records(temp.path())
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record.record_type == "task_derivation"
+                    && record.id == predecessor.task_derivation_id
+            })
+    );
+    let readiness = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(successor.design_version_id),
+        },
+    )
+    .unwrap();
+    assert!(
+        readiness
+            .items
+            .iter()
+            .any(|item| { item.name == "task_derivations_current" && item.result == "pass" })
     );
 }
 

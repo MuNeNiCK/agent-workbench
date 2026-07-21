@@ -40,6 +40,7 @@ struct View {
 
 #[derive(Serialize)]
 struct Scope {
+    work_unit_id: i64,
     owner_handle: crate::identity::OwnerHandle,
     component_handle: crate::identity::ComponentHandle,
 }
@@ -95,6 +96,7 @@ pub(super) fn render_with_recovery(
                 .map(|base| super::owner_plan_handle(owner, base, "base")),
             recovery_handle,
             scope: Scope {
+                work_unit_id: owner.owner_id,
                 owner_handle: handles.0,
                 component_handle: handles.1,
             },

@@ -21,7 +21,50 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             .next_action
             .starts_with("agent-workbench closure ready")
             && blocker.next_action.contains(&input.closure_id.to_string());
-        if !selected_ready {
+        let stale_design_recovery: bool = if blocker.kind == "stale_design" {
+            tx.query_row(
+                r#"
+                select exists(
+                  select 1 from correction_sessions session
+                  where session.closure_id=?1 and session.status='active'
+                    and exists(
+                      select 1 from correction_tokens applied
+                      where applied.closure_id=session.closure_id
+                        and applied.token_kind='transition'
+                        and applied.operation in ('design-decompose','design-reconcile','decomposition-plan-reconcile')
+                        and applied.status='applied'
+                    )
+                    and not exists(
+                      select 1 from correction_tokens pending
+                      where pending.closure_id=session.closure_id
+                        and pending.token_kind='transition'
+                        and pending.status='pending'
+                    )
+                )
+                "#,
+                params![input.closure_id],
+                |row| row.get(0),
+            )?
+        } else {
+            false
+        };
+        let selected_source_correction: bool = if blocker.kind == "required_review_finding" {
+            tx.query_row(
+                r#"
+                select exists(
+                  select 1 from correction_sessions session
+                  join closures closure on closure.id=session.closure_id
+                  where session.closure_id=?1 and session.status='active'
+                    and closure.finding_id=?2
+                )
+                "#,
+                params![input.closure_id, blocker.finding_id],
+                |row| row.get(0),
+            )?
+        } else {
+            false
+        };
+        if !selected_ready && !stale_design_recovery && !selected_source_correction {
             bail!(
                 "closure ready is not the selected action; next: {}",
                 blocker.next_action
@@ -197,48 +240,55 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             .optional()?
             .flatten();
         let mut stmt = tx.prepare(
-            "select operation, target, pre_hash from correction_tokens where closure_id = ?1 and token_kind = 'file' order by token_ordinal",
+            "select operation, target from correction_tokens where closure_id = ?1 and token_kind = 'file' order by token_ordinal",
         )?;
         let rows = stmt.query_map(params![input.closure_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         let file_tokens = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
-        for (operation, target, pre_hash) in file_tokens {
+        let mut incomplete_surfaces = Vec::new();
+        for (operation, target) in file_tokens {
             let token = CorrectionToken {
                 kind: "file".to_string(),
                 operation: operation.clone(),
-                target,
+                target: target.clone(),
             };
             let path = correction_file_path(root, design_root.as_deref(), &token)?;
+            let pre_hash = effective_file_pre_hash(&tx, input.closure_id, &operation, &target)?;
             match operation.as_str() {
                 "create" if !path.is_file() => {
-                    bail!(
+                    incomplete_surfaces.push(format!(
                         "created correction surface is still absent: {}",
                         path.display()
-                    )
+                    ));
                 }
                 "delete" if path.exists() => {
-                    bail!(
+                    incomplete_surfaces.push(format!(
                         "deleted correction surface still exists: {}",
                         path.display()
-                    )
+                    ));
                 }
                 "edit" if !path.is_file() => {
-                    bail!(
+                    incomplete_surfaces.push(format!(
                         "edited correction surface is not a regular file: {}",
                         path.display()
-                    )
+                    ));
                 }
                 "edit" if Some(file_sha256(&path)?) == pre_hash => {
-                    bail!("edited correction surface is unchanged: {}", path.display())
+                    incomplete_surfaces.push(format!(
+                        "edited correction surface is unchanged: {}",
+                        path.display()
+                    ));
                 }
                 _ => {}
             }
+        }
+        if !incomplete_surfaces.is_empty() {
+            bail!(
+                "correction surfaces are incomplete:\n{}",
+                incomplete_surfaces.join("\n")
+            );
         }
     }
     let high_watermark: i64 =
@@ -345,6 +395,10 @@ pub fn supersede_closure(
         .context("current registered or incomplete closure not found")?;
     ensure_review_finding_target(&tx, finding_id, "closure supersede")?;
     if let Some(blocker) = current_phase_blocker(&tx)? {
+        let selected_active_correction = blocker.next_action.starts_with(&format!(
+            "agent-workbench closure transition apply {} --token ",
+            input.closure_id
+        ));
         let selected_contract_action = blocker
             .next_action
             .starts_with("agent-workbench closure supersede")
@@ -353,8 +407,39 @@ pub fn supersede_closure(
                 .starts_with("agent-workbench work remediate")
             || blocker
                 .next_action
-                .starts_with("agent-workbench closure correction-begin");
-        if !selected_contract_action {
+                .starts_with("agent-workbench closure correction-begin")
+            || selected_active_correction;
+        let selected_stale_recovery = if blocker.kind == "stale_design" {
+            let selected = crate::traceability::selected_stale_record_in(&tx, project_id)?;
+            let expected_operation = blocker
+                .next_action
+                .starts_with("agent-workbench stale accept ")
+                .then_some("stale-accept")
+                .or_else(|| {
+                    blocker
+                        .next_action
+                        .starts_with("agent-workbench stale close ")
+                        .then_some("stale-close")
+                });
+            match (
+                selected,
+                expected_operation,
+                input.new_closure.affected_surfaces,
+            ) {
+                (Some((kind, id)), Some(operation), Some(surfaces)) => {
+                    let target = format!("{kind}/{id}");
+                    parse_correction_tokens(surfaces)?.iter().any(|token| {
+                        token.kind == "transition"
+                            && token.operation == operation
+                            && token.target == target
+                    })
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        if !selected_contract_action && !selected_stale_recovery {
             bail!(
                 "closure supersede is not selected; next: {}",
                 blocker.next_action
@@ -398,6 +483,10 @@ pub fn supersede_closure(
     tx.execute(
         "update closures set status = 'superseded', superseded_by_closure_id = ?1, superseded_at = current_timestamp, superseded_by_authority_event_id = ?2, supersession_reason = ?3 where id = ?4",
         params![new_closure_id, input.authority_event_id, input.reason, input.closure_id],
+    )?;
+    tx.execute(
+        "update correction_tokens set status='superseded' where closure_id=?1 and status='pending'",
+        params![input.closure_id],
     )?;
     tx.execute(
         "update correction_sessions set status = 'superseded', completed_at = current_timestamp where closure_id = ?1 and status = 'active'",
@@ -561,7 +650,22 @@ pub(super) fn ensure_review_finding_target(
     if let Some(blocker) = current_phase_blocker(conn)? {
         let same_selected_finding =
             blocker.kind == "required_review_finding" && blocker.finding_id == Some(finding_id);
-        if !same_selected_finding {
+        let same_owner_stale_recovery = if blocker.kind == "stale_design"
+            && matches!(operation, "closure add" | "closure supersede")
+        {
+            if let Some(work_unit_id) = blocker.work_unit_id {
+                conn.query_row(
+                    "select exists(select 1 from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.id=?1 and p.work_unit_id=?2 and f.status='open' and f.classification='valid')",
+                    params![finding_id, work_unit_id],
+                    |row| row.get::<_, bool>(0),
+                )?
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !same_selected_finding && !same_owner_stale_recovery {
             bail!(
                 "{operation} is not allowed under the selected resolver action; next: {}",
                 blocker.next_action
@@ -569,7 +673,7 @@ pub(super) fn ensure_review_finding_target(
         }
         return Ok(());
     }
-    let selected_active_finding: Option<i64> = conn.query_row(
+    let (target_is_active, selected_active_finding): (bool, Option<i64>) = conn.query_row(
         r#"
         with active_scopes(finding_id) as (
           select b.finding_id
@@ -584,12 +688,13 @@ pub(super) fn ensure_review_finding_target(
           join closures c on c.id = s.closure_id and c.status = 'registered'
           where s.status = 'active'
         )
-        select min(finding_id) from active_scopes
+        select exists(select 1 from active_scopes where finding_id=?1),
+               (select min(finding_id) from active_scopes)
         "#,
-        [],
-        |row| row.get(0),
+        [finding_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if selected_active_finding.is_some_and(|selected| selected != finding_id) {
+    if selected_active_finding.is_some() && !target_is_active {
         bail!(
             "{operation} targets finding {finding_id}, but active scoped finding {selected_active_finding:?} is selected"
         );
@@ -630,6 +735,49 @@ pub(super) fn require_text(value: Option<&str>, message: &str) -> Result<()> {
 pub fn add_finding_verification(
     root: &Path,
     input: NewFindingVerification<'_>,
+) -> Result<FindingVerificationOutcome> {
+    insert_finding_verification(
+        root,
+        FindingVerificationInput {
+            review_run_id: input.review_run_id,
+            finding_id: input.finding_id,
+            closure_id: input.closure_id,
+            closure_attempt_id: None,
+            result: input.result,
+            notes: input.notes,
+        },
+    )
+}
+
+pub fn add_finding_verification_for_attempt(
+    root: &Path,
+    input: NewFindingVerificationForAttempt<'_>,
+) -> Result<FindingVerificationOutcome> {
+    insert_finding_verification(
+        root,
+        FindingVerificationInput {
+            review_run_id: input.review_run_id,
+            finding_id: input.finding_id,
+            closure_id: input.closure_id,
+            closure_attempt_id: Some(input.closure_attempt_id),
+            result: input.result,
+            notes: input.notes,
+        },
+    )
+}
+
+struct FindingVerificationInput<'a> {
+    review_run_id: i64,
+    finding_id: i64,
+    closure_id: i64,
+    closure_attempt_id: Option<i64>,
+    result: &'a str,
+    notes: Option<&'a str>,
+}
+
+fn insert_finding_verification(
+    root: &Path,
+    input: FindingVerificationInput<'_>,
 ) -> Result<FindingVerificationOutcome> {
     if !matches!(input.result, "verified" | "not_fixed" | "needs_evidence") {
         bail!(
@@ -707,16 +855,49 @@ pub fn add_finding_verification(
         join findings f on f.id = c.finding_id
         join review_runs verifier on verifier.id = ?1 and verifier.project_id = ?5
         join review_runs source_run on source_run.id = f.review_run_id
+        join review_plans source_plan on source_plan.id = source_run.review_plan_id
+        join review_plans verifier_plan on verifier_plan.id = verifier.review_plan_id
         where c.id = ?2
           and c.finding_id = ?3
           and c.project_id = ?5
           and f.project_id = ?5
           and f.id = ?3
-          and source_run.review_plan_id = verifier.review_plan_id
+          and verifier_plan.work_unit_id = source_plan.work_unit_id
+          and verifier_plan.review_type = source_plan.review_type
+          and verifier_plan.stage = source_plan.stage
+          and (
+            exists(
+              select 1 from finding_design_recoveries recovery
+              where recovery.project_id=?5
+                and recovery.successor_closure_id=c.id
+                and recovery.successor_attempt_id=a.id
+                and recovery.successor_design_version_id=verifier_plan.design_version_id
+            )
+            or (
+              not exists(
+                select 1 from finding_design_recoveries recovery
+                where recovery.project_id=?5 and recovery.successor_closure_id=c.id
+              )
+              and (
+                verifier_plan.design_version_id is source_plan.design_version_id
+                or exists(
+                  select 1 from design_versions source_design
+                  join design_versions verifier_design
+                    on verifier_design.design_package_id=source_design.design_package_id
+                  where source_design.id=source_plan.design_version_id
+                    and verifier_design.id=verifier_plan.design_version_id
+                    and verifier_design.version_number>=source_design.version_number
+                    and verifier_design.status='approved'
+                )
+              )
+            )
+          )
+          and coalesce(verifier_plan.scope, '') = coalesce(source_plan.scope, '')
           and c.status = 'ready_for_verification'
           and verifier.id > a.review_run_high_watermark
           and verifier.target_ref = 'review-context:finding-fix:finding=' || f.id
                     || ':closure=' || c.id || ':attempt=' || a.id
+          and (?6 is null or a.id = ?6)
         "#,
             params![
                 input.review_run_id,
@@ -724,6 +905,7 @@ pub fn add_finding_verification(
                 input.finding_id,
                 input.result,
                 project_id,
+                input.closure_attempt_id,
             ],
             |row| row.get(0),
         )

@@ -55,22 +55,31 @@ agent-workbench design-decision list --design <design-version-id>
 1. Add a required design review plan.
 2. Build `review-context design-review`.
 3. Launch a fresh design review agent with the printed review target.
-4. Record a clean design review run or findings and closures.
-5. Run `gate design-ready --dry-run`.
-6. Decompose the design.
+4. Record its advisory claim or findings, then record the owner's separate
+   adjudication.
+5. Run `gate design-ready --dry-run` and explicitly approve that exact Design
+   Version with `design approve`.
+6. Choose exactly one branch. Canonical: run `decomposition show`, execute its
+   exact pathless/authored import, and follow validate/revise until ready.
+   Installed compatibility: run `decompose design` after approval; it
+   intentionally creates the generated graph and matching applied Plan now.
 7. Add a required design task decomposition review plan.
 8. Build `review-context design-task-decomposition`.
-9. Launch a fresh decomposition review agent with the printed review target.
-10. Run `gate implementation-ready --dry-run`.
-11. Run `next` and implement through the same work unit that owns the
+9. Launch a fresh decomposition review agent against the exact Plan and record
+    the owner's separate adjudication of its claim.
+10. Canonical branch only: run the exact printed `decomposition apply` action.
+    The compatibility branch is already applied and must not be applied again.
+    Both branches require steps 7-9 before implementation-ready.
+11. Run `gate implementation-ready --dry-run`.
+12. Run `next` and implement through the same work unit that owns the
     decomposed tasks, checklists, validation gates, and review plans.
-12. If `next` reports a blocked phase, resolve the printed finding, review,
+13. If `next` reports a blocked phase, resolve the printed finding, review,
     gate, or work-unit blocker first.
-13. If `next` reports an open inactive work unit, run the exact printed
+14. If `next` reports an open inactive work unit, run the exact printed
     `work activate --implementation --design-version <design-version-id> <work-unit-id>`
     command. If it reports suspended work, run the printed resume-check and
     resume commands.
-14. If the CLI cannot continue, activate, or resume that same work unit, report
+15. If the CLI cannot continue, activate, or resume that same work unit, report
     the workflow blocker. Do not create an unrelated work unit with
     `work start`, and do not inspect private managed state outside the CLI.
 
@@ -78,14 +87,20 @@ agent-workbench design-decision list --design <design-version-id>
 agent-workbench review plan add --work-unit <work-unit-id> --type design_review --stage design-ready --design-version <design-version-id> --required
 agent-workbench review-context design-review --design-version <design-version-id> --work-unit <work-unit-id>
 agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
+agent-workbench review adjudicate <design-review-run-id> --decision accepted --reason "<owner reason>" --expected-current pending
 agent-workbench gate design-ready --design-version <design-version-id> --dry-run
-agent-workbench decompose design <design-version-id> --work-unit <work-unit-id>
-agent-workbench checklist list
-agent-workbench stale list
+agent-workbench design approve <design-version-id>
+agent-workbench decomposition show --design-version <design-version-id> --work <work-unit-id>
+agent-workbench decomposition import --design-version <design-version-id> --work <work-unit-id> --expected-current absent --idempotency-key <key>
+# Follow any printed decomposition validate/revise action until ready.
 agent-workbench review plan add --work-unit <work-unit-id> --type design_task_decomposition --stage implementation-ready --design-version <design-version-id> --required
 agent-workbench review-context design-task-decomposition --design-version <design-version-id> --work-unit <work-unit-id>
 agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --clean --provenance external_agent --external-agent-id <agent-id> --provenance-ref <review-output-ref>
+agent-workbench review adjudicate <decomposition-review-run-id> --decision accepted --reason "<owner reason>" --expected-current pending
+agent-workbench decomposition apply <design-version-id> --work <work-unit-id>
 agent-workbench gate implementation-ready --design-version <design-version-id> --dry-run
+agent-workbench checklist list
+agent-workbench stale list
 agent-workbench next
 agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>
 ```

@@ -2,7 +2,7 @@ use super::*;
 use crate::db::{default_ledger_path, open_ledger};
 use crate::{
     NewPhaseDependency, NewTask, NewWorkPhase, WorkStart, add_phase_dependency, add_task,
-    assign_task_to_phase, close_phase, close_task, create_phase, init_project,
+    assign_task_to_phase, close_phase, close_task, create_phase, init_project, interrupt_work,
     start_work_with_options, suspend_work,
 };
 use rusqlite::params;
@@ -12,6 +12,7 @@ mod plan;
 mod recovery;
 mod stability;
 mod status;
+mod transition;
 
 fn migrated_owner_semantics(reverse: bool) -> (Vec<(i64, String)>, Vec<String>, Vec<String>) {
     let temp = tempfile::tempdir().unwrap();

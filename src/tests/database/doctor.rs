@@ -7,6 +7,7 @@ use super::*;
 fn corrupt_repairable_validation_links(root: &Path) {
     init_project(root).unwrap();
     let conn = open_ledger(&default_ledger_path(root)).unwrap();
+    retain_core_storage_only(&conn);
     conn.execute_batch(
         r#"
         insert into projects(id, name, root_path, created_at, updated_at)
@@ -76,7 +77,7 @@ fn corrupt_repairable_validation_links(root: &Path) {
 
         drop table validation_link_repair_changes;
         drop table validation_link_repair_runs;
-        delete from schema_migrations where version in (11, 12, 13);
+        delete from schema_migrations where version > 6;
         insert into schema_migrations(version, applied_at)
         values (6, current_timestamp);
         "#,
@@ -91,13 +92,17 @@ fn doctor_repairs_legacy_validation_links_with_backup_audit_and_idempotence() {
 
     let normal = project_status(temp.path()).unwrap();
     assert_eq!(normal.project_integrity.result, "blocked");
-    assert_eq!(normal.project_integrity.predicates[3].code, "GI-004");
-    assert_eq!(normal.project_integrity.predicates[3].result, "blocked");
+    assert_eq!(normal.project_integrity.predicates[1].code, "GI-002");
+    assert_eq!(normal.project_integrity.predicates[1].result, "blocked");
     assert_eq!(
-        normal.project_integrity.predicates[3]
+        normal.project_integrity.predicates[1]
             .next_action
             .as_deref(),
-        Some("agent-workbench doctor validation-links")
+        Some("agent-workbench update inspect")
+    );
+    assert_eq!(
+        normal.project_integrity.predicates[3].result,
+        "not_evaluated"
     );
 
     let diagnosis = diagnose_validation_links(temp.path()).unwrap();
@@ -243,6 +248,11 @@ fn doctor_repairs_legacy_validation_links_with_backup_audit_and_idempotence() {
     assert_eq!(acceptance_project, 1);
     drop(conn);
 
+    assert_eq!(
+        project_status(temp.path()).unwrap().schema_version,
+        Some(CORE_SCHEMA_VERSION)
+    );
+    apply_test_update(temp.path());
     assert_eq!(
         project_status(temp.path()).unwrap().schema_version,
         Some(SCHEMA_VERSION)

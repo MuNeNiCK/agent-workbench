@@ -387,7 +387,7 @@ pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
                         repository: &args.repository,
                         commit_sha: &commit_sha,
                         short_sha: args.short.as_deref(),
-                        subject: args.subject.as_deref(),
+                        subject: args.subject.as_deref().or(args.note.as_deref()),
                         author_name: args.author_name.as_deref(),
                         author_email: args.author_email.as_deref(),
                         committed_at: args.committed_at.as_deref(),
@@ -401,7 +401,22 @@ pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
         },
         GitCommand::Files { command } => match command {
             GitFileCommand::Add(args) => {
-                let git_commit_id = resolve_git_commit_id(root, &args.commit)?;
+                let (git_commit_id, change_type) = match (
+                    args.commit.as_deref(),
+                    args.change_type.as_deref(),
+                    args.change.as_deref(),
+                    args.repository.as_deref(),
+                ) {
+                    (Some(commit), Some(change_type), None, _) => {
+                        (resolve_git_commit_id(root, commit)?, change_type)
+                    }
+                    (None, None, Some(change), Some(repository)) => {
+                        (resolve_repository_head_commit(root, repository)?, change)
+                    }
+                    _ => anyhow::bail!(
+                        "git files add requires exactly --commit with --type or --repository with --change"
+                    ),
+                };
                 let outcome = add_git_file_change(
                     root,
                     NewGitFileChange {
@@ -409,7 +424,7 @@ pub(crate) fn handle_git(root: &Path, command: GitCommand) -> Result<()> {
                         repository: args.repository.as_deref(),
                         path: &args.path,
                         old_path: args.old_path.as_deref(),
-                        change_type: &args.change_type,
+                        change_type,
                         additions: args.additions,
                         deletions: args.deletions,
                         content_hash: args.hash.as_deref(),

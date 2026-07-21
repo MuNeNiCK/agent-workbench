@@ -201,7 +201,7 @@ pub(super) fn csv_query(
 pub(super) fn snapshot_active_task_ids(conn: &Connection, work_unit_id: i64) -> Result<String> {
     csv_query(
         conn,
-        "select cast(id as text) from tasks where work_unit_id = ?1 and status = 'open' order by id",
+        "select cast(id as text) from current_tasks where work_unit_id = ?1 and status = 'open' order by id",
         &[&work_unit_id],
     )
 }

@@ -27,6 +27,7 @@ pub(crate) enum PhaseState {
     Closed,
     OutOfScope,
     Split,
+    Superseded,
 }
 
 impl PhaseState {
@@ -37,6 +38,7 @@ impl PhaseState {
             "closed" => Ok(Self::Closed),
             "accepted_out_of_scope" => Ok(Self::OutOfScope),
             "split" => Ok(Self::Split),
+            "superseded" => Ok(Self::Superseded),
             _ => bail!("unreadable_source: phase status is outside the closed profile"),
         }
     }
@@ -48,6 +50,7 @@ impl PhaseState {
             Self::Closed => "closed",
             Self::OutOfScope => "out_of_scope",
             Self::Split => "split",
+            Self::Superseded => "out_of_scope",
         }
     }
 
@@ -61,6 +64,7 @@ pub(crate) enum DependencyState {
     Open,
     Completed,
     OutOfScope,
+    Superseded,
 }
 
 impl DependencyState {
@@ -69,6 +73,7 @@ impl DependencyState {
             "open" => Ok(Self::Open),
             "satisfied" => Ok(Self::Completed),
             "accepted" => Ok(Self::OutOfScope),
+            "invalidated" => Ok(Self::Superseded),
             _ => bail!("unreadable_source: dependency status is outside the closed profile"),
         }
     }
@@ -78,6 +83,7 @@ impl DependencyState {
             Self::Open => "open",
             Self::Completed => "completed",
             Self::OutOfScope => "out_of_scope",
+            Self::Superseded => "out_of_scope",
         }
     }
 }

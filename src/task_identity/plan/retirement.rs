@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::identity::{domain_digest, signed_source_id};
+use crate::identity::signed_source_id;
 
 use super::super::status::RequirementState;
 use super::lineage::LineagePlan;
@@ -36,7 +36,6 @@ pub(super) fn add(lineage: &LineagePlan, elements: &mut Vec<Element>) -> Result<
                 revision_digest: revision.revision_digest.clone(),
                 retired_sequence: signed_source_id(retired_sequence)?,
             };
-            let digest = domain_digest(b"AWB-RETIREMENT-v1\0", &payload.value());
             elements.push(Element {
                 array: ArrayKind::Retirements,
                 source_refs,
@@ -44,7 +43,7 @@ pub(super) fn add(lineage: &LineagePlan, elements: &mut Vec<Element>) -> Result<
                     kind: TargetKind::Revision,
                     digest: revision.revision_digest.clone(),
                 }),
-                sort_digest: digest,
+                sort_digest: revision.revision_digest.clone(),
                 classification: Classification::Retired,
                 reason: Reason::RemovedRevision,
                 before: Fingerprints {

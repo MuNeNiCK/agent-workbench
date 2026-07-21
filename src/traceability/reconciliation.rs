@@ -601,7 +601,8 @@ pub(crate) fn inherit_closed_phase_memberships_in(
                 where source_gate.task_id=t.id and source_gate.design_requirement_id=source_r.id
                   and source_gate.selected_before_edit=1 and not exists(select 1 from validation_runs latest
                     where latest.id=(select max(candidate.id) from validation_runs candidate
-                      where candidate.validation_gate_id=source_gate.id and candidate.created_at<=p.closed_at)
+                      where candidate.validation_gate_id=source_gate.id and candidate.created_at<=p.closed_at
+                        and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=candidate.id))
                       and latest.result='pass' and (source_gate.command is null or
                         (latest.command is source_gate.command and latest.command_usage_id is not null
                          and exists(select 1 from command_usages usage
@@ -710,7 +711,8 @@ pub(crate) fn inherit_closed_phase_memberships_in(
                 r#"select source_gate.id, current_gate.id,
                            (select max(vr.id) from validation_runs vr
                             where vr.validation_gate_id=source_gate.id
-                              and vr.created_at<=(select closed_at from work_phases where id=?5))
+                              and vr.created_at<=(select closed_at from work_phases where id=?5)
+                              and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id))
                     from validation_gates source_gate
                     join validation_gate_templates source_gt on source_gt.id=source_gate.template_id
                     join validation_gates current_gate on current_gate.task_id=?1

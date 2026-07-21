@@ -76,7 +76,22 @@ fn coverage(conn: &Connection, task_id: i64) -> Result<Vec<EvidenceSource>> {
 }
 
 fn validations(conn: &Connection, task_id: i64) -> Result<Vec<EvidenceSource>> {
-    let mut statement = conn.prepare(
+    let retirement_filter = conn.query_row(
+        "select exists(select 1 from sqlite_schema where type='table' and name='validation_link_retirements')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let sql = if retirement_filter {
+        r#"
+        select run.id,run.result,run.artifact_path,run.artifact_hash,run.notes,
+               gate.id,gate.expected_result
+        from validation_runs run
+        join validation_gates gate on gate.id=run.validation_gate_id
+        where run.task_id=?1 and run.result='pass'
+          and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=run.id)
+        order by run.id
+        "#
+    } else {
         r#"
         select run.id,run.result,run.artifact_path,run.artifact_hash,run.notes,
                gate.id,gate.expected_result
@@ -84,8 +99,9 @@ fn validations(conn: &Connection, task_id: i64) -> Result<Vec<EvidenceSource>> {
         join validation_gates gate on gate.id=run.validation_gate_id
         where run.task_id=?1 and run.result='pass'
         order by run.id
-        "#,
-    )?;
+        "#
+    };
+    let mut statement = conn.prepare(sql)?;
     statement
         .query_map(params![task_id], |row| {
             let id = row.get::<_, i64>(0)?;

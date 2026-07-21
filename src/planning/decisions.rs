@@ -33,44 +33,37 @@ pub fn add_decision(root: &Path, input: NewDecision<'_>) -> Result<DecisionOutco
 }
 
 pub fn list_decisions(root: &Path, query: Option<&str>) -> Result<Vec<DecisionRecord>> {
+    list_decisions_filtered(root, DecisionListFilter { query, topic: None })
+}
+
+pub fn list_decisions_filtered(
+    root: &Path,
+    filter: DecisionListFilter<'_>,
+) -> Result<Vec<DecisionRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
+    let pattern = filter.query.map(|query| format!("%{query}%"));
+    let mut stmt = conn.prepare(
+        r#"
+        select id, decision_key, topic, decision, rationale, status
+        from decisions
+        where project_id = ?1
+          and status = 'accepted'
+          and (?2 is null or topic = ?2)
+          and (
+            ?3 is null
+            or topic like ?3
+            or decision like ?3
+            or coalesce(decision_key, '') like ?3
+          )
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, filter.topic, pattern], decision_record)?;
     let mut records = Vec::new();
-
-    match query {
-        Some(query) => {
-            let pattern = format!("%{query}%");
-            let mut stmt = conn.prepare(
-                r#"
-                select id, decision_key, topic, decision, rationale, status
-                from decisions
-                where project_id = ?1
-                  and status = 'accepted'
-                  and (topic like ?2 or decision like ?2 or coalesce(decision_key, '') like ?2)
-                order by id
-                "#,
-            )?;
-            let rows = stmt.query_map(params![project_id, pattern], decision_record)?;
-            for row in rows {
-                records.push(row?);
-            }
-        }
-        None => {
-            let mut stmt = conn.prepare(
-                r#"
-                select id, decision_key, topic, decision, rationale, status
-                from decisions
-                where project_id = ?1 and status = 'accepted'
-                order by id
-                "#,
-            )?;
-            let rows = stmt.query_map(params![project_id], decision_record)?;
-            for row in rows {
-                records.push(row?);
-            }
-        }
+    for row in rows {
+        records.push(row?);
     }
-
     Ok(records)
 }
 
@@ -92,6 +85,11 @@ pub struct NewDecision<'a> {
     pub rationale: Option<&'a str>,
     pub compatibility_impact: Option<&'a str>,
     pub authority_refs: Option<&'a str>,
+}
+
+pub struct DecisionListFilter<'a> {
+    pub query: Option<&'a str>,
+    pub topic: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

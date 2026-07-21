@@ -93,7 +93,7 @@ pub(super) fn read_all(conn: &Connection, schema_version: i64) -> Result<Databas
     }
     let family_values = families.iter().map(family_value).collect::<Vec<_>>();
     let value = CanonicalValue::object([
-        ("profile", CanonicalValue::string(profile_id)),
+        ("profile", CanonicalValue::string(profile_id.clone())),
         (
             "sqlite_schema_version",
             CanonicalValue::string(schema_version.to_string()),

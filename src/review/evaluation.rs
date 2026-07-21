@@ -4,32 +4,60 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
-use crate::review_context::{review_context_ref, review_context_ref_with_phase};
+use crate::review_context::current_review_context_ref;
 
 use super::*;
 
 pub fn list_findings(root: &Path, status: Option<&str>) -> Result<Vec<FindingRecord>> {
+    list_findings_filtered(
+        root,
+        FindingListFilter {
+            status,
+            review_run_id: None,
+        },
+    )
+}
+
+pub fn list_findings_filtered(
+    root: &Path,
+    filter: FindingListFilter<'_>,
+) -> Result<Vec<FindingRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
         r#"
-        select id, review_run_id, finding_type, severity, description, classification, status
-        from findings
-        where project_id = ?1 and (?2 is null or status = ?2)
-        order by id
+        select f.id, f.review_run_id, f.finding_type, f.severity, f.description,
+               f.classification, f.status, epoch.epoch_number, decision.decision_handle
+        from findings f
+        left join finding_decision_epochs epoch on epoch.id=(
+          select terminal.id from finding_decision_epochs terminal
+          where terminal.project_id=f.project_id and terminal.finding_id=f.id
+            and terminal.status='terminal'
+          order by terminal.epoch_number desc limit 1
+        )
+        left join owner_decisions decision on decision.id=epoch.terminal_decision_id
+        where f.project_id = ?1
+          and (?2 is null or f.status = ?2)
+          and (?3 is null or f.review_run_id = ?3)
+        order by f.id
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, status], |row| {
-        Ok(FindingRecord {
-            id: row.get(0)?,
-            review_run_id: row.get(1)?,
-            finding_type: row.get(2)?,
-            severity: row.get(3)?,
-            description: row.get(4)?,
-            classification: row.get(5)?,
-            status: row.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![project_id, filter.status, filter.review_run_id],
+        |row| {
+            Ok(FindingRecord {
+                id: row.get(0)?,
+                review_run_id: row.get(1)?,
+                finding_type: row.get(2)?,
+                severity: row.get(3)?,
+                description: row.get(4)?,
+                classification: row.get(5)?,
+                status: row.get(6)?,
+                terminal_epoch: row.get(7)?,
+                current_decision_handle: row.get(8)?,
+            })
+        },
+    )?;
     collect_rows(rows)
 }
 
@@ -195,12 +223,20 @@ pub(super) fn consecutive_clean_runs(
     plan: &StoredReviewPlan,
     run_type: &str,
 ) -> Result<i64> {
-    let required_context =
-        review_context_kind_for_plan(&plan.stage, &plan.review_type).and_then(|kind| {
-            plan.design_version_id.map(|design_version_id| {
-                review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id))
-            })
-        });
+    let required_context = match (
+        review_context_kind_for_plan(&plan.stage, &plan.review_type),
+        plan.design_version_id,
+    ) {
+        (Some(kind), Some(design_version_id)) => Some(current_review_context_ref(
+            conn,
+            crate::db::project_id(conn)?,
+            kind,
+            Some(design_version_id),
+            Some(plan.work_unit_id),
+            None,
+        )?),
+        _ => None,
+    };
     let mut stmt = conn.prepare(
         r#"
         select r.clean_run, r.review_provenance, r.review_provenance_ref,
@@ -220,15 +256,6 @@ pub(super) fn consecutive_clean_runs(
                    select 1 from legacy_claim_audits l
                    where l.project_id=r.project_id and l.review_run_id=r.id
                      and l.reviewer_resolution='trusted'
-               ) or exists (
-                   select 1 from legacy_signed_review_effects s
-                   where s.project_id=r.project_id and s.review_run_id=r.id
-               ), exists (
-                   select 1 from review_adjudication_decisions d
-                   join owner_decisions o on o.id=d.owner_decision_id
-                   where d.review_run_id=r.id and d.value='accepted'
-                     and o.capability_id is not null and o.principal_id is not null
-                     and not exists(select 1 from review_adjudication_decisions n where n.predecessor_id=d.id)
                )
         from review_runs
         r
@@ -237,6 +264,12 @@ pub(super) fn consecutive_clean_runs(
           and (?3 = 0 or r.id > ?3)
           and r.status = 'completed'
           and r.new_findings_count = 0
+          and not exists (
+              select 1 from legacy_claim_audits audit
+              where audit.project_id=r.project_id and audit.review_run_id=r.id
+                and audit.reviewer_resolution in ('unbound','ambiguous')
+          )
+          and (?4 is null or r.target_ref = ?4)
         order by id desc
         "#,
     )?;
@@ -245,39 +278,33 @@ pub(super) fn consecutive_clean_runs(
     } else {
         0
     };
-    let rows = stmt.query_map(params![plan.id, run_type, fresh_boundary], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, i64>(3)? == 1,
-            row.get::<_, i64>(4)? == 1,
-            row.get::<_, i64>(5)? == 1,
-            row.get::<_, i64>(6)? == 1,
-        ))
-    })?;
+    let exact_target = (plan.review_type == "design_task_decomposition" && run_type == "fresh")
+        .then(|| required_context.clone())
+        .flatten();
+    let rows = stmt.query_map(
+        params![plan.id, run_type, fresh_boundary, exact_target],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)? == 1,
+                row.get::<_, i64>(4)? == 1,
+                row.get::<_, i64>(5)? == 1,
+            ))
+        },
+    )?;
     let mut count = 0;
     for row in rows {
-        let (
-            clean_run,
-            provenance,
-            provenance_ref,
-            has_external_agent,
-            accepted,
-            legacy_trusted,
-            signed_legacy,
-        ) = row?;
-        let trusted = if signed_legacy {
-            legacy_trusted
-        } else {
-            legacy_trusted
-                || required_context.is_none()
-                || trusted_review_provenance(
-                    &provenance,
-                    provenance_ref.as_deref(),
-                    has_external_agent,
-                )
-        };
+        let (clean_run, provenance, provenance_ref, has_external_agent, accepted, legacy_trusted) =
+            row?;
+        let trusted = legacy_trusted
+            || required_context.is_none()
+            || trusted_review_provenance(
+                &provenance,
+                provenance_ref.as_deref(),
+                has_external_agent,
+            );
         if clean_run == 1 && trusted && accepted {
             count += 1;
         } else {
@@ -411,12 +438,12 @@ pub(super) fn validate_review_run_result(input: &NewReviewRun<'_>) -> Result<()>
 }
 
 pub(super) fn validate_gate_context_target(
+    conn: &rusqlite::Connection,
     plan: &StoredReviewPlan,
     input: &NewReviewRun<'_>,
     target: &ResolvedRunTarget,
 ) -> Result<()> {
-    if !input.clean_run
-        || input.status != "completed"
+    if input.status != "completed"
         || input.run_type != "fresh"
         || input.run_purpose != "new_unbiased_review"
     {
@@ -428,16 +455,14 @@ pub(super) fn validate_gate_context_target(
     let Some(design_version_id) = plan.design_version_id else {
         return Ok(());
     };
-    let expected = if let Some(phase_id) = target.phase_id {
-        review_context_ref_with_phase(
-            kind,
-            Some(design_version_id),
-            Some(plan.work_unit_id),
-            Some(phase_id),
-        )
-    } else {
-        review_context_ref(kind, Some(design_version_id), Some(plan.work_unit_id))
-    };
+    let expected = current_review_context_ref(
+        conn,
+        crate::db::project_id(conn)?,
+        kind,
+        Some(design_version_id),
+        Some(plan.work_unit_id),
+        target.phase_id,
+    )?;
     if input.target_ref != Some(expected.as_str()) {
         bail!(
             "clean gate review run must use review-context target {expected}; run review-context first and pass context_ref with --target"
@@ -446,11 +471,13 @@ pub(super) fn validate_gate_context_target(
     let has_external_agent = input
         .external_agent_id
         .is_some_and(|external_agent_id| !external_agent_id.trim().is_empty());
-    if !trusted_review_provenance(
-        input.review_provenance,
-        input.review_provenance_ref,
-        has_external_agent,
-    ) {
+    if input.clean_run
+        && !trusted_review_provenance(
+            input.review_provenance,
+            input.review_provenance_ref,
+            has_external_agent,
+        )
+    {
         bail!(
             "clean gate review run requires trusted review provenance; pass --provenance external_agent --external-agent-id <id> --provenance-ref <review-output-ref>, or --provenance human_review --provenance-ref <review-output-ref>"
         );
@@ -790,23 +817,28 @@ pub(super) fn ensure_finding_type_matches_review_type(
     finding_type: &str,
     review_type: &str,
 ) -> Result<()> {
-    let allowed = match review_type {
-        "design_review" => matches!(finding_type, "design_finding"),
-        "design_implementation_diff" => matches!(finding_type, "design_implementation_drift"),
-        "design_task_decomposition" => matches!(finding_type, "design_task_gap"),
-        "implementation_review" => {
-            matches!(finding_type, "implementation_finding" | "coverage_finding")
-        }
-        "general" => matches!(
-            finding_type,
-            "design_finding"
-                | "design_implementation_drift"
-                | "design_task_gap"
-                | "implementation_finding"
-                | "coverage_finding"
-        ),
-        _ => false,
-    };
+    let common = matches!(
+        finding_type,
+        "validation_finding" | "process_finding" | "security_finding"
+    );
+    let allowed = common
+        || match review_type {
+            "design_review" => matches!(finding_type, "design_finding"),
+            "design_implementation_diff" => matches!(finding_type, "design_implementation_drift"),
+            "design_task_decomposition" => matches!(finding_type, "design_task_gap"),
+            "implementation_review" => {
+                matches!(finding_type, "implementation_finding" | "coverage_finding")
+            }
+            "general" => matches!(
+                finding_type,
+                "design_finding"
+                    | "design_implementation_drift"
+                    | "design_task_gap"
+                    | "implementation_finding"
+                    | "coverage_finding"
+            ),
+            _ => false,
+        };
     if !allowed {
         bail!("finding type does not match review type");
     }

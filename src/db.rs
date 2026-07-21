@@ -13,7 +13,14 @@ mod schema;
 mod status;
 
 #[cfg(test)]
-pub(crate) use adjudication_migration::validate_schema11_invalid_combinations;
+pub(crate) use adjudication_migration::{
+    find_candidate as find_migration_candidate, insert_candidate as insert_migration_candidate,
+    insert_edge_for_members as insert_migration_edge_for_members,
+    insert_shared_member_for_first_root as insert_shared_migration_member_for_first_root,
+    validate_schema11_invalid_combinations,
+};
+#[cfg(test)]
+pub(crate) use schema::REVIEW_INTEGRITY_SQL;
 
 use std::path::PathBuf;
 
@@ -22,7 +29,8 @@ pub const LEDGER_FILE: &str = "ledger.sqlite";
 pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const CORE_SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 25;
 
 pub(crate) use migration::*;
 pub(crate) use mutation::*;
@@ -108,6 +116,10 @@ pub enum NextAction {
         corrections: Vec<SourceCorrection>,
     },
     NoOpenWorkUnit,
+    SelectedWorkTerminal {
+        work_unit_id: i64,
+        status: String,
+    },
     ResumeSuspended {
         work_unit: ActiveWorkUnit,
     },
@@ -138,12 +150,14 @@ pub struct ProjectIntegrityStatus {
 pub struct OwnerAction {
     pub owner_type: String,
     pub owner_id: i64,
+    pub owner_handle: Option<String>,
     pub title: String,
     pub state: String,
     pub schedulable: bool,
     pub blocker_kind: Option<String>,
     pub description: String,
     pub next_action: String,
+    pub next_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

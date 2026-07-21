@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn migrate_refreshes_finding_epoch_transition_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_finding_epoch_immutable_update;
+        create trigger trg_finding_epoch_immutable_update
+        before update on finding_decision_epochs
+        begin select raise(abort,'legacy finding decision epochs are append-only'); end;
+        "#,
+    )
+    .unwrap();
+
+    crate::db::migrate(&conn).unwrap();
+
+    let trigger_sql: String = conn
+        .query_row(
+            "select sql from sqlite_master where type='trigger' and name='trg_finding_epoch_immutable_update'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(trigger_sql.contains("old.status='open' and new.status='terminal'"));
+    assert!(!trigger_sql.contains("legacy finding decision epochs"));
+}
+
+#[test]
 fn init_migrates_existing_kpt_item_status_constraint() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -80,6 +108,111 @@ fn init_migrates_existing_kpt_item_status_constraint() {
         [],
     )
     .unwrap();
+}
+
+#[test]
+fn repeated_migration_preserves_complete_kpt_lifecycle_references() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    add_user_correction(
+        temp.path(),
+        NewUserCorrection {
+            scope: "project",
+            correction_type: "process",
+            mistake_pattern: "repeat",
+            correction: "change",
+            applies_to: "project",
+            severity: "medium",
+        },
+    )
+    .unwrap();
+    let review = start_kpt_review(
+        temp.path(),
+        NewKptReview {
+            scope: Some("project"),
+            summary: Some("migration conservation"),
+            from: Some("corrections"),
+            period: None,
+        },
+    )
+    .unwrap();
+    let rule_item = add_kpt_item(
+        temp.path(),
+        NewKptItem {
+            kpt_review_id: Some(review.kpt_review_id),
+            item_type: "keep",
+            title: "retain behavior",
+            details: Some("observe public results"),
+            severity: "medium",
+            proposed_action: None,
+        },
+    )
+    .unwrap();
+    convert_kpt_item_to_rule(
+        temp.path(),
+        KptItemRuleConversion {
+            kpt_item_id: rule_item.kpt_item_id,
+            scope: None,
+            title: None,
+            body: None,
+        },
+    )
+    .unwrap();
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("owner"),
+            summary: "dismiss imported observation",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let before = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+    let imported = before
+        .iter()
+        .find(|item| item.id != rule_item.kpt_item_id)
+        .unwrap();
+    let outcome = dismiss_kpt_item(
+        temp.path(),
+        KptItemDismissalRequest {
+            kpt_item_id: imported.id,
+            authority_event_id: authority.authority_event_id,
+            reason: "already represented",
+            expected_current: &imported.current_handle,
+        },
+    )
+    .unwrap();
+    assert!(matches!(outcome, KptItemDismissalOutcome::Dismissed(_)));
+    let expected = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let violations: i64 = conn
+        .query_row("select count(*) from pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    drop(conn);
+
+    assert_eq!(violations, 0);
+    assert_eq!(
+        list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap(),
+        expected
+    );
+    assert!(
+        applicable_rules(
+            temp.path(),
+            RuleQuery {
+                scope_key: Some("project"),
+                work_unit_id: None,
+            },
+        )
+        .unwrap()
+        .iter()
+        .any(|rule| rule.kpt_rule_id.is_some())
+    );
 }
 
 #[test]

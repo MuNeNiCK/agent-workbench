@@ -8,6 +8,29 @@ pub(crate) enum MigrationCommand {
         #[command(subcommand)]
         command: TaskIdentityCommand,
     },
+    /// Bind a migrated reviewer identity to retained external-agent provenance.
+    Reviewer {
+        #[command(subcommand)]
+        command: ReviewerMigrationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReviewerMigrationCommand {
+    Bind(ReviewerMigrationBindArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReviewerMigrationBindArgs {
+    pub(crate) source_reviewer_ref: String,
+    #[arg(long)]
+    pub(crate) agent_label: String,
+    #[arg(long)]
+    pub(crate) external_agent_id: String,
+    #[arg(long)]
+    pub(crate) provenance_ref: String,
+    #[arg(long)]
+    pub(crate) authority: i64,
 }
 
 #[derive(Debug, Subcommand)]

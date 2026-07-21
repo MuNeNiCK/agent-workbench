@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
+use super::decode_opaque_task_ref;
+
 pub(super) fn record_completion_inheritances(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -131,7 +133,7 @@ pub(super) fn validate_completion_inheritance_application(
     Ok(())
 }
 
-pub(super) fn transition_state_snapshot(
+pub(crate) fn transition_state_snapshot(
     conn: &rusqlite::Connection,
     work_unit_id: i64,
 ) -> Result<String> {
@@ -604,8 +606,8 @@ pub(super) fn resolve_task_ref(
     value: &str,
 ) -> Result<(i64, i64)> {
     let numeric_id = value.parse::<i64>().ok();
-    let key = value.strip_prefix("@task/");
-    if numeric_id.is_none() && key.is_none() {
+    let opaque_key = decode_opaque_task_ref(value)?;
+    if numeric_id.is_none() && opaque_key.is_none() {
         bail!("invalid task reference");
     }
     if let Some(task_id) = numeric_id {
@@ -666,35 +668,56 @@ pub(super) fn resolve_task_ref(
             _ => bail!("numeric task disposition has ambiguous eligible derivations"),
         };
     }
-    conn.query_row(
+    let key = opaque_key.context("task reference has no opaque key")?;
+    let mut stmt = conn.prepare(
         r#"
-        select alias.record_id, r.id
-        from correction_transition_aliases alias
-        join correction_transition_applications app on app.id = alias.correction_application_id
-        join correction_tokens token on token.id = app.correction_token_id
-        join tasks t on t.id = alias.record_id
-        join task_derivations td on td.task_id = t.id and td.status = 'active'
-        join design_requirements r on r.id = td.design_requirement_id
-        where app.correction_session_id = ?1 and token.token_ordinal < ?2
-          and alias.record_type = 'task'
-          and (?3 is null or alias.record_id = ?3)
-          and (?4 is null or alias.alias = '@task/' || ?4)
-          and t.work_unit_id = ?5 and r.design_version_id = ?6
-          and (?4 is null or r.requirement_key = ?4)
-        order by alias.id desc, r.id limit 1
+        with eligible(task_id,requirement_id) as (
+          select item.task_id,item.design_requirement_id
+          from correction_transition_applications application
+          join correction_tokens token on token.id=application.correction_token_id
+          join checklist_items item
+            on application.result_ref='checklist:'||item.checklist_id
+          where application.correction_session_id=?1 and token.token_ordinal<?2
+            and token.operation in ('design-decompose','design-reconcile')
+          union
+          select application_item.task_id,item_requirement.design_requirement_id
+          from correction_transition_applications application
+          join correction_tokens token on token.id=application.correction_token_id
+          join decomposition_applications application_item
+            on application.result_ref='decomposition-plan:'||application_item.decomposition_plan_id
+          join decomposition_item_requirements item_requirement
+            on item_requirement.decomposition_item_id=application_item.decomposition_item_id
+          where application.correction_session_id=?1 and token.token_ordinal<?2
+            and token.operation='decomposition-plan-reconcile'
+        )
+        select distinct task.id,requirement.id
+        from eligible
+        join tasks task on task.id=eligible.task_id
+        join design_requirements requirement on requirement.id=eligible.requirement_id
+        join task_derivations derivation on derivation.task_id=task.id
+          and derivation.design_requirement_id=requirement.id and derivation.status='active'
+        where task.work_unit_id=?3 and requirement.design_version_id=?4
+          and task.status in ('open','blocked') and requirement.requirement_key=?5
+        order by task.id,requirement.id
         "#,
-        params![
-            session_id,
-            token_ordinal,
-            numeric_id,
-            key,
-            work_unit_id,
-            design_version_id
-        ],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()?
-    .context("task reference was not created or adopted by an earlier correction token")
+    )?;
+    let candidates = stmt
+        .query_map(
+            params![
+                session_id,
+                token_ordinal,
+                work_unit_id,
+                design_version_id,
+                key
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match candidates.as_slice() {
+        [candidate] => Ok(*candidate),
+        [] => bail!("opaque task identity is absent from the preceding design/work decomposition"),
+        _ => bail!("opaque task identity matches multiple stable decomposition identities"),
+    }
 }
 
 pub(super) fn resolve_phase_ref(
@@ -749,10 +772,10 @@ pub(super) fn ensure_phase_dependency_owner(
     conn.query_row(
         r#"
         select 1
-        from work_phase_dependencies d
-        join work_phases source on source.id = d.from_phase_id
-        join work_phases target on target.id = d.to_phase_id
-        where d.id = ?1 and d.status = 'open'
+        from phase_epoch_dependencies d
+        join phase_epochs source on source.id = d.from_phase_epoch_id
+        join phase_epochs target on target.id = d.to_phase_epoch_id
+        where d.id = ?1 and d.state = 'open'
           and source.work_unit_id = ?2 and target.work_unit_id = ?2
         "#,
         params![dependency_id, work_unit_id],

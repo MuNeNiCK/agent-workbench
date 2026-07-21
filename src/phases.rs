@@ -1,11 +1,13 @@
 mod completion;
 mod operations;
 mod rescope;
+pub(crate) mod schema;
 
 pub(crate) use completion::phase_review_lifecycle_action;
 use completion::*;
 pub use operations::*;
 use rescope::*;
+pub(crate) use schema::install_phase_epochs;
 
 pub struct NewWorkPhase<'a> {
     pub work_unit_id: i64,
@@ -62,6 +64,11 @@ pub struct PhaseTaskOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub struct PhaseDependencyOutcome {
     pub dependency_id: i64,
+}
+
+pub struct PhaseDependencyListFilter {
+    pub work_unit_id: Option<i64>,
+    pub phase_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -739,4 +739,25 @@ when new.target_type = 'coverage_item'
 begin
     select raise(abort, 'acceptance project_id must match coverage item project_id');
 end;
+
+-- The terminal marker is part of validation ownership itself so every consumer can
+-- exclude retired evidence. Generation 23 adds the public repair receipts and routes.
+create table if not exists validation_link_retirements (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    validation_run_id integer not null unique references validation_runs(id),
+    artifact_ref text not null,
+    reason text not null,
+    expected_current text not null,
+    request_digest text not null check(length(request_digest)=64),
+    created_at text not null,
+    unique(project_id,artifact_ref),
+    unique(project_id,request_digest)
+);
+create trigger if not exists trg_validation_link_retirement_update
+before update on validation_link_retirements
+begin select raise(abort,'validation link retirements are append-only'); end;
+create trigger if not exists trg_validation_link_retirement_delete
+before delete on validation_link_retirements
+begin select raise(abort,'validation link retirements are append-only'); end;
 "#;

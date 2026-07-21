@@ -4,7 +4,10 @@ use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::{open_existing_project, project_id};
-use crate::review_context::required_plans_missing_context_count;
+use crate::review_context::{
+    PlanReviewOwnerState, current_decomposition_plan_review_target,
+    required_plans_missing_context_count, resolve_decomposition_plan_review_owner,
+};
 
 use super::*;
 
@@ -202,46 +205,97 @@ pub fn implementation_ready(
         ));
     }
 
-    let review_state =
-        implementation_review_gate_state(&conn, project_id, version.design_version_id)?;
-    let decomposition_review_plan_count = required_review_plan_count(
+    let current_plan_reviews = current_decomposition_plan_review_state(
         &conn,
         project_id,
+        version.design_package_id,
         version.design_version_id,
-        "implementation-ready",
-        "design_task_decomposition",
     )?;
-    if decomposition_review_plan_count == 0 {
-        items.push(ImplementationReadyItem::fail(
-            "pre_implementation_reviews_clean",
-            Some(
-                "add a required implementation-ready design_task_decomposition review plan for this design version",
-            ),
-        ));
-    } else if review_state.incomplete_required_plan_count == 0
-        && review_state.missing_context_run_count == 0
-        && review_state.unresolved_finding_count == 0
+    if current_plan_reviews.total == 0 {
+        // The installed compatibility branch may still be materializing its
+        // matching Plan. Its ordinary review gate below remains authoritative.
+    } else if current_plan_reviews.applied == current_plan_reviews.total
+        && current_plan_reviews.accepted_clean == current_plan_reviews.total
     {
         items.push(ImplementationReadyItem::pass(
-            "pre_implementation_reviews_clean",
+            "current_decomposition_plans_reviewed",
             Some(format!(
-                "{} required plans, {} missing review-context runs, {} unresolved findings",
-                review_state.required_plan_count,
-                review_state.missing_context_run_count,
-                review_state.unresolved_finding_count
+                "{} current plans are applied with accepted exact reviews",
+                current_plan_reviews.total
             )),
         ));
     } else {
         items.push(ImplementationReadyItem::fail(
-            "pre_implementation_reviews_clean",
+            "current_decomposition_plans_reviewed",
             Some(format!(
-                "{} required plans, {} incomplete, {} missing review-context runs, {} unresolved findings",
-                review_state.required_plan_count,
-                review_state.incomplete_required_plan_count,
-                review_state.missing_context_run_count,
-                review_state.unresolved_finding_count
+                "{} current plans, {} applied, {} with accepted exact reviews",
+                current_plan_reviews.total,
+                current_plan_reviews.applied,
+                current_plan_reviews.accepted_clean
             )),
         ));
+    }
+    if current_plan_reviews.total > 0 {
+        let incomplete = current_plan_reviews.total - current_plan_reviews.accepted_clean;
+        if incomplete == 0 {
+            items.push(ImplementationReadyItem::pass(
+                "pre_implementation_reviews_clean",
+                Some(format!(
+                    "{} current exact decomposition reviews are owner-accepted clean",
+                    current_plan_reviews.total
+                )),
+            ));
+        } else {
+            items.push(ImplementationReadyItem::fail(
+                "pre_implementation_reviews_clean",
+                Some(format!(
+                    "{} current exact decomposition reviews, {} not owner-accepted clean",
+                    current_plan_reviews.total, incomplete
+                )),
+            ));
+        }
+    } else {
+        let review_state =
+            implementation_review_gate_state(&conn, project_id, version.design_version_id)?;
+        let decomposition_review_plan_count = required_review_plan_count(
+            &conn,
+            project_id,
+            version.design_version_id,
+            "implementation-ready",
+            "design_task_decomposition",
+        )?;
+        if decomposition_review_plan_count == 0 {
+            items.push(ImplementationReadyItem::fail(
+                "pre_implementation_reviews_clean",
+                Some(
+                    "add a required implementation-ready design_task_decomposition review plan for this design version",
+                ),
+            ));
+        } else if review_state.incomplete_required_plan_count == 0
+            && review_state.missing_context_run_count == 0
+            && review_state.unresolved_finding_count == 0
+        {
+            items.push(ImplementationReadyItem::pass(
+                "pre_implementation_reviews_clean",
+                Some(format!(
+                    "{} required plans, {} missing review-context runs, {} unresolved findings",
+                    review_state.required_plan_count,
+                    review_state.missing_context_run_count,
+                    review_state.unresolved_finding_count
+                )),
+            ));
+        } else {
+            items.push(ImplementationReadyItem::fail(
+                "pre_implementation_reviews_clean",
+                Some(format!(
+                    "{} required plans, {} incomplete, {} missing review-context runs, {} unresolved findings",
+                    review_state.required_plan_count,
+                    review_state.incomplete_required_plan_count,
+                    review_state.missing_context_run_count,
+                    review_state.unresolved_finding_count
+                )),
+            ));
+        }
     }
 
     let result = if items.iter().all(|item| item.result == "pass") {
@@ -262,6 +316,133 @@ pub fn implementation_ready(
         design_version_id: Some(version.design_version_id),
         items,
     })
+}
+
+/// Resolve the current design from one exact work owner and evaluate the same
+/// implementation-readiness contract used by the installed design form.
+pub fn implementation_ready_for_work(
+    root: &Path,
+    work_unit_id: i64,
+) -> Result<ImplementationReadyOutcome> {
+    let design_version_id = design_version_for_work(root, work_unit_id)?;
+    implementation_ready(
+        root,
+        ImplementationReadyCheck {
+            design_version_id: Some(design_version_id),
+        },
+    )
+}
+
+pub fn design_version_for_work(root: &Path, work_unit_id: i64) -> Result<i64> {
+    let conn = open_existing_project(root)?;
+    let project = project_id(&conn)?;
+    let work_exists: bool = conn.query_row(
+        "select exists(select 1 from work_units where id=?1 and project_id=?2)",
+        params![work_unit_id, project],
+        |row| row.get(0),
+    )?;
+    if !work_exists {
+        bail!("work unit {work_unit_id} not found in this project; next: agent-workbench status");
+    }
+    let mut stmt = conn.prepare(
+        r#"
+            select distinct candidate.design_version_id
+            from (
+                select plan.design_version_id
+                from decomposition_plans plan
+                join design_versions version on version.id=plan.design_version_id
+                join design_packages package on package.id=version.design_package_id
+                where plan.project_id=?1 and plan.work_unit_id=?2
+                  and plan.status != 'superseded'
+                  and package.current_design_version_id=plan.design_version_id
+                union
+                select checklist.design_version_id
+                from checklists checklist
+                join design_versions version on version.id=checklist.design_version_id
+                join design_packages package on package.id=version.design_package_id
+                where checklist.project_id=?1 and checklist.work_unit_id=?2
+                  and checklist.status in ('active','stale')
+                  and package.current_design_version_id=checklist.design_version_id
+            ) candidate
+            order by candidate.design_version_id
+            "#,
+    )?;
+    let candidates = stmt
+        .query_map(params![project, work_unit_id], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match candidates.as_slice() {
+        [design_version_id] => Ok(*design_version_id),
+        [] => bail!(
+            "work unit {work_unit_id} has no current design binding; next: agent-workbench status --work {work_unit_id}"
+        ),
+        _ => bail!(
+            "work unit {work_unit_id} has multiple current design bindings; next: agent-workbench status --work {work_unit_id}"
+        ),
+    }
+}
+
+struct CurrentPlanReviewState {
+    total: i64,
+    applied: i64,
+    accepted_clean: i64,
+}
+
+fn current_decomposition_plan_review_state(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    design_package_id: i64,
+    selected_design_version_id: i64,
+) -> Result<CurrentPlanReviewState> {
+    let mut statement = conn.prepare(
+        r#"
+        select plan.work_unit_id,plan.status
+        from decomposition_plans plan
+        join work_units work on work.id=plan.work_unit_id
+        where plan.project_id=?1 and plan.design_package_id=?2
+          and plan.status!='superseded' and plan.work_unit_id is not null
+          and work.status in ('open','blocked')
+          and not exists (
+            select 1
+            from decomposition_plans newer
+            where newer.project_id=plan.project_id
+              and newer.design_package_id=plan.design_package_id
+              and newer.work_unit_id=plan.work_unit_id
+              and newer.status!='superseded'
+              and (newer.revision>plan.revision
+                   or (newer.revision=plan.revision and newer.id>plan.id))
+          )
+        order by plan.work_unit_id
+        "#,
+    )?;
+    let plans = statement
+        .query_map(params![project_id, design_package_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut state = CurrentPlanReviewState {
+        total: plans.len() as i64,
+        applied: 0,
+        accepted_clean: 0,
+    };
+    for (work_unit_id, status) in plans {
+        if status == "applied" {
+            state.applied += 1;
+        }
+        let Some(target) = current_decomposition_plan_review_target(
+            conn,
+            project_id,
+            selected_design_version_id,
+            work_unit_id,
+        )?
+        else {
+            continue;
+        };
+        let owner = resolve_decomposition_plan_review_owner(conn, project_id, &target)?;
+        if owner.state == PlanReviewOwnerState::AcceptedClean {
+            state.accepted_clean += 1;
+        }
+    }
+    Ok(state)
 }
 
 pub(super) fn required_review_plan_count(
@@ -571,6 +752,7 @@ pub(super) fn count_stale_task_derivations(
         select count(*)
         from task_derivations td
         join design_requirements r on r.id = td.design_requirement_id
+        join tasks source_task on source_task.id = td.task_id
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
@@ -592,6 +774,21 @@ pub(super) fn count_stale_task_derivations(
               and ar.stale_record_id = td.id
               and ar.acceptance_type = 'stale_accepted'
               and ar.status = 'approved'
+          )
+          and not exists (
+            select 1
+            from task_derivations replacement
+            join design_requirements replacement_requirement
+              on replacement_requirement.id=replacement.design_requirement_id
+            join design_versions replacement_version
+              on replacement_version.id=replacement_requirement.design_version_id
+            join tasks replacement_task on replacement_task.id=replacement.task_id
+            where replacement.project_id=td.project_id
+              and replacement.status!='stale'
+              and replacement_version.status='approved'
+              and replacement_requirement.design_version_id=p.current_design_version_id
+              and replacement_requirement.requirement_key=r.requirement_key
+              and replacement_task.work_unit_id is source_task.work_unit_id
           )
         "#,
         params![design_package_id],
@@ -689,6 +886,24 @@ pub(super) fn count_stale_validation_gates(
               )
               and ar.acceptance_type = 'stale_accepted'
               and ar.status = 'approved'
+          )
+          and not exists (
+            select 1
+            from validation_gates replacement
+            join design_requirements replacement_requirement
+              on replacement_requirement.id=replacement.design_requirement_id
+            join design_versions replacement_version
+              on replacement_version.id=replacement_requirement.design_version_id
+            left join tasks source_task on source_task.id=vg.task_id
+            left join tasks replacement_task on replacement_task.id=replacement.task_id
+            where replacement.project_id=vg.project_id
+              and replacement.status!='stale'
+              and replacement_version.status='approved'
+              and replacement_requirement.design_version_id=p.current_design_version_id
+              and replacement_requirement.requirement_key=r.requirement_key
+              and replacement.gate_key=vg.gate_key
+              and coalesce(replacement.work_unit_id,replacement_task.work_unit_id,0)
+                  =coalesce(vg.work_unit_id,source_task.work_unit_id,0)
           )
         "#,
         params![design_package_id],

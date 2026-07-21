@@ -1,11 +1,30 @@
 mod apply;
+mod decomposition;
 mod lock;
+mod manual;
 mod plan;
 mod profile;
 mod recovery;
-mod schema;
+pub(crate) mod schema;
 mod source;
 pub(crate) mod status;
+pub(crate) use decomposition::materialize_decomposition_item;
+
+pub(crate) fn revise_canonical_task(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    task_id: i64,
+    details: &str,
+    outcome: &str,
+) -> anyhow::Result<i64> {
+    if let Some(revision) =
+        decomposition::revise_decomposition_task(conn, project_id, task_id, details, outcome)?
+    {
+        return Ok(revision);
+    }
+    manual::revise_manual_task(conn, project_id, task_id, outcome)
+}
+pub(crate) use manual::materialize_manual_task;
 
 use std::path::Path;
 

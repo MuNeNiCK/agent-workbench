@@ -1,18 +1,19 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::db::{StoredActivation, max_id, suspend_snapshot, suspended_activation};
+use crate::db::{StoredActivation, max_id, project_id, suspend_snapshot};
 
 use super::{close_repository::*, close_trace::*, forking::*, *};
 
-pub(super) fn evaluate_resume_ready(
+pub(super) fn evaluate_resume_ready_for(
     conn: &Connection,
+    work_unit_id: Option<i64>,
     maturity: &str,
 ) -> Result<ResumeGateEvaluation> {
     if !matches!(maturity, "basic" | "trace-aware" | "repo-aware") {
         bail!("unsupported maturity; use basic, trace-aware, or repo-aware");
     }
-    let target = suspended_activation(conn)?.context("no suspended activation to resume")?;
+    let target = resolve_suspended_activation(conn, work_unit_id)?;
     let snapshot = suspend_snapshot(conn, target.activation_id)?;
     let stack_revision = max_id(conn, "work_unit_events")?;
     let authority_high_watermark = max_id(conn, "authority_events")?;
@@ -390,6 +391,84 @@ pub(super) fn evaluate_resume_ready(
     })
 }
 
+fn resolve_suspended_activation(
+    conn: &Connection,
+    requested_work_unit_id: Option<i64>,
+) -> Result<StoredActivation> {
+    let project = project_id(conn)?;
+    if let Some(work_unit_id) = requested_work_unit_id {
+        let exists = conn.query_row(
+            "select exists(select 1 from work_units where id=?1 and project_id=?2)",
+            params![work_unit_id, project],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
+            bail!(
+                "resume target unresolved: work unit {work_unit_id} not found; next: agent-workbench status"
+            );
+        }
+    }
+    let mut stmt = conn.prepare(
+        r#"
+        select id,project_id,work_unit_id,stack_depth,status
+        from work_unit_activations
+        where project_id=?1 and status='suspended'
+          and (?2 is null or work_unit_id=?2)
+        order by work_unit_id,id
+        "#,
+    )?;
+    let candidates = stmt
+        .query_map(params![project, requested_work_unit_id], |row| {
+            Ok(StoredActivation {
+                activation_id: row.get(0)?,
+                project_id: row.get(1)?,
+                work_unit_id: row.get(2)?,
+                stack_depth: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match candidates.as_slice() {
+        [target] => Ok(StoredActivation {
+            activation_id: target.activation_id,
+            project_id: target.project_id,
+            work_unit_id: target.work_unit_id,
+            stack_depth: target.stack_depth,
+            status: target.status.clone(),
+        }),
+        [] => {
+            if let Some(work_unit_id) = requested_work_unit_id {
+                bail!(
+                    "resume target unresolved: work unit {work_unit_id} has no suspended activation; next: agent-workbench status --work {work_unit_id}"
+                )
+            }
+            bail!("no suspended activation to resume")
+        }
+        _ if requested_work_unit_id.is_some() => {
+            let work_unit_id = requested_work_unit_id.expect("checked above");
+            bail!(
+                "project integrity blocked: work unit {work_unit_id} has multiple suspended activations; next: agent-workbench status --work {work_unit_id}"
+            )
+        }
+        _ => {
+            let actions = candidates
+                .iter()
+                .map(|candidate| {
+                    format!(
+                        "next: agent-workbench resume-check {} --maturity trace-aware",
+                        candidate.work_unit_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!(
+                "resume target unresolved: {} suspended work owners require an explicit owner\n{actions}",
+                candidates.len()
+            )
+        }
+    }
+}
+
 pub(super) fn repository_state_revision_for_resume(conn: &Connection) -> Result<i64> {
     Ok([
         max_id(conn, "repository_snapshots")?,
@@ -560,6 +639,7 @@ pub(super) fn validation_close_state(
                     select vr.result
                     from validation_runs vr
                     where vr.validation_gate_id = vg.id
+                      and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
                     order by vr.id desc
                     limit 1
                 ) as latest_result,
@@ -568,6 +648,7 @@ pub(super) fn validation_close_state(
                     from validation_runs vr
                     left join acceptance_records run_ar on run_ar.id = vr.acceptance_record_id
                     where vr.validation_gate_id = vg.id
+                      and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
                       and (
                         (
                           run_ar.status = 'approved'
@@ -632,6 +713,7 @@ pub(super) fn validation_gate_blocker_details_for_work(
                     select vr.result
                     from validation_runs vr
                     where vr.validation_gate_id = vg.id
+                      and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
                     order by vr.id desc
                     limit 1
                 ) as latest_result,
@@ -640,6 +722,7 @@ pub(super) fn validation_gate_blocker_details_for_work(
                     from validation_runs vr
                     left join acceptance_records run_ar on run_ar.id = vr.acceptance_record_id
                     where vr.validation_gate_id = vg.id
+                      and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
                       and (
                         (
                           run_ar.status = 'approved'
@@ -902,8 +985,47 @@ pub(super) fn close_process_state(
         params![project_id],
         |row| row.get(0),
     )?;
+    let unsettled_repeated_correction_count = conn.query_row(
+        r#"
+        select count(*)
+        from user_corrections correction
+        where correction.project_id=?1 and correction.status='active'
+          and not exists (
+            select 1 from acceptance_records acceptance
+            where acceptance.project_id=correction.project_id
+              and acceptance.target_type='stale_record'
+              and acceptance.stale_record_type='user_correction'
+              and acceptance.stale_record_id=correction.id
+              and acceptance.status='approved'
+              and acceptance.acceptance_type in ('stale_accepted','explicit_exception')
+          )
+          and not exists (
+            select 1
+            from kpt_item_sources source
+            join kpt_items item on item.id=source.kpt_item_id
+            join kpt_reviews review on review.id=item.kpt_review_id
+            where review.project_id=correction.project_id
+              and source.source_kind='correction'
+              and source.source_identity=cast(correction.id as text)
+              and source.source_revision=correction.created_at
+              and item.status in ('converted','converted_to_task','dismissed')
+          )
+        "#,
+        params![project_id],
+        |row| row.get(0),
+    )?;
     let open_kpt_review_count = conn.query_row(
         "select count(*) from kpt_reviews where project_id = ?1 and status = 'open'",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let unsettled_kpt_item_count = conn.query_row(
+        r#"
+        select count(*)
+        from kpt_items item
+        join kpt_reviews review on review.id=item.kpt_review_id
+        where review.project_id=?1 and item.status in ('open','accepted')
+        "#,
         params![project_id],
         |row| row.get(0),
     )?;
@@ -922,36 +1044,15 @@ pub(super) fn close_process_state(
         params![project_id, work_unit_id],
         |row| row.get(0),
     )?;
-    let invalid_commit_message_count = conn.query_row(
-        r#"
-        select count(*)
-        from work_record_commits wrc
-        join work_records wr on wr.id = wrc.work_record_id
-        join git_commits gc on gc.id = wrc.git_commit_id
-        where wr.project_id = ?1
-          and wr.work_unit_id = ?2
-          and (
-              instr(gc.subject, ': ') = 0
-              or lower(gc.subject) = 'review'
-              or lower(gc.subject) like 'review:%'
-              or lower(gc.subject) like 'review %'
-              or lower(gc.subject) like '% review'
-              or lower(gc.subject) like '% review %'
-              or lower(gc.subject) glob '*' || char(112,104,97,115,101) || '[0-9]*'
-              or lower(gc.subject) glob '*' || char(112,104,97,115,101) || ' [0-9]*'
-          )
-        "#,
-        params![project_id, work_unit_id],
-        |row| row.get(0),
-    )?;
     Ok(CloseProcessState {
         applicable_rule_count,
         rule_conflict_count,
         fixed_command_count,
         missing_fixed_command_usage_count,
-        invalid_commit_message_count,
         repeated_correction_count,
+        unsettled_repeated_correction_count,
         open_kpt_review_count,
+        unsettled_kpt_item_count,
         work_record_count,
         work_record_evidence_link_count,
     })

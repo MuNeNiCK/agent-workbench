@@ -136,6 +136,14 @@ pub(super) fn review_plan_stage_state(
     work_unit_id: i64,
     stage: &str,
 ) -> Result<ReviewPlanStageState> {
+    Ok(review_plan_stage_projection(conn, work_unit_id, stage)?.0)
+}
+
+pub(super) fn review_plan_stage_projection(
+    conn: &Connection,
+    work_unit_id: i64,
+    stage: &str,
+) -> Result<(ReviewPlanStageState, Vec<String>)> {
     let mut stmt = conn.prepare(
         r#"
         select id, status, review_type, design_version_id, work_unit_id
@@ -143,6 +151,7 @@ pub(super) fn review_plan_stage_state(
         where work_unit_id = ?1
           and stage = ?2
           and required = 1
+          and status in ('open', 'blocked', 'clean', 'exhausted', 'needs_user_decision')
           and (
             design_version_id is null
             or exists (
@@ -171,6 +180,7 @@ pub(super) fn review_plan_stage_state(
         ))
     })?;
     let mut state = ReviewPlanStageState::default();
+    let mut details = Vec::new();
     for row in rows {
         let (review_plan_id, status, review_type, design_version_id, plan_work_unit_id) = row?;
         state.required_plan_count += 1;
@@ -178,7 +188,7 @@ pub(super) fn review_plan_stage_state(
         if status != "clean" && !accepted {
             state.incomplete_required_plan_count += 1;
         }
-        if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
+        let missing_context = if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
             && design_version_id.is_some()
             && !accepted
             && !review_plan_has_clean_context_run(
@@ -187,92 +197,41 @@ pub(super) fn review_plan_stage_state(
                 kind,
                 design_version_id,
                 plan_work_unit_id,
-            )?
-        {
+            )? {
             state.missing_context_run_count += 1;
-        }
-        if !accepted {
-            state.stale_target_count += stale_review_plan_target_count(conn, review_plan_id)?;
-        }
-    }
-    Ok(state)
-}
+            Some(kind)
+        } else {
+            None
+        };
+        let stale_targets = if accepted {
+            0
+        } else {
+            stale_review_plan_target_count(conn, review_plan_id)?
+        };
+        state.stale_target_count += stale_targets;
 
-pub(super) fn review_plan_blocker_details_for_stage(
-    conn: &Connection,
-    work_unit_id: i64,
-    stage: &str,
-) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        r#"
-        select id, status, review_type, design_version_id, work_unit_id
-        from review_plans
-        where work_unit_id = ?1
-          and stage = ?2
-          and required = 1
-          and (
-            design_version_id is null
-            or exists (
-              select 1
-              from task_derivations td
-              join design_requirements r on r.id=td.design_requirement_id
-              join design_versions v on v.id=r.design_version_id
-              join design_packages p on p.id=v.design_package_id
-              join tasks t on t.id=td.task_id
-              where r.design_version_id=review_plans.design_version_id
-                and t.work_unit_id=review_plans.work_unit_id
-                and td.status in ('active','stale')
-                and p.current_design_version_id=r.design_version_id
-            )
-          )
-        order by id
-        "#,
-    )?;
-    let rows = stmt.query_map(params![work_unit_id, stage], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, Option<i64>>(4)?,
-        ))
-    })?;
-    let mut details = Vec::new();
-    for row in rows {
-        let (review_plan_id, status, review_type, design_version_id, plan_work_unit_id) = row?;
-        if review_plan_accepted(conn, review_plan_id)? {
-            continue;
-        }
-        if status != "clean" {
-            details.push(format!(
-                "review_plan:{review_plan_id} type:{review_type} status:{status} design:{} incomplete",
-                format_optional_id(design_version_id)
-            ));
-        }
-        if let Some(kind) = review_context_kind_for_plan(stage, &review_type)
-            && design_version_id.is_some()
-            && !review_plan_has_clean_context_run(
-                conn,
-                review_plan_id,
-                kind,
-                design_version_id,
-                plan_work_unit_id,
-            )?
-        {
-            details.push(format!(
-                "review_plan:{review_plan_id} type:{review_type} missing_context:{kind} context_ref:review-context:{kind}:design={}:work={}",
-                format_optional_id(design_version_id),
-                format_optional_id(plan_work_unit_id)
-            ));
-        }
-        let stale_targets = stale_review_plan_target_count(conn, review_plan_id)?;
-        if stale_targets > 0 {
-            details.push(format!(
-                "review_plan:{review_plan_id} type:{review_type} stale_targets:{stale_targets}"
-            ));
+        if !accepted {
+            if status != "clean" {
+                details.push(format!(
+                    "review_plan:{review_plan_id} type:{review_type} status:{status} design:{} incomplete",
+                    format_optional_id(design_version_id)
+                ));
+            }
+            if let Some(kind) = missing_context {
+                details.push(format!(
+                    "review_plan:{review_plan_id} type:{review_type} missing_context:{kind} context_ref:review-context:{kind}:design={}:work={}",
+                    format_optional_id(design_version_id),
+                    format_optional_id(plan_work_unit_id)
+                ));
+            }
+            if stale_targets > 0 {
+                details.push(format!(
+                    "review_plan:{review_plan_id} type:{review_type} stale_targets:{stale_targets}"
+                ));
+            }
         }
     }
-    Ok(details)
+    Ok((state, details))
 }
 
 pub(super) fn review_plan_accepted(conn: &Connection, review_plan_id: i64) -> Result<bool> {

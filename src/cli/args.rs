@@ -19,7 +19,7 @@ pub(crate) use work::*;
 #[derive(Debug, Parser)]
 #[command(name = "agent-workbench")]
 #[command(about = "Structured local workbench for long-running coding-agent work")]
-#[command(version)]
+#[command(version, disable_help_subcommand = true)]
 pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) root: Option<PathBuf>,
@@ -32,16 +32,24 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Initialize managed project state.
-    Init,
+    Init {
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Inspect or restore versioned project state.
     Update {
         #[command(subcommand)]
         command: UpdateCommand,
     },
+    /// Run explicitly operator-scoped workflows.
+    Operator {
+        #[command(subcommand)]
+        command: OperatorCommand,
+    },
     /// Print public project status.
-    Status,
+    Status(StatusArgs),
     /// Print the next suggested action.
-    Next,
+    Next(NextArgs),
     /// Diagnose and repair supported compatibility problems.
     Doctor {
         #[command(subcommand)]
@@ -185,6 +193,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DecomposeCommand,
     },
+    /// Inspect, preview, and apply Decomposition Plans.
+    Decomposition {
+        #[command(subcommand)]
+        command: DecompositionCommand,
+    },
     /// List generated checklists.
     Checklist {
         #[command(subcommand)]
@@ -202,22 +215,72 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ExportCommand,
     },
+    /// Print help for a variadic route or one --route value.
+    Help(HelpArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct HelpArgs {
+    #[arg(value_name = "ROUTE_PART", conflicts_with = "route")]
+    pub(crate) route_parts: Vec<String>,
+    #[arg(long, conflicts_with = "route_parts")]
+    pub(crate) route: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum UpdateCommand {
     /// Print the current identity and available content-addressed backups.
     Inspect,
-    /// Apply the pending schema/state update after inspecting current identity.
+    /// Record project-local authority for one recovery choice.
+    AuthorityRecord(UpdateAuthorityRecordArgs),
+    /// Record one owner choice offered by an update inspection.
+    Decide(UpdateDecideArgs),
+    /// Apply the pending project update after inspecting current identity.
     Apply(UpdateApplyArgs),
     /// Atomically restore a verified content-addressed backup.
     Restore(UpdateRestoreArgs),
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct UpdateApplyArgs {
+pub(crate) struct UpdateAuthorityRecordArgs {
+    pub(crate) inspection_handle: String,
+    #[arg(long)]
+    pub(crate) choice: String,
+    #[arg(long)]
+    pub(crate) statement: String,
+    #[arg(long, value_parser = ["user_instruction"])]
+    pub(crate) provenance: String,
+    #[arg(long)]
+    pub(crate) provenance_ref: String,
     #[arg(long)]
     pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(clap::ArgGroup::new("authority_kind").required(true).multiple(false).args(["authority", "recovery_authority"])))]
+pub(crate) struct UpdateDecideArgs {
+    pub(crate) inspection_handle: String,
+    #[arg(long)]
+    pub(crate) choice: String,
+    #[arg(long)]
+    pub(crate) authority: Option<i64>,
+    #[arg(long)]
+    pub(crate) recovery_authority: Option<String>,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UpdateApplyArgs {
+    pub(crate) inspection_handle: Option<String>,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -226,4 +289,97 @@ pub(crate) struct UpdateRestoreArgs {
     pub(crate) backup: String,
     #[arg(long)]
     pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum OperatorCommand {
+    /// Assemble, publish, verify, and recover one release candidate owner.
+    Release {
+        #[command(subcommand)]
+        command: OperatorReleaseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum OperatorReleaseCommand {
+    /// Assemble or inspect candidate-local release bytes.
+    Candidate {
+        #[command(subcommand)]
+        command: OperatorReleaseCandidateCommand,
+    },
+    /// Create and push the exact annotated tag without overwriting remote history.
+    PublishSource(OperatorReleaseMutationArgs),
+    /// Create the remote release and publish only the inspected asset manifest.
+    PublishAssets(OperatorReleaseMutationArgs),
+    /// Download the complete remote asset set and verify its identities.
+    VerifyRemote(OperatorReleaseMutationArgs),
+    /// Probe an interrupted or conflicting external publication step.
+    Reconcile(OperatorReleaseMutationArgs),
+    /// Retry only the absent step selected by the candidate resolver.
+    Retry(OperatorReleaseMutationArgs),
+    /// Publish a non-destructive withdrawal notice and retain remote history.
+    Withdraw(OperatorReleaseAuthorityArgs),
+    /// Link an incomplete candidate to an explicitly authorized successor.
+    Supersede(OperatorReleaseSupersedeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum OperatorReleaseCandidateCommand {
+    /// Build and bind the complete candidate from the reviewed source commit.
+    Assemble(OperatorReleaseAssembleArgs),
+    /// Reinspect the assembled files and record local identity equality.
+    Inspect(OperatorReleaseMutationArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct OperatorReleaseAssembleArgs {
+    #[arg(long = "work")]
+    pub(crate) work_unit_id: Option<i64>,
+    #[arg(long)]
+    pub(crate) version: String,
+    #[arg(long = "commit")]
+    pub(crate) commit: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct OperatorReleaseMutationArgs {
+    pub(crate) candidate: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct OperatorReleaseAuthorityArgs {
+    pub(crate) candidate: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+    #[arg(long = "authority")]
+    pub(crate) authority_event_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct OperatorReleaseSupersedeArgs {
+    pub(crate) candidate: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+    #[arg(long)]
+    pub(crate) idempotency_key: String,
+    #[arg(long)]
+    pub(crate) by: String,
+    #[arg(long = "authority")]
+    pub(crate) authority_event_id: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }

@@ -8,31 +8,67 @@ use agent_workbench::*;
 pub(crate) fn handle_correction(root: &Path, command: CorrectionCommand) -> Result<()> {
     match command {
         CorrectionCommand::Add(args) => {
+            let (correction_type, pattern, correction, applies_to, severity) = match (
+                args.correction_type.as_deref(),
+                args.pattern.as_deref(),
+                args.correction.as_deref(),
+                args.source.as_deref(),
+                args.expected_change.as_deref(),
+            ) {
+                (Some(correction_type), Some(pattern), Some(correction), None, None) => (
+                    correction_type,
+                    pattern,
+                    correction,
+                    args.applies_to.as_deref().unwrap_or("project"),
+                    args.severity.as_deref().unwrap_or("medium"),
+                ),
+                (None, None, None, Some(source), Some(expected_change)) => (
+                    "process",
+                    source,
+                    expected_change,
+                    "project",
+                    args.severity.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "correction add --source requires explicit --severity and --expected-change"
+                        )
+                    })?,
+                ),
+                _ => anyhow::bail!(
+                    "correction add requires exactly the installed --type/--pattern/--correction form or the --source/--expected-change form"
+                ),
+            };
             let outcome = add_user_correction(
                 root,
                 NewUserCorrection {
                     scope: &args.scope,
-                    correction_type: &args.correction_type,
-                    mistake_pattern: &args.pattern,
-                    correction: &args.correction,
-                    applies_to: &args.applies_to,
-                    severity: &args.severity,
+                    correction_type,
+                    mistake_pattern: pattern,
+                    correction,
+                    applies_to,
+                    severity,
                 },
             )?;
             println!("added correction");
             println!("user_correction_id: {}", outcome.user_correction_id);
         }
         CorrectionCommand::List(args) => {
-            let records = list_user_corrections(root, args.scope.as_deref())?;
+            let records = list_user_corrections_filtered(
+                root,
+                UserCorrectionListFilter {
+                    scope: args.scope.as_deref(),
+                    status: args.status.as_deref().unwrap_or("active"),
+                },
+            )?;
             if records.is_empty() {
                 println!("no corrections");
             }
             for record in records {
                 println!(
-                    "{} [{}:{}] {} -> {}",
+                    "{} [{}:{}:{}] {} -> {}",
                     record.id,
                     record.scope,
                     record.severity,
+                    record.status,
                     record.mistake_pattern,
                     record.correction
                 );
@@ -179,14 +215,25 @@ pub(crate) fn handle_command(root: &Path, command: MemoryCommand) -> Result<()> 
             }
         },
         MemoryCommand::List(args) => {
-            let records = list_command_profiles(root, args.command_type.as_deref())?;
+            let records = list_command_profiles_filtered(
+                root,
+                CommandProfileListFilter {
+                    command_type: args.command_type.as_deref(),
+                    scope: args.scope.as_deref(),
+                },
+            )?;
             if records.is_empty() {
                 println!("no command profiles");
             }
             for record in records {
                 println!(
-                    "{} [{}:{}] {} = {}",
-                    record.id, record.command_type, record.status, record.name, record.command
+                    "{} [{}:{} scope={}] {} = {}",
+                    record.id,
+                    record.command_type,
+                    record.status,
+                    record.scope.as_deref().unwrap_or("-"),
+                    record.name,
+                    record.command
                 );
             }
         }
@@ -249,8 +296,22 @@ pub(crate) fn handle_rules(root: &Path, command: RulesCommand) -> Result<()> {
                     .acceptance_record_id
                     .map(|id| format!(" acceptance_record_id={id}"))
                     .unwrap_or_default();
+                let kpt_rule = record
+                    .kpt_rule_id
+                    .map(|id| format!(" kpt_rule_id={id}"))
+                    .unwrap_or_default();
+                let rule_title = record
+                    .title
+                    .as_ref()
+                    .map(|value| format!(" title={value:?}"))
+                    .unwrap_or_default();
+                let rule_body = record
+                    .body
+                    .as_ref()
+                    .map(|value| format!(" body={value:?}"))
+                    .unwrap_or_default();
                 println!(
-                    "{} [{}:{} precedence={}]{}{}{}{}{}{}{}{}{}{}",
+                    "{} [{}:{} precedence={}]{}{}{}{}{}{}{}{}{}{}{}{}{}",
                     record.id,
                     record.rule_source_type,
                     record.scope_type,
@@ -264,6 +325,9 @@ pub(crate) fn handle_rules(root: &Path, command: RulesCommand) -> Result<()> {
                     work_unit,
                     validation_gate,
                     acceptance_record,
+                    kpt_rule,
+                    rule_title,
+                    rule_body,
                     shadowed
                 );
             }

@@ -42,11 +42,16 @@ pub fn apply_correction_transition(
         .optional()?
         .context("registered correction transition token not found")?;
     let declared_stale = matches!(operation.as_str(), "stale-accept" | "stale-close");
+    let design_recovery = matches!(
+        operation.as_str(),
+        "design-decompose" | "design-reconcile" | "decomposition-plan-reconcile"
+    );
     let selected_stale = crate::traceability::selected_stale_record_in(&tx, project_id)?;
     let matches_selected_stale = selected_stale
         .as_ref()
         .is_some_and(|(kind, id)| target == format!("{kind}/{id}"));
     if let Some((kind, id)) = selected_stale.as_ref()
+        && !design_recovery
         && (!declared_stale || !matches_selected_stale)
     {
         bail!("stale {kind}:{id} is the selected transition");
@@ -55,10 +60,12 @@ pub fn apply_correction_transition(
         let exact_stale_apply = format!(
             "agent-workbench closure transition apply {closure_id} --token {token_ordinal}"
         );
-        if !(blocker.kind == "stale_design"
-            && declared_stale
-            && matches_selected_stale
-            && blocker.next_action == exact_stale_apply)
+        let design_recovery = blocker.kind == "stale_design" && design_recovery;
+        if !(design_recovery
+            || blocker.kind == "stale_design"
+                && declared_stale
+                && matches_selected_stale
+                && blocker.next_action == exact_stale_apply)
         {
             bail!(
                 "closure transition apply is not the selected action; next: {}",
@@ -178,12 +185,18 @@ pub fn apply_correction_transition(
     let before_state = transition_state_snapshot(&tx, work_unit_id)?;
     let mut completion_inheritances = Vec::new();
     let result_ref = match operation.as_str() {
+        "decomposition-plan-reconcile" => {
+            let (design, work, plan_path) = parse_decomposition_reconciliation_target(&target)?;
+            bail!(
+                "decomposition-plan-reconcile requires its authorized Plan; use: agent-workbench decomposition reconcile {design} --work {work} --plan {plan_path} --closure {closure_id} --expected-current <identity>"
+            )
+        }
         "design-decompose" => {
             let (design, work) = parse_pair(&target)?;
             if work != work_unit_id {
                 bail!("design-decompose target work unit does not own the correction")
             }
-            if design_version_id != Some(design) {
+            if !correction_design_accepts(&tx, design_version_id, design)? {
                 bail!("design-decompose target design is outside the correction review plan")
             }
             let outcome = crate::traceability::decompose_design_in(
@@ -204,7 +217,7 @@ pub fn apply_correction_transition(
             let design = parts[0].parse::<i64>()?;
             let work = parts[1].parse::<i64>()?;
             let checklist = parts[2].parse::<i64>()?;
-            if work != work_unit_id || design_version_id != Some(design) {
+            if work != work_unit_id || !correction_design_accepts(&tx, design_version_id, design)? {
                 bail!("design-reconcile target is outside the correction owner or design")
             }
             let outcome = crate::traceability::reconcile_design_in(
@@ -223,7 +236,7 @@ pub fn apply_correction_transition(
                 design_version_id,
                 &target,
             )?;
-            let outcome = if target.starts_with("@task/") {
+            let outcome = if decode_opaque_task_ref(&target)?.is_some() {
                 crate::planning::accept_task_out_of_scope_in(
                     &tx,
                     project_id,
@@ -258,7 +271,7 @@ pub fn apply_correction_transition(
             if work != work_unit_id {
                 bail!("phase-create target work unit does not own the correction")
             }
-            if design_version_id != Some(design) {
+            if !correction_design_accepts(&tx, design_version_id, design)? {
                 bail!("phase-create target design is outside the correction review plan")
             }
             let outcome = crate::phases::create_phase_in(
@@ -290,7 +303,7 @@ pub fn apply_correction_transition(
                 design_version_id,
                 task_ref,
             )?;
-            if let Some(requirement_key) = task_ref.strip_prefix("@task/") {
+            if let Some(requirement_key) = decode_opaque_task_ref(task_ref)? {
                 tx.execute(
                     r#"
                     delete from work_phase_task_memberships

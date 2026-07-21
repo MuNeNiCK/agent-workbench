@@ -432,6 +432,197 @@ fn close_ready_requires_required_close_plans_to_be_clean() {
 }
 
 #[test]
+fn close_ready_ignores_retained_superseded_review_history_with_a_bounded_projection() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "bounded close review projection", None).unwrap();
+    record_close_prerequisites(temp.path(), &work);
+    record_clean_repository_snapshot(temp.path(), &work);
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "retained coverage projection",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("accepted coverage remains current"),
+        },
+    )
+    .unwrap();
+    let design = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "bounded-close-history",
+            title: "Bounded Close History",
+        },
+    )
+    .unwrap();
+    fs::write(
+        design.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Retain current coverage", "high"),
+    )
+    .unwrap();
+    let imported = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &design.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: imported.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: None,
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
+    let coverage = add_coverage_item(
+        temp.path(),
+        NewCoverageItem {
+            design_version_id: imported.design_version_id,
+            requirement_key: "REQ-001",
+            review_scope_id: None,
+            work_unit_id: None,
+            task_id: Some(task.task_id),
+            requirement: "coverage is explicitly out of scope",
+            runtime_boundary_evidence: None,
+            ux_boundary_evidence: None,
+            lifecycle_boundary_evidence: None,
+            tests_or_gates: None,
+            missing_or_unverified: Some("not applicable"),
+            status: "partial",
+        },
+    )
+    .unwrap();
+    let current = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let authority_event_id = approval_authority_event(temp.path());
+
+    let mut conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let review_policy_id: i64 = conn
+        .query_row(
+            "select review_policy_id from review_plans where id = ?1",
+            params![current.review_plan_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut first_historical_plan_id = None;
+    for ordinal in 0..512 {
+        tx.execute(
+            r#"
+            insert into review_plans(
+                project_id, work_unit_id, review_type, required, stage, scope,
+                clean_condition, stop_condition, review_policy_id, status, created_at
+            ) values(1, ?1, 'implementation_review', 1, 'close-ready', ?2,
+                     'clean', 'block', ?3, 'not_required', current_timestamp)
+            "#,
+            params![
+                work.work_unit_id,
+                format!("retained historical plan {ordinal}"),
+                review_policy_id
+            ],
+        )
+        .unwrap();
+        let historical_plan_id = tx.last_insert_rowid();
+        first_historical_plan_id.get_or_insert(historical_plan_id);
+        tx.execute(
+            r#"
+            insert into review_plan_targets(review_plan_id, target_type, work_unit_id)
+            values(?1, 'work_unit', ?2)
+            "#,
+            params![historical_plan_id, work.work_unit_id],
+        )
+        .unwrap();
+        tx.execute(
+            r#"
+            insert into acceptance_records(
+                project_id, target_type, review_plan_id, acceptance_type, reason, scope,
+                created_by, status, approved_by_authority_event_id, approved_at, created_at,
+                review_impact
+            ) values(1, 'review_plan', ?1, 'stale_accepted', 'superseded',
+                     'review-plan-supersession', 'user', 'approved', ?2,
+                     current_timestamp, current_timestamp, ?3)
+            "#,
+            params![
+                historical_plan_id,
+                authority_event_id,
+                format!("superseded_by_review_plan:{}", current.review_plan_id)
+            ],
+        )
+        .unwrap();
+    }
+    tx.execute(
+        "update tasks set status = 'closed', closed_by_commit = 'abc123' where id = ?1",
+        params![task.task_id],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(conn);
+    accept_design_exception(
+        temp.path(),
+        NewDesignExceptionAcceptance {
+            design_version_id: Some(imported.design_version_id),
+            design_package: None,
+            target: &format!("coverage:{}", coverage.coverage_item_id),
+            acceptance_type: "accepted_out_of_scope",
+            reason: "coverage is outside this work's runtime boundary",
+            approval_authority_event_id: authority_event_id,
+        },
+    )
+    .unwrap();
+
+    let first = close_ready(temp.path()).unwrap();
+    let second = close_ready(temp.path()).unwrap();
+
+    assert_eq!(first, second);
+    let review = first
+        .items
+        .iter()
+        .find(|item| item.name == "review_plans_clean")
+        .unwrap();
+    assert!(review.details.starts_with("1 required close-ready plans"));
+    assert!(
+        review
+            .details
+            .contains(&format!("review_plan:{}", current.review_plan_id))
+    );
+    assert!(!review.details.contains(&format!(
+        "review_plan:{}",
+        first_historical_plan_id.unwrap()
+    )));
+    let trace = first
+        .items
+        .iter()
+        .find(|item| item.name == "design_trace_closed")
+        .unwrap();
+    assert!(trace.details.contains("0 missing task coverage"));
+    assert!(trace.details.contains("0 missing requirement coverage"));
+}
+
+#[test]
 fn close_ready_requires_close_repository_comparisons_for_changed_snapshots() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -730,7 +921,7 @@ fn close_ready_ignores_interrupted_child_repository_snapshots_as_baseline() {
 }
 
 #[test]
-fn close_ready_blocks_invalid_linked_commit_messages() {
+fn linked_commit_subject_vocabulary_does_not_affect_close_readiness() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "commit policy work", None).unwrap();
@@ -784,43 +975,46 @@ fn close_ready_blocks_invalid_linked_commit_messages() {
 
     let allowed = close_ready(temp.path()).unwrap();
 
-    let invalid = add_git_commit(
-        temp.path(),
-        NewGitCommit {
-            repository: "main",
-            commit_sha: "def456",
-            short_sha: Some("def456"),
-            subject: Some("fix: review feedback"),
-            author_name: None,
-            author_email: None,
-            committed_at: None,
-            parent_shas: None,
-        },
-    )
-    .unwrap();
-    add_work_record_git_commit(
-        temp.path(),
-        NewWorkRecordGitCommit {
-            work_record_id: record.work_record_id,
-            git_commit_id: Some(invalid.git_commit_id),
-            commit_sha: "def456",
-            role: "created",
-            note: None,
-        },
-    )
-    .unwrap();
-    let blocked = close_ready(temp.path()).unwrap();
+    for (sha, subject) in [
+        ("def456", "review"),
+        ("ghi789", "Phase 42 review: 日本語の目的を記録"),
+    ] {
+        let commit = add_git_commit(
+            temp.path(),
+            NewGitCommit {
+                repository: "main",
+                commit_sha: sha,
+                short_sha: Some(sha),
+                subject: Some(subject),
+                author_name: None,
+                author_email: None,
+                committed_at: None,
+                parent_shas: None,
+            },
+        )
+        .unwrap();
+        add_work_record_git_commit(
+            temp.path(),
+            NewWorkRecordGitCommit {
+                work_record_id: record.work_record_id,
+                git_commit_id: Some(commit.git_commit_id),
+                commit_sha: sha,
+                role: "created",
+                note: None,
+            },
+        )
+        .unwrap();
+    }
+    let after = close_ready(temp.path()).unwrap();
 
+    assert_eq!(allowed.result, after.result);
     assert!(
-        allowed
+        after
             .items
             .iter()
-            .any(|item| item.name == "commit_messages_checked" && item.result == "pass")
+            .all(|item| item.name != "commit_messages_checked")
     );
-    assert!(
-        blocked
-            .items
-            .iter()
-            .any(|item| item.name == "commit_messages_checked" && item.result == "fail")
-    );
+    assert!(after.items.iter().any(|item| {
+        item.name == "work_record_recorded" && item.details.contains("3 linked evidence rows")
+    }));
 }

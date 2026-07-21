@@ -4,11 +4,12 @@ use std::path::Path;
 use anyhow::Result;
 
 use agent_workbench::{
-    ValidationLinkChange, diagnose_validation_links, list_validation_link_audit,
-    repair_validation_links_with_backup_notice,
+    ValidationLinkArtifactOutcome, ValidationLinkChange, diagnose_validation_link,
+    diagnose_validation_links, list_validation_link_audit, repair_validation_link,
+    repair_validation_links_with_backup_notice, retire_validation_link,
 };
 
-use super::args::{DoctorCommand, DoctorValidationLinksArgs};
+use super::args::{DoctorCommand, DoctorValidationLinkCommand, DoctorValidationLinksArgs};
 
 pub(crate) fn handle(root: &Path, command: DoctorCommand) -> Result<()> {
     match command {
@@ -17,6 +18,29 @@ pub(crate) fn handle(root: &Path, command: DoctorCommand) -> Result<()> {
 }
 
 fn handle_validation_links(root: &Path, args: DoctorValidationLinksArgs) -> Result<()> {
+    if let Some(command) = args.command {
+        if args.artifact.is_some() || args.dry_run || args.repair || args.audit {
+            anyhow::bail!(
+                "validation_link_mode_conflict: explicit repair/retire cannot be combined with diagnosis or compatibility flags"
+            );
+        }
+        let outcome = match command {
+            DoctorValidationLinkCommand::Repair(input) => repair_validation_link(
+                root,
+                &input.artifact_ref,
+                input.project,
+                &input.expected_current,
+            )?,
+            DoctorValidationLinkCommand::Retire(input) => retire_validation_link(
+                root,
+                &input.artifact_ref,
+                &input.reason,
+                &input.expected_current,
+            )?,
+        };
+        print_artifact_outcome(&outcome);
+        return Ok(());
+    }
     if args.audit {
         let runs = list_validation_link_audit(root)?;
         println!("validation_link_repair_runs: {}", runs.len());
@@ -72,7 +96,10 @@ fn handle_validation_links(root: &Path, args: DoctorValidationLinksArgs) -> Resu
     }
 
     let _explicit_dry_run = args.dry_run;
-    let diagnosis = diagnose_validation_links(root)?;
+    let diagnosis = match args.artifact.as_deref() {
+        Some(artifact) => diagnose_validation_link(root, artifact)?,
+        None => diagnose_validation_links(root)?,
+    };
     println!("dry_run: true");
     if diagnosis.runs.is_empty() {
         println!("validation_links: clean");
@@ -84,12 +111,23 @@ fn handle_validation_links(root: &Path, args: DoctorValidationLinksArgs) -> Resu
     println!("repairable: {}", diagnosis.repairable);
     for run in diagnosis.runs {
         println!("validation_run_id: {}", run.validation_run_id);
+        println!("artifact: {}", run.artifact_ref);
+        if let Some(project) = run.expected_project_id {
+            println!("expected_project: {project}");
+        }
+        println!("expected_current: {}", run.current_revision);
         println!("run_repairable: {}", run.repairable);
         for reason in run.reasons {
             println!("reason: {reason}");
         }
         for change in &run.changes {
             print_change(change);
+        }
+        if !run.repairable {
+            println!("required_input: reason");
+        }
+        for action in run.legal_actions {
+            println!("next: {action}");
         }
     }
     if diagnosis.repairable {
@@ -100,6 +138,24 @@ fn handle_validation_links(root: &Path, args: DoctorValidationLinksArgs) -> Resu
         );
     }
     Ok(())
+}
+
+fn print_artifact_outcome(outcome: &ValidationLinkArtifactOutcome) {
+    println!("artifact: {}", outcome.artifact_ref);
+    println!("validation_run_id: {}", outcome.validation_run_id);
+    println!("operation: {}", outcome.operation);
+    println!("result_current: {}", outcome.result_current);
+    if let Some(repair) = outcome.repair_run_id {
+        println!("repair_run_id: {repair}");
+    }
+    if let Some(retirement) = outcome.retirement_id {
+        println!("retirement_id: {retirement}");
+    }
+    if let Some(backup) = &outcome.backup_path {
+        println!("backup: {}", backup.display());
+    }
+    println!("idempotent: {}", outcome.idempotent);
+    println!("next: agent-workbench status");
 }
 
 fn print_change(change: &ValidationLinkChange) {

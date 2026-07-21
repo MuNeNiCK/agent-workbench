@@ -75,48 +75,55 @@ pub fn classify_finding(
     finding_id: i64,
     classification: &str,
 ) -> Result<FindingClassificationOutcome> {
+    if !matches!(
+        classification,
+        "unclassified" | "invalid" | "valid" | "design_conflict" | "needs_evidence"
+    ) {
+        bail!(
+            "code: classification_unknown\nsupplied: {classification}\nallowed: unclassified,invalid,valid,design_conflict,needs_evidence\nnext: agent-workbench finding classify --help"
+        );
+    }
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let current_status: String = tx
+    let (current_status, current_classification): (String, String) = tx
         .query_row(
-            "select status from findings where id = ?1 and project_id = ?2",
+            "select status,classification from findings where id = ?1 and project_id = ?2",
             params![finding_id, project_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
         .context("finding not found")?;
     ensure_review_finding_target(&tx, finding_id, "finding classify")?;
-    if let Some(blocker) = current_phase_blocker(&tx)? {
-        let expected = format!("agent-workbench finding classify {finding_id}");
-        if !blocker.next_action.starts_with(&expected) {
-            bail!(
-                "finding classify is not selected; next: {}",
-                blocker.next_action
-            );
-        }
+    if current_classification == classification {
+        return Ok(FindingClassificationOutcome {
+            finding_id,
+            classification: current_classification,
+            status: current_status,
+            existing: true,
+        });
     }
     if matches!(current_status.as_str(), "closed" | "accepted_out_of_scope") {
-        bail!("terminal finding cannot be reclassified without an explicit authority transition");
-    }
-    let current_classification: String = tx.query_row(
-        "select classification from findings where id = ?1 and project_id = ?2",
-        params![finding_id, project_id],
-        |row| row.get(0),
-    )?;
-    if current_classification == classification {
-        return Ok(FindingClassificationOutcome { finding_id });
+        bail!(
+            "code: finding_terminal\nstatus: {current_status}\nnext: agent-workbench finding reopen --help"
+        );
     }
     if current_classification == "valid" && classification != "valid" {
         bail!(
-            "a valid finding cannot be reclassified to bypass closure, remediation, and verification"
+            "code: classification_change_forbidden\ncurrent: valid\nsupplied: {classification}\nnext: agent-workbench closure add --help"
         );
+    }
+    if let Some(blocker) = current_phase_blocker(&tx)? {
+        let expected = format!("agent-workbench finding classify {finding_id}");
+        if !blocker.next_action.starts_with(&expected) {
+            bail!("code: finding_not_selected\nnext: {}", blocker.next_action);
+        }
     }
     let status = match classification {
         "invalid" => "closed",
         "valid" => "open",
         "design_conflict" | "needs_evidence" | "unclassified" => "open",
-        _ => bail!("invalid finding classification"),
+        _ => unreachable!("the classification enum was checked before opening the project"),
     };
     let changed = tx.execute(
         r#"
@@ -136,7 +143,12 @@ pub fn classify_finding(
     )?;
     refresh_plan_for_run(&tx, project_id, review_run_id)?;
     tx.commit()?;
-    Ok(FindingClassificationOutcome { finding_id })
+    Ok(FindingClassificationOutcome {
+        finding_id,
+        classification: classification.to_string(),
+        status: status.to_string(),
+        existing: false,
+    })
 }
 
 pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome> {
@@ -159,12 +171,7 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
         .optional()?
         .context("finding not found")?;
     ensure_review_finding_target(&tx, finding.id, "closure add")?;
-    if let Some(blocker) = current_phase_blocker(&tx)? {
-        let expected = format!("agent-workbench closure add --finding {}", finding.id);
-        if !blocker.next_action.starts_with(&expected) {
-            bail!("closure add is not selected; next: {}", blocker.next_action);
-        }
-    }
+    let blocker = current_phase_blocker(&tx)?;
     if finding.classification != "valid" {
         bail!("closure requires a valid finding");
     }
@@ -182,6 +189,13 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
         );
     }
     let eligible = finding_is_remediation_eligible(&tx, project_id, finding.id)?;
+    if let Some(blocker) = blocker {
+        let expected = format!("agent-workbench closure add --finding {}", finding.id);
+        let stale_source_recovery = !eligible && blocker.kind == "stale_design";
+        if !blocker.next_action.starts_with(&expected) && !stale_source_recovery {
+            bail!("closure add is not selected; next: {}", blocker.next_action);
+        }
+    }
     if eligible {
         require_text(
             input.affected_surfaces,
@@ -270,15 +284,7 @@ pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginO
             selected_active_closure.unwrap()
         );
     }
-    if let Some(blocker) = current_phase_blocker(&tx)? {
-        let expected = format!("agent-workbench closure correction-begin {closure_id}");
-        if blocker.next_action != expected {
-            bail!(
-                "closure correction-begin is not the selected action; next: {}",
-                blocker.next_action
-            );
-        }
-    }
+    let blocker = current_phase_blocker(&tx)?;
     let (finding_id, surfaces, eligible, design_root): (i64, String, bool, Option<String>) = tx
         .query_row(
             r#"
@@ -302,6 +308,15 @@ pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginO
         .context("registered correction closure not found")?;
     if eligible {
         bail!("implementation findings use agent-workbench work remediate");
+    }
+    if let Some(blocker) = blocker {
+        let expected = format!("agent-workbench closure correction-begin {closure_id}");
+        if blocker.next_action != expected && blocker.kind != "stale_design" {
+            bail!(
+                "closure correction-begin is not the selected action; next: {}",
+                blocker.next_action
+            );
+        }
     }
     if let Some(session_id) = tx
         .query_row(

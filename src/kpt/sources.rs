@@ -3,28 +3,39 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::*;
 
-pub(super) fn convertible_kpt_item(
-    conn: &rusqlite::Connection,
+pub(super) fn existing_kpt_conversion(
+    conn: &Connection,
     kpt_item_id: i64,
-) -> Result<StoredKptItem> {
+) -> Result<Option<ExistingKptConversion>> {
     conn.query_row(
         r#"
-        select id, title, details, proposed_action
-        from kpt_items
-        where id = ?1 and status in ('open', 'accepted')
+        select id,target_type,kpt_rule_id,task_id,command_profile_id,review_policy_id,
+               design_version_id,decision_id,user_correction_id,item_revision,
+               predecessor_handle,request_identity,receipt_identity,current_handle
+        from kpt_item_conversions where kpt_item_id=?1
         "#,
         params![kpt_item_id],
         |row| {
-            Ok(StoredKptItem {
+            Ok(ExistingKptConversion {
                 id: row.get(0)?,
-                title: row.get(1)?,
-                details: row.get(2)?,
-                proposed_action: row.get(3)?,
+                target_type: row.get(1)?,
+                kpt_rule_id: row.get(2)?,
+                task_id: row.get(3)?,
+                command_profile_id: row.get(4)?,
+                review_policy_id: row.get(5)?,
+                design_version_id: row.get(6)?,
+                decision_id: row.get(7)?,
+                user_correction_id: row.get(8)?,
+                item_revision: row.get(9)?,
+                predecessor_handle: row.get(10)?,
+                request_identity: row.get(11)?,
+                receipt_identity: row.get(12)?,
+                current_handle: row.get(13)?,
             })
         },
     )
-    .optional()?
-    .context("kpt item not found or not convertible")
+    .optional()
+    .map_err(Into::into)
 }
 
 pub(super) fn ensure_fixed_command_authority(
@@ -53,13 +64,21 @@ pub(super) fn ensure_fixed_command_authority(
 }
 
 pub(super) fn latest_open_kpt_review(conn: &rusqlite::Connection) -> Result<i64> {
-    conn.query_row(
-        "select id from kpt_reviews where status = 'open' order by id desc limit 1",
-        [],
-        |row| row.get::<_, i64>(0),
-    )
-    .optional()?
-    .context("no open kpt review; run kpt start first")
+    let reviews = conn
+        .prepare("select id from kpt_reviews where status='open' order by id")?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match reviews.as_slice() {
+        [review_id] => Ok(*review_id),
+        [] => bail!("no open kpt review; run agent-workbench kpt start first"),
+        _ => bail!(
+            "multiple open KPT reviews; select one explicitly{}",
+            reviews
+                .iter()
+                .map(|id| format!("\nnext: agent-workbench kpt item list --review {id}"))
+                .collect::<String>()
+        ),
+    }
 }
 
 pub(super) fn parse_kpt_sources(input: Option<&str>) -> Result<Vec<KptSource>> {
@@ -98,7 +117,7 @@ pub(super) fn import_findings_as_kpt_items(
     let sql = match period_modifier {
         Some(_) => {
             r#"
-            select id, finding_type, severity, description, classification, status
+            select id, finding_type, severity, description, classification, status, created_at
             from findings
             where project_id = ?1
               and status = 'open'
@@ -108,7 +127,7 @@ pub(super) fn import_findings_as_kpt_items(
         }
         None => {
             r#"
-            select id, finding_type, severity, description, classification, status
+            select id, finding_type, severity, description, classification, status, created_at
             from findings
             where project_id = ?1
               and status = 'open'
@@ -148,6 +167,13 @@ pub(super) fn import_findings_as_kpt_items(
                 "classify, close, or convert this review finding",
             ],
         )?;
+        insert_kpt_item_source(
+            conn,
+            conn.last_insert_rowid(),
+            "finding",
+            finding.id,
+            &finding.created_at,
+        )?;
         count += 1;
     }
     Ok(count)
@@ -161,6 +187,7 @@ pub(super) fn stored_finding_record(row: &rusqlite::Row<'_>) -> rusqlite::Result
         description: row.get(3)?,
         classification: row.get(4)?,
         status: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }
 
@@ -195,6 +222,13 @@ pub(super) fn import_corrections_as_kpt_items(
                 correction.correction,
             ],
         )?;
+        insert_kpt_item_source(
+            conn,
+            conn.last_insert_rowid(),
+            "correction",
+            correction.id,
+            &correction.created_at,
+        )?;
     }
 
     Ok(corrections.len() as i64)
@@ -211,7 +245,7 @@ pub(super) fn import_commands_as_kpt_items(
         Some(period_modifier) => {
             let mut stmt = conn.prepare(
                 r#"
-                select d.id, d.command_profile_id, p.name, d.reason, d.status
+                select d.id, d.command_profile_id, p.name, d.reason, d.status, d.created_at
                 from command_deviations d
                 join command_profiles p on p.id = d.command_profile_id
                 where p.project_id = ?1 and d.created_at >= datetime('now', ?2)
@@ -227,7 +261,7 @@ pub(super) fn import_commands_as_kpt_items(
         None => {
             let mut stmt = conn.prepare(
                 r#"
-                select d.id, d.command_profile_id, p.name, d.reason, d.status
+                select d.id, d.command_profile_id, p.name, d.reason, d.status, d.created_at
                 from command_deviations d
                 join command_profiles p on p.id = d.command_profile_id
                 where p.project_id = ?1
@@ -263,6 +297,13 @@ pub(super) fn import_commands_as_kpt_items(
                 "decide whether to update, keep, or deprecate this command profile",
             ],
         )?;
+        insert_kpt_item_source(
+            conn,
+            conn.last_insert_rowid(),
+            "command-drift",
+            record.id,
+            &record.created_at,
+        )?;
     }
 
     Ok(records.len() as i64)
@@ -279,7 +320,7 @@ pub(super) fn import_review_runs_as_kpt_items(
             r#"
             select id, review_plan_id, run_type, run_purpose, status,
                    new_findings_count, carried_findings_checked, clean_run,
-                   coalesce(result_summary, '')
+                   coalesce(result_summary, ''), created_at
             from review_runs
             where project_id = ?1
               and created_at >= datetime('now', ?2)
@@ -291,7 +332,7 @@ pub(super) fn import_review_runs_as_kpt_items(
             r#"
             select id, review_plan_id, run_type, run_purpose, status,
                    new_findings_count, carried_findings_checked, clean_run,
-                   coalesce(result_summary, '')
+                   coalesce(result_summary, ''), created_at
             from review_runs
             where project_id = ?1
               and (status != 'completed' or clean_run = 0 or new_findings_count > 0)
@@ -341,6 +382,13 @@ pub(super) fn import_review_runs_as_kpt_items(
                 "classify the review outcome and adjust tasks, policy, or design if needed",
             ],
         )?;
+        insert_kpt_item_source(
+            conn,
+            conn.last_insert_rowid(),
+            "review-outcome",
+            record.id,
+            &record.created_at,
+        )?;
     }
     Ok(records.len() as i64)
 }
@@ -354,7 +402,7 @@ pub(super) fn import_work_records_as_kpt_items(
     let sql = match period_modifier {
         Some(_) => {
             r#"
-            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
+            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, ''), r.created_at
             from work_records r
             where r.project_id = ?1
               and r.created_at >= datetime('now', ?2)
@@ -364,7 +412,7 @@ pub(super) fn import_work_records_as_kpt_items(
         }
         None => {
             r#"
-            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, '')
+            select r.id, r.topic, coalesce(r.next_actions, ''), coalesce(r.notable_operations, ''), r.created_at
             from work_records r
             where r.project_id = ?1
               and (coalesce(r.next_actions, '') != '' or coalesce(r.notable_operations, '') != '')
@@ -403,6 +451,13 @@ pub(super) fn import_work_records_as_kpt_items(
                 "convert unresolved next actions into tasks or decisions",
             ],
         )?;
+        insert_kpt_item_source(
+            conn,
+            conn.last_insert_rowid(),
+            "work-outcome",
+            record.id,
+            &record.created_at,
+        )?;
     }
     Ok(records.len() as i64)
 }
@@ -418,7 +473,7 @@ pub(super) fn corrections_for_kpt(
         (Some(scope), Some(period_modifier)) => {
             let mut stmt = conn.prepare(
                 r#"
-                select id, scope, correction_type, mistake_pattern, correction, severity
+                select id, scope, correction_type, mistake_pattern, correction, severity, created_at
                 from user_corrections
                 where project_id = ?1
                   and status = 'active'
@@ -438,7 +493,7 @@ pub(super) fn corrections_for_kpt(
         (Some(scope), None) => {
             let mut stmt = conn.prepare(
                 r#"
-                select id, scope, correction_type, mistake_pattern, correction, severity
+                select id, scope, correction_type, mistake_pattern, correction, severity, created_at
                 from user_corrections
                 where project_id = ?1 and status = 'active' and scope = ?2
                 order by id
@@ -452,7 +507,7 @@ pub(super) fn corrections_for_kpt(
         (None, Some(period_modifier)) => {
             let mut stmt = conn.prepare(
                 r#"
-                select id, scope, correction_type, mistake_pattern, correction, severity
+                select id, scope, correction_type, mistake_pattern, correction, severity, created_at
                 from user_corrections
                 where project_id = ?1
                   and status = 'active'
@@ -471,7 +526,7 @@ pub(super) fn corrections_for_kpt(
         (None, None) => {
             let mut stmt = conn.prepare(
                 r#"
-                select id, scope, correction_type, mistake_pattern, correction, severity
+                select id, scope, correction_type, mistake_pattern, correction, severity, created_at
                 from user_corrections
                 where project_id = ?1 and status = 'active'
                 order by id
@@ -521,18 +576,6 @@ pub(super) fn kpt_review_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Kpt
     })
 }
 
-pub(super) fn kpt_item_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<KptItemRecord> {
-    Ok(KptItemRecord {
-        id: row.get(0)?,
-        kpt_review_id: row.get(1)?,
-        item_type: row.get(2)?,
-        title: row.get(3)?,
-        severity: row.get(4)?,
-        status: row.get(5)?,
-        linked_task_id: row.get(6)?,
-    })
-}
-
 pub(super) fn stored_correction_record(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<StoredCorrection> {
@@ -543,6 +586,7 @@ pub(super) fn stored_correction_record(
         mistake_pattern: row.get(3)?,
         correction: row.get(4)?,
         severity: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }
 
@@ -555,6 +599,7 @@ pub(super) fn command_drift_record(
         profile_name: row.get(2)?,
         reason: row.get(3)?,
         status: row.get(4)?,
+        created_at: row.get(5)?,
     })
 }
 
@@ -571,6 +616,7 @@ pub(super) fn review_run_kpt_record(
         carried_findings_checked: row.get(6)?,
         clean_run: row.get::<_, i64>(7)? == 1,
         result_summary: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
@@ -582,6 +628,7 @@ pub(super) fn work_record_kpt_record(
         topic: row.get(1)?,
         next_actions: row.get(2)?,
         notable_operations: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 
@@ -604,11 +651,92 @@ pub(super) enum KptSource {
     WorkRecords,
 }
 
-pub(super) struct StoredKptItem {
+pub(super) struct ExistingKptConversion {
     pub(super) id: i64,
-    pub(super) title: String,
-    pub(super) details: Option<String>,
-    pub(super) proposed_action: Option<String>,
+    pub(super) target_type: String,
+    pub(super) kpt_rule_id: Option<i64>,
+    pub(super) task_id: Option<i64>,
+    pub(super) command_profile_id: Option<i64>,
+    pub(super) review_policy_id: Option<i64>,
+    pub(super) design_version_id: Option<i64>,
+    pub(super) decision_id: Option<i64>,
+    pub(super) user_correction_id: Option<i64>,
+    pub(super) item_revision: Option<String>,
+    pub(super) predecessor_handle: Option<String>,
+    pub(super) request_identity: Option<String>,
+    pub(super) receipt_identity: Option<String>,
+    pub(super) current_handle: Option<String>,
+}
+
+impl ExistingKptConversion {
+    pub(super) fn target(&self) -> Result<KptItemConversionTarget> {
+        match self.target_type.as_str() {
+            "rule" => Ok(KptItemConversionTarget::Rule(
+                self.kpt_rule_id
+                    .context("rule conversion target is incomplete")?,
+            )),
+            "correction" | "user_correction" => Ok(KptItemConversionTarget::Correction(
+                self.user_correction_id
+                    .context("correction conversion target is incomplete")?,
+            )),
+            "task" => Ok(KptItemConversionTarget::Task(
+                self.task_id
+                    .context("task conversion target is incomplete")?,
+            )),
+            "command_profile" => Ok(KptItemConversionTarget::CommandProfile(
+                self.command_profile_id
+                    .context("command-profile conversion target is incomplete")?,
+            )),
+            "review_policy" => Ok(KptItemConversionTarget::ReviewPolicy(
+                self.review_policy_id
+                    .context("review-policy conversion target is incomplete")?,
+            )),
+            "decision" => Ok(KptItemConversionTarget::Decision(
+                self.decision_id
+                    .context("decision conversion target is incomplete")?,
+            )),
+            "design_version" => Ok(KptItemConversionTarget::DesignVersion(
+                self.design_version_id
+                    .context("design-version conversion target is incomplete")?,
+            )),
+            value => bail!("unknown KPT conversion target: {value}"),
+        }
+    }
+
+    pub(super) fn record(&self, item_id: i64) -> Result<KptItemConversionRecord> {
+        let target = self.target()?;
+        let receipt = match (
+            &self.item_revision,
+            &self.predecessor_handle,
+            &self.request_identity,
+            &self.receipt_identity,
+            &self.current_handle,
+        ) {
+            (
+                Some(item_revision),
+                Some(predecessor_handle),
+                Some(request_identity),
+                Some(receipt_identity),
+                Some(current_handle),
+            ) => Some(KptItemConversionReceipt {
+                kpt_item_conversion_id: self.id,
+                kpt_item_id: item_id,
+                item_revision: item_revision.clone(),
+                target: target.clone(),
+                predecessor_handle: predecessor_handle.clone(),
+                request_identity: request_identity.clone(),
+                receipt_identity: receipt_identity.clone(),
+                current_handle: current_handle.clone(),
+            }),
+            (None, None, None, None, None) => None,
+            _ => bail!("KPT item conversion receipt is incomplete"),
+        };
+        Ok(KptItemConversionRecord {
+            kpt_item_conversion_id: self.id,
+            target,
+            receipt,
+        })
+    }
 }
 
 pub(super) struct StoredCorrection {
@@ -618,6 +746,7 @@ pub(super) struct StoredCorrection {
     mistake_pattern: String,
     correction: String,
     severity: String,
+    created_at: String,
 }
 
 pub(super) struct StoredFinding {
@@ -627,6 +756,7 @@ pub(super) struct StoredFinding {
     description: String,
     classification: String,
     status: String,
+    created_at: String,
 }
 
 pub(super) struct StoredCommandDrift {
@@ -635,6 +765,7 @@ pub(super) struct StoredCommandDrift {
     profile_name: String,
     reason: String,
     status: String,
+    created_at: String,
 }
 
 pub(super) struct StoredReviewRunOutcome {
@@ -647,6 +778,7 @@ pub(super) struct StoredReviewRunOutcome {
     carried_findings_checked: i64,
     clean_run: bool,
     result_summary: String,
+    created_at: String,
 }
 
 pub(super) struct StoredWorkRecordOutcome {
@@ -654,4 +786,28 @@ pub(super) struct StoredWorkRecordOutcome {
     topic: String,
     next_actions: String,
     notable_operations: String,
+    created_at: String,
+}
+
+fn insert_kpt_item_source(
+    conn: &Connection,
+    kpt_item_id: i64,
+    source_kind: &str,
+    source_id: i64,
+    source_revision: &str,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        insert into kpt_item_sources(
+            kpt_item_id,source_kind,source_identity,source_revision,created_at
+        ) values(?1,?2,?3,?4,current_timestamp)
+        "#,
+        params![
+            kpt_item_id,
+            source_kind,
+            source_id.to_string(),
+            source_revision
+        ],
+    )?;
+    Ok(())
 }

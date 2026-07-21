@@ -7,44 +7,6 @@ use crate::identity::{CanonicalValue, canonical_bytes, domain_digest, signed_sou
 
 use super::snapshot::{DatabaseSnapshot, SqliteScalar};
 
-const CANDIDATE_SHARED: &[&str] = &[
-    "projects",
-    "design_packages",
-    "design_versions",
-    "design_files",
-    "design_requirements",
-    "design_decisions",
-    "validation_gate_templates",
-    "validation_gate_template_requirements",
-    "authorities",
-    "authority_events",
-    "rule_bindings",
-    "command_profiles",
-    "repositories",
-    "repository_snapshots",
-    "repository_dirty_entries",
-    "repository_state_classifications",
-    "repository_snapshot_comparisons",
-    "git_commits",
-    "git_file_changes",
-    "schema_migrations",
-    "legacy_migration_candidates",
-    "legacy_migration_candidate_members",
-    "legacy_migration_edges",
-    "legacy_migration_projections",
-    "legacy_reviewer_bindings",
-    "legacy_claim_audits",
-    "legacy_finding_audits",
-    "authority_bootstrap_targets",
-    "review_boundary_snapshots",
-    "review_correction_events",
-    "review_correction_recovery_obligations",
-    "finding_decision_epochs",
-    "decision_continuations",
-    "authority_migration_sources",
-    "legacy_adjudication_migrations",
-];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Node {
     family: usize,
@@ -129,11 +91,18 @@ pub(super) fn classify(
         .enumerate()
         .map(|(position, _)| owners[component_of[position]].clone())
         .collect::<Vec<_>>();
-    validate_classification(database, &nodes, &node_owners)?;
-
     let mut conflicted_owners = BTreeSet::new();
-    for owner_set in &node_owners {
-        if owner_set.len() > 1 {
+    for (node, owner_set) in nodes.iter().zip(&node_owners) {
+        if owner_set.len() > 1
+            && matches!(
+                database.families[node.family].name.as_str(),
+                "tasks"
+                    | "task_derivations"
+                    | "checklist_items"
+                    | "validation_gates"
+                    | "work_phase_task_memberships"
+            )
+        {
             conflicted_owners.extend(owner_set);
         }
     }
@@ -141,10 +110,6 @@ pub(super) fn classify(
         let source = &node_owners[positions[&edge.source]];
         let target = &node_owners[positions[&edge.target]];
         match (single(source), single(target)) {
-            (Some(left), Some(right)) if left != right => {
-                conflicted_owners.insert(left);
-                conflicted_owners.insert(right);
-            }
             (None, Some(_)) if source.is_empty() => {
                 bail!("task-history migration source classification is inconsistent");
             }
@@ -153,15 +118,16 @@ pub(super) fn classify(
     }
 
     let mut components = BTreeMap::new();
-    let owner_ids = node_owners
+    let owner_ids = nodes
         .iter()
-        .filter_map(single)
-        .collect::<BTreeSet<_>>();
+        .filter(|node| database.families[node.family].name == "work_units")
+        .map(|node| row_id(database, *node))
+        .collect::<Result<BTreeSet<_>>>()?;
     for owner_id in owner_ids {
         let owned = nodes
             .iter()
             .enumerate()
-            .filter(|(position, _)| node_owners[*position] == BTreeSet::from([owner_id]))
+            .filter(|(position, _)| node_owners[*position].contains(&owner_id))
             .map(|(_, node)| *node)
             .collect::<BTreeSet<_>>();
         let shared = shared_incidence(
@@ -231,9 +197,15 @@ fn read_edges(conn: &Connection, database: &DatabaseSnapshot) -> Result<Vec<Edge
             if group.iter().any(|item| &item.1 != target_name) {
                 bail!("task-history migration source foreign key is malformed");
             }
-            let target_family_index = *family_positions
-                .get(target_name.as_str())
-                .context("task-history migration source foreign key leaves the profile")?;
+            if source_family.name == "work_units" && target_name == "work_units" {
+                continue;
+            }
+            let Some(target_family_index) = family_positions.get(target_name.as_str()).copied()
+            else {
+                // Relations outside the task-history input contract are not part of
+                // task ownership or migration identity.
+                continue;
+            };
             let target_family = &database.families[target_family_index];
             let mut target_index = BTreeMap::<Vec<u8>, Vec<usize>>::new();
             for (row_index, row) in target_family.rows.iter().enumerate() {
@@ -366,20 +338,6 @@ fn topological_order(edges: &[BTreeSet<usize>]) -> Result<Vec<usize>> {
         bail!("task-history migration source component graph is cyclic");
     }
     Ok(order)
-}
-
-fn validate_classification(
-    database: &DatabaseSnapshot,
-    nodes: &[Node],
-    owners: &[BTreeSet<i64>],
-) -> Result<()> {
-    for (node, owner_set) in nodes.iter().zip(owners) {
-        let family = database.families[node.family].name.as_str();
-        if !CANDIDATE_SHARED.contains(&family) && owner_set.len() != 1 {
-            bail!("task-history migration source owner is unreadable");
-        }
-    }
-    Ok(())
 }
 
 fn shared_incidence(

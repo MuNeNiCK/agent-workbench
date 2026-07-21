@@ -14,6 +14,7 @@ struct PlanIndexView {
 
 #[derive(Serialize)]
 struct PlanIndexEntry {
+    work_unit_id: i64,
     owner_handle: OwnerHandle,
     component_handle: ComponentHandle,
     state: &'static str,
@@ -34,6 +35,7 @@ pub(crate) fn render(snapshot: &SourceSnapshot) -> Result<String> {
             let has_ambiguity = !plan.ambiguities().is_empty();
             let handles = owner_handles(snapshot, owner);
             Ok(PlanIndexEntry {
+                work_unit_id: owner.owner_id,
                 owner_handle: handles.0,
                 component_handle: handles.1,
                 state: scope::state(owner, has_ambiguity),
@@ -46,6 +48,7 @@ pub(crate) fn render(snapshot: &SourceSnapshot) -> Result<String> {
             .iter()
             .map(|entry| {
                 CanonicalValue::object([
+                    ("work_unit_id", CanonicalValue::Integer(entry.work_unit_id)),
                     (
                         "owner_handle",
                         CanonicalValue::string(entry.owner_handle.as_str()),

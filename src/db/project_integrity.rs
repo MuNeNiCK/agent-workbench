@@ -107,6 +107,20 @@ pub(super) fn evaluate_project_integrity(root: &Path) -> IntegrityEvaluation {
         }
     }
 
+    match super::project_requires_update(&conn) {
+        Ok(true) => {
+            return blocked_with_next(
+                1,
+                "project state requires an explicit update".to_string(),
+                Some(conn),
+                Some(version),
+                Some("agent-workbench update inspect".to_string()),
+            );
+        }
+        Ok(false) => {}
+        Err(error) => return blocked(1, error.to_string(), Some(conn), Some(version)),
+    }
+
     let canonical_root = root
         .canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
@@ -134,27 +148,6 @@ pub(super) fn evaluate_project_integrity(root: &Path) -> IntegrityEvaluation {
             return diagnostic_failure(conn, version, error.to_string());
         }
     };
-    if validation_links.runs.is_empty() {
-        match super::project_requires_update(&conn) {
-            Ok(true) => {
-                let next = crate::update::current_identity(root).map_or_else(
-                    |_| "agent-workbench update inspect".to_string(),
-                    |identity| {
-                        format!("agent-workbench update apply --expected-current {identity}")
-                    },
-                );
-                return blocked_with_next(
-                    1,
-                    "project state requires an explicit update".to_string(),
-                    Some(conn),
-                    Some(version),
-                    Some(next),
-                );
-            }
-            Ok(false) => {}
-            Err(error) => return blocked(1, error.to_string(), Some(conn), Some(version)),
-        }
-    }
     match validation_links.runs.len() {
         0 => IntegrityEvaluation {
             status: ProjectIntegrityStatus {

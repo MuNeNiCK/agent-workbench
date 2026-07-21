@@ -241,6 +241,15 @@ pub struct DesignVersionApproval<'a> {
     pub summary: Option<&'a str>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct DesignVersionInspection {
+    pub design_version_id: i64,
+    pub version_number: i64,
+    pub status: String,
+    pub current: bool,
+    pub design_identity: String,
+}
+
 pub struct DesignReadyCheck {
     pub design_version_id: Option<i64>,
 }

@@ -97,6 +97,40 @@ pub fn list_user_corrections(
     Ok(records)
 }
 
+pub fn list_user_corrections_filtered(
+    root: &Path,
+    filter: UserCorrectionListFilter<'_>,
+) -> Result<Vec<UserCorrectionStatusRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut stmt = conn.prepare(
+        r#"
+        select id, scope, correction_type, mistake_pattern, correction, severity, status
+        from user_corrections
+        where project_id = ?1
+          and status = ?2
+          and (?3 is null or scope = ?3)
+        order by id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![project_id, filter.status, filter.scope], |row| {
+        Ok(UserCorrectionStatusRecord {
+            id: row.get(0)?,
+            scope: row.get(1)?,
+            correction_type: row.get(2)?,
+            mistake_pattern: row.get(3)?,
+            correction: row.get(4)?,
+            severity: row.get(5)?,
+            status: row.get(6)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
@@ -198,6 +232,9 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
                 work_unit_id: row.get(10)?,
                 validation_gate_id: row.get(11)?,
                 acceptance_record_id: row.get(12)?,
+                kpt_rule_id: None,
+                title: None,
+                body: None,
                 shadowed_by_rule_id: None,
             })
         },
@@ -205,6 +242,48 @@ pub fn applicable_rules(root: &Path, input: RuleQuery<'_>) -> Result<Vec<RuleRec
     for row in rows {
         records.push(row?);
     }
+    let mut kpt_statement = conn.prepare(
+        r#"
+        select id,scope,title,body
+        from kpt_rules
+        where project_id=?1 and status='recorded'
+          and (scope='project' or scope=?2 or (?3 is not null and scope=cast(?3 as text)))
+        order by id
+        "#,
+    )?;
+    let kpt_rows =
+        kpt_statement.query_map(params![project_id, scope_key, work_unit_id], |row| {
+            let id = row.get(0)?;
+            let scope: String = row.get(1)?;
+            Ok(RuleRecord {
+                id,
+                rule_source_type: "kpt_rule".to_string(),
+                scope_type: scope_type_for(&scope).to_string(),
+                scope_key: Some(scope),
+                precedence: 60,
+                authority_event_id: None,
+                user_correction_id: None,
+                command_profile_id: None,
+                review_policy_id: None,
+                review_plan_id: None,
+                work_unit_id: None,
+                validation_gate_id: None,
+                acceptance_record_id: None,
+                kpt_rule_id: Some(id),
+                title: Some(row.get(2)?),
+                body: Some(row.get(3)?),
+                shadowed_by_rule_id: None,
+            })
+        })?;
+    for row in kpt_rows {
+        records.push(row?);
+    }
+    records.sort_by(|left, right| {
+        right
+            .precedence
+            .cmp(&left.precedence)
+            .then(left.id.cmp(&right.id))
+    });
     annotate_shadowed_rules(&mut records);
 
     Ok(records)
@@ -340,6 +419,22 @@ pub struct UserCorrectionRecord {
     pub severity: String,
 }
 
+pub struct UserCorrectionListFilter<'a> {
+    pub scope: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct UserCorrectionStatusRecord {
+    pub id: i64,
+    pub scope: String,
+    pub correction_type: String,
+    pub mistake_pattern: String,
+    pub correction: String,
+    pub severity: String,
+    pub status: String,
+}
+
 pub struct RuleQuery<'a> {
     pub scope_key: Option<&'a str>,
     pub work_unit_id: Option<i64>,
@@ -360,5 +455,8 @@ pub struct RuleRecord {
     pub work_unit_id: Option<i64>,
     pub validation_gate_id: Option<i64>,
     pub acceptance_record_id: Option<i64>,
+    pub kpt_rule_id: Option<i64>,
+    pub title: Option<String>,
+    pub body: Option<String>,
     pub shadowed_by_rule_id: Option<i64>,
 }

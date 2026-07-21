@@ -75,6 +75,21 @@ fn phase_commands_group_tasks_and_drive_next_phase_order() {
         ],
     );
     assert!(dependency.contains("dependency_id: 1"));
+    let by_work = ok(
+        temp.path(),
+        &["phase", "dependency", "list", "--work-unit", "1"],
+    );
+    assert!(by_work.contains("beta must settle first"));
+    let by_source = ok(
+        temp.path(),
+        &["phase", "dependency", "list", "--phase", "1"],
+    );
+    assert!(by_source.contains("beta must settle first"));
+    let by_target = ok(
+        temp.path(),
+        &["phase", "dependency", "list", "--phase", "2"],
+    );
+    assert!(by_target.contains("beta must settle first"));
     let next = ok(temp.path(), &["next"]);
     assert!(next.contains("next_phase_id: 1"));
     assert!(next.contains("next_phase_id:"));

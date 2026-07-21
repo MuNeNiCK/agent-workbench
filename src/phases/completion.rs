@@ -27,8 +27,8 @@ pub(super) fn load_phase(
 ) -> Result<StoredPhase> {
     conn.query_row(
         r#"
-        select id, work_unit_id, phase_work_unit_id, status
-        from work_phases
+        select id, work_unit_id, phase_work_unit_id, state
+        from phase_epochs
         where id = ?1 and project_id = ?2
         "#,
         params![phase_id, project_id],
@@ -263,6 +263,7 @@ pub(super) fn count_phase_validation_gate_blockers(
               select 1
               from validation_runs vr
               where vr.validation_gate_id = vg.id
+                and not exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
                 and (
                     vr.result = 'pass'
                     or vr.acceptance_record_id is not null
@@ -594,12 +595,8 @@ pub(super) fn phase_review_provenance_is_trusted(
 }
 
 pub(super) fn validate_phase_key(key: &str) -> Result<()> {
-    if key.trim().is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    {
-        bail!("phase key must use lowercase ascii letters, digits, '-' or '_'");
+    if key.trim().is_empty() || key != key.trim() {
+        bail!("phase key must be non-empty canonical text");
     }
     Ok(())
 }

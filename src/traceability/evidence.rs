@@ -106,6 +106,20 @@ pub fn list_task_derivations(
     root: &Path,
     input: TaskDerivationListQuery,
 ) -> Result<Vec<TaskDerivationRecord>> {
+    list_task_derivations_filtered(
+        root,
+        TaskDerivationListFilter {
+            design_version_id: Some(input.design_version_id),
+            task_id: None,
+            work_unit_id: input.work_unit_id,
+        },
+    )
+}
+
+pub fn list_task_derivations_filtered(
+    root: &Path,
+    input: TaskDerivationListFilter,
+) -> Result<Vec<TaskDerivationRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
@@ -118,13 +132,19 @@ pub fn list_task_derivations(
         join tasks t on t.id = td.task_id
         left join checklist_items ci on ci.id = td.checklist_item_id
         where td.project_id = ?1
-          and r.design_version_id = ?2
-          and (?3 is null or t.work_unit_id = ?3)
+          and (?2 is null or r.design_version_id = ?2)
+          and (?3 is null or td.task_id = ?3)
+          and (?4 is null or t.work_unit_id = ?4)
         order by r.requirement_key, td.id
         "#,
     )?;
     let rows = stmt.query_map(
-        params![project_id, input.design_version_id, input.work_unit_id],
+        params![
+            project_id,
+            input.design_version_id,
+            input.task_id,
+            input.work_unit_id
+        ],
         |row| {
             Ok(TaskDerivationRecord {
                 id: row.get(0)?,
@@ -338,6 +358,7 @@ pub fn list_implementation_evidence(
               )
             )
           )
+          and (?5 is null or e.evidence_type = ?5)
         order by e.id
         "#,
     )?;
@@ -346,7 +367,8 @@ pub fn list_implementation_evidence(
             project_id,
             input.task_id,
             input.design_version_id,
-            input.work_unit_id
+            input.work_unit_id,
+            input.evidence_type
         ],
         |row| {
             Ok(ImplementationEvidenceRecord {
@@ -761,7 +783,8 @@ pub fn list_validation_runs(
             vr.id, vr.validation_gate_id, vg.gate_key, vr.work_unit_id,
             vr.task_id, vr.command_usage_id, vr.repository_snapshot_id,
             vr.result, vr.command, vr.classification, vr.acceptance_record_id,
-            vr.artifact_path, vr.artifact_hash, vr.notes, vr.created_at
+            vr.artifact_path, vr.artifact_hash, vr.notes, vr.created_at,
+            exists(select 1 from validation_link_retirements retirement where retirement.validation_run_id=vr.id)
         from validation_runs vr
         join validation_gates vg on vg.id = vr.validation_gate_id
         where vr.project_id = ?1
@@ -786,6 +809,7 @@ pub fn list_validation_runs(
             artifact_hash: row.get(12)?,
             notes: row.get(13)?,
             created_at: row.get(14)?,
+            retired: row.get(15)?,
         })
     })?;
     let mut records = Vec::new();

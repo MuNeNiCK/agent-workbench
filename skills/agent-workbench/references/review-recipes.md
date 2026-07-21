@@ -48,16 +48,32 @@ Use `--phase <phase-id>` only for grouped phases that remain inside the
 aggregate work unit. Split phase work units use the normal work-unit-scoped
 context for the child work unit.
 
-Record the independent review claim directly. Reviewer output remains advisory
-until the owner records a separate decision:
+Issue a project-local provenance claim, request the invocation, and publish the
+independent claim. Reviewer output remains advisory until the owner records a
+separate decision:
 
 ```sh
-agent-workbench review run add --plan <review-plan-id> --type fresh --purpose new_unbiased_review --target <context-ref> --status completed --clean --new-findings 0 --carried-findings 0 --summary "<summary>" --provenance external_agent --external-agent-id <reviewer-id> --provenance-ref <review-output-ref>
+agent-workbench review provenance issue --reviewer <reviewer-id> --plan <review-plan-id> --target <context-ref> --kind external_agent --purpose new_unbiased_review --reference <review-output-ref> --idempotency-key <key>
+agent-workbench review invocation request --plan <review-plan-id> --target <context-ref> --reviewer <reviewer-id> --provenance <provenance-handle> --purpose new_unbiased_review --idempotency-key <key> --expected-plan-current open
+agent-workbench review invocation complete <invocation-id> --claim clean --summary "<summary>" --expected-current requested --idempotency-key <key>
 agent-workbench review adjudicate <review-run-id> --decision accepted --reason "<reason>" --expected-current pending
 ```
 
 The claim and owner decision remain separate records. No key, signature, grant,
 principal resolution, or capability bootstrap is required.
+
+For a review with findings, create a result stage, add every finding, and
+publish the stage atomically:
+
+```sh
+agent-workbench review result stage <invocation-id> --expected-current requested --idempotency-key <key>
+agent-workbench review result finding-add <stage-handle> --type <finding-type> --severity <severity> --description "<description>" --expected-current <version-handle> --idempotency-key <key>
+agent-workbench review result complete <stage-handle> --expected-findings <count> --summary "<summary>" --expected-current <version-handle> --invocation-current requested --idempotency-key <key>
+```
+
+Use `review invocation fail|cancel` and `review result cancel` for explicit
+terminal outcomes. Exact retry with the same idempotency key returns the same
+recorded result; changed payloads are rejected.
 
 ## Finding Lifecycle
 

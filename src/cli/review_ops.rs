@@ -7,6 +7,161 @@ use agent_workbench::*;
 
 pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
     match command {
+        ReviewCommand::Provenance { command } => match command {
+            ReviewProvenanceCommand::Issue(args) => {
+                let outcome = issue_review_provenance(
+                    root,
+                    ReviewProvenanceIssue {
+                        reviewer_ref: &args.reviewer,
+                        review_plan_id: args.plan,
+                        target_context: &args.target,
+                        provenance_kind: &args.kind,
+                        purpose: &args.purpose,
+                        source_reference: &args.reference,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?;
+                println!("provenance_handle: {}", outcome.provenance_handle);
+                println!("already_recorded: {}", outcome.already_recorded);
+            }
+        },
+        ReviewCommand::Invocation { command } => {
+            let outcome = match command {
+                ReviewInvocationCommand::Request(args) => request_invocation(
+                    root,
+                    InvocationRequest {
+                        review_plan_id: args.plan,
+                        target_context: &args.target,
+                        reviewer_ref: &args.reviewer,
+                        provenance_handle: &args.provenance,
+                        purpose: &args.purpose,
+                        idempotency_key: &args.idempotency_key,
+                        expected_plan_current: &args.expected_plan_current,
+                    },
+                )?,
+                ReviewInvocationCommand::Start(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Start,
+                    },
+                )?,
+                ReviewInvocationCommand::Complete(args) => {
+                    let outcome = match (
+                        args.claim.as_deref(),
+                        args.verification_claim.as_deref(),
+                        args.attempt,
+                    ) {
+                        (Some(claim), None, None) => InvocationTerminal::CompleteReview {
+                            claim,
+                            summary: &args.summary,
+                        },
+                        (None, Some(claim), Some(attempt)) => {
+                            InvocationTerminal::CompleteVerification {
+                                claim,
+                                attempt,
+                                summary: &args.summary,
+                            }
+                        }
+                        _ => anyhow::bail!(
+                            "complete requires either --claim, or --verification-claim with --attempt"
+                        ),
+                    };
+                    transition_invocation(
+                        root,
+                        InvocationTransitionRequest {
+                            invocation_id: args.invocation_id,
+                            expected_current: &args.expected_current,
+                            idempotency_key: &args.idempotency_key,
+                            outcome,
+                        },
+                    )?
+                }
+                ReviewInvocationCommand::Fail(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Fail {
+                            reason: &args.reason,
+                        },
+                    },
+                )?,
+                ReviewInvocationCommand::Cancel(args) => transition_invocation(
+                    root,
+                    InvocationTransitionRequest {
+                        invocation_id: args.invocation_id,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                        outcome: InvocationTerminal::Cancel {
+                            reason: &args.reason,
+                        },
+                    },
+                )?,
+            };
+            println!("invocation_id: {}", outcome.invocation_id);
+            println!("invocation_handle: {}", outcome.invocation_handle);
+            println!("invocation_state: {}", outcome.state);
+            if let Some(run) = outcome.review_run_id {
+                println!("review_run_id: {run}");
+            }
+            println!("already_applied: {}", outcome.already_applied);
+        }
+        ReviewCommand::Result { command } => {
+            let outcome = match command {
+                ReviewResultCommand::Stage(args) => create_result_stage(
+                    root,
+                    CreateResultStageRequest {
+                        invocation_id: args.invocation_id,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+                ReviewResultCommand::FindingAdd(args) => add_result_finding(
+                    root,
+                    AddResultFindingRequest {
+                        stage_handle: &args.stage_handle,
+                        finding_type: &args.finding_type,
+                        severity: &args.severity,
+                        description: &args.description,
+                        requirement: args.requirement,
+                        task: args.task,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+                ReviewResultCommand::Complete(args) => complete_result_stage(
+                    root,
+                    CompleteResultStageRequest {
+                        stage_handle: &args.stage_handle,
+                        expected_findings: args.expected_findings,
+                        summary: &args.summary,
+                        expected_current: &args.expected_current,
+                        invocation_current: &args.invocation_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+                ReviewResultCommand::Cancel(args) => cancel_result_stage(
+                    root,
+                    CancelResultStageRequest {
+                        stage_handle: &args.stage_handle,
+                        reason: &args.reason,
+                        expected_current: &args.expected_current,
+                        idempotency_key: &args.idempotency_key,
+                    },
+                )?,
+            };
+            println!("stage_handle: {}", outcome.stage_handle);
+            println!("version_handle: {}", outcome.version_handle);
+            println!("stage_state: {}", outcome.state);
+            if let Some(result) = outcome.result_handle {
+                println!("result_handle: {result}");
+            }
+            println!("already_applied: {}", outcome.already_applied);
+        }
         ReviewCommand::Correction { command } => match command {
             ReviewCorrectionCommand::Add(args) => {
                 let outcome = correct_terminal_review(
@@ -183,6 +338,20 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                 )?;
                 println!("waived review plan");
             }
+            ReviewPlanCommand::Supersede(args) => {
+                let outcome = supersede_review_plan(
+                    root,
+                    ReviewPlanSupersession {
+                        predecessor_plan_id: args.review_plan_id,
+                        successor_plan_id: args.successor_plan_id,
+                        authority_event_id: args.authority,
+                        reason: &args.reason,
+                    },
+                )?;
+                println!("superseded review plan");
+                println!("predecessor_plan_id: {}", outcome.predecessor_plan_id);
+                println!("successor_plan_id: {}", outcome.successor_plan_id);
+            }
             ReviewPlanCommand::Target { command } => match command {
                 ReviewPlanTargetCommand::Add(args) => {
                     let outcome = add_review_plan_target(
@@ -312,6 +481,40 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             )?;
             println!("decision_handle: {}", outcome.decision_handle);
         }
+        FindingCommand::Recover(args) => {
+            let outcome = recover_finding_design(
+                root,
+                FindingDesignRecovery {
+                    finding_id: args.finding_id,
+                    terminal_epoch: args.epoch,
+                    evidence: &args.evidence,
+                    authority_event_id: args.authority,
+                    reason: &args.reason,
+                    package_current: &args.package_current,
+                    expected_current: &args.expected_current,
+                    idempotency_key: &args.idempotency_key,
+                },
+            )?;
+            println!("recovered terminal design finding");
+            println!("recovery_handle: {}", outcome.recovery_handle);
+            println!("finding_id: {}", outcome.finding_id);
+            println!("terminal_epoch: {}", outcome.terminal_epoch);
+            println!("source_closure_id: {}", outcome.source_closure_id);
+            println!("source_session_id: {}", outcome.source_session_id);
+            println!("source_attempt_id: {}", outcome.source_attempt_id);
+            println!(
+                "corrected_design_version_id: {}",
+                outcome.corrected_design_version_id
+            );
+            println!("corrected_design_ref: {}", outcome.corrected_design_ref);
+            println!("successor_closure_id: {}", outcome.successor_closure_id);
+            println!("successor_session_id: {}", outcome.successor_session_id);
+            println!("successor_attempt_id: {}", outcome.successor_attempt_id);
+            println!("context_ref: {}", outcome.context_ref);
+            println!("next: {}", outcome.next_action);
+            println!("idempotent: {}", outcome.idempotent);
+            println!("converged: {}", outcome.converged);
+        }
         FindingCommand::Decide(args) => {
             let outcome = decide_finding(
                 root,
@@ -340,14 +543,51 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             println!("finding_id: {}", outcome.finding_id);
         }
         FindingCommand::Classify(args) => {
-            anyhow::bail!(
-                "code: finding_adjudication_required\nnext: agent-workbench finding decide {} --help (legacy classification={})",
-                args.finding_id,
-                args.classification
-            );
+            match (
+                args.classification.as_deref(),
+                args.decision.as_deref(),
+                args.reason.as_deref(),
+                args.expected_current.as_deref(),
+            ) {
+                (Some(classification), None, None, None) => {
+                    let outcome = classify_finding(root, args.finding_id, classification)?;
+                    println!(
+                        "classification_result: {}",
+                        if outcome.existing {
+                            "existing"
+                        } else {
+                            "classified"
+                        }
+                    );
+                    println!("finding_id: {}", outcome.finding_id);
+                    println!("classification: {}", outcome.classification);
+                    println!("status: {}", outcome.status);
+                }
+                (None, Some(decision), Some(reason), Some(expected_current)) => {
+                    let outcome = decide_finding(
+                        root,
+                        args.finding_id,
+                        AdjudicationInput {
+                            decision,
+                            reason,
+                            expected_current,
+                        },
+                    )?;
+                    println!("decision_handle: {}", outcome.decision_handle);
+                }
+                _ => anyhow::bail!(
+                    "finding classify requires exactly --classification or the complete --decision/--reason/--expected-current form"
+                ),
+            }
         }
         FindingCommand::List(args) => {
-            let records = list_findings(root, args.status.as_deref())?;
+            let records = list_findings_filtered(
+                root,
+                FindingListFilter {
+                    status: args.status.as_deref(),
+                    review_run_id: args.run,
+                },
+            )?;
             let status = project_status(root)?;
             if records.is_empty() {
                 println!("no findings");
@@ -362,6 +602,18 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                     record.status,
                     record.description
                 );
+                if record.status == "closed"
+                    && let (Some(epoch), Some(handle)) = (
+                        record.terminal_epoch,
+                        record.current_decision_handle.as_deref(),
+                    )
+                {
+                    println!("terminal_epoch: {epoch}");
+                    println!(
+                        "reopen: agent-workbench finding reopen {} --epoch {} --reason <reason> --expected-current {}",
+                        record.id, epoch, handle
+                    );
+                }
                 if let Some(remediation) = status
                     .finding_remediations
                     .iter()
@@ -391,16 +643,29 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             }
         }
         FindingCommand::Verify(args) => {
-            let outcome = add_finding_verification(
-                root,
-                NewFindingVerification {
-                    review_run_id: args.run,
-                    finding_id: args.finding,
-                    closure_id: args.closure,
-                    result: &args.result,
-                    notes: args.notes.as_deref(),
-                },
-            )?;
+            let outcome = match args.attempt {
+                Some(closure_attempt_id) => add_finding_verification_for_attempt(
+                    root,
+                    NewFindingVerificationForAttempt {
+                        review_run_id: args.run,
+                        finding_id: args.finding,
+                        closure_id: args.closure,
+                        closure_attempt_id,
+                        result: &args.result,
+                        notes: args.notes.as_deref(),
+                    },
+                )?,
+                None => add_finding_verification(
+                    root,
+                    NewFindingVerification {
+                        review_run_id: args.run,
+                        finding_id: args.finding,
+                        closure_id: args.closure,
+                        result: &args.result,
+                        notes: args.notes.as_deref(),
+                    },
+                )?,
+            };
             println!("added finding verification");
             println!(
                 "finding_verification_id: {}",
@@ -642,106 +907,415 @@ pub(crate) fn handle_kpt(root: &Path, command: KptCommand) -> Result<()> {
                         task,
                         record.title
                     );
+                    println!("current: {}", record.current_handle);
+                    println!("details: {}", record.details.as_deref().unwrap_or("-"));
+                    println!(
+                        "proposed_action: {}",
+                        record.proposed_action.as_deref().unwrap_or("-")
+                    );
+                    if !record.legal_actions.is_empty() {
+                        println!("legal_actions: {}", record.legal_actions.join(","));
+                    }
+                    if let Some(conversion) = &record.conversion {
+                        print_kpt_conversion_record(conversion);
+                    }
+                    if let Some(receipt) = &record.dismissal {
+                        print_kpt_dismissal_receipt(receipt);
+                    }
                 }
             }
-            KptItemCommand::Convert(args) => match args.target_type.as_str() {
-                "task" => {
-                    let outcome = convert_kpt_item_to_task(
-                        root,
-                        KptItemTaskConversion {
-                            kpt_item_id: args.item,
-                            task_title: args.title.as_deref(),
-                            details: args.details.as_deref(),
-                            priority: &args.priority,
-                            work_unit_id: args.work_unit,
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("task_id: {}", outcome.task_id);
+            KptItemCommand::Convert(args) => {
+                validate_kpt_conversion_operands(&args)?;
+                let item_id = match args.item {
+                    Some(item_id) => item_id,
+                    None if args.target_type == KptConversionTargetArg::CommandProfile
+                        && args.command_status.as_deref() == Some("fixed") =>
+                    {
+                        resolve_fixed_kpt_item(root, args.authority)?
+                    }
+                    None => anyhow::bail!("--item is required for this KPT conversion target"),
+                };
+                match args.target_type {
+                    KptConversionTargetArg::Rule => {
+                        let outcome = convert_kpt_item_to_rule(
+                            root,
+                            KptItemRuleConversion {
+                                kpt_item_id: item_id,
+                                scope: args.scope.as_deref(),
+                                title: args.title.as_deref(),
+                                body: args.details.as_deref(),
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("kpt_rule_id: {}", outcome.kpt_rule_id);
+                    }
+                    KptConversionTargetArg::Correction => {
+                        let outcome = convert_kpt_item_to_correction(
+                            root,
+                            KptItemCorrectionConversion {
+                                kpt_item_id: item_id,
+                                scope: args.scope.as_deref(),
+                                source_label: args.title.as_deref(),
+                                expected_change: args.details.as_deref(),
+                                severity: args.priority.as_deref().unwrap_or("medium"),
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("user_correction_id: {}", outcome.user_correction_id);
+                    }
+                    KptConversionTargetArg::Task => {
+                        let outcome = convert_kpt_item_to_task(
+                            root,
+                            KptItemTaskConversion {
+                                kpt_item_id: item_id,
+                                task_title: args.title.as_deref(),
+                                details: args.details.as_deref(),
+                                priority: args.priority.as_deref().unwrap_or("medium"),
+                                work_unit_id: args.work_unit,
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("task_id: {}", outcome.task_id);
+                    }
+                    KptConversionTargetArg::ReviewPolicy => {
+                        let review_type = args
+                            .review_type
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("--review-type is required"))?;
+                        let outcome = convert_kpt_item_to_review_policy(
+                            root,
+                            KptItemReviewPolicyConversion {
+                                kpt_item_id: item_id,
+                                name: args.name.as_deref().or(args.title.as_deref()),
+                                review_type,
+                                max_fresh_agents: args.max_fresh_agents.unwrap_or(1),
+                                max_resume_agents: args.max_resume_agents.unwrap_or(1),
+                                max_parallel_agents: args.max_parallel_agents.unwrap_or(1),
+                                required_consecutive_clean_fresh_runs: args
+                                    .fresh_clean
+                                    .unwrap_or(1),
+                                required_consecutive_clean_resume_runs: args
+                                    .resume_clean
+                                    .unwrap_or(0),
+                                stop_on_severity: args
+                                    .stop_on_severity
+                                    .as_deref()
+                                    .unwrap_or("none"),
+                                allow_new_findings_in_resume: args.allow_new_findings_in_resume,
+                                run_count_scope: args
+                                    .run_count_scope
+                                    .as_deref()
+                                    .unwrap_or("review_plan"),
+                                default_run_mode: args
+                                    .default_run_mode
+                                    .as_deref()
+                                    .unwrap_or("fresh"),
+                                on_max_agents_exceeded: args
+                                    .on_max_agents_exceeded
+                                    .as_deref()
+                                    .unwrap_or("block"),
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("review_policy_id: {}", outcome.review_policy_id);
+                    }
+                    KptConversionTargetArg::CommandProfile => {
+                        let outcome = convert_kpt_item_to_command_profile(
+                            root,
+                            KptItemCommandProfileConversion {
+                                kpt_item_id: item_id,
+                                name: args.name.as_deref().or(args.title.as_deref()),
+                                command: args.command.as_deref().or(args.details.as_deref()),
+                                command_type: args.command_type.as_deref().unwrap_or("other"),
+                                scope: args.scope.as_deref(),
+                                status: args.command_status.as_deref().unwrap_or("candidate"),
+                                stability: args.stability.as_deref().unwrap_or("context_dependent"),
+                                timeout: args.timeout.as_deref(),
+                                expected_result: args.expected_result.as_deref(),
+                                authority_event_id: args.authority,
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("command_profile_id: {}", outcome.command_profile_id);
+                    }
+                    KptConversionTargetArg::Decision => {
+                        let outcome = convert_kpt_item_to_decision(
+                            root,
+                            KptItemDecisionConversion {
+                                kpt_item_id: item_id,
+                                decision_key: args.decision_key.as_deref(),
+                                topic: args.title.as_deref(),
+                                decision: args.details.as_deref(),
+                                rationale: args.rationale.as_deref(),
+                                compatibility_impact: args.compatibility_impact.as_deref(),
+                                authority_refs: args.authority_refs.as_deref(),
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("decision_id: {}", outcome.decision_id);
+                    }
+                    KptConversionTargetArg::DesignVersion => {
+                        let design_version_id = args
+                            .design_version
+                            .ok_or_else(|| anyhow::anyhow!("--design-version is required"))?;
+                        let outcome = convert_kpt_item_to_design_version(
+                            root,
+                            KptItemDesignVersionConversion {
+                                kpt_item_id: item_id,
+                                design_version_id,
+                            },
+                        )?;
+                        print_kpt_conversion_result(outcome.already_applied, &outcome.receipt);
+                        println!("design_version_id: {}", outcome.design_version_id);
+                    }
                 }
-                "review-policy" | "review_policy" => {
-                    let review_type = args
-                        .review_type
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("--review-type is required"))?;
-                    let outcome = convert_kpt_item_to_review_policy(
-                        root,
-                        KptItemReviewPolicyConversion {
-                            kpt_item_id: args.item,
-                            name: args.name.as_deref().or(args.title.as_deref()),
-                            review_type,
-                            max_fresh_agents: args.max_fresh_agents,
-                            max_resume_agents: args.max_resume_agents,
-                            max_parallel_agents: args.max_parallel_agents,
-                            required_consecutive_clean_fresh_runs: args.fresh_clean,
-                            required_consecutive_clean_resume_runs: args.resume_clean,
-                            stop_on_severity: &args.stop_on_severity,
-                            allow_new_findings_in_resume: args.allow_new_findings_in_resume,
-                            run_count_scope: &args.run_count_scope,
-                            default_run_mode: &args.default_run_mode,
-                            on_max_agents_exceeded: &args.on_max_agents_exceeded,
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("review_policy_id: {}", outcome.review_policy_id);
+            }
+            KptItemCommand::Dismiss(args) => {
+                let outcome = dismiss_kpt_item(
+                    root,
+                    KptItemDismissalRequest {
+                        kpt_item_id: args.item,
+                        authority_event_id: args.authority,
+                        reason: &args.reason,
+                        expected_current: &args.expected_current,
+                    },
+                )?;
+                match outcome {
+                    KptItemDismissalOutcome::Dismissed(receipt) => {
+                        println!("dismissed kpt item");
+                        print_kpt_dismissal_receipt(&receipt);
+                    }
+                    KptItemDismissalOutcome::Existing(receipt) => {
+                        println!("kpt item dismissal already exists");
+                        print_kpt_dismissal_receipt(&receipt);
+                    }
+                    KptItemDismissalOutcome::InputInvalid { field, next } => {
+                        anyhow::bail!("input_invalid: {field}\nnext: {next}")
+                    }
+                    KptItemDismissalOutcome::AuthorityInvalid {
+                        authority_event_id,
+                        required_scope,
+                        next,
+                    } => anyhow::bail!(
+                        "authority_invalid: {authority_event_id}; required_scope: {required_scope}\nnext: {next}"
+                    ),
+                    KptItemDismissalOutcome::StateChanged {
+                        expected,
+                        observed,
+                        next,
+                    } => {
+                        anyhow::bail!(
+                            "state_changed: expected {expected}, observed {observed}\nnext: {next}"
+                        )
+                    }
+                    KptItemDismissalOutcome::ItemTerminal {
+                        state,
+                        current,
+                        next,
+                    } => {
+                        anyhow::bail!("item_terminal: {state}; current: {current}\nnext: {next}")
+                    }
                 }
-                "command-profile" | "command_profile" => {
-                    let outcome = convert_kpt_item_to_command_profile(
-                        root,
-                        KptItemCommandProfileConversion {
-                            kpt_item_id: args.item,
-                            name: args.name.as_deref().or(args.title.as_deref()),
-                            command: args.command.as_deref().or(args.details.as_deref()),
-                            command_type: &args.command_type,
-                            scope: args.scope.as_deref(),
-                            status: &args.command_status,
-                            stability: &args.stability,
-                            timeout: args.timeout.as_deref(),
-                            expected_result: args.expected_result.as_deref(),
-                            authority_event_id: args.authority,
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("command_profile_id: {}", outcome.command_profile_id);
-                }
-                "decision" => {
-                    let outcome = convert_kpt_item_to_decision(
-                        root,
-                        KptItemDecisionConversion {
-                            kpt_item_id: args.item,
-                            decision_key: args.decision_key.as_deref(),
-                            topic: args.title.as_deref(),
-                            decision: args.details.as_deref(),
-                            rationale: args.rationale.as_deref(),
-                            compatibility_impact: args.compatibility_impact.as_deref(),
-                            authority_refs: args.authority_refs.as_deref(),
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("decision_id: {}", outcome.decision_id);
-                }
-                "design-version" | "design_version" => {
-                    let design_version_id = args
-                        .design_version
-                        .ok_or_else(|| anyhow::anyhow!("--design-version is required"))?;
-                    let outcome = convert_kpt_item_to_design_version(
-                        root,
-                        KptItemDesignVersionConversion {
-                            kpt_item_id: args.item,
-                            design_version_id,
-                        },
-                    )?;
-                    println!("converted kpt item");
-                    println!("kpt_item_conversion_id: {}", outcome.kpt_item_conversion_id);
-                    println!("design_version_id: {}", outcome.design_version_id);
-                }
-                other => anyhow::bail!("unsupported kpt item conversion target: {other}"),
-            },
+            }
         },
+    }
+    Ok(())
+}
+
+fn print_kpt_dismissal_receipt(receipt: &KptItemDismissalReceipt) {
+    println!("dismissal.item_revision: {}", receipt.item_revision);
+    match &receipt.source {
+        Some(source) => println!(
+            "dismissal.source: exact({},{},{})",
+            source.source_kind, source.source_identity, source.source_revision
+        ),
+        None => println!("dismissal.source: none"),
+    }
+    println!("dismissal.review_revision: {}", receipt.review_revision);
+    println!("dismissal.review_status: {}", receipt.review_status);
+    println!(
+        "dismissal.authority_event_id: {}",
+        receipt.authority_event_id
+    );
+    println!("dismissal.reason: {}", receipt.reason);
+    println!("dismissal.predecessor: {}", receipt.predecessor_handle);
+    println!("dismissal.decision: {}", receipt.decision_handle);
+    println!("dismissal.current: {}", receipt.current_handle);
+    println!("dismissal.replay: {}", receipt.replay_identity);
+}
+
+fn print_kpt_conversion_result(already_applied: bool, receipt: &KptItemConversionReceipt) {
+    if already_applied {
+        println!("kpt item conversion already exists");
+    } else {
+        println!("converted kpt item");
+    }
+    println!("kpt_item_conversion_id: {}", receipt.kpt_item_conversion_id);
+    print_kpt_conversion_receipt(receipt);
+}
+
+fn print_kpt_conversion_record(record: &KptItemConversionRecord) {
+    match &record.receipt {
+        Some(receipt) => print_kpt_conversion_receipt(receipt),
+        None => {
+            println!(
+                "conversion.target: {}({})",
+                record.target.target_type(),
+                record.target.target_id()
+            );
+            println!("conversion.receipt: legacy-absent");
+        }
+    }
+}
+
+fn print_kpt_conversion_receipt(receipt: &KptItemConversionReceipt) {
+    println!(
+        "conversion.target: {}({})",
+        receipt.target.target_type(),
+        receipt.target.target_id()
+    );
+    println!("conversion.item_revision: {}", receipt.item_revision);
+    println!("conversion.predecessor: {}", receipt.predecessor_handle);
+    println!("conversion.request: {}", receipt.request_identity);
+    println!("conversion.receipt: {}", receipt.receipt_identity);
+    println!("conversion.current: {}", receipt.current_handle);
+}
+
+fn resolve_fixed_kpt_item(root: &Path, authority: Option<i64>) -> Result<i64> {
+    let reviews = list_kpt_reviews(root, Some("open"))?;
+    if reviews.len() != 1 {
+        let actions = reviews
+            .iter()
+            .map(|review| format!("agent-workbench kpt item list --review {}", review.id))
+            .collect::<Vec<_>>();
+        anyhow::bail!(
+            "fixed command conversion without --item requires exactly one open KPT review; found {}{}",
+            reviews.len(),
+            actions
+                .iter()
+                .map(|action| format!("\nnext: {action}"))
+                .collect::<String>()
+        );
+    }
+    let items = list_kpt_items(root, Some(reviews[0].id))?
+        .into_iter()
+        .filter(|item| matches!(item.status.as_str(), "open" | "accepted"))
+        .collect::<Vec<_>>();
+    if items.len() != 1 {
+        let authority = authority
+            .map(|id| format!(" --authority {id}"))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "fixed command conversion without --item requires exactly one eligible item; found {}{}",
+            items.len(),
+            items
+                .iter()
+                .map(|item| format!(
+                    "\nnext: agent-workbench kpt item convert --item {} --to command-profile --command-status fixed{}",
+                    item.id, authority
+                ))
+                .collect::<String>()
+        );
+    }
+    Ok(items[0].id)
+}
+
+fn validate_kpt_conversion_operands(args: &KptItemConvertArgs) -> Result<()> {
+    let target = args.target_type.as_str();
+    let present = [
+        ("--title", args.title.is_some()),
+        ("--details", args.details.is_some()),
+        ("--priority", args.priority.is_some()),
+        ("--work-unit", args.work_unit.is_some()),
+        ("--name", args.name.is_some()),
+        ("--command", args.command.is_some()),
+        ("--command-type", args.command_type.is_some()),
+        ("--scope", args.scope.is_some()),
+        ("--command-status", args.command_status.is_some()),
+        ("--stability", args.stability.is_some()),
+        ("--timeout", args.timeout.is_some()),
+        ("--expected-result", args.expected_result.is_some()),
+        ("--authority", args.authority.is_some()),
+        ("--review-type", args.review_type.is_some()),
+        ("--fresh-clean", args.fresh_clean.is_some()),
+        ("--resume-clean", args.resume_clean.is_some()),
+        ("--max-fresh-agents", args.max_fresh_agents.is_some()),
+        ("--max-resume-agents", args.max_resume_agents.is_some()),
+        ("--max-parallel-agents", args.max_parallel_agents.is_some()),
+        ("--stop-on-severity", args.stop_on_severity.is_some()),
+        (
+            "--allow-new-findings-in-resume",
+            args.allow_new_findings_in_resume,
+        ),
+        ("--run-count-scope", args.run_count_scope.is_some()),
+        ("--default-run-mode", args.default_run_mode.is_some()),
+        (
+            "--on-max-agents-exceeded",
+            args.on_max_agents_exceeded.is_some(),
+        ),
+        ("--decision-key", args.decision_key.is_some()),
+        ("--rationale", args.rationale.is_some()),
+        (
+            "--compatibility-impact",
+            args.compatibility_impact.is_some(),
+        ),
+        ("--authority-refs", args.authority_refs.is_some()),
+        ("--design-version", args.design_version.is_some()),
+    ];
+    let allowed: &[&str] = match target {
+        "rule" => &["--title", "--details", "--scope"],
+        "correction" => &["--title", "--details", "--scope", "--priority"],
+        "task" => &["--title", "--details", "--priority", "--work-unit"],
+        "command-profile" => &[
+            "--title",
+            "--details",
+            "--name",
+            "--command",
+            "--command-type",
+            "--scope",
+            "--command-status",
+            "--stability",
+            "--timeout",
+            "--expected-result",
+            "--authority",
+        ],
+        "review-policy" => &[
+            "--title",
+            "--name",
+            "--review-type",
+            "--fresh-clean",
+            "--resume-clean",
+            "--max-fresh-agents",
+            "--max-resume-agents",
+            "--max-parallel-agents",
+            "--stop-on-severity",
+            "--allow-new-findings-in-resume",
+            "--run-count-scope",
+            "--default-run-mode",
+            "--on-max-agents-exceeded",
+        ],
+        "decision" => &[
+            "--title",
+            "--details",
+            "--decision-key",
+            "--rationale",
+            "--compatibility-impact",
+            "--authority-refs",
+        ],
+        "design-version" => &["--design-version"],
+        _ => unreachable!("KPT conversion target is a closed value enum"),
+    };
+    if let Some((operand, _)) = present
+        .iter()
+        .find(|(operand, is_present)| *is_present && !allowed.contains(operand))
+    {
+        anyhow::bail!("unexpected operand {operand} for KPT conversion target {target}");
+    }
+    if target == "command-profile"
+        && args.authority.is_some()
+        && args.command_status.as_deref().unwrap_or("candidate") != "fixed"
+    {
+        anyhow::bail!("--authority is valid only for a fixed command-profile conversion");
     }
     Ok(())
 }

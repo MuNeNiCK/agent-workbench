@@ -8,17 +8,26 @@ use agent_workbench::*;
 pub(crate) fn handle_task(root: &Path, command: TaskCommand) -> Result<()> {
     match command {
         TaskCommand::Add(args) => {
-            let outcome = add_task(
-                root,
-                NewTask {
-                    title: &args.title,
-                    priority: &args.priority,
-                    source: &args.source,
-                    work_unit_id: args.work_unit,
-                    details: args.details.as_deref(),
-                    completion_condition: args.completion_condition.as_deref(),
-                },
-            )?;
+            let task = NewTask {
+                title: &args.title,
+                priority: &args.priority,
+                source: &args.source,
+                work_unit_id: args.work_unit,
+                details: args.details.as_deref(),
+                completion_condition: args.completion_condition.as_deref(),
+            };
+            let outcome = match (args.under_correction_closure, args.phase) {
+                (Some(closure_id), Some(phase_id)) => add_correction_support_task(
+                    root,
+                    CorrectionSupportTask {
+                        task,
+                        closure_id,
+                        phase_id,
+                    },
+                )?,
+                (None, None) => add_task(root, task)?,
+                _ => unreachable!("clap requires correction closure and phase together"),
+            };
             println!("added task");
             println!("task_id: {}", outcome.task_id);
             if let Some(work_unit_id) = outcome.work_unit_id {
@@ -77,8 +86,70 @@ pub(crate) fn handle_decision(root: &Path, command: DecisionCommand) -> Result<(
             println!("added decision");
             println!("decision_id: {}", outcome.decision_id);
         }
+        DecisionCommand::Adjudicate(args) => {
+            let outcome = adjudicate_owner(
+                root,
+                &args.owner,
+                args.target,
+                AdjudicationInput {
+                    decision: &args.decision,
+                    reason: &args.reason,
+                    expected_current: &args.expected_current,
+                },
+            )?;
+            println!("decision_handle: {}", outcome.decision_handle);
+        }
+        DecisionCommand::Continuation { command } => match command {
+            DecisionContinuationCommand::Show(args) => {
+                let record = show_decision_continuation(root, &args.continuation_handle)?;
+                println!("continuation: {}", record.continuation_handle);
+                println!("status: {}", record.status);
+                println!("owner: {}", record.owner_ref);
+                println!("target: {}", record.target_ref);
+                println!("decision_family: {}", record.decision_family);
+                println!("action: {}", record.action);
+                println!("expected_current: {}", record.expected_current);
+                println!("context_identity: {}", record.context_identity);
+                println!("code: {}", record.rejection_code);
+                println!("required_input: {}", record.required_inputs);
+                if let Some(decision) = record.decision_handle {
+                    println!("decision_handle: {decision}");
+                }
+                if let Some(successor) = record.successor_continuation {
+                    println!("successor_continuation: {successor}");
+                    println!("next: agent-workbench decision continuation show {successor}");
+                }
+            }
+            DecisionContinuationCommand::Apply(args) => {
+                let outcome = apply_decision_continuation(
+                    root,
+                    DecisionContinuationApply {
+                        continuation_handle: &args.continuation_handle,
+                        decision: &args.decision,
+                        reason: &args.reason,
+                        expected_current: &args.expected_current,
+                    },
+                )?;
+                println!("continuation: {}", outcome.continuation_handle);
+                println!("status: {}", outcome.status);
+                if let Some(decision) = outcome.decision_handle {
+                    println!("decision_handle: {decision}");
+                }
+                if let Some(successor) = outcome.successor_continuation {
+                    println!("successor_continuation: {successor}");
+                }
+                println!("idempotent: {}", outcome.idempotent);
+                println!("next: {}", outcome.next_action);
+            }
+        },
         DecisionCommand::List(args) => {
-            print_decisions(list_decisions(root, args.query.as_deref())?);
+            print_decisions(list_decisions_filtered(
+                root,
+                DecisionListFilter {
+                    query: args.query.as_deref(),
+                    topic: args.topic.as_deref(),
+                },
+            )?);
         }
         DecisionCommand::Search(args) => {
             print_decisions(list_decisions(root, Some(&args.query))?);
@@ -110,6 +181,7 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
             )?;
             println!("imported design package");
             println!("design_version_id: {}", outcome.design_version_id);
+            println!("design_identity: {}", outcome.content_hash);
         }
         DesignCommand::Refresh(args) => {
             let outcome = import_design_package(
@@ -121,6 +193,15 @@ pub(crate) fn handle_design(root: &Path, command: DesignCommand) -> Result<()> {
             )?;
             println!("refreshed design package");
             println!("design_version_id: {}", outcome.design_version_id);
+            println!("design_identity: {}", outcome.content_hash);
+        }
+        DesignCommand::Inspect(args) => {
+            let outcome = inspect_design_version_ref(root, &args.design_version_ref)?;
+            println!("design_version_id: {}", outcome.design_version_id);
+            println!("version_number: {}", outcome.version_number);
+            println!("status: {}", outcome.status);
+            println!("current: {}", outcome.current);
+            println!("design_identity: {}", outcome.design_identity);
         }
         DesignCommand::Approve(args) => {
             approve_design_version(
@@ -224,6 +305,35 @@ pub(crate) fn handle_gate_template(root: &Path, command: GateTemplateCommand) ->
 pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
     match command {
         TraceCommand::DeriveTask(args) => {
+            if let Some(closure_id) = args.revise_completion_under_closure {
+                let details = args.details.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--details is required when revising completion")
+                })?;
+                let completion_condition =
+                    args.completion_condition.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--completion-condition is required when revising completion"
+                        )
+                    })?;
+                let outcome = revise_task_completion(
+                    root,
+                    TaskCompletionRevision {
+                        task_id: args.task,
+                        closure_id,
+                        design_version_id: args.design,
+                        requirement_key: &args.requirement,
+                        details,
+                        completion_condition,
+                    },
+                )?;
+                println!("revised task derivation completion");
+                println!("task_id: {}", outcome.task_id);
+                println!(
+                    "checklist_items_updated: {}",
+                    outcome.checklist_items_updated
+                );
+                return Ok(());
+            }
             derive_task_from_requirement(
                 root,
                 NewTaskDerivation {
@@ -240,10 +350,11 @@ pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
         }
         TraceCommand::Derivation { command } => match command {
             TraceDerivationCommand::List(args) => {
-                let records = list_task_derivations(
+                let records = list_task_derivations_filtered(
                     root,
-                    TaskDerivationListQuery {
-                        design_version_id: args.design,
+                    TaskDerivationListFilter {
+                        design_version_id: args.design.or(args.design_version),
+                        task_id: args.task,
                         work_unit_id: None,
                     },
                 )?;
@@ -316,12 +427,17 @@ pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<(
             println!("added implementation evidence");
         }
         EvidenceCommand::List(args) => {
+            let (owner_task, owner_design, owner_work) = match args.owner.as_deref() {
+                None => (None, None, None),
+                Some(owner) => parse_evidence_owner(owner)?,
+            };
             let records = list_implementation_evidence(
                 root,
                 ImplementationEvidenceListQuery {
-                    task_id: args.task,
-                    design_version_id: args.design,
-                    work_unit_id: None,
+                    task_id: args.task.or(owner_task),
+                    design_version_id: args.design.or(owner_design),
+                    work_unit_id: owner_work,
+                    evidence_type: args.kind,
                 },
             )?;
             if records.is_empty() {
@@ -342,6 +458,21 @@ pub(crate) fn handle_evidence(root: &Path, command: EvidenceCommand) -> Result<(
         }
     }
     Ok(())
+}
+
+fn parse_evidence_owner(owner: &str) -> Result<(Option<i64>, Option<i64>, Option<i64>)> {
+    const HELP: &str = "evidence owner must be task:<id>, design_version:<id>, or work_unit:<id>";
+    let (kind, id) = owner.split_once(':').ok_or_else(|| anyhow::anyhow!(HELP))?;
+    let id = id.parse::<i64>().map_err(|_| anyhow::anyhow!(HELP))?;
+    if id <= 0 {
+        anyhow::bail!(HELP);
+    }
+    match kind {
+        "task" => Ok((Some(id), None, None)),
+        "design" | "design_version" => Ok((None, Some(id), None)),
+        "work" | "work_unit" => Ok((None, None, Some(id))),
+        _ => anyhow::bail!(HELP),
+    }
 }
 
 pub(crate) fn handle_coverage(root: &Path, command: CoverageCommand) -> Result<()> {
@@ -367,12 +498,12 @@ pub(crate) fn handle_coverage(root: &Path, command: CoverageCommand) -> Result<(
             println!("added coverage item");
         }
         CoverageCommand::List(args) => {
-            let records = list_coverage_items(
+            let records = list_coverage_items_filtered(
                 root,
-                CoverageItemListQuery {
-                    design_version_id: args.design,
+                CoverageItemListFilter {
+                    design_version_id: args.design.or(args.design_version),
                     status: args.status.as_deref(),
-                    work_unit_id: None,
+                    work_unit_id: args.work,
                 },
             )?;
             if records.is_empty() {

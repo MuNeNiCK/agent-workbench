@@ -1,4 +1,164 @@
 use super::*;
+
+#[test]
+fn phase_dependency_has_one_terminal_transition_and_retains_history() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "dependency lifecycle", None).unwrap();
+    let prerequisite = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "prerequisite",
+            title: "Prerequisite",
+            kind: "implementation",
+            order: 1,
+            reason: Some("first public step"),
+        },
+    )
+    .unwrap();
+    let dependent = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "dependent",
+            title: "Dependent",
+            kind: "implementation",
+            order: 2,
+            reason: Some("second public step"),
+        },
+    )
+    .unwrap();
+    let dependency = add_phase_dependency(
+        temp.path(),
+        NewPhaseDependency {
+            from_phase_id: prerequisite.phase_id,
+            to_phase_id: dependent.phase_id,
+            dependency_type: "blocks",
+            reason: "the prerequisite outcome is required",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_phase_dependencies(temp.path(), work.work_unit_id)
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == dependency.dependency_id)
+            .unwrap()
+            .status,
+        "open"
+    );
+
+    satisfy_phase_dependency(
+        temp.path(),
+        dependency.dependency_id,
+        "the prerequisite outcome is observable",
+        "test:prerequisite-observed",
+    )
+    .unwrap();
+    let terminal = list_phase_dependencies(temp.path(), work.work_unit_id)
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == dependency.dependency_id)
+        .unwrap();
+    assert_eq!(terminal.status, "satisfied");
+    assert_eq!(
+        terminal.evidence_ref.as_deref(),
+        Some("test:prerequisite-observed")
+    );
+    assert!(
+        satisfy_phase_dependency(
+            temp.path(),
+            dependency.dependency_id,
+            "duplicate terminal mutation",
+            "test:duplicate",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("open phase dependency not found")
+    );
+}
+
+#[test]
+fn public_phase_reassignment_moves_the_current_membership_and_preserves_history() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "phase reassignment", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "Move me",
+            priority: "medium",
+            source: "user",
+            work_unit_id: Some(work.work_unit_id),
+            details: Some("exercise public phase assignment"),
+            completion_condition: Some("the task has one current phase"),
+        },
+    )
+    .unwrap();
+    let first = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "first",
+            title: "First",
+            kind: "implementation",
+            order: 1,
+            reason: Some("public reassignment test"),
+        },
+    )
+    .unwrap();
+    let second = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "second",
+            title: "Second",
+            kind: "implementation",
+            order: 2,
+            reason: Some("public reassignment test"),
+        },
+    )
+    .unwrap();
+    assign_task_to_phase(temp.path(), first.phase_id, task.task_id).unwrap();
+    assign_task_to_phase(temp.path(), second.phase_id, task.task_id).unwrap();
+    let phases = list_phases(temp.path(), work.work_unit_id).unwrap();
+    assert_eq!(
+        phases
+            .iter()
+            .find(|phase| phase.id == first.phase_id)
+            .unwrap()
+            .task_count,
+        0
+    );
+    assert_eq!(
+        phases
+            .iter()
+            .find(|phase| phase.id == second.phase_id)
+            .unwrap()
+            .task_count,
+        1
+    );
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    let states: (i64, i64, i64) = conn
+        .query_row(
+            r#"select
+                 (select count(*) from phase_epoch_memberships where state='current'),
+                 (select count(*) from phase_epoch_memberships where state='superseded'),
+                 (select count(*) from phase_epoch_memberships current
+                    join phase_epoch_memberships predecessor
+                      on predecessor.id=current.predecessor_membership_id
+                    where current.state='current' and predecessor.state='superseded')"#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(states, (1, 1, 1));
+}
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -160,7 +320,12 @@ fn reconciliation_inherits_completed_membership_from_closed_phase() {
         )
         .unwrap();
         db.execute(
-            "insert into work_phase_events(project_id,phase_id,event_type,reason,next_status,created_at) values (1,?1,'closed','fixture','closed',current_timestamp)",
+            "update phase_epochs set state='closed',terminal_at=(select closed_at from work_phases where id=?1),terminal_summary='fixture complete' where id=?1",
+            params![phase.phase_id],
+        )
+        .unwrap();
+        db.execute(
+            "insert into work_phase_events(project_id,phase_id,event_type,reason,next_status,created_at) select 1,id,'closed','fixture','closed',closed_at from work_phases where id=?1",
             params![phase.phase_id],
         )
         .unwrap();

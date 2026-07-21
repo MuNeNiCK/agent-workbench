@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TaskCommand {
@@ -89,9 +89,17 @@ pub(crate) struct PhaseDependencyAddArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("dependency_owner")
+        .required(true)
+        .multiple(false)
+        .args(["work_unit", "phase"])
+))]
 pub(crate) struct PhaseDependencyListArgs {
     #[arg(long)]
-    pub(crate) work_unit: i64,
+    pub(crate) work_unit: Option<i64>,
+    #[arg(long)]
+    pub(crate) phase: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -203,6 +211,10 @@ pub(crate) struct TaskAddArgs {
     pub(crate) details: Option<String>,
     #[arg(long)]
     pub(crate) completion_condition: Option<String>,
+    #[arg(long, requires = "phase")]
+    pub(crate) under_correction_closure: Option<i64>,
+    #[arg(long, requires = "under_correction_closure")]
+    pub(crate) phase: Option<i64>,
 }
 
 #[derive(Debug, Args)]
@@ -230,8 +242,51 @@ pub(crate) struct TaskAcceptOutOfScopeArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum DecisionCommand {
     Add(DecisionAddArgs),
+    /// Apply an owner decision through the matching review, finding, or verification owner.
+    Adjudicate(DecisionAdjudicateArgs),
+    /// Inspect or apply an opaque owner-decision continuation.
+    Continuation {
+        #[command(subcommand)]
+        command: DecisionContinuationCommand,
+    },
     List(DecisionListArgs),
     Search(DecisionSearchArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DecisionContinuationCommand {
+    Show(DecisionContinuationShowArgs),
+    Apply(DecisionContinuationApplyArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionContinuationShowArgs {
+    pub(crate) continuation_handle: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionContinuationApplyArgs {
+    pub(crate) continuation_handle: String,
+    #[arg(long, value_parser = ["accepted", "rejected", "needs_evidence"])]
+    pub(crate) decision: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DecisionAdjudicateArgs {
+    #[arg(long, value_parser = ["review", "finding", "verification"])]
+    pub(crate) owner: String,
+    #[arg(long)]
+    pub(crate) target: i64,
+    #[arg(long, value_parser = ["accepted", "rejected", "needs_evidence"])]
+    pub(crate) decision: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }
 #[derive(Debug, Args)]
 pub(crate) struct DecisionAddArgs {
@@ -253,6 +308,8 @@ pub(crate) struct DecisionAddArgs {
 pub(crate) struct DecisionListArgs {
     #[arg(long)]
     pub(crate) query: Option<String>,
+    #[arg(long, conflicts_with = "query")]
+    pub(crate) topic: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -265,6 +322,7 @@ pub(crate) enum DesignCommand {
     Init(DesignInitArgs),
     Import(DesignImportArgs),
     Refresh(DesignImportArgs),
+    Inspect(DesignInspectArgs),
     Approve(DesignApproveArgs),
 }
 
@@ -280,6 +338,11 @@ pub(crate) struct DesignImportArgs {
     pub(crate) package_path: PathBuf,
     #[arg(long, default_value = "draft")]
     pub(crate) status: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DesignInspectArgs {
+    pub(crate) design_version_ref: String,
 }
 
 #[derive(Debug, Args)]
@@ -347,6 +410,10 @@ pub(crate) struct TraceDeriveTaskArgs {
     pub(crate) item_title: Option<String>,
     #[arg(long)]
     pub(crate) completion_condition: Option<String>,
+    #[arg(long)]
+    pub(crate) revise_completion_under_closure: Option<i64>,
+    #[arg(long)]
+    pub(crate) details: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -356,8 +423,12 @@ pub(crate) enum TraceDerivationCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct TraceDerivationListArgs {
+    #[arg(long, conflicts_with = "design_version")]
+    pub(crate) design: Option<i64>,
+    #[arg(long, conflicts_with = "design")]
+    pub(crate) design_version: Option<i64>,
     #[arg(long)]
-    pub(crate) design: i64,
+    pub(crate) task: Option<i64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -398,6 +469,11 @@ pub(crate) struct EvidenceAddArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct EvidenceListArgs {
+    /// Filter by a typed owner reference such as work_unit:12 or task:34.
+    #[arg(long, conflicts_with_all = ["task", "design"])]
+    pub(crate) owner: Option<String>,
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
     #[arg(long)]
     pub(crate) task: Option<i64>,
     #[arg(long)]
@@ -438,8 +514,12 @@ pub(crate) struct CoverageAddArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct CoverageListArgs {
-    #[arg(long)]
-    pub(crate) design: i64,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "design_version")]
+    pub(crate) design: Option<i64>,
+    #[arg(long, conflicts_with = "design")]
+    pub(crate) design_version: Option<i64>,
+    #[arg(long, requires = "design")]
     pub(crate) status: Option<String>,
+    #[arg(long)]
+    pub(crate) work: Option<i64>,
 }

@@ -5,15 +5,19 @@ use anyhow::Result;
 use super::args::{GateCommand, GateRunCommand};
 use agent_workbench::{
     DesignReadyCheck, ImplementationReadyCheck, NewValidationRun, ValidationGateSelection,
-    ValidationRunListQuery, add_validation_run, close_ready, design_ready, implementation_ready,
-    list_validation_runs, resume_ready, select_validation_gate,
+    ValidationRunListQuery, add_validation_run, close_ready, close_ready_for, design_ready,
+    implementation_ready, implementation_ready_for_work, list_validation_runs, resume_ready_for,
+    select_validation_gate,
 };
 
 pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
     match command {
         GateCommand::CloseReady(args) => {
             let _ = args.dry_run;
-            let outcome = close_ready(root)?;
+            let outcome = match args.work_unit_id {
+                Some(work_unit_id) => close_ready_for(root, work_unit_id)?,
+                None => close_ready(root)?,
+            };
             println!("gate: close-ready");
             println!("dry_run: true");
             if let Some(work_unit_id) = outcome.work_unit_id {
@@ -105,12 +109,14 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "-".to_string());
                     let artifact = record.artifact_path.as_deref().unwrap_or("-");
+                    let lifecycle = if record.retired { "retired" } else { "active" };
                     println!(
-                        "{} [gate={} {}:{}] usage={} snapshot={} artifact={}",
+                        "{} [gate={} {}:{}:{}] usage={} snapshot={} artifact={}",
                         record.id,
                         record.validation_gate_id,
                         record.gate_key,
                         record.result,
+                        lifecycle,
                         usage,
                         snapshot,
                         artifact
@@ -119,7 +125,7 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
         },
         GateCommand::ResumeReady(args) => {
-            let outcome = resume_ready(root, &args.maturity)?;
+            let outcome = resume_ready_for(root, args.work_unit_id, &args.maturity)?;
             println!("gate: resume-ready");
             println!("maturity: {}", args.maturity);
             println!("dry_run: true");
@@ -148,7 +154,7 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             let outcome = design_ready(
                 root,
                 DesignReadyCheck {
-                    design_version_id: args.design_version,
+                    design_version_id: args.design_version_positional.or(args.design_version),
                 },
             )?;
             println!("gate: design-ready");
@@ -171,12 +177,18 @@ pub(crate) fn handle(root: &Path, command: GateCommand) -> Result<()> {
             }
         }
         GateCommand::ImplementationReady(args) => {
-            let outcome = implementation_ready(
-                root,
-                ImplementationReadyCheck {
-                    design_version_id: args.design_version,
-                },
-            )?;
+            let outcome = match args.work_unit_id {
+                Some(work_unit_id) => {
+                    println!("selected_work_unit_id: {work_unit_id}");
+                    implementation_ready_for_work(root, work_unit_id)?
+                }
+                None => implementation_ready(
+                    root,
+                    ImplementationReadyCheck {
+                        design_version_id: args.design_version,
+                    },
+                )?,
+            };
             println!("gate: implementation-ready");
             println!("dry_run: true");
             if let Some(design_package_id) = outcome.design_package_id {

@@ -8,6 +8,9 @@ pub(crate) enum DoctorCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct DoctorValidationLinksArgs {
+    /// Diagnose one exact validation artifact.
+    #[arg(long)]
+    pub(crate) artifact: Option<String>,
     /// Explicitly run the default read-only diagnosis.
     #[arg(long, conflicts_with_all = ["repair", "audit"])]
     pub(crate) dry_run: bool,
@@ -17,6 +20,32 @@ pub(crate) struct DoctorValidationLinksArgs {
     /// List immutable validation-link repair audit records.
     #[arg(long, conflicts_with_all = ["repair", "dry_run"])]
     pub(crate) audit: bool,
+    #[command(subcommand)]
+    pub(crate) command: Option<DoctorValidationLinkCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DoctorValidationLinkCommand {
+    Repair(DoctorValidationLinkRepairArgs),
+    Retire(DoctorValidationLinkRetireArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DoctorValidationLinkRepairArgs {
+    pub(crate) artifact_ref: String,
+    #[arg(long)]
+    pub(crate) project: i64,
+    #[arg(long)]
+    pub(crate) expected_current: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DoctorValidationLinkRetireArgs {
+    pub(crate) artifact_ref: String,
+    #[arg(long)]
+    pub(crate) reason: String,
+    #[arg(long)]
+    pub(crate) expected_current: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -114,6 +143,8 @@ pub(crate) struct WorkResumeArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct WorkCloseArgs {
+    /// Close this exact work owner. Omit only when exactly one open owner exists.
+    pub(crate) work_unit_id: Option<i64>,
     #[arg(long)]
     pub(crate) summary: String,
     #[arg(long)]
@@ -169,6 +200,8 @@ pub(crate) struct WorkFollowUpArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ResumeCheckArgs {
+    /// Check this exact suspended work owner.
+    pub(crate) work_unit_id: Option<i64>,
     #[arg(long, default_value = "basic")]
     pub(crate) maturity: String,
 }
@@ -196,6 +229,8 @@ pub(crate) enum GateCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct GateResumeReadyArgs {
+    /// Evaluate this exact suspended work owner.
+    pub(crate) work_unit_id: Option<i64>,
     #[arg(long, default_value = "basic")]
     pub(crate) maturity: String,
     #[arg(long)]
@@ -204,12 +239,30 @@ pub(crate) struct GateResumeReadyArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct GateCloseReadyArgs {
+    /// Evaluate this exact work owner instead of the active-work adapter.
+    pub(crate) work_unit_id: Option<i64>,
     #[arg(long)]
     pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct StatusArgs {
+    /// Restrict the projection to one exact work owner.
+    #[arg(long)]
+    pub(crate) work: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct NextArgs {
+    /// Resolve the next action for one exact work owner.
+    #[arg(long)]
+    pub(crate) work: Option<i64>,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct GateDesignReadyArgs {
+    #[arg(value_name = "DESIGN_VERSION", conflicts_with = "design_version")]
+    pub(crate) design_version_positional: Option<i64>,
     #[arg(long)]
     pub(crate) design_version: Option<i64>,
     #[arg(long)]
@@ -218,6 +271,9 @@ pub(crate) struct GateDesignReadyArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct GateImplementationReadyArgs {
+    /// Evaluate the current design bound to this exact work owner.
+    #[arg(value_name = "WORK", conflicts_with = "design_version")]
+    pub(crate) work_unit_id: Option<i64>,
     #[arg(long)]
     pub(crate) design_version: Option<i64>,
     #[arg(long)]

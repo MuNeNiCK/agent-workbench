@@ -1,20 +1,88 @@
 use super::*;
-use crate::db::{SCHEMA_VERSION, open_ledger};
+use crate::db::{CORE_SCHEMA_VERSION, SCHEMA_VERSION, open_ledger};
 use rusqlite::params;
 use std::fs;
 
+// Library invariants are owned here by product responsibility. Product modules expose only the
+// narrow crate-visible seams required to exercise an invariant and do not contain test modules.
+
 mod database;
+mod decomposition;
 mod design;
 mod governance;
 mod identity;
 mod migration;
 mod repository;
 mod review;
+mod update;
 mod work;
 
 fn apply_test_update(root: &std::path::Path) -> UpdateApplyOutcome {
     let inspection = inspect_update(root).unwrap();
     apply_update(root, &inspection.current_identity).unwrap()
+}
+
+fn retain_core_storage_only(conn: &rusqlite::Connection) {
+    let foreign_keys: i64 = conn
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(
+        r#"
+        drop view if exists correction_decomposition_task_memberships;
+        drop trigger if exists trg_decomposition_plan_ingress_links_insert;
+        drop trigger if exists trg_decomposition_plan_ingress_immutable_update;
+        drop trigger if exists trg_decomposition_plan_ingress_immutable_delete;
+        drop table if exists decomposition_plan_ingress_identities;
+        drop trigger if exists trg_finding_verification_project_insert;
+        drop trigger if exists trg_finding_verification_project_update;
+        drop table if exists finding_design_recoveries;
+        drop table if exists decomposition_reconciliation_results;
+        drop table if exists decomposition_migration_sources;
+        drop table if exists decomposition_lineage;
+        drop table if exists decomposition_reconciliation_dependencies;
+        drop table if exists decomposition_reconciliation_applications;
+        drop table if exists decomposition_reconciliation_phases;
+        drop table if exists decomposition_reconciliation_gates;
+        drop table if exists decomposition_reconciliation_checklist_items;
+        drop table if exists decomposition_reconciliation_tasks;
+        drop table if exists decomposition_application_dependencies;
+        drop table if exists decomposition_application_gates;
+        drop table if exists decomposition_application_boundaries;
+        drop table if exists decomposition_application_requirements;
+        drop table if exists decomposition_applications;
+        drop table if exists decomposition_item_checklist_boundary_gates;
+        drop table if exists decomposition_item_gates;
+        drop table if exists decomposition_item_checklist_boundaries;
+        drop table if exists decomposition_item_requirements;
+        drop table if exists decomposition_items;
+        drop table if exists decomposition_slice_dependencies;
+        drop table if exists decomposition_slices;
+        drop table if exists decomposition_plans;
+        drop trigger if exists trg_release_candidate_boundary_insert;
+        drop trigger if exists trg_release_candidate_boundary_update;
+        drop trigger if exists trg_release_candidate_boundary_delete;
+        drop table if exists release_candidate_boundaries;
+        drop table if exists release_candidate_attempts;
+        drop table if exists release_candidate_subject_revisions;
+        drop table if exists release_candidate_revisions;
+        drop table if exists release_candidate_events;
+        drop table if exists release_candidate_assets;
+        drop table if exists release_candidates;
+        drop table if exists update_receipts;
+        drop table if exists update_decisions;
+        drop table if exists update_operations;
+        delete from schema_migrations where version > 13;
+        create view correction_decomposition_task_memberships as
+        select cast(null as integer) correction_application_id,
+               cast(null as integer) task_id
+        where 0;
+        "#,
+    )
+    .unwrap();
+    conn.execute_batch(crate::db::REVIEW_INTEGRITY_SQL).unwrap();
+    conn.pragma_update(None, "foreign_keys", foreign_keys != 0)
+        .unwrap();
 }
 
 fn add_review_run(

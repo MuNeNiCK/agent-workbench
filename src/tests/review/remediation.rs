@@ -1,6 +1,390 @@
 use super::*;
 
 #[test]
+fn source_correction_rejects_repository_authority_without_publishing_a_closure() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "reject repository source correction", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "design_review",
+            required: true,
+            stage: "design-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("source correction must remain Markdown-only"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_finding",
+            severity: "high",
+            description: "repository authority escaped the source-correction registry",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+
+    for surface in [
+        "repository:create:src/new.rs",
+        "repository:edit:src/lib.rs",
+        "repository:delete:tests/obsolete.rs",
+    ] {
+        let error = add_closure(
+            temp.path(),
+            NewClosure {
+                finding_id: finding.finding_id,
+                design_invariant: "source correction remains in its declared Markdown registry",
+                design_citations: None,
+                implementation_evidence: None,
+                affected_surfaces: Some(surface),
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: Some("correct only a declared Markdown surface"),
+                tests_or_gates: Some("source correction contract"),
+                verification_plan: Some("review the exact Markdown correction"),
+                closed_by_commit: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not source-correction authority"),
+            "{surface}: {error:#}"
+        );
+    }
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from closures where finding_id=?1",
+            [finding.finding_id],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(conn);
+
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "source correction remains in its declared Markdown registry",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("docs:create:docs/correction.md"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("publish the declared Markdown correction"),
+            tests_or_gates: Some("source correction contract"),
+            verification_plan: Some("review the exact Markdown correction"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select target from correction_tokens where closure_id=?1",
+            [closure.closure_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "docs:docs/correction.md"
+    );
+}
+
+#[test]
+fn project_local_verification_claim_remains_advisory_until_owner_adjudication() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "project-local verification", None).unwrap();
+    let policy = add_review_policy(
+        temp.path(),
+        NewReviewPolicy {
+            name: "project-local-verification",
+            review_type: "implementation_review",
+            max_fresh_agents: 1,
+            max_resume_agents: 2,
+            max_parallel_agents: 1,
+            required_consecutive_clean_fresh_runs: 1,
+            required_consecutive_clean_resume_runs: 0,
+            stop_on_severity: "none",
+            allow_resume_review: true,
+            allow_fresh_review: true,
+            allow_new_findings_in_resume: false,
+            on_max_agents_exceeded: "block",
+            run_count_scope: "review_plan",
+            default_run_mode: "fresh",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: Some(policy.review_policy_id),
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let source = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("found issue"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: Some("source-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("source-review:1"),
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: source.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "verify independently",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "finding is valid",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "verification remains advisory",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review/orchestration.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("publish a project-local verification claim"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("independent exact-attempt verification"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    remediate_work(temp.path(), finding.finding_id).unwrap();
+    let prior_attempt = ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: closure.closure_id,
+            implementation_evidence: "fixed",
+            tests_or_gates: "tests pass",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let prior_review = add_review_run_with_finding_result(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "resume",
+            run_purpose: "finding_fix_verification",
+            target_ref: Some(&prior_attempt.context_ref),
+            prompt_deviations: None,
+            result_summary: Some("first attempt is not fixed"),
+            new_findings_count: 0,
+            carried_findings_checked: 1,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: Some("prior-verification-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("verification-output:prior"),
+        },
+        Some("not_fixed"),
+    )
+    .unwrap();
+    add_finding_verification(
+        temp.path(),
+        NewFindingVerification {
+            review_run_id: prior_review.review_run_id,
+            finding_id: finding.finding_id,
+            closure_id: closure.closure_id,
+            result: "not_fixed",
+            notes: Some("first attempt needs another correction"),
+        },
+    )
+    .unwrap();
+    adjudicate_verification(
+        temp.path(),
+        prior_review.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        prior_attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "owner accepts the not-fixed result",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    let attempt = ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: closure.closure_id,
+            implementation_evidence: "fixed on the next attempt",
+            tests_or_gates: "tests pass again",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let provenance = issue_review_provenance(
+        temp.path(),
+        ReviewProvenanceIssue {
+            reviewer_ref: "verification-reviewer",
+            review_plan_id: plan.review_plan_id,
+            target_context: &attempt.context_ref,
+            provenance_kind: "external_agent",
+            purpose: "finding_fix_verification",
+            source_reference: "verification-output:1",
+            idempotency_key: "verification-provenance",
+        },
+    )
+    .unwrap();
+    let invocation = request_invocation(
+        temp.path(),
+        InvocationRequest {
+            review_plan_id: plan.review_plan_id,
+            target_context: &attempt.context_ref,
+            reviewer_ref: "verification-reviewer",
+            provenance_handle: &provenance.provenance_handle,
+            purpose: "finding_fix_verification",
+            idempotency_key: "verification-invocation",
+            expected_plan_current: "open",
+        },
+    )
+    .unwrap();
+    let mismatched = transition_invocation(
+        temp.path(),
+        InvocationTransitionRequest {
+            invocation_id: invocation.invocation_id,
+            expected_current: "requested",
+            idempotency_key: "verification-wrong-attempt",
+            outcome: InvocationTerminal::CompleteVerification {
+                claim: "verified",
+                attempt: prior_attempt.attempt_id,
+                summary: "wrong prior attempt",
+            },
+        },
+    )
+    .unwrap_err();
+    assert!(
+        mismatched
+            .to_string()
+            .contains("does not match the invocation target")
+    );
+    let claim = transition_invocation(
+        temp.path(),
+        InvocationTransitionRequest {
+            invocation_id: invocation.invocation_id,
+            expected_current: "requested",
+            idempotency_key: "verification-complete",
+            outcome: InvocationTerminal::CompleteVerification {
+                claim: "verified",
+                attempt: attempt.attempt_id,
+                summary: "exact attempt verified",
+            },
+        },
+    )
+    .unwrap();
+    let replay = transition_invocation(
+        temp.path(),
+        InvocationTransitionRequest {
+            invocation_id: invocation.invocation_id,
+            expected_current: "requested",
+            idempotency_key: "verification-complete",
+            outcome: InvocationTerminal::CompleteVerification {
+                claim: "verified",
+                attempt: attempt.attempt_id,
+                summary: "exact attempt verified",
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(claim.review_run_id, replay.review_run_id);
+    assert!(replay.already_applied);
+    assert_eq!(list_findings(temp.path(), Some("open")).unwrap().len(), 1);
+
+    adjudicate_verification(
+        temp.path(),
+        claim.review_run_id.unwrap(),
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "owner accepts the independent claim",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    assert!(list_findings(temp.path(), Some("open")).unwrap().is_empty());
+}
+
+#[test]
 fn close_ready_finding_allows_remediation_then_requires_exact_resume_verification() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -668,7 +1052,7 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
         .unwrap();
     assert_eq!(advisory_state, (None, "awaiting_verification".into()));
     drop(conn);
-    adjudicate_verification(
+    let verified_decision = adjudicate_verification(
         temp.path(),
         verified_resume.review_run_id,
         finding.finding_id,
@@ -684,6 +1068,28 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
     assert_eq!(
         list_findings(temp.path(), None).unwrap()[0].status,
         "closed"
+    );
+    let terminal_finding = &list_findings(temp.path(), None).unwrap()[0];
+    assert_eq!(terminal_finding.terminal_epoch, Some(1));
+    assert_eq!(
+        terminal_finding.current_decision_handle.as_deref(),
+        Some(verified_decision.decision_handle.as_str())
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        "drop trigger trg_finding_epoch_immutable_delete;
+         delete from finding_decision_epochs where finding_id=1;",
+    )
+    .unwrap();
+    drop(conn);
+    let inspection = inspect_update(temp.path()).unwrap();
+    assert_eq!(inspection.status, "ready_to_apply");
+    apply_update(temp.path(), &inspection.current_identity).unwrap();
+    let migrated_finding = &list_findings(temp.path(), None).unwrap()[0];
+    assert_eq!(migrated_finding.terminal_epoch, Some(1));
+    assert_eq!(
+        migrated_finding.current_decision_handle.as_deref(),
+        Some(verified_decision.decision_handle.as_str())
     );
     assert!(classify_finding(temp.path(), finding.finding_id, "needs_evidence").is_err());
     add_review_run(
@@ -707,6 +1113,64 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
     )
     .unwrap();
     assert_eq!(list_review_plans(temp.path()).unwrap()[0].status, "clean");
+
+    let reopened = reopen_finding_epoch(
+        temp.path(),
+        finding.finding_id,
+        1,
+        AdjudicationInput {
+            decision: "reopened",
+            reason: "verified result was later found to be incorrect",
+            expected_current: &verified_decision.decision_handle,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let epochs = conn
+        .prepare(
+            "select epoch_number,status,terminal_decision_id,reopen_decision_id from finding_decision_epochs where finding_id=?1 order by epoch_number",
+        )
+        .unwrap()
+        .query_map(params![finding.finding_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let verified_decision_id: i64 = conn
+        .query_row(
+            "select id from owner_decisions where decision_handle=?1",
+            params![verified_decision.decision_handle],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let reopen_decision_id: i64 = conn
+        .query_row(
+            "select id from owner_decisions where decision_handle=?1",
+            params![reopened.decision_handle],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        epochs,
+        vec![
+            (1, "terminal".into(), Some(verified_decision_id), None),
+            (2, "open".into(), None, Some(reopen_decision_id)),
+        ]
+    );
+    let recovered: (String, String) = conn
+        .query_row(
+            "select f.lifecycle_state,c.status from findings f join closures c on c.finding_id=f.id where f.id=?1",
+            params![finding.finding_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(recovered, ("open".into(), "superseded".into()));
 }
 
 #[test]

@@ -60,6 +60,29 @@ pub(crate) fn create_phase_in(
         ],
     )?;
     let phase_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into phase_epochs(
+          id,project_id,work_unit_id,phase_work_unit_id,design_version_id,phase_key,
+          title,kind,phase_order,state,reason,created_at
+        ) values(?1,?2,?3,null,?4,?5,?6,?7,?8,'open',?9,current_timestamp)
+        "#,
+        params![
+            phase_id,
+            project_id,
+            input.work_unit_id,
+            input.design_version_id,
+            input.key,
+            input.title,
+            input.kind,
+            input.order,
+            input.reason
+        ],
+    )?;
+    conn.execute(
+        "insert into phase_epoch_sources(project_id,phase_epoch_id,source_phase_id,source_generation,created_at) values(?1,?2,?3,15,current_timestamp)",
+        params![project_id, phase_id, phase_id],
+    )?;
     insert_phase_event(
         conn,
         project_id,
@@ -82,9 +105,15 @@ pub fn list_phases(root: &Path, work_unit_id: i64) -> Result<Vec<WorkPhaseRecord
         r#"
         select
             p.id, p.work_unit_id, p.phase_work_unit_id, p.design_version_id,
-            p.phase_key, p.title, p.kind, p.phase_order, p.status,
+            p.phase_key, p.title, p.kind, p.phase_order,
+            case when exists(
+              select 1 from phase_scope_dispositions disposition
+              where disposition.phase_epoch_id=p.id
+                and disposition.scope_kind='whole_phase'
+                and disposition.state='accepted_out_of_scope'
+            ) then 'accepted_out_of_scope' else p.state end,
             count(m.task_id)
-        from work_phases p
+        from phase_epochs p
         left join work_phase_task_memberships m on m.phase_id = p.id
         where p.project_id = ?1 and p.work_unit_id = ?2
         group by p.id
@@ -102,9 +131,15 @@ pub fn show_phase(root: &Path, phase_id: i64) -> Result<WorkPhaseRecord> {
         r#"
         select
             p.id, p.work_unit_id, p.phase_work_unit_id, p.design_version_id,
-            p.phase_key, p.title, p.kind, p.phase_order, p.status,
+            p.phase_key, p.title, p.kind, p.phase_order,
+            case when exists(
+              select 1 from phase_scope_dispositions disposition
+              where disposition.phase_epoch_id=p.id
+                and disposition.scope_kind='whole_phase'
+                and disposition.state='accepted_out_of_scope'
+            ) then 'accepted_out_of_scope' else p.state end,
             count(m.task_id)
-        from work_phases p
+        from phase_epochs p
         left join work_phase_task_memberships m on m.phase_id = p.id
         where p.project_id = ?1 and p.id = ?2
         group by p.id
@@ -133,18 +168,111 @@ pub(crate) fn assign_task_to_phase_in(
     task_id: i64,
 ) -> Result<PhaseTaskOutcome> {
     let phase = load_phase(conn, project_id, phase_id)?;
-    let task_work_unit_id: Option<i64> = conn
+    if !matches!(phase.status.as_str(), "open" | "blocked") {
+        bail!("phase assignment requires a current open or blocked phase");
+    }
+    let (task_work_unit_id, task_status): (Option<i64>, String) = conn
         .query_row(
-            "select work_unit_id from tasks where id = ?1",
+            "select work_unit_id,status from current_tasks where id = ?1",
             params![task_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .context("task not found")?;
+        .context("current task not found")?;
+    if !matches!(task_status.as_str(), "open" | "blocked") {
+        bail!("phase assignment requires a current open or blocked task");
+    }
     let allowed_child = phase.phase_work_unit_id;
     if task_work_unit_id != Some(phase.work_unit_id) && task_work_unit_id != allowed_child {
         bail!("phase assignment task must belong to the phase aggregate or phase work unit");
     }
+    let (task_identity_id, revision_id) =
+        crate::task_identity::materialize_manual_task(conn, project_id, task_id)?;
+    let predecessor = conn
+        .query_row(
+            "select id,phase_epoch_id from phase_epoch_memberships where project_id=?1 and task_identity_id=?2 and state='current'",
+            params![project_id, task_identity_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    if predecessor.is_some_and(|(_, current_phase)| current_phase == phase_id) {
+        return Ok(PhaseTaskOutcome { phase_id, task_id });
+    }
+    if let Some((membership_id, _)) = predecessor {
+        conn.execute(
+            "update phase_epoch_memberships set state='superseded',terminal_at=current_timestamp where id=?1 and state='current'",
+            [membership_id],
+        )?;
+    }
+    let source_membership_id =
+        publish_task_membership_shadow_in(conn, project_id, phase_id, task_id)?;
+    let canonical_membership_id = conn
+        .query_row(
+            "select id from task_phase_memberships where project_id=?1 and task_identity_id=?2 order by id desc limit 1",
+            params![project_id, task_identity_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let state = task_status.as_str();
+    let canonical_membership_id = match canonical_membership_id {
+        Some(id) => {
+            conn.execute(
+                "update task_phase_memberships set phase_id=?1,boundary_revision_id=null,state=?2,created_at=current_timestamp where id=?3",
+                params![phase_id, state, id],
+            )?;
+            id
+        }
+        None => {
+            conn.execute(
+                "insert into task_phase_memberships(project_id,phase_id,task_identity_id,boundary_revision_id,state,created_at) values(?1,?2,?3,null,?4,current_timestamp)",
+                params![project_id, phase_id, task_identity_id, state],
+            )?;
+            conn.last_insert_rowid()
+        }
+    };
+    conn.execute(
+        r#"
+        insert into task_phase_membership_sources(
+          project_id,task_phase_membership_id,source_membership_id,created_at
+        ) values(?1,?2,?3,current_timestamp)
+        on conflict(project_id,source_membership_id) do update set
+          task_phase_membership_id=excluded.task_phase_membership_id,
+          created_at=excluded.created_at
+        "#,
+        params![project_id, canonical_membership_id, source_membership_id],
+    )?;
+    conn.execute(
+        "insert into phase_epoch_memberships(project_id,phase_epoch_id,task_identity_id,boundary_revision_id,state,predecessor_membership_id,created_at,terminal_at) values(?1,?2,?3,?4,'current',?5,current_timestamp,null)",
+        params![
+            project_id,
+            phase_id,
+            task_identity_id,
+            revision_id,
+            predecessor.map(|(id, _)| id)
+        ],
+    )?;
+    let epoch_membership_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into phase_epoch_membership_sources(
+          project_id,phase_epoch_membership_id,source_membership_id,source_generation,created_at
+        ) values(?1,?2,?3,15,current_timestamp)
+        on conflict(source_membership_id) do update set
+          phase_epoch_membership_id=excluded.phase_epoch_membership_id,
+          source_generation=excluded.source_generation,
+          created_at=excluded.created_at
+        "#,
+        params![project_id, epoch_membership_id, source_membership_id],
+    )?;
+    Ok(PhaseTaskOutcome { phase_id, task_id })
+}
+
+pub(crate) fn publish_task_membership_shadow_in(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    phase_id: i64,
+    task_id: i64,
+) -> Result<i64> {
     conn.execute(
         r#"
         insert into work_phase_task_memberships(project_id, phase_id, task_id, assigned_at)
@@ -155,6 +283,11 @@ pub(crate) fn assign_task_to_phase_in(
             assigned_at = excluded.assigned_at
         "#,
         params![project_id, phase_id, task_id],
+    )?;
+    let source_membership_id: i64 = conn.query_row(
+        "select id from work_phase_task_memberships where project_id=?1 and task_id=?2",
+        params![project_id, task_id],
+        |row| row.get(0),
     )?;
     insert_phase_event(
         conn,
@@ -168,7 +301,7 @@ pub(crate) fn assign_task_to_phase_in(
         None,
         None,
     )?;
-    Ok(PhaseTaskOutcome { phase_id, task_id })
+    Ok(source_membership_id)
 }
 
 pub fn add_phase_dependency(
@@ -212,6 +345,26 @@ pub(crate) fn add_phase_dependency_in(
         ],
     )?;
     let dependency_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into phase_epoch_dependencies(
+          id,project_id,from_phase_epoch_id,to_phase_epoch_id,dependency_type,
+          reason,state,created_at
+        ) values(?1,?2,?3,?4,?5,?6,'open',current_timestamp)
+        "#,
+        params![
+            dependency_id,
+            project_id,
+            input.from_phase_id,
+            input.to_phase_id,
+            input.dependency_type,
+            input.reason
+        ],
+    )?;
+    conn.execute(
+        "insert into phase_epoch_dependency_sources(project_id,phase_epoch_dependency_id,source_dependency_id,source_generation,created_at) values(?1,?2,?3,15,current_timestamp)",
+        params![project_id, dependency_id, dependency_id],
+    )?;
     insert_phase_event(
         conn,
         project_id,
@@ -231,35 +384,53 @@ pub fn list_phase_dependencies(
     root: &Path,
     work_unit_id: i64,
 ) -> Result<Vec<PhaseDependencyRecord>> {
+    list_phase_dependencies_filtered(
+        root,
+        PhaseDependencyListFilter {
+            work_unit_id: Some(work_unit_id),
+            phase_id: None,
+        },
+    )
+}
+
+pub fn list_phase_dependencies_filtered(
+    root: &Path,
+    filter: PhaseDependencyListFilter,
+) -> Result<Vec<PhaseDependencyRecord>> {
     let conn = open_existing_project(root)?;
     let project_id = project_id(&conn)?;
     let mut stmt = conn.prepare(
         r#"
         select
-            d.id, d.from_phase_id, fp.phase_key, d.to_phase_id, tp.phase_key,
-            d.dependency_type, d.status, d.reason, d.evidence_ref,
+            d.id, d.from_phase_epoch_id, fp.phase_key, d.to_phase_epoch_id, tp.phase_key,
+            d.dependency_type, d.state, d.reason, d.evidence_ref,
             d.authority_event_id
-        from work_phase_dependencies d
-        join work_phases fp on fp.id = d.from_phase_id
-        join work_phases tp on tp.id = d.to_phase_id
-        where d.project_id = ?1 and fp.work_unit_id = ?2
+        from phase_epoch_dependencies d
+        join phase_epochs fp on fp.id = d.from_phase_epoch_id
+        join phase_epochs tp on tp.id = d.to_phase_epoch_id
+        where d.project_id = ?1
+          and (?2 is null or fp.work_unit_id = ?2)
+          and (?3 is null or fp.id = ?3 or tp.id = ?3)
         order by d.id
         "#,
     )?;
-    let rows = stmt.query_map(params![project_id, work_unit_id], |row| {
-        Ok(PhaseDependencyRecord {
-            id: row.get(0)?,
-            from_phase_id: row.get(1)?,
-            from_phase_key: row.get(2)?,
-            to_phase_id: row.get(3)?,
-            to_phase_key: row.get(4)?,
-            dependency_type: row.get(5)?,
-            status: row.get(6)?,
-            reason: row.get(7)?,
-            evidence_ref: row.get(8)?,
-            authority_event_id: row.get(9)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![project_id, filter.work_unit_id, filter.phase_id],
+        |row| {
+            Ok(PhaseDependencyRecord {
+                id: row.get(0)?,
+                from_phase_id: row.get(1)?,
+                from_phase_key: row.get(2)?,
+                to_phase_id: row.get(3)?,
+                to_phase_key: row.get(4)?,
+                dependency_type: row.get(5)?,
+                status: row.get(6)?,
+                reason: row.get(7)?,
+                evidence_ref: row.get(8)?,
+                authority_event_id: row.get(9)?,
+            })
+        },
+    )?;
     collect_rows(rows)
 }
 
@@ -498,6 +669,10 @@ pub fn phase_rescope(root: &Path, input: PhaseRescope<'_>) -> Result<PhaseRescop
         "update work_phases set phase_work_unit_id = ?1, status = 'split' where id = ?2",
         params![target_work_unit_id, phase.id],
     )?;
+    tx.execute(
+        "update phase_epochs set phase_work_unit_id=?1,state='split',terminal_at=current_timestamp where id=?2 and state in ('open','blocked')",
+        params![target_work_unit_id, phase.id],
+    )?;
     insert_phase_event(
         &tx,
         project_id,
@@ -562,6 +737,10 @@ pub fn phase_split(root: &Path, input: PhaseSplit<'_>) -> Result<PhaseRescopeOut
     move_phase_trace_bundle(&tx, project_id, &phase, child_work_unit_id)?;
     tx.execute(
         "update work_phases set phase_work_unit_id = ?1, status = 'split' where id = ?2",
+        params![child_work_unit_id, phase.id],
+    )?;
+    tx.execute(
+        "update phase_epochs set phase_work_unit_id=?1,state='split',terminal_at=current_timestamp where id=?2 and state in ('open','blocked')",
         params![child_work_unit_id, phase.id],
     )?;
     insert_phase_event(
@@ -703,12 +882,49 @@ pub fn close_phase(root: &Path, phase_id: i64, summary: &str) -> Result<PhaseClo
         params![summary, phase_id],
     )?;
     tx.execute(
+        "update phase_epochs set state='closed',terminal_at=current_timestamp,terminal_summary=?1 where id=?2",
+        params![summary, phase_id],
+    )?;
+    tx.execute(
         r#"
         update work_phase_dependencies
         set status = 'satisfied', resolved_at = current_timestamp, evidence_ref = ?1
         where from_phase_id = ?2 and status = 'open'
         "#,
         params![format!("phase:{phase_id}:closed"), phase_id],
+    )?;
+    tx.execute(
+        r#"
+        update phase_epoch_dependencies
+        set state='satisfied',terminal_at=current_timestamp,evidence_ref=?1
+        where from_phase_epoch_id=?2 and state='open'
+        "#,
+        params![format!("phase:{phase_id}:closed"), phase_id],
+    )?;
+    tx.execute(
+        r#"
+        update phase_epoch_memberships
+        set state='closed',terminal_at=current_timestamp,
+            boundary_revision_id=(
+              select revision.id from task_revisions revision
+              where revision.task_identity_id=phase_epoch_memberships.task_identity_id
+                and revision.status='current'
+            )
+        where phase_epoch_id=?1 and state='current'
+        "#,
+        [phase_id],
+    )?;
+    tx.execute(
+        r#"
+        update task_phase_memberships
+        set state='closed',boundary_revision_id=(
+          select revision.id from task_revisions revision
+          where revision.task_identity_id=task_phase_memberships.task_identity_id
+            and revision.status='current'
+        )
+        where phase_id=?1 and state in ('open','blocked')
+        "#,
+        [phase_id],
     )?;
     insert_phase_event(
         &tx,
@@ -753,6 +969,23 @@ pub fn accept_phase_out_of_scope(
             phase.status
         );
     }
+    tx.execute(
+        "update phase_epochs set state='superseded',authority_event_id=?1,terminal_at=current_timestamp,terminal_summary=?2 where id=?3 and state in ('open','blocked')",
+        params![authority_event_id, reason, phase_id],
+    )?;
+    tx.execute(
+        "insert into phase_scope_dispositions(project_id,phase_epoch_id,scope_kind,task_identity_id,state,reason,authority_event_id,created_at) values(?1,?2,'whole_phase',null,'accepted_out_of_scope',?3,?4,current_timestamp)",
+        params![project_id, phase_id, reason, authority_event_id],
+    )?;
+    let disposition_id = tx.last_insert_rowid();
+    tx.execute(
+        "insert into phase_scope_disposition_sources(project_id,phase_scope_disposition_id,source_phase_id,source_generation,created_at) values(?1,?2,?3,15,current_timestamp)",
+        params![project_id, disposition_id, phase_id],
+    )?;
+    tx.execute(
+        "update phase_epoch_memberships set state='out_of_scope',terminal_at=current_timestamp where phase_epoch_id=?1 and state='current'",
+        [phase_id],
+    )?;
     insert_phase_event(
         &tx,
         project_id,
@@ -794,8 +1027,9 @@ pub fn add_phase_review_target(
         "#,
         params![project_id, review_plan_id, phase_id],
     )?;
+    let review_plan_target_id = conn.last_insert_rowid();
     Ok(PhaseReviewTargetOutcome {
-        review_plan_target_id: conn.last_insert_rowid(),
+        review_plan_target_id,
     })
 }
 
@@ -839,15 +1073,34 @@ pub(crate) fn update_dependency_status_in(
     let phase_id: i64 = conn
         .query_row(
             r#"
-            select to_phase_id
-            from work_phase_dependencies
-            where id = ?1 and project_id = ?2 and status = 'open'
+            select to_phase_epoch_id
+            from phase_epoch_dependencies
+            where id = ?1 and project_id = ?2 and state = 'open'
             "#,
             params![dependency_id, project_id],
             |row| row.get(0),
         )
         .optional()?
         .context("open phase dependency not found")?;
+    let changed = conn.execute(
+        r#"
+        update phase_epoch_dependencies
+        set state=?1,reason=?2,evidence_ref=?3,authority_event_id=?4,
+            terminal_at=current_timestamp
+        where id=?5 and project_id=?6 and state='open'
+        "#,
+        params![
+            status,
+            reason,
+            evidence_ref,
+            authority_event_id,
+            dependency_id,
+            project_id
+        ],
+    )?;
+    if changed != 1 {
+        bail!("open phase dependency changed before transition");
+    }
     conn.execute(
         r#"
         update work_phase_dependencies

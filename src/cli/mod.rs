@@ -1,5 +1,5 @@
-use anyhow::Result;
-use clap::Parser;
+use anyhow::{Result, bail};
+use clap::{CommandFactory, Parser};
 use std::env;
 
 mod args;
@@ -13,15 +13,74 @@ mod migration;
 mod phases;
 mod planning;
 mod records;
+mod release_ops;
 mod review_ops;
 mod work;
 
 use args::*;
 
 use agent_workbench::{
-    NextAction, OwnerAction, PhaseBlocker, ProjectIntegrityStatus, apply_update, init_project,
-    inspect_update, next_action, project_status, restore_update,
+    NextAction, OwnerAction, PhaseBlocker, ProjectIntegrityStatus, UpdateDecisionAuthority,
+    UpdateRecoveryAuthorityInput, apply_update, apply_update_operation,
+    decide_update_with_authority, init_project_with_name, inspect_update, next_action_for,
+    project_status_for, record_update_recovery_authority, restore_update, restore_update_operation,
 };
+
+fn reject_with_inspection_actions(reason: &str, next_actions: &[String]) -> Result<()> {
+    let actions = next_actions
+        .iter()
+        .map(|action| format!("next: {action}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!("{reason}\n{actions}")
+}
+
+fn project_public_update_result<T>(
+    root: &std::path::Path,
+    operation: &str,
+    expected_current: &str,
+    retry: &str,
+    result: Result<T>,
+) -> Result<T> {
+    result.map_err(|error| {
+        let message = error.to_string();
+        let is_public_contract_error = message.lines().any(|line| line.starts_with("next: "))
+            || message.contains("; run agent-workbench ")
+            || [
+                "inspection handle ",
+                "backup handle ",
+                "expected current identity ",
+                "idempotency key ",
+            ]
+            .iter()
+            .any(|prefix| message.starts_with(prefix));
+        if is_public_contract_error {
+            return error;
+        }
+        match inspect_update(root) {
+            Ok(inspection) => {
+                let actions = if inspection.current_identity == expected_current {
+                    inspection.next_actions
+                } else {
+                    vec![retry.to_string()]
+                };
+                anyhow::anyhow!(
+                    "update {operation} could not be completed\nupdate_status: {}\n{}",
+                    inspection.status,
+                    actions
+                        .iter()
+                        .map(|action| format!("next: {action}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            }
+            Err(_) => anyhow::anyhow!(
+                "update {operation} could not be completed\nupdate_status: owner_input_required\nnext: agent-workbench update inspect"
+            ),
+        }
+    })
+}
+
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = match cli.root {
@@ -36,35 +95,146 @@ pub(crate) fn run() -> Result<()> {
 
     let result: Result<()> = (|| {
         match cli.command {
-            Command::Init => {
-                init_project(&root)?;
+            Command::Init { name } => {
+                init_project_with_name(&root, name.as_deref())?;
                 println!("initialized project state");
             }
             Command::Update { command } => match command {
                 UpdateCommand::Inspect => {
                     let inspection = inspect_update(&root)?;
+                    println!("inspection_handle: {}", inspection.inspection_handle);
                     println!("current_identity: {}", inspection.current_identity);
-                    if inspection.pending_changes.is_empty() {
-                        println!("update_required: false");
-                    } else {
-                        println!("update_required: true");
-                        for change in inspection.pending_changes {
-                            println!("pending_change: {change}");
-                        }
+                    println!("update_status: {}", inspection.status);
+                    println!("update_required: {}", inspection.status != "current");
+                    for capability in inspection.preserved_capabilities {
+                        println!("preserved_capability: {capability}");
                     }
                     for backup in inspection.restorable_backups {
                         println!("backup: {backup}");
                     }
+                    for choice in inspection.decision_choices {
+                        println!("decision_choice: {choice}");
+                    }
+                    for next in inspection.next_actions {
+                        println!("next: {next}");
+                    }
+                }
+                UpdateCommand::AuthorityRecord(args) => {
+                    let outcome = record_update_recovery_authority(
+                        &root,
+                        UpdateRecoveryAuthorityInput {
+                            inspection_handle: &args.inspection_handle,
+                            choice: &args.choice,
+                            statement: &args.statement,
+                            provenance: &args.provenance,
+                            provenance_ref: &args.provenance_ref,
+                            expected_current: &args.expected_current,
+                            idempotency_key: &args.idempotency_key,
+                        },
+                    )?;
+                    println!("authority_handle: {}", outcome.authority_handle);
+                    println!("already_recorded: {}", outcome.already_recorded);
+                    println!("next: {}", outcome.next_action);
+                }
+                UpdateCommand::Decide(args) => {
+                    let authority = match (args.authority, args.recovery_authority.as_deref()) {
+                        (Some(authority), None) => UpdateDecisionAuthority::ProjectEvent(authority),
+                        (None, Some(authority)) => UpdateDecisionAuthority::Recovery(authority),
+                        _ => unreachable!("clap enforces the authority sum"),
+                    };
+                    let outcome = decide_update_with_authority(
+                        &root,
+                        &args.inspection_handle,
+                        &args.choice,
+                        authority,
+                        &args.reason,
+                        &args.expected_current,
+                    )?;
+                    println!("inspection_handle: {}", outcome.inspection_handle);
+                    println!("decision_handle: {}", outcome.decision_handle);
+                    println!("already_applied: {}", outcome.already_applied);
+                    println!("next: {}", outcome.next_action);
                 }
                 UpdateCommand::Apply(args) => {
-                    let outcome = apply_update(&root, &args.expected_current)?;
+                    let outcome = match (&args.inspection_handle, &args.idempotency_key) {
+                        (Some(inspection_handle), Some(idempotency_key)) => {
+                            let retry = format!(
+                                "agent-workbench update apply {inspection_handle} --expected-current {} --idempotency-key {idempotency_key}",
+                                args.expected_current
+                            );
+                            project_public_update_result(
+                                &root,
+                                "apply",
+                                &args.expected_current,
+                                &retry,
+                                apply_update_operation(
+                                    &root,
+                                    inspection_handle,
+                                    &args.expected_current,
+                                    idempotency_key,
+                                ),
+                            )?
+                        }
+                        (None, None) => {
+                            let retry = format!(
+                                "agent-workbench update apply --expected-current {}",
+                                args.expected_current
+                            );
+                            project_public_update_result(
+                                &root,
+                                "apply",
+                                &args.expected_current,
+                                &retry,
+                                apply_update(&root, &args.expected_current),
+                            )?
+                        }
+                        _ => {
+                            let inspection = inspect_update(&root)?;
+                            reject_with_inspection_actions(
+                                "update apply requires either the established form or the complete inspected form",
+                                &inspection.next_actions,
+                            )?;
+                            unreachable!()
+                        }
+                    };
+                    println!("operation_handle: {}", outcome.operation_handle);
                     println!("source_identity: {}", outcome.source_identity);
                     println!("result_identity: {}", outcome.result_identity);
                     println!("backup_identity: {}", outcome.backup_identity);
                     println!("already_applied: {}", outcome.already_applied);
                 }
                 UpdateCommand::Restore(args) => {
-                    let outcome = restore_update(&root, &args.backup, &args.expected_current)?;
+                    let outcome = if let Some(idempotency_key) = &args.idempotency_key {
+                        let retry = format!(
+                            "agent-workbench update restore --backup {} --expected-current {} --idempotency-key {idempotency_key}",
+                            args.backup, args.expected_current
+                        );
+                        project_public_update_result(
+                            &root,
+                            "restore",
+                            &args.expected_current,
+                            &retry,
+                            restore_update_operation(
+                                &root,
+                                &args.backup,
+                                &args.expected_current,
+                                idempotency_key,
+                            ),
+                        )?
+                    } else {
+                        let retry = format!(
+                            "agent-workbench update restore --backup {} --expected-current {}",
+                            args.backup, args.expected_current
+                        );
+                        project_public_update_result(
+                            &root,
+                            "restore",
+                            &args.expected_current,
+                            &retry,
+                            restore_update(&root, &args.backup, &args.expected_current),
+                        )?
+                    };
+                    println!("operation_handle: {}", outcome.operation_handle);
                     println!("restored_identity: {}", outcome.restored_identity);
                     println!(
                         "recovery_backup_identity: {}",
@@ -73,13 +243,17 @@ pub(crate) fn run() -> Result<()> {
                     println!("already_applied: {}", outcome.already_applied);
                 }
             },
-            Command::Status => {
-                let status = project_status(&root)?;
+            Command::Operator { command } => release_ops::handle(&root, command)?,
+            Command::Status(args) => {
+                let status = project_status_for(&root, args.work)?;
                 if !status.initialized {
                     println!("not initialized");
                     println!("next: agent-workbench init");
                 } else {
                     println!("initialized");
+                    if let Some(work_unit_id) = args.work {
+                        println!("selected_work_unit_id: {work_unit_id}");
+                    }
                     println!("open_work_units: {}", status.open_work_units);
                     println!("active_activations: {}", status.active_activations);
                     print_project_integrity(&status.project_integrity);
@@ -120,7 +294,7 @@ pub(crate) fn run() -> Result<()> {
                     }
                 }
             }
-            Command::Next => match next_action(&root)? {
+            Command::Next(args) => match next_action_for(&root, args.work)? {
                 NextAction::NotInitialized { ledger_path } => {
                     let _ = ledger_path;
                     println!("not initialized");
@@ -155,6 +329,15 @@ pub(crate) fn run() -> Result<()> {
                 NextAction::NoOpenWorkUnit => {
                     println!("no open work unit");
                     println!("next: agent-workbench work start <title>");
+                }
+                NextAction::SelectedWorkTerminal {
+                    work_unit_id,
+                    status,
+                } => {
+                    println!("selected work unit is terminal");
+                    println!("work_unit_id: {work_unit_id}");
+                    println!("status: {status}");
+                    println!("next: none");
                 }
                 NextAction::ResumeSuspended { work_unit } => {
                     println!("suspended work unit");
@@ -214,10 +397,15 @@ pub(crate) fn run() -> Result<()> {
             Command::Authority { command } => authority_ops::handle_authority(&root, command)?,
             Command::Kpt { command } => review_ops::handle_kpt(&root, command)?,
             Command::Decompose { command } => design_flow::handle_decompose(&root, command)?,
+            // Keep every Decomposition entry on the shared typed resolver and renderer.
+            Command::Decomposition { command } => {
+                design_flow::handle_decomposition(&root, command)?
+            }
             Command::Checklist { command } => design_flow::handle_checklist(&root, command)?,
             Command::Stale { command } => design_flow::handle_stale(&root, command)?,
             Command::ReviewContext(args) => design_flow::print_review_context(&root, &args)?,
             Command::Export { command } => design_flow::handle_export(&root, command)?,
+            Command::Help(args) => print_route_help(args)?,
         }
         Ok(())
     })();
@@ -225,26 +413,64 @@ pub(crate) fn run() -> Result<()> {
     result.map_err(|error| classification::classify_error(error, &root, publication))
 }
 
+fn print_route_help(args: HelpArgs) -> Result<()> {
+    let parts = match args.route {
+        Some(route) => route
+            .split(|character: char| character == '/' || character.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        None => args.route_parts,
+    };
+    let mut command = Cli::command();
+    let mut selected = &mut command;
+    for part in &parts {
+        selected = selected
+            .find_subcommand_mut(part)
+            .ok_or_else(|| anyhow::anyhow!("unknown help route: {}", parts.join(" ")))?;
+    }
+    selected.set_bin_name(format!("agent-workbench {}", parts.join(" ")));
+    selected.print_long_help()?;
+    println!();
+    Ok(())
+}
+
 fn print_project_integrity(integrity: &ProjectIntegrityStatus) {
     println!("project_integrity: {}", integrity.result);
     if integrity.result == "blocked" {
-        println!("inspect: agent-workbench doctor validation-links");
+        let action = integrity
+            .predicates
+            .iter()
+            .find(|predicate| predicate.result == "blocked")
+            .and_then(|predicate| predicate.next_action.as_deref())
+            .unwrap_or("agent-workbench doctor validation-links");
+        println!("next: {action}");
     }
 }
 
 fn print_owner_actions(owners: &[OwnerAction]) {
     println!("owner_action_count: {}", owners.len());
     for owner in owners {
-        println!("owner: {}:{}", owner.owner_type, owner.owner_id);
+        println!(
+            "owner: {}:{}",
+            owner.owner_type,
+            owner
+                .owner_handle
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| owner.owner_id.to_string())
+        );
         println!("owner_state: {}", owner.state);
         println!("owner_schedulable: {}", owner.schedulable);
         if let Some(kind) = owner.blocker_kind.as_deref() {
             println!("owner_blocker_kind: {kind}");
         }
-        if owner.next_action.contains("review-context:") {
-            println!("owner_next: agent-workbench finding list --status open");
-        } else {
-            println!("owner_next: {}", owner.next_action);
+        for action in &owner.next_actions {
+            if action.contains("review-context:") {
+                println!("owner_next: agent-workbench finding list --status open");
+            } else {
+                println!("owner_next: {action}");
+            }
         }
     }
 }
@@ -260,7 +486,12 @@ fn print_source_correction_summary(correction: &agent_workbench::SourceCorrectio
     println!("work_unit_id: {}", correction.work_unit_id);
     println!("finding_id: {}", correction.finding_id);
     println!("closure_id: {}", correction.closure_id);
-    println!("inspect: agent-workbench finding list --status open");
+    println!("description: {}", correction.description);
+    println!("affected_surfaces: {}", correction.affected_surfaces);
+    println!("fix_plan: {}", correction.fix_plan);
+    println!("tests_or_gates: {}", correction.tests_or_gates);
+    println!("verification_plan: {}", correction.verification_plan);
+    println!("next: {}", correction.next_action);
 }
 
 fn print_next_phase(work_unit: &agent_workbench::ActiveWorkUnit) {

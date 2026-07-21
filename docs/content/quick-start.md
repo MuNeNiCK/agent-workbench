@@ -101,8 +101,11 @@ decomposed tasks and checklists. After `implementation-ready` passes,
 resume suspended work, activate an open inactive work unit, or start new work.
 Design-derived implementation uses explicit implementation intent, for example
 `agent-workbench work activate --implementation --design-version <design-version-id> <work-unit-id>`.
-Start-based implementation intent is rejected; activate the work unit produced
-by `decompose design`.
+Start-based implementation intent is rejected; activate the work unit owned by
+the applied Decomposition Plan. The normal path uses `decomposition show`,
+`decomposition import`, validation or revision as directed, independent review,
+and `decomposition apply`. `decompose design` remains the automatic
+compatibility path and creates a matching applied Plan rather than bypassing it.
 For aggregate work that needs feature or milestone grouping, ask the agent to
 create work phases with `phase create`, assign tasks with `phase assign`, and
 inspect `phase inventory`. Before moving or splitting a phase, the agent should

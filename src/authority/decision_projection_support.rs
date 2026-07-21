@@ -3,7 +3,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::owner_decisions::OwnerDecisionRequest;
 
-pub(super) fn expected_current_for_target(
+pub(crate) fn expected_current_for_target(
     conn: &rusqlite::Connection,
     project: i64,
     request: &OwnerDecisionRequest<'_>,
@@ -101,7 +101,50 @@ pub(super) fn apply_finding_reopen(
         bail!("finding epoch is not terminal");
     }
     conn.execute("insert into finding_decision_epochs(project_id,finding_id,epoch_number,reopen_decision_id,status,created_at) values(?1,?2,?3,?4,'open',current_timestamp)",params![project,finding,epoch+1,owner_decision_id])?;
+    conn.execute(
+        "update closures set status='superseded',superseded_at=current_timestamp,supersession_reason='finding reopened by owner decision' where project_id=?1 and finding_id=?2 and status!='superseded'",
+        params![project, finding],
+    )?;
+    conn.execute(
+        "update correction_sessions set status='superseded',completed_at=current_timestamp where project_id=?1 and finding_id=?2 and status='active'",
+        params![project, finding],
+    )?;
+    conn.execute(
+        "update correction_tokens set status='superseded' where project_id=?1 and status='pending' and closure_id in(select id from closures where project_id=?1 and finding_id=?2)",
+        params![project, finding],
+    )?;
     conn.execute("update findings set lifecycle_state='open',status='open',close_reason=null where project_id=?1 and id=?2",params![project,finding])?;
     conn.execute("insert into finding_lifecycle_events(project_id,finding_id,owner_decision_id,from_state,to_state,effect,created_at) values(?1,?2,?3,'closed','open','authority_reopen',current_timestamp)",params![project,finding,owner_decision_id])?;
+    Ok(())
+}
+
+pub(super) fn terminalize_finding_epoch(
+    conn: &rusqlite::Connection,
+    project: i64,
+    finding: i64,
+    owner_decision_id: i64,
+) -> Result<()> {
+    let open_epoch: Option<i64> = conn
+        .query_row(
+            "select max(epoch_number) from finding_decision_epochs where project_id=?1 and finding_id=?2 and status='open'",
+            params![project, finding],
+            |row| row.get(0),
+        )?;
+    if let Some(epoch) = open_epoch {
+        conn.execute(
+            "update finding_decision_epochs set terminal_decision_id=?1,status='terminal' where project_id=?2 and finding_id=?3 and epoch_number=?4 and status='open'",
+            params![owner_decision_id, project, finding, epoch],
+        )?;
+    } else {
+        let epoch: i64 = conn.query_row(
+            "select coalesce(max(epoch_number),0)+1 from finding_decision_epochs where project_id=?1 and finding_id=?2",
+            params![project, finding],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "insert into finding_decision_epochs(project_id,finding_id,epoch_number,terminal_decision_id,status,created_at) values(?1,?2,?3,?4,'terminal',current_timestamp)",
+            params![project, finding, epoch, owner_decision_id],
+        )?;
+    }
     Ok(())
 }

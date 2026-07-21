@@ -8,26 +8,45 @@ use agent_workbench::*;
 pub(crate) fn handle_authority(root: &Path, command: AuthorityCommand) -> Result<()> {
     match command {
         AuthorityCommand::Add(args) => {
-            let event_type = match args.authority_type.as_str() {
-                "design" => "design_doc",
-                other => other,
+            let outcome = match (
+                args.path.as_deref(),
+                args.authority_type.as_deref(),
+                args.instruction.as_deref(),
+                args.source.as_deref(),
+            ) {
+                (Some(path), Some(authority_type), None, None) => {
+                    let event_type = match authority_type {
+                        "design" => "design_doc",
+                        other => other,
+                    };
+                    let summary = args.summary.unwrap_or_else(|| {
+                        format!("registered {authority_type} authority at {path}")
+                    });
+                    add_authority_event(
+                        root,
+                        NewAuthorityEvent {
+                            event_type,
+                            source: Some(path),
+                            summary: &summary,
+                            scope: args.scope.as_deref(),
+                            precedence: args.precedence.unwrap_or(90),
+                        },
+                    )?
+                }
+                (None, None, Some(instruction), Some(source)) => add_authority_event(
+                    root,
+                    NewAuthorityEvent {
+                        event_type: "user_instruction",
+                        source: Some(source),
+                        summary: instruction,
+                        scope: Some("project"),
+                        precedence: 100,
+                    },
+                )?,
+                _ => anyhow::bail!(
+                    "authority add requires exactly --path with --type or --instruction with --source"
+                ),
             };
-            let summary = args.summary.unwrap_or_else(|| {
-                format!(
-                    "registered {} authority at {}",
-                    args.authority_type, args.path
-                )
-            });
-            let outcome = add_authority_event(
-                root,
-                NewAuthorityEvent {
-                    event_type,
-                    source: Some(&args.path),
-                    summary: &summary,
-                    scope: args.scope.as_deref(),
-                    precedence: args.precedence,
-                },
-            )?;
             println!("added authority");
             println!("authority_id: {}", outcome.authority_id);
             println!("authority_event_id: {}", outcome.authority_event_id);

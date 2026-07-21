@@ -79,3 +79,25 @@ The import creates a new design version. When the design changes,
 derived tasks, checklists, validation gates, review plans, and coverage can
 become stale. Package identities and contents remain project-local unless the
 user explicitly exports a classified view to a chosen destination.
+
+## Decomposition Plans
+
+An approved Design Version is converted to executable work through a persistent
+Decomposition Plan. The normal lifecycle is:
+
+1. Inspect the current slot with `agent-workbench decomposition show
+   --design-version <design-version-id> --work <work-unit-id>`.
+2. Import an authored or pathless Plan with the exact `decomposition import`
+   action printed by the CLI.
+3. Follow `decomposition validate` and `decomposition revise` actions until the
+   Plan is ready.
+4. Review and separately adjudicate the exact Plan.
+5. Apply it with `agent-workbench decomposition apply <design-version-id>
+   --work <work-unit-id>`.
+6. When a successor changes an applied graph, follow the exact
+   `decomposition reconcile` action. The predecessor and successor remain
+   linked in project-local lineage.
+
+`agent-workbench decompose design` remains the automatic compatibility path.
+It atomically creates the generated task graph and its matching applied Plan;
+it does not bypass approval, exact-Plan review, or implementation readiness.

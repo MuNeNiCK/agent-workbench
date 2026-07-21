@@ -1,6 +1,211 @@
 use super::*;
 
 #[test]
+fn kpt_rule_and_correction_conversions_use_public_governance_owners() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let review = start_kpt_review(
+        temp.path(),
+        NewKptReview {
+            scope: Some("project"),
+            summary: Some("governance actions"),
+            from: None,
+            period: None,
+        },
+    )
+    .unwrap();
+    let rule_item = add_kpt_item(
+        temp.path(),
+        NewKptItem {
+            kpt_review_id: Some(review.kpt_review_id),
+            item_type: "keep",
+            title: "retain public behavior",
+            details: Some("validate the observable contract"),
+            severity: "medium",
+            proposed_action: None,
+        },
+    )
+    .unwrap();
+    let correction_item = add_kpt_item(
+        temp.path(),
+        NewKptItem {
+            kpt_review_id: Some(review.kpt_review_id),
+            item_type: "problem",
+            title: "implementation detail escaped",
+            details: Some("test behavior instead"),
+            severity: "high",
+            proposed_action: None,
+        },
+    )
+    .unwrap();
+
+    let rule = convert_kpt_item_to_rule(
+        temp.path(),
+        KptItemRuleConversion {
+            kpt_item_id: rule_item.kpt_item_id,
+            scope: None,
+            title: None,
+            body: None,
+        },
+    )
+    .unwrap();
+    let rule_replay = convert_kpt_item_to_rule(
+        temp.path(),
+        KptItemRuleConversion {
+            kpt_item_id: rule_item.kpt_item_id,
+            scope: None,
+            title: None,
+            body: None,
+        },
+    )
+    .unwrap();
+    assert!(rule_replay.already_applied);
+    assert_eq!(rule_replay.receipt, rule.receipt);
+    let changed_rule = convert_kpt_item_to_rule(
+        temp.path(),
+        KptItemRuleConversion {
+            kpt_item_id: rule_item.kpt_item_id,
+            scope: None,
+            title: None,
+            body: Some("a different request must not replace the committed rule"),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        changed_rule
+            .downcast_ref::<KptConversionAlreadyCommitted>()
+            .is_some()
+    );
+    let correction = convert_kpt_item_to_correction(
+        temp.path(),
+        KptItemCorrectionConversion {
+            kpt_item_id: correction_item.kpt_item_id,
+            scope: None,
+            source_label: None,
+            expected_change: None,
+            severity: "high",
+        },
+    )
+    .unwrap();
+
+    let rules = applicable_rules(
+        temp.path(),
+        RuleQuery {
+            scope_key: Some("project"),
+            work_unit_id: None,
+        },
+    )
+    .unwrap();
+    let corrections = list_user_corrections(temp.path(), Some("project")).unwrap();
+    let items = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+    assert!(
+        rules
+            .iter()
+            .any(|entry| entry.kpt_rule_id == Some(rule.kpt_rule_id)
+                && entry.body.as_deref() == Some("validate the observable contract"))
+    );
+    assert!(
+        rules
+            .iter()
+            .any(|entry| { entry.user_correction_id == Some(correction.user_correction_id) })
+    );
+    assert!(corrections.iter().any(|entry| {
+        entry.id == correction.user_correction_id
+            && entry.mistake_pattern == "implementation detail escaped"
+            && entry.correction == "test behavior instead"
+    }));
+    assert!(items.iter().all(|item| item.status == "converted"));
+    assert!(items.iter().all(|item| item.legal_actions.is_empty()));
+}
+
+#[test]
+fn kpt_dismissal_is_exact_replayable_and_projects_one_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let review = start_kpt_review(
+        temp.path(),
+        NewKptReview {
+            scope: Some("project"),
+            summary: Some("no action decisions"),
+            from: None,
+            period: None,
+        },
+    )
+    .unwrap();
+    let item = add_kpt_item(
+        temp.path(),
+        NewKptItem {
+            kpt_review_id: Some(review.kpt_review_id),
+            item_type: "keep",
+            title: "observation needs no change",
+            details: Some("already covered by public behavior"),
+            severity: "low",
+            proposed_action: None,
+        },
+    )
+    .unwrap();
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("owner"),
+            summary: "approve no-action outcome",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let open = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+    assert_eq!(open[0].legal_actions, ["convert", "dismiss"]);
+    assert!(open[0].dismissal.is_none());
+    let expected_current = open[0].current_handle.clone();
+    close_kpt_review(temp.path(), review.kpt_review_id).unwrap();
+
+    let request = KptItemDismissalRequest {
+        kpt_item_id: item.kpt_item_id,
+        authority_event_id: authority.authority_event_id,
+        reason: "no product change is required",
+        expected_current: &expected_current,
+    };
+    let first = dismiss_kpt_item(temp.path(), request).unwrap();
+    let KptItemDismissalOutcome::Dismissed(receipt) = first else {
+        panic!("first dismissal must commit")
+    };
+    assert!(receipt.source.is_none());
+    assert_eq!(receipt.review_status, "closed");
+    let replay = dismiss_kpt_item(
+        temp.path(),
+        KptItemDismissalRequest {
+            kpt_item_id: item.kpt_item_id,
+            authority_event_id: authority.authority_event_id,
+            reason: "no product change is required",
+            expected_current: &expected_current,
+        },
+    )
+    .unwrap();
+    assert_eq!(replay, KptItemDismissalOutcome::Existing(receipt.clone()));
+
+    let changed = dismiss_kpt_item(
+        temp.path(),
+        KptItemDismissalRequest {
+            kpt_item_id: item.kpt_item_id,
+            authority_event_id: authority.authority_event_id,
+            reason: "changed reason",
+            expected_current: &expected_current,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        changed,
+        KptItemDismissalOutcome::ItemTerminal { .. }
+    ));
+    let listed = list_kpt_items(temp.path(), Some(review.kpt_review_id)).unwrap();
+    assert_eq!(listed[0].dismissal.as_ref(), Some(&receipt));
+    assert_eq!(listed[0].current_handle, receipt.current_handle);
+    assert!(listed[0].legal_actions.is_empty());
+}
+
+#[test]
 fn kpt_item_can_convert_to_task() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

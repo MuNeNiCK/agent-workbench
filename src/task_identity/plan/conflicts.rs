@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use super::super::source::{OwnerSource, TaskSource};
 use super::super::status::{ChecklistItemState, ChecklistState, PhaseState, TaskState};
@@ -168,7 +168,7 @@ fn add_owner_conflict(owner: &OwnerSource, elements: &mut Vec<Element>) -> Resul
         return Ok(());
     }
     if owner.tasks.is_empty() {
-        bail!("source owner conflict has no task identity to quarantine");
+        return Ok(());
     }
     let refs = owner
         .tasks

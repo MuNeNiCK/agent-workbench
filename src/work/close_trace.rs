@@ -29,27 +29,30 @@ pub(crate) fn has_stale_design_state_for_work(
 }
 
 pub(super) fn close_trace_state(conn: &Connection, work_unit_id: i64) -> Result<CloseTraceState> {
+    let active_requirement_count = count_active_requirements_for_work(conn, work_unit_id)?;
+    let derived_task_count = count_design_derived_tasks_for_work(conn, work_unit_id)?;
+    let missing_evidence_count =
+        count_closed_derived_tasks_missing_evidence_for_work(conn, work_unit_id)?;
+    let missing_coverage_count =
+        count_closed_derived_tasks_missing_coverage_for_work(conn, work_unit_id)?;
+    let missing_requirement_coverage_count = if active_requirement_count == 0 {
+        0
+    } else {
+        count_active_requirements_missing_coverage_for_work(conn, work_unit_id)?
+    };
+    let missing_validation_gate_count =
+        count_derived_tasks_missing_selected_gate_for_work(conn, work_unit_id)?;
+    let open_checklist_item_count = count_open_checklist_items_for_work(conn, work_unit_id)?;
+    let active_checklist_count = count_active_checklists_for_work(conn, work_unit_id)?;
     Ok(CloseTraceState {
-        active_requirement_count: count_active_requirements_for_work(conn, work_unit_id)?,
-        derived_task_count: count_design_derived_tasks_for_work(conn, work_unit_id)?,
-        missing_evidence_count: count_closed_derived_tasks_missing_evidence_for_work(
-            conn,
-            work_unit_id,
-        )?,
-        missing_coverage_count: count_closed_derived_tasks_missing_coverage_for_work(
-            conn,
-            work_unit_id,
-        )?,
-        missing_requirement_coverage_count: count_active_requirements_missing_coverage_for_work(
-            conn,
-            work_unit_id,
-        )?,
-        missing_validation_gate_count: count_derived_tasks_missing_selected_gate_for_work(
-            conn,
-            work_unit_id,
-        )?,
-        open_checklist_item_count: count_open_checklist_items_for_work(conn, work_unit_id)?,
-        active_checklist_count: count_active_checklists_for_work(conn, work_unit_id)?,
+        active_requirement_count,
+        derived_task_count,
+        missing_evidence_count,
+        missing_coverage_count,
+        missing_requirement_coverage_count,
+        missing_validation_gate_count,
+        open_checklist_item_count,
+        active_checklist_count,
     })
 }
 
@@ -192,6 +195,14 @@ pub(super) fn count_active_requirements_missing_coverage_for_work(
             left join tasks t on t.id = vg.task_id
             where coalesce(vg.work_unit_id, t.work_unit_id) = ?1
               and p.current_design_version_id = r.design_version_id
+        ),
+        approved_coverage as (
+            select distinct coverage_item_id
+            from acceptance_records
+            where target_type = 'coverage_item'
+              and coverage_item_id is not null
+              and acceptance_type = 'accepted_out_of_scope'
+              and status = 'approved'
         )
         select count(*)
         from design_requirements r
@@ -204,6 +215,7 @@ pub(super) fn count_active_requirements_missing_coverage_for_work(
             join design_versions covered_v on covered_v.id = covered_r.design_version_id
             join design_versions required_v on required_v.id = r.design_version_id
             left join tasks ct on ct.id = c.task_id
+            left join approved_coverage approved on approved.coverage_item_id = c.id
             where (
                 c.design_requirement_id = r.id
                 or (
@@ -220,14 +232,7 @@ pub(super) fn count_active_requirements_missing_coverage_for_work(
                 c.status = 'covered'
                 or (
                   c.status = 'accepted_out_of_scope'
-                  and exists (
-                    select 1
-                    from acceptance_records ar
-                    where ar.target_type = 'coverage_item'
-                      and ar.coverage_item_id = c.id
-                      and ar.acceptance_type = 'accepted_out_of_scope'
-                      and ar.status = 'approved'
-                  )
+                  and approved.coverage_item_id is not null
                 )
               )
           )
@@ -439,6 +444,14 @@ pub(super) fn count_closed_derived_tasks_missing_coverage_for_work(
 ) -> Result<i64> {
     conn.query_row(
         r#"
+        with approved_coverage as (
+            select distinct coverage_item_id
+            from acceptance_records
+            where target_type = 'coverage_item'
+              and coverage_item_id is not null
+              and acceptance_type = 'accepted_out_of_scope'
+              and status = 'approved'
+        )
         select count(*)
         from task_derivations td
         join tasks t on t.id = td.task_id
@@ -454,6 +467,7 @@ pub(super) fn count_closed_derived_tasks_missing_coverage_for_work(
             from coverage_items c
             join design_requirements covered_r on covered_r.id = c.design_requirement_id
             join design_versions covered_v on covered_v.id = covered_r.design_version_id
+            left join approved_coverage approved on approved.coverage_item_id = c.id
             where (
                 c.design_requirement_id = td.design_requirement_id
                 or (
@@ -470,14 +484,7 @@ pub(super) fn count_closed_derived_tasks_missing_coverage_for_work(
                 c.status = 'covered'
                 or (
                   c.status = 'accepted_out_of_scope'
-                  and exists (
-                    select 1
-                    from acceptance_records ar
-                    where ar.target_type = 'coverage_item'
-                      and ar.coverage_item_id = c.id
-                      and ar.acceptance_type = 'accepted_out_of_scope'
-                      and ar.status = 'approved'
-                  )
+                  and approved.coverage_item_id is not null
                 )
               )
           )

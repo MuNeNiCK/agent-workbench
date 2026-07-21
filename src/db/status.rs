@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{migration::*, owner_routing::*, project::*, project_integrity::*, runtime::*, *};
@@ -23,11 +24,19 @@ pub fn default_log_root(root: &Path) -> PathBuf {
 }
 
 pub fn init_project(root: &Path) -> Result<InitOutcome> {
+    init_project_with_name(root, None)
+}
+
+pub fn init_project_with_name(root: &Path, requested_name: Option<&str>) -> Result<InitOutcome> {
+    if requested_name.is_some_and(|name| name.trim().is_empty()) {
+        bail!("project name must not be empty");
+    }
     let ledger_path = default_ledger_path(root);
     if let Some(parent) = ledger_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create ledger directory {}", parent.display()))?;
     }
+    let _update_guard = crate::update::exclusive_writer_guard(root)?;
     for directory in [
         default_design_root(root),
         default_export_root(root),
@@ -48,6 +57,20 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
     }
     migrate(&conn)?;
     ensure_project(&conn, root)?;
+    if let Some(requested_name) = requested_name {
+        let project = project_id(&conn)?;
+        let current: String =
+            conn.query_row("select name from projects where id=?1", [project], |row| {
+                row.get(0)
+            })?;
+        if existing && current != requested_name {
+            bail!("project is already initialized with a different name");
+        }
+        conn.execute(
+            "update projects set name=?1,updated_at=current_timestamp where id=?2",
+            params![requested_name, project],
+        )?;
+    }
     sync_agents_md_authority(&conn, root)?;
     sync_commit_message_policy(&conn)?;
 
@@ -55,6 +78,10 @@ pub fn init_project(root: &Path) -> Result<InitOutcome> {
 }
 
 pub fn project_status(root: &Path) -> Result<ProjectStatus> {
+    project_status_for(root, None)
+}
+
+pub fn project_status_for(root: &Path, work_unit_id: Option<i64>) -> Result<ProjectStatus> {
     let ledger_path = default_ledger_path(root);
     if !ledger_path.exists() {
         return Ok(ProjectStatus {
@@ -104,8 +131,25 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             row.get::<_, String>(0)
         })
         .optional()?;
-    let open_work_units = count_rows(&conn, "work_units", "status in ('open', 'blocked')")?;
-    let active_activations = count_rows(&conn, "work_unit_activations", "status = 'active'")?;
+    if let Some(work_unit_id) = work_unit_id {
+        ensure_project_work_exists(&conn, work_unit_id)?;
+    }
+    let open_work_units = match work_unit_id {
+        Some(work_unit_id) => conn.query_row(
+            "select count(*) from work_units where id=?1 and status in ('open','blocked')",
+            params![work_unit_id],
+            |row| row.get(0),
+        )?,
+        None => count_rows(&conn, "work_units", "status in ('open', 'blocked')")?,
+    };
+    let active_activations = match work_unit_id {
+        Some(work_unit_id) => conn.query_row(
+            "select count(*) from work_unit_activations where work_unit_id=?1 and status='active'",
+            params![work_unit_id],
+            |row| row.get(0),
+        )?,
+        None => count_rows(&conn, "work_unit_activations", "status = 'active'")?,
+    };
     let schema_version = conn
         .query_row(
             "select version from schema_migrations order by version desc limit 1",
@@ -113,9 +157,15 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
-    let finding_remediations = current_finding_remediations(&conn)?;
-    let source_corrections = current_source_corrections(&conn)?;
-    let owner_actions = current_owner_actions(&conn)?;
+    let mut finding_remediations = current_finding_remediations(&conn)?;
+    let mut source_corrections = current_source_corrections(&conn)?;
+    let mut owner_actions = resolved_owner_actions(&conn)?;
+    if let Some(work_unit_id) = work_unit_id {
+        finding_remediations.retain(|item| item.work_unit_id == work_unit_id);
+        source_corrections.retain(|item| item.work_unit_id == work_unit_id);
+        owner_actions
+            .retain(|owner| owner.owner_type == "work_unit" && owner.owner_id == work_unit_id);
+    }
 
     Ok(ProjectStatus {
         initialized: true,
@@ -133,6 +183,10 @@ pub fn project_status(root: &Path) -> Result<ProjectStatus> {
 }
 
 pub fn next_action(root: &Path) -> Result<NextAction> {
+    next_action_for(root, None)
+}
+
+pub fn next_action_for(root: &Path, work_unit_id: Option<i64>) -> Result<NextAction> {
     let ledger_path = default_ledger_path(root);
     if !ledger_path.exists() {
         return Ok(NextAction::NotInitialized { ledger_path });
@@ -152,7 +206,25 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
     let conn = integrity
         .connection
         .context("integrity evaluator lost ledger connection")?;
-    let owners = current_owner_actions(&conn)?;
+    let owners = resolved_owner_actions(&conn)?;
+    if let Some(work_unit_id) = work_unit_id {
+        let status = ensure_project_work_exists(&conn, work_unit_id)?;
+        if matches!(status.as_str(), "closed" | "abandoned") {
+            return Ok(NextAction::SelectedWorkTerminal {
+                work_unit_id,
+                status,
+            });
+        }
+        let owner = owners
+            .into_iter()
+            .find(|owner| owner.owner_type == "work_unit" && owner.owner_id == work_unit_id)
+            .with_context(|| {
+                format!("resolver did not return the selected work owner {work_unit_id}")
+            })?;
+        return Ok(NextAction::OwnerActions {
+            owners: vec![owner],
+        });
+    }
     if owners.len() > 1 || owners.iter().any(|owner| owner.blocker_kind.is_some()) {
         return Ok(NextAction::OwnerActions { owners });
     }
@@ -270,6 +342,30 @@ pub fn next_action(root: &Path) -> Result<NextAction> {
         },
         None => NextAction::NoOpenWorkUnit,
     })
+}
+
+fn ensure_project_work_exists(conn: &Connection, work_unit_id: i64) -> Result<String> {
+    let project = project_id(conn)?;
+    conn.query_row(
+        "select status from work_units where id=?1 and project_id=?2",
+        params![work_unit_id, project],
+        |row| row.get(0),
+    )
+    .optional()?
+    .with_context(|| format!("work unit {work_unit_id} not found in this project"))
+}
+
+fn resolved_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction>> {
+    let owners = current_owner_actions(conn)?;
+    let mut work_owners = HashSet::new();
+    if owners
+        .iter()
+        .filter(|owner| owner.owner_type == "work_unit")
+        .any(|owner| !work_owners.insert(owner.owner_id))
+    {
+        bail!("owner resolution returned more than one result for the same work");
+    }
+    Ok(owners)
 }
 
 pub(super) fn current_finding_remediations(conn: &Connection) -> Result<Vec<FindingRemediation>> {
@@ -399,14 +495,28 @@ pub(super) fn attach_next_phase(
         .query_row(
             r#"
             select p.id, p.phase_key, p.title
-            from work_phases p
+            from phase_epochs p
             where p.work_unit_id = ?1
-              and p.status in ('open', 'blocked')
+              and p.state in ('open', 'blocked')
+              and (
+                exists(
+                  select 1 from decomposition_applications application
+                  join decomposition_plans plan on plan.id=application.decomposition_plan_id
+                  where application.phase_id=p.id and plan.status='applied'
+                )
+                or not exists(
+                  select 1 from decomposition_applications application
+                  where application.phase_id=p.id
+                  union all
+                  select 1 from decomposition_migration_sources migration
+                  where migration.source_phase_id=p.id
+                )
+              )
               and not exists (
                   select 1
-                  from work_phase_dependencies d
-                  where d.to_phase_id = p.id
-                    and d.status = 'open'
+                  from phase_epoch_dependencies d
+                  where d.to_phase_epoch_id = p.id
+                    and d.state = 'open'
               )
             order by p.phase_order, p.id
             limit 1
@@ -431,16 +541,10 @@ pub(super) fn attach_next_phase(
 
 pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlocker>> {
     let project_id = project_id(conn)?;
-    let active_work_unit_id = conn
-        .query_row(
-            "select work_unit_id from work_unit_activations where project_id = ?1 and status = 'active' order by id desc limit 1",
-            params![project_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    let selected_stale = crate::traceability::selected_stale_record_in(conn, project_id)?;
+    let selected_stale =
+        crate::traceability::selected_stale_record_with_owner_in(conn, project_id)?;
     if selected_stale.is_some() {
-        let stale_transition = if let Some((kind, record_id)) = selected_stale.as_ref() {
+        let stale_transition = if let Some((kind, record_id, _)) = selected_stale.as_ref() {
             conn.query_row(
                 r#"
                 select token.closure_id, token.token_ordinal
@@ -461,7 +565,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
         };
         let next_action = stale_transition.map_or_else(
             || {
-                let (kind, record_id) = selected_stale.as_ref().unwrap();
+                let (kind, record_id, _) = selected_stale.as_ref().unwrap();
                 format!("agent-workbench stale accept {kind} {record_id} --reason \"<reason>\"")
             },
             |(closure_id, token)| {
@@ -471,7 +575,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
         return Ok(Some(PhaseBlocker {
             kind: "stale_design".to_string(),
             review_plan_id: None,
-            work_unit_id: active_work_unit_id,
+            work_unit_id: selected_stale.map(|(_, _, work_unit_id)| work_unit_id),
             review_type: None,
             stage: None,
             review_run_id: None,
