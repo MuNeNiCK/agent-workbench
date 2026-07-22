@@ -327,8 +327,13 @@ pub(in crate::decomposition) fn transition_decomposition_plan(
         tx.commit()?;
         return Ok(outcome);
     }
-    if !matches!(predecessor.status.as_str(), "draft" | "incomplete") {
-        bail!("only a draft or incomplete Decomposition Plan can be validated or revised");
+    let revises_ordinary_ready = predecessor.status == "ready"
+        && reconciliation_predecessor.is_none()
+        && replacement.is_some();
+    if !matches!(predecessor.status.as_str(), "draft" | "incomplete") && !revises_ordinary_ready {
+        bail!(
+            "only a draft or incomplete Decomposition Plan can be validated or revised; an ordinary ready Plan can only be revised"
+        );
     }
     let design_version_id = resolve_design_version(&tx, project_id, &document.design_fingerprint)?;
     validate_document_binding(
@@ -368,10 +373,17 @@ pub(in crate::decomposition) fn transition_decomposition_plan(
     } else {
         "ready"
     };
-    let changed = tx.execute(
-        "update decomposition_plans set status='superseded' where id=?1 and status in ('draft','incomplete')",
-        [plan_id],
-    )?;
+    let changed = if revises_ordinary_ready {
+        tx.execute(
+            "update decomposition_plans set status='superseded' where id=?1 and status='ready'",
+            [plan_id],
+        )?
+    } else {
+        tx.execute(
+            "update decomposition_plans set status='superseded' where id=?1 and status in ('draft','incomplete')",
+            [plan_id],
+        )?
+    };
     if changed != 1 {
         bail!("Decomposition Plan changed before successor publication");
     }

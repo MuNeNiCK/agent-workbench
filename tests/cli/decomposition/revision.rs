@@ -86,37 +86,36 @@ slices: []
     let ready_id = field(&revised, "plan").to_string();
     let ready_current = field(&revised, "current_identity").to_string();
 
-    let invalid_revalidation = aw(
+    let revised_ready = ok(
         temp.path(),
         &[
             "decomposition",
-            "validate",
+            "revise",
             &ready_id,
+            "--plan",
+            &valid_plan,
             "--expected-current",
             &ready_current,
             "--idempotency-key",
-            "ready-revalidation",
+            "ready-revise",
         ],
     );
-    assert!(!invalid_revalidation.status.success());
-    let stderr = String::from_utf8_lossy(&invalid_revalidation.stderr);
-    assert!(
-        stderr
-            .contains("only a draft or incomplete Decomposition Plan can be validated or revised")
-    );
-    assert!(!stderr.contains("applied predecessor"));
+    assert!(revised_ready.contains("status: ready"));
+    assert!(revised_ready.contains(&format!("predecessor: {ready_id}")));
+    assert_eq!(field(&revised_ready, "revision"), "4");
+    let corrected_ready_id = field(&revised_ready, "plan").to_string();
 
     accept_exact_plan_review(
         temp.path(),
         &design,
         &work,
-        field(&revised, "review_context"),
+        field(&revised_ready, "review_context"),
     );
     let applied = ok(
         temp.path(),
         &["decomposition", "apply", &design, "--work", &work],
     );
-    assert_eq!(field(&applied, "plan"), ready_id);
+    assert_eq!(field(&applied, "plan"), corrected_ready_id);
     assert!(applied.contains("tasks: 1"));
     assert!(applied.contains("status: applied"));
 
