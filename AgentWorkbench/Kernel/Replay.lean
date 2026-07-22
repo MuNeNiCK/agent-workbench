@@ -68,6 +68,7 @@ inductive Event
   | workInitialized (work : Work.WorkUnit) (activation : Work.Activation)
   | workRegistered (work : Work.WorkUnit)
   | suspendedActivationRegistered (activation : Work.Activation)
+  | workResumed (work : WorkId) (activation : ActivationId)
   | completionPlanned (plan : Lifecycle.CompletionPlan)
   | relatedWorkTerminated (owner related : WorkId)
   | phaseCompleted (work : WorkId) (key : String)
@@ -101,6 +102,10 @@ def applyUnchecked (event : Event) (state : State) : State :=
       { invalidated with work := state.work ++ [work] }
   | .suspendedActivationRegistered activation =>
       { invalidated with activations := state.activations ++ [activation] }
+  | .workResumed _ activation =>
+      match Work.resume state.activations activation with
+      | some activations => { invalidated with activations }
+      | none => invalidated
   | .completionPlanned plan =>
       { invalidated with lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan] }
   | .relatedWorkTerminated owner related =>
@@ -172,6 +177,11 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       activation.status == .suspended && activation.readyToResume &&
       state.work.any (fun work => work.id == activation.work && work.status == .open) &&
       !state.activations.any (·.id == activation.id)
+  | .workResumed work activation =>
+      Work.workIsOpen state.work work &&
+      state.activations.any (fun candidate =>
+        candidate.id == activation && candidate.work == work) &&
+      Work.resumable state.activations activation
   | .completionPlanned plan =>
       !state.lifecycle.any (fun completion => completion.plan.work == plan.work) &&
       decide (Lifecycle.ValidPlan state.work plan)

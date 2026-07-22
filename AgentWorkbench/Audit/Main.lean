@@ -281,6 +281,7 @@ def auditDeclarations (env : Environment) : IO Unit := do
       fail s!"unsafe declaration entered normative implementation: {rendered}"
   let roots := theoremRules.toList.map (·.declaration.toName) ++
     [`AgentWorkbench.Application.Service.execute,
+     `AgentWorkbench.Application.Service.executeAction,
      `AgentWorkbench.Application.Service.bootstrapCommand,
      `AgentWorkbench.Cli.Program.executeBootstrap,
      `AgentWorkbench.Cli.Program.executeRequest,
@@ -294,6 +295,12 @@ def auditDeclarations (env : Environment) : IO Unit := do
   unless declarationReaches env `AgentWorkbench.Application.Service.executeRequest
       [`AgentWorkbench.Cli.Program.executeRequest] [] do
     fail "compiled CLI request path does not reach Application.Service.executeRequest"
+  unless declarationReaches env `AgentWorkbench.Application.Service.executeAction
+      [`AgentWorkbench.Cli.Program.executeRequest] [] do
+    fail "compiled CLI request path does not reach resolver action execution"
+  unless declarationReaches env `AgentWorkbench.Application.Service.execute
+      [`AgentWorkbench.Application.Service.executeAction] [] do
+    fail "resolver action execution does not reach governed mutation"
   unless declarationReaches env `AgentWorkbench.Application.Service.repairProjection
       [`AgentWorkbench.Cli.Program.executeRequest] [] do
     fail "compiled CLI request path does not reach the explicit projection repair mutation"

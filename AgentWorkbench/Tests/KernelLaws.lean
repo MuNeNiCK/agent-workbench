@@ -88,6 +88,18 @@ def executeStore (command : Kernel.Decide.Command) (store : Kernel.Projection.St
   | .ok transaction => pure transaction.result
   | .error error => throw <| IO.userError s!"{message}: {repr error}"
 
+def executeResolverAction (action : Kernel.Resolver.Action)
+    (store : Kernel.Projection.Store) (message : String) : IO Kernel.Projection.Store :=
+  match Cli.Program.executeRequest (.action action) store with
+  | .ok response => pure response.store
+  | .error error => throw <| IO.userError s!"{message}: {error}"
+
+def expectResolverActionRejected (action : Kernel.Resolver.Action)
+    (store : Kernel.Projection.Store) (message : String) : IO Unit :=
+  match Cli.Program.executeRequest (.action action) store with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError s!"{message}: stale action unexpectedly executed"
+
 def buildCompletionStore (missing : Option MissingCompletionCondition) :
     IO Kernel.Projection.Store := do
   let store ← executeStore Application.Service.bootstrapCommand
@@ -434,22 +446,34 @@ def main : IO Unit := do
     .exact receipt) "an exact retry must return its receipt despite a later revision"
   expect (Policy.Update.resolveRetry receipt.operation "changed" ⟨0⟩ ⟨99⟩ [receipt] ==
     .payloadConflict) "a changed retry payload must conflict"
-  let firstStore ← match Application.Service.execute
-      Application.Service.bootstrapCommand Application.Service.initialStore with
-    | .ok transaction => pure transaction.result
-    | .error error => throw <| IO.userError s!"store bootstrap rejected: {repr error}"
+  let initializeAction ← match
+      (Application.Service.resolve Application.Service.initialStore).value with
+    | .action action@(.initializeWork _) => pure action
+    | _ => throw <| IO.userError "empty authoritative store did not emit initialization"
+  let firstStore ← executeResolverAction initializeAction Application.Service.initialStore
+    "CLI initialization action rejected"
+  expectResolverActionRejected initializeAction firstStore
+    "initialization action did not reject after ledger advancement"
   let observed := Kernel.Gates.observeGate Kernel.Gates.validStateGate firstStore
   expect (observed.1 == firstStore) "gate observation must preserve the complete store"
   let firstInspection := Kernel.Projection.inspect firstStore
   match (Application.Service.resolve firstStore).value with
-  | .action action =>
+  | .action action@(.continueActiveWork _ work activation) =>
+      expect (work == firstWork.id && activation == firstActivation.id)
+        "continue action did not bind the active work and activation"
       expect (action.executable firstInspection)
         "next action must be executable at its stated ledger point and target"
-      let revisedStore := { firstStore with ledger := {
-        firstStore.ledger with storedHead := first.revision.next } }
+      let continued ← executeResolverAction action firstStore
+        "CLI continue action rejected"
+      expect (continued == firstStore) "continue action must be observational"
+      let revisedStore ← executeStore
+        (.registerWork firstStore.ledger.storedHead secondWork) firstStore
+        "continue drift fixture rejected"
       expect (!action.executable (Kernel.Projection.inspect revisedStore))
         "a projected action must become non-executable after ledger identity changes"
-  | .blocked _ => throw <| IO.userError "active work must resolve to an action"
+      expectResolverActionRejected action revisedStore
+        "continue action did not reject after ledger drift"
+  | _ => throw <| IO.userError "active work must resolve to the exact continue action"
   let forgedLedger := {
     firstStore.ledger with
     events := []
@@ -554,13 +578,21 @@ def main : IO Unit := do
       | .fresh _ _ => pure ()
       | _ => throw <| IO.userError "CLI repair request did not adopt a fresh replay"
   | .error error => throw <| IO.userError s!"CLI repair request failed: {error}"
-  let advancedStore := { staleStore with ledger := {
-    staleStore.ledger with storedHead := staleStore.ledger.storedHead.next } }
+  let repairedByAction ← executeResolverAction repairAction staleStore
+    "CLI resolver repair action failed"
+  match Kernel.Projection.inspect repairedByAction with
+  | .fresh _ _ => pure ()
+  | _ => throw <| IO.userError "CLI resolver repair action did not adopt replayed state"
+  let advancedStore ← executeStore
+    (.registerWork firstStore.ledger.storedHead secondWork) firstStore
+    "repair drift fixture rejected"
   expect (!repairAction.executable (Kernel.Projection.inspect advancedStore))
     "repair action must reject after its ledger binding changes"
   match Application.Service.executeRecovery repairAction advancedStore with
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError "stale repair action unexpectedly executed"
+  expectResolverActionRejected repairAction advancedStore
+    "CLI repair action did not reject after ledger drift"
 
   let missingStore := { firstStore with active := none }
   match (Application.Service.status missingStore).value with
@@ -652,6 +684,18 @@ def main : IO Unit := do
         "completion exposed the wrong suspended parent"
       expect (action.executable (Kernel.Projection.inspect completedStore))
         "exposed parent resume action is not executable"
+      let resumedStore ← executeResolverAction action completedStore
+        "CLI resume action rejected"
+      let resumedState ← currentState resumedStore
+      expect (resumedState.activations.any fun candidate =>
+        candidate.id == activation && candidate.work == work &&
+          candidate.status == .active)
+        "resume action did not activate its exact suspended frame"
+      expect (resumedStore.ledger.events.reverse.head? ==
+        some (Kernel.Replay.Event.workResumed work activation))
+        "resume action did not append its exact governed event"
+      expectResolverActionRejected action resumedStore
+        "resume action did not reject after ledger advancement"
   | _ => throw <| IO.userError "completion did not expose the suspended parent"
   IO.println "kernel laws: pass"
 

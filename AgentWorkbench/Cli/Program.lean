@@ -20,7 +20,10 @@ def run : IO Unit := do
   | .ok transaction =>
       match (Application.Service.queryValidity transaction.result).value,
           (Application.Service.resolve transaction.result).value with
-      | .pass, .action action => IO.println s!"agent-workbench verified core: {repr action}"
+      | .pass, .action action =>
+          match executeRequest (.action action) transaction.result with
+          | .ok response => IO.println s!"agent-workbench verified core: {response.output}"
+          | .error error => throw <| IO.userError s!"resolver action rejected: {error}"
       | .blocked reason, _ => throw <| IO.userError reason
       | _, .blocked blocker => throw <| IO.userError s!"resolver blocked: {repr blocker}"
 

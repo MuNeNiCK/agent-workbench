@@ -15,6 +15,8 @@ inductive Command
   | registerWork (expectedRevision : Revision) (work : Work.WorkUnit)
   | registerSuspendedActivation (expectedRevision : Revision)
       (activation : Work.Activation)
+  | resumeWork (expectedRevision : Revision) (work : WorkId)
+      (activation : ActivationId)
   | planCompletion (expectedRevision : Revision) (plan : Lifecycle.CompletionPlan)
   | terminateRelatedWork (expectedRevision : Revision) (owner related : WorkId)
   | completePhase (expectedRevision : Revision) (work : WorkId) (key : String)
@@ -42,6 +44,7 @@ def Command.expectedRevision : Command → Revision
   | .initializeWork revision _ _
   | .registerWork revision _
   | .registerSuspendedActivation revision _
+  | .resumeWork revision _ _
   | .planCompletion revision _
   | .terminateRelatedWork revision _ _
   | .completePhase revision _ _
@@ -84,6 +87,14 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.suspendedActivationRegistered activation], by simp⟩
       else
         .error (.invalidTransition "registered parent activation must be new, suspended, ready, and reference open work")
+  | .resumeWork _ work activation =>
+      if Work.workIsOpen state.work work &&
+          state.activations.any (fun candidate =>
+            candidate.id == activation && candidate.work == work) &&
+          Work.resumable state.activations activation then
+        .ok ⟨[.workResumed work activation], by simp⟩
+      else
+        .error (.invalidTransition "resumed activation must be ready, suspended, inactive, and reference the exact open work")
   | .planCompletion _ plan =>
       if state.lifecycle.any (fun completion => completion.plan.work == plan.work) then
         .error (.invalidTransition "completion plan already exists")

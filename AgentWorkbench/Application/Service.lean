@@ -101,15 +101,42 @@ def executeRecovery (action : Resolver.Action) (store : Projection.Store) :
   | .repairProjection command => repairProjection command store
   | _ => .error .commandMismatch
 
+structure Response where
+  store : Projection.Store
+  output : String
+
+def executeAction (action : Resolver.Action) (store : Projection.Store) :
+    Except String Response :=
+  if action.executable (Projection.inspect store) then
+    match action with
+    | .repairProjection command =>
+        match repairProjection command store with
+        | .error error => .error s!"{repr error}"
+        | .ok transaction =>
+            .ok {
+              store := transaction.adopted.result
+              output := s!"{repr transaction.adopted.receipt}" }
+    | .initializeWork _ =>
+        match execute bootstrapCommand store with
+        | .error error => .error s!"{repr error}"
+        | .ok transaction =>
+            .ok { store := transaction.result, output := s!"{repr action}" }
+    | .continueActiveWork _ _ _ =>
+        .ok { store, output := s!"{repr action}" }
+    | .resumeSuspendedWork point work activation =>
+        match execute (.resumeWork point.revision work activation) store with
+        | .error error => .error s!"{repr error}"
+        | .ok transaction =>
+            .ok { store := transaction.result, output := s!"{repr action}" }
+  else
+    .error "resolver action is stale or does not match the authoritative store"
+
 inductive Request
   | status
   | next
   | gate (request : Gates.Request)
   | repairProjection (command : Domain.Projection.RepairCommand)
-
-structure Response where
-  store : Projection.Store
-  output : String
+  | action (action : Resolver.Action)
 
 def executeRequest (request : Request) (store : Projection.Store) :
     Except String Response :=
@@ -130,6 +157,7 @@ def executeRequest (request : Request) (store : Projection.Store) :
           .ok {
             store := transaction.adopted.result
             output := s!"{repr transaction.adopted.receipt}" }
+  | .action action => executeAction action store
 
 theorem status_is_read_only (store : Projection.Store) :
     (status store).store = store :=
