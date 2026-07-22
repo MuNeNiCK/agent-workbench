@@ -77,6 +77,12 @@ axiom close_work_emits_atomic_event (target : WorkId) (state : State)
     (accepted : Decide.closeWork target state = .ok transaction) :
     transaction.events = [.workCompleted transaction.target transaction.activation]
 
+axiom decide_complete_requires_closeable (target : WorkId) (state : State)
+    {transaction : Decide.AcceptedTransaction}
+    (accepted : Decide.decide (.completeWork state.revision target) state = .ok transaction) :
+    Policy.Completion.closeable target state.work state.activations
+      state.claims state.adjudications state.lifecycle = true
+
 axiom single_active_activation {activations : List Work.Activation}
     (valid : Work.AtMostOneActive activations) :
     (Work.activeActivations activations).length ≤ 1
@@ -118,16 +124,18 @@ axiom adoption_is_atomic (transaction : Projection.AdoptionTransaction) :
     transaction.result.ledger = transaction.sourceLedger ∧
     transaction.result.active = some transaction.candidate
 
-axiom completion_requires_current_obligations (target : WorkId)
+axiom completion_requires_authoritative_lifecycle (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
-    (facts : List Work.CompletionFacts) (obligations : List Evidence.Obligation)
-    (accepted : Policy.Completion.closeable target work activations facts obligations = true) :
-    Policy.Completion.obligationsReady obligations target = true
+    (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (lifecycle : List Lifecycle.CompletionState)
+    (accepted : Policy.Completion.closeable target work activations claims adjudications lifecycle = true) :
+    Policy.Completion.authoritativeReady target work claims adjudications lifecycle = true
 
 axiom completion_requires_active_target (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
-    (facts : List Work.CompletionFacts) (obligations : List Evidence.Obligation)
-    (accepted : Policy.Completion.closeable target work activations facts obligations = true) :
+    (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (lifecycle : List Lifecycle.CompletionState)
+    (accepted : Policy.Completion.closeable target work activations claims adjudications lifecycle = true) :
     (Work.activeFor activations target).isSome = true
 
 axiom exact_retry_returns_same_receipt

@@ -4,6 +4,8 @@ import AgentWorkbench.Domain.Review
 import AgentWorkbench.Domain.Evidence
 import AgentWorkbench.Domain.ExternalOperation
 import AgentWorkbench.Domain.Projection
+import AgentWorkbench.Domain.Lifecycle
+import AgentWorkbench.Policy.Completion
 
 namespace AgentWorkbench.Kernel.Replay
 
@@ -18,22 +20,20 @@ structure State where
   evidence : List Evidence.Evidence
   externalOperations : List ExternalOperation.Attempt
   obligations : List Evidence.Obligation
-  completionFacts : List Work.CompletionFacts
+  lifecycle : List Lifecycle.CompletionState
 deriving DecidableEq, Repr
 
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
   Review.ValidReviewState state.claims state.adjudications ∧
+  Lifecycle.ReviewClaimsReferencePlans state.lifecycle state.claims ∧
   Evidence.UniqueEvidenceIds state.evidence ∧
   Evidence.EvidenceWellFormed state.evidence ∧
   Evidence.EvidenceCurrentAt state.revision state.evidence ∧
   Evidence.EvidenceReferencesObligations state.evidence state.obligations ∧
   ExternalOperation.UniqueOperations state.externalOperations ∧
   ExternalOperation.AttemptsWellFormed state.externalOperations ∧
-  Work.UniqueCompletionFacts state.completionFacts ∧
-  Work.CompletionFactsReferenceWork state.work state.completionFacts ∧
-  Work.CurrentCompletionFactsReferenceOpenWork state.work state.completionFacts ∧
-  Work.CompletionFactsCurrent state.revision state.completionFacts ∧
+  Lifecycle.ValidLifecycleState state.work state.lifecycle ∧
   Evidence.UniqueObligations state.obligations ∧
   Evidence.ObligationsWellFormed state.obligations ∧
   Evidence.ObligationsReferenceWork (state.work.map (·.id)) state.obligations ∧
@@ -51,9 +51,10 @@ instance (state : State) : Decidable (ValidState state) := by
     Evidence.EvidenceCurrentAt
     Evidence.EvidenceReferencesObligations
     ExternalOperation.UniqueOperations ExternalOperation.AttemptsWellFormed
-    Work.UniqueCompletionFacts Work.CompletionFactsReferenceWork
-    Work.CurrentCompletionFactsReferenceOpenWork
-    Work.CompletionFactsCurrent
+    Lifecycle.ReviewClaimsReferencePlans
+    Lifecycle.ValidLifecycleState Lifecycle.ValidPlan Lifecycle.MatchesPlan
+    Lifecycle.RecordsWellFormed
+    Lifecycle.nonemptyKeys
     Evidence.UniqueObligations Evidence.ObligationsWellFormed
     Evidence.ObligationsReferenceWork Evidence.CurrentObligationsReferenceOpenWork
     Evidence.ObligationsCurrentAt
@@ -65,13 +66,23 @@ structure VerifiedState where
 
 inductive Event
   | workInitialized (work : Work.WorkUnit) (activation : Work.Activation)
+  | workRegistered (work : Work.WorkUnit)
+  | suspendedActivationRegistered (activation : Work.Activation)
+  | completionPlanned (plan : Lifecycle.CompletionPlan)
+  | relatedWorkTerminated (owner related : WorkId)
+  | phaseCompleted (work : WorkId) (key : String)
+  | taskCompleted (work : WorkId) (key : String)
+  | checklistCompleted (work : WorkId) (key : String)
+  | findingResolved (work : WorkId) (key : String)
+  | validationPassed (work : WorkId) (key artifactDigest : String)
+  | repositoryClassified (work : WorkId) (key snapshotDigest : String)
+  | correctionResolved (work : WorkId) (key : String)
+  | workRecordLinked (work : WorkId) (key reference : String)
   | reviewClaimed (claim : Review.Claim)
   | reviewAdjudicated (decision : Review.Adjudication)
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
-  | completionEvidenceRecorded (facts : Work.CompletionFacts)
-      (obligations : List Evidence.Obligation)
   | workCompleted (work : WorkId) (activation : ActivationId)
 deriving DecidableEq, Repr
 
@@ -81,11 +92,48 @@ def applyUnchecked (event : Event) (state : State) : State :=
     state with
     revision := revised
     evidence := Evidence.invalidateEvidence state.evidence
-    completionFacts := Work.invalidateCompletionFacts state.completionFacts
     obligations := Evidence.invalidate state.obligations }
   match event with
   | .workInitialized work activation =>
       { invalidated with work := [work], activations := [activation] }
+  | .workRegistered work =>
+      { invalidated with work := state.work ++ [work] }
+  | .suspendedActivationRegistered activation =>
+      { invalidated with activations := state.activations ++ [activation] }
+  | .completionPlanned plan =>
+      { invalidated with lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan] }
+  | .relatedWorkTerminated owner related =>
+      { invalidated with
+        work := Work.closeWork state.work related
+        lifecycle := state.lifecycle.map fun completion =>
+          if completion.plan.work == owner then Lifecycle.advance completion else completion }
+  | .phaseCompleted work key =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then Lifecycle.completePhase completion key else completion }
+  | .taskCompleted work key =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then Lifecycle.completeTask completion key else completion }
+  | .checklistCompleted work key =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then Lifecycle.completeChecklist completion key else completion }
+  | .findingResolved work key =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then Lifecycle.resolveFinding completion key else completion }
+  | .validationPassed work key artifactDigest =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then
+          Lifecycle.passValidation completion key artifactDigest else completion }
+  | .repositoryClassified work key snapshotDigest =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then
+          Lifecycle.classifyRepository completion key snapshotDigest else completion }
+  | .correctionResolved work key =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then Lifecycle.resolveCorrection completion key else completion }
+  | .workRecordLinked work key reference =>
+      { invalidated with lifecycle := state.lifecycle.map fun completion =>
+        if completion.plan.work == work then
+          Lifecycle.linkWorkRecord completion key reference else completion }
   | .reviewClaimed claim => { invalidated with claims := state.claims ++ [claim] }
   | .reviewAdjudicated decision =>
       { invalidated with adjudications := state.adjudications ++ [decision] }
@@ -104,20 +152,97 @@ def applyUnchecked (event : Event) (state : State) : State :=
       let retained := (Evidence.invalidate state.obligations).filter fun existing =>
         existing.work != obligation.work || existing.key != obligation.key
       { invalidated with obligations := retained ++ [{ obligation with revision := revised, current := true }] }
-  | .completionEvidenceRecorded facts obligations =>
-      let retainedFacts := (Work.invalidateCompletionFacts state.completionFacts).filter
-        (·.work != facts.work)
-      let retainedObligations := (Evidence.invalidate state.obligations).filter fun existing =>
-        existing.work != facts.work ||
-          !(obligations.any fun replacement => replacement.key == existing.key)
-      { invalidated with
-        completionFacts := retainedFacts ++ [{ facts with revision := revised, current := true }]
-        obligations := retainedObligations ++ obligations.map fun obligation =>
-          { obligation with work := facts.work, revision := revised, current := true } }
   | .workCompleted work activation =>
       { invalidated with
         work := Work.closeWork state.work work
         activations := Work.closeActivation state.activations activation }
+
+def eventApplicable (event : Event) (state : State) : Bool :=
+  match event with
+  | .workInitialized work activation =>
+      state.work.isEmpty && state.activations.isEmpty &&
+      work.status == .open && activation.status == .active &&
+      !activation.readyToResume && activation.work == work.id
+  | .workRegistered work =>
+      work.status == .open && !state.work.any (·.id == work.id)
+  | .suspendedActivationRegistered activation =>
+      activation.status == .suspended && activation.readyToResume &&
+      state.work.any (fun work => work.id == activation.work && work.status == .open) &&
+      !state.activations.any (·.id == activation.id)
+  | .completionPlanned plan =>
+      !state.lifecycle.any (fun completion => completion.plan.work == plan.work) &&
+      decide (Lifecycle.ValidPlan state.work plan)
+  | .relatedWorkTerminated owner related =>
+      match Lifecycle.forWork state.lifecycle owner with
+      | none => false
+      | some completion =>
+          completion.plan.relatedWork.any (·.work == related) &&
+          state.work.any (fun work => work.id == related && work.status == .open) &&
+          (Work.activeFor state.activations related).isNone
+  | .phaseCompleted work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => completion.phases.any (fun record =>
+          record.key == key && record.status == .pending)
+      | none => false
+  | .taskCompleted work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => completion.tasks.any (fun record =>
+          record.key == key && record.status == .pending)
+      | none => false
+  | .checklistCompleted work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => completion.checklists.any (fun record =>
+          record.key == key && record.status == .pending)
+      | none => false
+  | .findingResolved work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => completion.findings.any (fun record =>
+          record.key == key && record.status == .open)
+      | none => false
+  | .validationPassed work key artifactDigest =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => !artifactDigest.isEmpty && completion.validations.any (·.key == key)
+      | none => false
+  | .repositoryClassified work key snapshotDigest =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => !snapshotDigest.isEmpty && completion.repositories.any (·.key == key)
+      | none => false
+  | .correctionResolved work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => completion.corrections.any (fun record =>
+          record.key == key && record.status == .open)
+      | none => false
+  | .workRecordLinked work key reference =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion => !reference.isEmpty && completion.workRecords.any (fun record =>
+          record.key == key && record.status == .unlinked)
+      | none => false
+  | .reviewClaimed claim =>
+      match Lifecycle.forWork state.lifecycle claim.work with
+      | some completion => completion.plan.reviews.contains claim.plan &&
+          claim.epoch == completion.epoch && !state.claims.any (·.id == claim.id)
+      | none => false
+  | .reviewAdjudicated decision =>
+      state.claims.any (·.id == decision.review) &&
+      !state.adjudications.any (·.review == decision.review)
+  | .evidenceRecorded item =>
+      !item.obligation.isEmpty && !item.artifactDigest.isEmpty &&
+      !state.evidence.any (·.id == item.id) &&
+      state.obligations.any fun obligation =>
+        obligation.work == item.work && obligation.key == item.obligation
+  | .externalOperationRecorded attempt =>
+      attempt.state == .prepared && !attempt.operation.value.isEmpty &&
+      !attempt.artifactDigest.isEmpty &&
+      !state.externalOperations.any (·.operation == attempt.operation)
+  | .obligationRecorded obligation =>
+      !obligation.key.isEmpty &&
+      state.work.any (fun work => work.id == obligation.work && work.status == .open)
+  | .workCompleted work activation =>
+      match Work.activeFor state.activations work with
+      | some current => current.id == activation &&
+          Policy.Completion.closeable work state.work state.activations
+            state.claims state.adjudications state.lifecycle
+      | none => false
 
 def verifyState (state : State) : Except DomainError VerifiedState :=
   if valid : ValidState state then
@@ -126,7 +251,10 @@ def verifyState (state : State) : Except DomainError VerifiedState :=
     .error (.invariantViolation "state invariant violation")
 
 def applyEvent (event : Event) (verified : VerifiedState) : Except DomainError VerifiedState :=
-  verifyState (applyUnchecked event verified.state)
+  if eventApplicable event verified.state then
+    verifyState (applyUnchecked event verified.state)
+  else
+    .error (.invalidTransition "event is not applicable to authoritative state")
 
 def replayFrom : List Event → VerifiedState → Except DomainError VerifiedState
   | [], state => .ok state
@@ -151,7 +279,7 @@ def emptyState : State :=
     evidence := []
     externalOperations := []
     obligations := []
-    completionFacts := [] }
+    lifecycle := [] }
 
 structure LedgerImage where
   id : LedgerId
@@ -228,9 +356,11 @@ theorem emptyState_valid : ValidState emptyState := by
     Evidence.EvidenceWellFormed, Evidence.EvidenceCurrentAt,
     Evidence.EvidenceReferencesObligations,
     ExternalOperation.UniqueOperations,
-    ExternalOperation.AttemptsWellFormed, Work.UniqueCompletionFacts,
-    Work.CompletionFactsReferenceWork, Work.CurrentCompletionFactsReferenceOpenWork,
-    Work.CompletionFactsCurrent,
+    ExternalOperation.AttemptsWellFormed,
+    Lifecycle.ReviewClaimsReferencePlans,
+    Lifecycle.ValidLifecycleState, Lifecycle.ValidPlan, Lifecycle.MatchesPlan,
+    Lifecycle.RecordsWellFormed,
+    Lifecycle.nonemptyKeys,
     Evidence.UniqueObligations, Evidence.ObligationsWellFormed,
     Evidence.ObligationsReferenceWork, Evidence.CurrentObligationsReferenceOpenWork,
     Evidence.ObligationsCurrentAt,

@@ -17,6 +17,27 @@ def firstWork : Domain.Work.WorkUnit :=
 def secondWork : Domain.Work.WorkUnit :=
   { id := ⟨2⟩, status := .open }
 
+def thirdWork : Domain.Work.WorkUnit :=
+  { id := ⟨3⟩, status := .open }
+
+def parentWork : Domain.Work.WorkUnit :=
+  { id := ⟨4⟩, status := .open }
+
+def completionPlan : Domain.Lifecycle.CompletionPlan :=
+  { work := firstWork.id
+    relatedWork := [
+      { work := secondWork.id, kind := .child },
+      { work := thirdWork.id, kind := .dependency }]
+    phases := ["phase-1"]
+    tasks := ["task-1", "task-after-validation"]
+    checklists := ["checklist-1"]
+    reviews := [⟨1⟩]
+    findings := ["finding-1"]
+    validations := ["validation-1"]
+    repositories := ["repository-1"]
+    corrections := ["correction-1"]
+    workRecords := ["record-1"] }
+
 def initializeWork (state : Kernel.Replay.State)
     (work : Domain.Work.WorkUnit)
     (activation : Domain.Work.Activation) : Kernel.Decide.Command :=
@@ -36,19 +57,11 @@ def expectRejectedNoEffect (command : Kernel.Decide.Command)
   expect (Kernel.Decide.committedState result state == state)
     s!"{message}: rejected command changed state or revision"
 
-def completeFacts : Domain.Work.CompletionFacts :=
-  { work := firstWork.id
-    revision := ⟨1⟩
-    current := true
-    dependentWorkTerminal := true
-    phasesTerminal := true
-    tasksComplete := true
-    checklistsComplete := true
-    reviewsClean := true
-    findingsResolved := true
-    repositoryClassified := true
-    workRecordsLinked := true
-    correctionsResolved := true }
+def executeState (command : Kernel.Decide.Command) (state : Kernel.Replay.State)
+    (message : String) : IO Kernel.Replay.State :=
+  match Kernel.Decide.decide command state with
+  | .ok transaction => pure transaction.result.state
+  | .error error => throw <| IO.userError s!"{message}: {repr error}"
 
 def main : IO Unit := do
   let initial := Kernel.Replay.emptyState
@@ -75,23 +88,6 @@ def main : IO Unit := do
   | .error .staleRevision => pure ()
   | _ => throw <| IO.userError "stale command must be rejected"
   expectRejectedNoEffect stale first "stale revision rejection"
-  let claim : Domain.Review.Claim := { id := ⟨1⟩, claim := .clean }
-  let claimed ← match Kernel.Decide.decide
-      (.recordReviewClaim first.revision claim) first with
-    | .ok transaction => pure transaction.result.state
-    | .error error => throw <| IO.userError s!"valid review claim rejected: {repr error}"
-  expectRejectedNoEffect (.recordReviewClaim claimed.revision claim) claimed
-    "duplicate review claim"
-  let unknownAdjudication : Domain.Review.Adjudication :=
-    { review := ⟨99⟩, decision := .accepted }
-  expectRejectedNoEffect (.recordReviewAdjudication first.revision unknownAdjudication) first
-    "adjudication without claim"
-  let adjudication : Domain.Review.Adjudication :=
-    { review := claim.id, decision := .accepted }
-  match Kernel.Decide.decide
-      (.recordReviewAdjudication claimed.revision adjudication) claimed with
-  | .ok _ => pure ()
-  | .error error => throw <| IO.userError s!"valid adjudication rejected: {repr error}"
   let currentObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "proof", revision := ⟨1⟩, current := true }
   let obligated ← match Kernel.Decide.decide
@@ -155,34 +151,119 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.initializeWork initial.revision closedWork suspended) initial
     "unready suspended activation referencing closed work"
+  let authorityClaim : Domain.Review.Claim :=
+    { id := ⟨99⟩, plan := ⟨99⟩, work := firstWork.id, epoch := ⟨0⟩, claim := .clean }
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
-  expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
+  expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState authorityClaim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
-  let staleObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨1⟩, current := false }
   let malformedObligation := { currentObligation with key := "" }
   expectRejectedNoEffect (.recordObligation first.revision malformedObligation) first
     "malformed obligation"
-  expectRejectedNoEffect
-    (.recordCompletionEvidence first.revision completeFacts
-      [currentObligation, currentObligation]) first
-    "duplicate completion obligations"
   let orphanObligation := { currentObligation with work := ⟨99⟩ }
   expectRejectedNoEffect (.recordObligation first.revision orphanObligation) first
     "obligation owned by missing work"
-  let orphanFacts := { completeFacts with work := ⟨99⟩ }
+  let registeredChild ← executeState (.registerWork first.revision secondWork) first
+    "child registration rejected"
+  let registeredDependency ← executeState
+    (.registerWork registeredChild.revision thirdWork) registeredChild
+    "dependency registration rejected"
+  let registeredParent ← executeState
+    (.registerWork registeredDependency.revision parentWork) registeredDependency
+    "parent registration rejected"
+  let parentActivation : Domain.Work.Activation :=
+    { id := ⟨4⟩, work := parentWork.id, status := .suspended, readyToResume := true }
+  let withParent ← executeState
+    (.registerSuspendedActivation registeredParent.revision parentActivation) registeredParent
+    "suspended parent registration rejected"
+  let planned ← executeState (.planCompletion withParent.revision completionPlan) withParent
+    "completion planning rejected"
+  expect (!(Policy.Completion.closeable firstWork.id planned.work planned.activations
+    planned.claims planned.adjudications planned.lifecycle))
+    "an authoritative plan must begin unready instead of self-attested complete"
+  match Kernel.Replay.replay
+      [.workCompleted firstWork.id firstActivation.id] planned with
+  | .error (.invalidTransition _) => pure ()
+  | _ => throw <| IO.userError "a raw completion event bypassed authoritative lifecycle derivation"
+  let childDone ← executeState
+    (.terminateRelatedWork planned.revision firstWork.id secondWork.id) planned
+    "child completion rejected"
+  let dependencyDone ← executeState
+    (.terminateRelatedWork childDone.revision firstWork.id thirdWork.id) childDone
+    "dependency completion rejected"
+  let phaseDone ← executeState
+    (.completePhase dependencyDone.revision firstWork.id "phase-1") dependencyDone
+    "phase completion rejected"
+  let taskDone ← executeState
+    (.completeTask phaseDone.revision firstWork.id "task-1") phaseDone
+    "task completion rejected"
+  let checklistDone ← executeState
+    (.completeChecklist taskDone.revision firstWork.id "checklist-1") taskDone
+    "checklist completion rejected"
+  let findingDone ← executeState
+    (.resolveFinding checklistDone.revision firstWork.id "finding-1") checklistDone
+    "finding resolution rejected"
+  let correctionDone ← executeState
+    (.resolveCorrection findingDone.revision firstWork.id "correction-1") findingDone
+    "correction resolution rejected"
+  let recordDone ← executeState
+    (.linkWorkRecord correctionDone.revision firstWork.id "record-1" "work-record:1")
+      correctionDone "work-record link rejected"
+  let repositoryDone ← executeState
+    (.classifyRepository recordDone.revision firstWork.id "repository-1" "snapshot:1")
+      recordDone "repository classification rejected"
+  let epoch ← match Domain.Lifecycle.forWork repositoryDone.lifecycle firstWork.id with
+    | some completion => pure completion.epoch
+    | none => throw <| IO.userError "completion lifecycle disappeared"
+  let claim : Domain.Review.Claim :=
+    { id := ⟨1⟩, plan := ⟨1⟩, work := firstWork.id, epoch, claim := .clean }
+  let claimed ← executeState
+    (.recordReviewClaim repositoryDone.revision claim) repositoryDone
+    "current scoped review claim rejected"
+  expectRejectedNoEffect (.recordReviewClaim claimed.revision claim) claimed
+    "duplicate review claim"
+  let unknownAdjudication : Domain.Review.Adjudication :=
+    { review := ⟨99⟩, decision := .accepted }
   expectRejectedNoEffect
-    (.recordCompletionEvidence first.revision orphanFacts [orphanObligation]) first
-    "completion evidence owned by missing work"
-  expect (Policy.Completion.closeable firstWork.id first.work first.activations
-    [completeFacts] [currentObligation])
-    "complete current obligations must allow completion"
-  expect (!(Policy.Completion.closeable firstWork.id first.work first.activations
-    [completeFacts] [])) "completion must reject missing obligations"
-  expect (!(Policy.Completion.closeable firstWork.id first.work first.activations
-    [completeFacts] [staleObligation]))
-    "completion must reject stale obligations"
-  let completable := { first with completionFacts := [completeFacts], obligations := [currentObligation] }
+    (.recordReviewAdjudication claimed.revision unknownAdjudication) claimed
+    "adjudication without claim"
+  let adjudication : Domain.Review.Adjudication :=
+    { review := claim.id, decision := .accepted }
+  let adjudicated ← executeState
+    (.recordReviewAdjudication claimed.revision adjudication) claimed
+    "review adjudication rejected"
+  let staleable ← executeState
+    (.passValidation adjudicated.revision firstWork.id "validation-1" "artifact:1")
+      adjudicated "validation observation rejected"
+  let staled ← executeState
+    (.completeTask staleable.revision firstWork.id "task-after-validation") staleable
+    "post-validation task completion rejected"
+  expectRejectedNoEffect (.completeWork staled.revision firstWork.id) staled
+    "stale completion-context observations"
+  let repositoryRefreshed ← executeState
+    (.classifyRepository staled.revision firstWork.id "repository-1" "snapshot:2") staled
+    "current repository reclassification rejected"
+  let refreshedEpoch ← match Domain.Lifecycle.forWork
+      repositoryRefreshed.lifecycle firstWork.id with
+    | some completion => pure completion.epoch
+    | none => throw <| IO.userError "completion lifecycle disappeared after invalidation"
+  let freshClaim : Domain.Review.Claim :=
+    { id := ⟨2⟩, plan := ⟨1⟩, work := firstWork.id,
+      epoch := refreshedEpoch, claim := .clean }
+  let freshlyClaimed ← executeState
+    (.recordReviewClaim repositoryRefreshed.revision freshClaim) repositoryRefreshed
+    "fresh scoped review claim rejected"
+  let freshAdjudication : Domain.Review.Adjudication :=
+    { review := freshClaim.id, decision := .accepted }
+  let freshlyAdjudicated ← executeState
+    (.recordReviewAdjudication freshlyClaimed.revision freshAdjudication) freshlyClaimed
+    "fresh review adjudication rejected"
+  let completable ← executeState
+    (.passValidation freshlyAdjudicated.revision firstWork.id
+      "validation-1" "artifact:2") freshlyAdjudicated
+    "current validation observation rejected"
+  expect (Policy.Completion.closeable firstWork.id completable.work completable.activations
+    completable.claims completable.adjudications completable.lifecycle)
+    "authoritative current lifecycle records must allow completion"
   let completed ← match Kernel.Decide.closeWork firstWork.id completable with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid completion rejected: {repr error}"
@@ -193,39 +274,11 @@ def main : IO Unit := do
     "completion must atomically close the owning activation"
   expect (completed.revision == completable.revision.next)
     "atomic completion must advance exactly one revision"
-  expectRejectedNoEffect
-    (.recordCompletionEvidence completed.revision completeFacts [currentObligation]) completed
-    "current completion evidence for closed work"
   expectRejectedNoEffect (.recordObligation completed.revision currentObligation) completed
     "current obligation for closed work"
-  let contradictory := { completable with completionFacts :=
-    [completeFacts, { completeFacts with revision := ⟨3⟩, tasksComplete := false }] }
-  match Kernel.Replay.verifyState contradictory with
-  | .error _ => pure ()
-  | .ok _ => throw <| IO.userError "contradictory completion facts must invalidate state"
-  match Kernel.Decide.closeWork firstWork.id contradictory with
-  | .error (.invariantViolation _) => pure ()
-  | _ => throw <| IO.userError "invalid contradictory facts must not authorize completion"
-  let staleRevisionState := { completable with
-    completionFacts := [{ completeFacts with revision := ⟨0⟩ }]
-    obligations := [{ currentObligation with revision := ⟨0⟩ }] }
-  match Kernel.Replay.verifyState staleRevisionState with
-  | .error _ => pure ()
-  | .ok _ => throw <| IO.userError "stale-revision current evidence must invalidate state"
-  match Kernel.Decide.closeWork firstWork.id staleRevisionState with
-  | .error (.invariantViolation _) => pure ()
-  | _ => throw <| IO.userError "stale-revision evidence must not authorize completion"
-  let unrelated : Domain.Work.Activation :=
-    { id := ⟨2⟩, work := ⟨2⟩, status := .suspended, readyToResume := true }
-  let withUnrelated := { completable with
-    work := [firstWork, secondWork]
-    activations := [firstActivation, unrelated] }
-  let afterUnrelated ← match Kernel.Decide.closeWork firstWork.id withUnrelated with
-    | .ok transaction => pure transaction.result.state
-    | .error error => throw <| IO.userError s!"completion with unrelated activation failed: {repr error}"
-  expect (afterUnrelated.activations.any fun activation => activation == unrelated)
+  expect (completed.activations.any fun activation => activation == parentActivation)
     "completion must preserve unrelated suspended activations"
-  match Kernel.Decide.closeWork secondWork.id withUnrelated with
+  match Kernel.Decide.closeWork parentWork.id completable with
   | .error (.invalidTransition _) => pure ()
   | _ => throw <| IO.userError "inactive target completion must reject"
   let receipt : Policy.Update.Receipt :=

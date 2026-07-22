@@ -12,6 +12,22 @@ open AgentWorkbench.Kernel.Replay
 inductive Command
   | initializeWork (expectedRevision : Revision)
       (work : Work.WorkUnit) (activation : Work.Activation)
+  | registerWork (expectedRevision : Revision) (work : Work.WorkUnit)
+  | registerSuspendedActivation (expectedRevision : Revision)
+      (activation : Work.Activation)
+  | planCompletion (expectedRevision : Revision) (plan : Lifecycle.CompletionPlan)
+  | terminateRelatedWork (expectedRevision : Revision) (owner related : WorkId)
+  | completePhase (expectedRevision : Revision) (work : WorkId) (key : String)
+  | completeTask (expectedRevision : Revision) (work : WorkId) (key : String)
+  | completeChecklist (expectedRevision : Revision) (work : WorkId) (key : String)
+  | resolveFinding (expectedRevision : Revision) (work : WorkId) (key : String)
+  | passValidation (expectedRevision : Revision) (work : WorkId)
+      (key artifactDigest : String)
+  | classifyRepository (expectedRevision : Revision) (work : WorkId)
+      (key snapshotDigest : String)
+  | resolveCorrection (expectedRevision : Revision) (work : WorkId) (key : String)
+  | linkWorkRecord (expectedRevision : Revision) (work : WorkId)
+      (key reference : String)
   | recordReviewClaim (expectedRevision : Revision) (claim : Review.Claim)
   | recordReviewAdjudication (expectedRevision : Revision)
       (adjudication : Review.Adjudication)
@@ -19,19 +35,28 @@ inductive Command
   | recordExternalOperation (expectedRevision : Revision)
       (attempt : ExternalOperation.Attempt)
   | recordObligation (expectedRevision : Revision) (obligation : Evidence.Obligation)
-  | recordCompletionEvidence (expectedRevision : Revision)
-      (facts : Work.CompletionFacts) (obligations : List Evidence.Obligation)
   | completeWork (expectedRevision : Revision) (target : WorkId)
 deriving DecidableEq, Repr
 
 def Command.expectedRevision : Command → Revision
   | .initializeWork revision _ _
+  | .registerWork revision _
+  | .registerSuspendedActivation revision _
+  | .planCompletion revision _
+  | .terminateRelatedWork revision _ _
+  | .completePhase revision _ _
+  | .completeTask revision _ _
+  | .completeChecklist revision _ _
+  | .resolveFinding revision _ _
+  | .passValidation revision _ _ _
+  | .classifyRepository revision _ _ _
+  | .resolveCorrection revision _ _
+  | .linkWorkRecord revision _ _ _
   | .recordReviewClaim revision _
   | .recordReviewAdjudication revision _
   | .recordEvidence revision _
   | .recordExternalOperation revision _
   | .recordObligation revision _
-  | .recordCompletionEvidence revision _ _
   | .completeWork revision _ => revision
 
 structure DerivedEvents where
@@ -47,8 +72,106 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.workInitialized work activation], by simp⟩
       else
         .error (.invalidTransition "work initialization requires an empty state and one matching open active frame")
+  | .registerWork _ work =>
+      if work.status == .open && !state.work.any (·.id == work.id) then
+        .ok ⟨[.workRegistered work], by simp⟩
+      else
+        .error (.invalidTransition "registered work must be a new open work unit")
+  | .registerSuspendedActivation _ activation =>
+      if activation.status == .suspended && activation.readyToResume &&
+          state.work.any (fun work => work.id == activation.work && work.status == .open) &&
+          !state.activations.any (·.id == activation.id) then
+        .ok ⟨[.suspendedActivationRegistered activation], by simp⟩
+      else
+        .error (.invalidTransition "registered parent activation must be new, suspended, ready, and reference open work")
+  | .planCompletion _ plan =>
+      if state.lifecycle.any (fun completion => completion.plan.work == plan.work) then
+        .error (.invalidTransition "completion plan already exists")
+      else if Lifecycle.ValidPlan state.work plan then
+        .ok ⟨[.completionPlanned plan], by simp⟩
+      else
+        .error (.invalidTransition "completion plan is not authoritative or well formed")
+  | .terminateRelatedWork _ owner related =>
+      match Lifecycle.forWork state.lifecycle owner with
+      | none => .error (.invalidTransition "completion plan is missing")
+      | some completion =>
+          if completion.plan.relatedWork.any (·.work == related) &&
+              state.work.any (fun work => work.id == related && work.status == .open) &&
+              (Work.activeFor state.activations related).isNone then
+            .ok ⟨[.relatedWorkTerminated owner related], by simp⟩
+          else
+            .error (.invalidTransition "related work is not an open inactive requirement")
+  | .completePhase _ work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if completion.phases.any (fun record =>
+              record.key == key && record.status == .pending) then
+            .ok ⟨[.phaseCompleted work key], by simp⟩
+          else .error (.invalidTransition "phase is not pending")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .completeTask _ work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if completion.tasks.any (fun record =>
+              record.key == key && record.status == .pending) then
+            .ok ⟨[.taskCompleted work key], by simp⟩
+          else .error (.invalidTransition "task is not pending")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .completeChecklist _ work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if completion.checklists.any (fun record =>
+              record.key == key && record.status == .pending) then
+            .ok ⟨[.checklistCompleted work key], by simp⟩
+          else .error (.invalidTransition "checklist is not pending")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .resolveFinding _ work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if completion.findings.any (fun record =>
+              record.key == key && record.status == .open) then
+            .ok ⟨[.findingResolved work key], by simp⟩
+          else .error (.invalidTransition "finding is not open")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .passValidation _ work key artifactDigest =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if !artifactDigest.isEmpty && completion.validations.any (·.key == key) then
+            .ok ⟨[.validationPassed work key artifactDigest], by simp⟩
+          else .error (.invalidTransition "validation observation is not a required nonempty artifact")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .classifyRepository _ work key snapshotDigest =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if !snapshotDigest.isEmpty && completion.repositories.any (·.key == key) then
+            .ok ⟨[.repositoryClassified work key snapshotDigest], by simp⟩
+          else .error (.invalidTransition "repository classification is not bound to a required snapshot")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .resolveCorrection _ work key =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if completion.corrections.any (fun record =>
+              record.key == key && record.status == .open) then
+            .ok ⟨[.correctionResolved work key], by simp⟩
+          else .error (.invalidTransition "correction is not open")
+      | none => .error (.invalidTransition "completion plan is missing")
+  | .linkWorkRecord _ work key reference =>
+      match Lifecycle.forWork state.lifecycle work with
+      | some completion =>
+          if !reference.isEmpty && completion.workRecords.any (fun record =>
+              record.key == key && record.status == .unlinked) then
+            .ok ⟨[.workRecordLinked work key reference], by simp⟩
+          else .error (.invalidTransition "work record link is not a required unlinked record")
+      | none => .error (.invalidTransition "completion plan is missing")
   | .recordReviewClaim _ claim =>
-      .ok ⟨[.reviewClaimed claim], by simp⟩
+      match Lifecycle.forWork state.lifecycle claim.work with
+      | some completion =>
+          if completion.plan.reviews.contains claim.plan &&
+              claim.epoch == completion.epoch &&
+              !state.claims.any (·.id == claim.id) then
+            .ok ⟨[.reviewClaimed claim], by simp⟩
+          else .error (.invalidTransition "review claim is not bound to the current required scope")
+      | none => .error (.invalidTransition "completion plan is missing")
   | .recordReviewAdjudication _ adjudication =>
       .ok ⟨[.reviewAdjudicated adjudication], by simp⟩
   | .recordEvidence _ evidence =>
@@ -60,14 +183,12 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .error (.invalidTransition "external operation must begin prepared")
   | .recordObligation _ obligation =>
       .ok ⟨[.obligationRecorded obligation], by simp⟩
-  | .recordCompletionEvidence _ facts obligations =>
-      .ok ⟨[.completionEvidenceRecorded facts obligations], by simp⟩
   | .completeWork _ target =>
       match Work.activeFor state.activations target with
       | none => .error (.invalidTransition "target work is not active")
       | some activation =>
           if Policy.Completion.closeable target state.work state.activations
-              state.completionFacts state.obligations then
+              state.claims state.adjudications state.lifecycle then
             .ok ⟨[.workCompleted target activation.id], by simp⟩
           else
             .error (.invalidTransition "completion obligations remain")
@@ -166,19 +287,33 @@ theorem decide_complete_emits (target : WorkId) (state : State)
   simp only [Command.expectedRevision] at accepted
   simp only [if_true] at accepted
   by_cases ready : Policy.Completion.closeable target state.work state.activations
-      state.completionFacts state.obligations = true
+      state.claims state.adjudications state.lifecycle = true
   · simp only [deriveEvents, active, ready, if_true] at accepted
     split at accepted
     · cases accepted
       rfl
     · contradiction
   · have notReady : Policy.Completion.closeable target state.work state.activations
-        state.completionFacts state.obligations = false := by
+        state.claims state.adjudications state.lifecycle = false := by
       cases result : Policy.Completion.closeable target state.work state.activations
-          state.completionFacts state.obligations with
+          state.claims state.adjudications state.lifecycle with
       | false => rfl
       | true => exact (ready result).elim
     simp [deriveEvents, active, notReady] at accepted
+
+theorem decide_complete_requires_closeable (target : WorkId) (state : State)
+    {transaction : AcceptedTransaction}
+    (accepted : decide (.completeWork state.revision target) state = .ok transaction) :
+    Policy.Completion.closeable target state.work state.activations
+      state.claims state.adjudications state.lifecycle = true := by
+  obtain ⟨derived, derivedBy, _⟩ :=
+    decide_emits_only_derived_events (.completeWork state.revision target) state accepted
+  simp only [deriveEvents] at derivedBy
+  split at derivedBy
+  · contradiction
+  · split at derivedBy
+    · assumption
+    · contradiction
 
 theorem close_work_emits_atomic_event (target : WorkId) (state : State)
     {transaction : CompletionTransaction}

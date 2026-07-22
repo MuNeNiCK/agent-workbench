@@ -17,30 +17,6 @@ structure Activation where
   readyToResume : Bool
 deriving DecidableEq, Repr
 
-structure CompletionFacts where
-  work : WorkId
-  revision : Revision
-  current : Bool
-  dependentWorkTerminal : Bool
-  phasesTerminal : Bool
-  tasksComplete : Bool
-  checklistsComplete : Bool
-  reviewsClean : Bool
-  findingsResolved : Bool
-  repositoryClassified : Bool
-  workRecordsLinked : Bool
-  correctionsResolved : Bool
-deriving DecidableEq, Repr
-
-def UniqueCompletionFacts (facts : List CompletionFacts) : Prop :=
-  (facts.map (·.work)).Nodup
-
-def CompletionFactsCurrent (revision : Revision) (facts : List CompletionFacts) : Prop :=
-  (facts.all fun fact => !fact.current || fact.revision == revision) = true
-
-def invalidateCompletionFacts (facts : List CompletionFacts) : List CompletionFacts :=
-  facts.map fun fact => { fact with current := false }
-
 def activeActivations (activations : List Activation) : List Activation :=
   activations.filter (fun activation => activation.status == .active)
 
@@ -66,15 +42,6 @@ def NonterminalActivationsReferenceOpenWork (work : List WorkUnit)
   (activations.all fun activation =>
     activation.status == .closed ||
       work.any fun unit => unit.id == activation.work && unit.status == .open) = true
-
-def CompletionFactsReferenceWork (work : List WorkUnit)
-    (facts : List CompletionFacts) : Prop :=
-  (facts.all fun fact => work.any (·.id == fact.work)) = true
-
-def CurrentCompletionFactsReferenceOpenWork (work : List WorkUnit)
-    (facts : List CompletionFacts) : Prop :=
-  (facts.all fun fact => !fact.current ||
-    work.any fun unit => unit.id == fact.work && unit.status == .open) = true
 
 def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop :=
   UniqueWorkIds work ∧

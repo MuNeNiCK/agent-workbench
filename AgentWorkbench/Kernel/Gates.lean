@@ -23,7 +23,7 @@ def completionGate (target : WorkId) (store : Projection.Store) : GateResult :=
   match inspection.currentState? with
   | some state =>
       if Policy.Completion.closeable target state.work state.activations
-          state.completionFacts state.obligations then
+          state.claims state.adjudications state.lifecycle then
         .pass
       else
         .blocked "completion obligations remain"

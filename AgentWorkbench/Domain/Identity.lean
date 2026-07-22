@@ -16,6 +16,17 @@ structure ReviewId where
   value : Nat
 deriving DecidableEq, Repr, BEq
 
+structure ReviewPlanId where
+  value : Nat
+deriving DecidableEq, Repr, BEq
+
+structure CompletionEpoch where
+  value : Nat
+deriving DecidableEq, Repr, BEq, Ord
+
+def CompletionEpoch.next (epoch : CompletionEpoch) : CompletionEpoch :=
+  ⟨epoch.value + 1⟩
+
 structure EvidenceId where
   value : Nat
 deriving DecidableEq, Repr, BEq

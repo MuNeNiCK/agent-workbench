@@ -7,6 +7,9 @@ open AgentWorkbench.Domain
 
 structure Claim where
   id : ReviewId
+  plan : ReviewPlanId
+  work : WorkId
+  epoch : CompletionEpoch
   claim : ReviewClaim
 deriving DecidableEq, Repr
 
