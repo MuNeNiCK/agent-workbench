@@ -30,9 +30,7 @@ theorems = [
 modules = [
   "AgentWorkbench.Domain.Identity",
   "AgentWorkbench.Domain.Facts",
-  "AgentWorkbench.Domain.Projection",
   "AgentWorkbench.Domain.Work",
-  "AgentWorkbench.Domain.Lifecycle",
   "AgentWorkbench.Domain.Design",
   "AgentWorkbench.Domain.Review",
   "AgentWorkbench.Domain.Evidence",
@@ -42,7 +40,6 @@ modules = [
   "AgentWorkbench.Policy.Completion",
   "AgentWorkbench.Policy.Update",
   "AgentWorkbench.Kernel.Replay",
-  "AgentWorkbench.Kernel.Projection",
   "AgentWorkbench.Kernel.Decide",
   "AgentWorkbench.Kernel.Gates",
   "AgentWorkbench.Kernel.Resolver",

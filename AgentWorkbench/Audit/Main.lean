@@ -21,27 +21,76 @@ structure ManifestPolicy where
   forbiddenAxioms : Array String
   unsafeFfiModules : Array String
 
-def moduleRules : Array ModuleRule := #[
-  ⟨"AgentWorkbench.Domain.Identity", #[]⟩,
-  ⟨"AgentWorkbench.Domain.Facts", #[]⟩,
-  ⟨"AgentWorkbench.Domain.Projection", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Domain.Work", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Domain.Lifecycle", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Review"]⟩,
-  ⟨"AgentWorkbench.Domain.Design", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Domain.Review", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Domain.Evidence", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Domain.ExternalOperation", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Policy.Traceability", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Evidence"]⟩,
-  ⟨"AgentWorkbench.Policy.Authority", #["AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Policy.Completion", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Lifecycle", "AgentWorkbench.Domain.Evidence"]⟩,
-  ⟨"AgentWorkbench.Policy.Update", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Kernel.Replay", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation", "AgentWorkbench.Domain.Projection", "AgentWorkbench.Domain.Lifecycle", "AgentWorkbench.Policy.Completion"]⟩,
-  ⟨"AgentWorkbench.Kernel.Projection", #["AgentWorkbench.Kernel.Replay"]⟩,
-  ⟨"AgentWorkbench.Kernel.Decide", #["AgentWorkbench.Kernel.Replay", "AgentWorkbench.Policy.Traceability", "AgentWorkbench.Policy.Authority", "AgentWorkbench.Policy.Completion", "AgentWorkbench.Policy.Update"]⟩,
-  ⟨"AgentWorkbench.Kernel.Gates", #["AgentWorkbench.Kernel.Projection", "AgentWorkbench.Policy.Completion"]⟩,
-  ⟨"AgentWorkbench.Kernel.Resolver", #["AgentWorkbench.Kernel.Gates", "AgentWorkbench.Domain.Work"]⟩,
-  ⟨"AgentWorkbench.Application.Service", #["AgentWorkbench.Kernel.Decide", "AgentWorkbench.Kernel.Gates", "AgentWorkbench.Kernel.Resolver"]⟩
-]
+def designModuleMapPath : System.FilePath :=
+  ".agent-workbench/designs/lean-first-core/05-building-blocks.md"
+
+def designMapTokens (content : String) : Except String (List String) :=
+  let marker := "The initial module/interface map is normative:\n\n```text\n"
+  match content.splitOn marker with
+  | _ :: after :: _ =>
+      match after.splitOn "\n```" with
+      | block :: _ =>
+          .ok <| ((block.replace "\n" " ").replace "," " ").splitOn " " |>
+            List.filter (fun token => !token.isEmpty)
+      | _ => .error "normative module map closing fence is missing"
+  | _ => .error "normative module map opening marker is missing"
+
+def tokenSection (start stop : String) (tokens : List String) : List String :=
+  ((tokens.dropWhile (· != start)).drop 1).takeWhile (· != stop)
+
+def isQualifiedDesignToken (token : String) : Bool :=
+  token.contains '.'
+
+def qualifyDesignModule (token : String) : String :=
+  "AgentWorkbench." ++ token
+
+def resolveDesignImports (allModules l0 l1 l2 l3 : List String)
+    (tokens : List String) : List String :=
+  (tokens.flatMap fun token =>
+    if token = "L0" then l0
+    else if token = "L1" then l1
+    else if token = "L2" then l2
+    else if token = "L3" then l3
+    else
+      match allModules.find? (fun module => module.endsWith ("." ++ token)) with
+      | some module => [module]
+      | none => []).eraseDups
+
+partial def parseDesignArrowRules (allModules l0 l1 l2 l3 : List String) :
+    List String → Except String (Array ModuleRule)
+  | [] => .ok #[]
+  | module :: "->" :: rest => do
+      unless isQualifiedDesignToken module do
+        throw s!"invalid normative module token: {module}"
+      let imports := rest.takeWhile (fun token => !isQualifiedDesignToken token)
+      let remaining := rest.drop imports.length
+      let tail ← parseDesignArrowRules allModules l0 l1 l2 l3 remaining
+      return #[⟨qualifyDesignModule module,
+        (resolveDesignImports allModules l0 l1 l2 l3 imports).toArray⟩] ++ tail
+  | token :: _ => .error s!"invalid normative module rule near {token}"
+
+def parseDesignModuleRules (content : String) : Except String (Array ModuleRule) := do
+  let tokens ← designMapTokens content
+  let l0Tokens := tokenSection "L0" "L1" tokens
+  let l1Section := tokenSection "L1" "L2" tokens
+  let l2Section := tokenSection "L2" "L3" tokens
+  let l3Section := tokenSection "L3" "L4" tokens
+  let l4Section := tokenSection "L4" "L5" tokens
+  let l0 := (l0Tokens.filter isQualifiedDesignToken).map qualifyDesignModule
+  let l1 := ((l1Section.takeWhile (· != "->")).filter isQualifiedDesignToken).map
+    qualifyDesignModule
+  let l2 := (l2Section.filter isQualifiedDesignToken).map qualifyDesignModule
+  let l3 := (l3Section.filter isQualifiedDesignToken).map qualifyDesignModule
+  let l4 := (l4Section.filter isQualifiedDesignToken).map qualifyDesignModule
+  let allModules := l0 ++ l1 ++ l2 ++ l3 ++ l4
+  unless !l0.isEmpty && !l1.isEmpty && !l2.isEmpty && !l3.isEmpty && !l4.isEmpty do
+    throw "normative module map has an empty product layer"
+  let l0Rules := l0.toArray.map fun module => ⟨module, #[]⟩
+  let l1Rules := l1.toArray.map fun module => ⟨module, l0.toArray⟩
+  let l2Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l2Section
+  let l3Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l3Section
+  let l4Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l4Section
+  return l0Rules ++ l1Rules ++ l2Rules ++ l3Rules ++ l4Rules
 
 def theoremRules : Array TheoremRule := #[
   ⟨"AgentWorkbench.Kernel.Replay.replay_deterministic", "AgentWorkbench.Audit.Expected.replay_deterministic"⟩,
@@ -119,11 +168,12 @@ def parseManifestPolicy (content : String) : Except String ManifestPolicy := do
     forbiddenAxioms := ← parseManifestArray "forbidden_axioms" content
     unsafeFfiModules := ← parseManifestArray "unsafe_ffi_modules" content }
 
-def validateManifestPolicy (policy : ManifestPolicy) : Except String Unit := do
+def validateManifestPolicy (designRules : Array ModuleRule)
+    (policy : ManifestPolicy) : Except String Unit := do
   unless policy.theorems = theoremRules.map (·.declaration) do
     throw "theorem manifest differs from immutable Lean policy"
-  unless policy.modules = moduleRules.map (·.module) do
-    throw "module manifest differs from immutable Lean policy"
+  unless policy.modules = designRules.map (·.module) do
+    throw "module manifest differs from the approved Design Package module map"
   unless policy.permittedAxioms = expectedPermittedAxioms do
     throw "permitted axiom manifest differs from immutable Lean policy"
   unless policy.forbiddenAxioms = expectedForbiddenAxioms do
@@ -131,12 +181,13 @@ def validateManifestPolicy (policy : ManifestPolicy) : Except String Unit := do
   unless policy.unsafeFfiModules = expectedUnsafeFfiModules do
     throw "unsafe/FFI boundary differs from immutable Lean policy"
 
-def validateManifestContent (content : String) : Except String ManifestPolicy := do
+def validateManifestContent (designRules : Array ModuleRule)
+    (content : String) : Except String ManifestPolicy := do
   let policy ← parseManifestPolicy content
-  validateManifestPolicy policy
+  validateManifestPolicy designRules policy
   return policy
 
-def auditNegativeFixtures (manifest : String) : IO Unit := do
+def auditNegativeFixtures (designRules : Array ModuleRule) (manifest : String) : IO Unit := do
   let fixtures : Array (String × String) := #[
     ("missing-theorem", manifest.replace
       "AgentWorkbench.Kernel.Replay.replay_deterministic"
@@ -148,7 +199,7 @@ def auditNegativeFixtures (manifest : String) : IO Unit := do
   ]
   for (name, fixture) in fixtures do
     if fixture = manifest then fail s!"negative fixture did not mutate manifest: {name}"
-    match validateManifestContent fixture with
+    match validateManifestContent designRules fixture with
     | .error _ => pure ()
     | .ok _ => fail s!"negative manifest fixture was accepted: {name}"
 
@@ -201,9 +252,15 @@ def auditReverificationBounds (actual : Array ModuleRule) : IO Unit := do
   unless completionDependents.contains "AgentWorkbench.Application.Service" do
     fail "Policy.Completion dependent closure does not reach the application boundary"
 
-def auditArchitecture : IO Unit := do
+def importsWithinDesign (designRules actualRules : Array ModuleRule) : Bool :=
+  actualRules.all fun actual =>
+    match designRules.find? (·.module = actual.module) with
+    | none => false
+    | some allowed => actual.imports.all allowed.imports.contains
+
+def auditArchitecture (designRules : Array ModuleRule) : IO Unit := do
   let mut actualRules : Array ModuleRule := #[]
-  for rule in moduleRules do
+  for rule in designRules do
     unless ← (modulePath rule.module).pathExists do
       fail s!"missing normative module {rule.module}"
     let actual ← sourceImports rule.module
@@ -211,6 +268,14 @@ def auditArchitecture : IO Unit := do
     for imported in actual do
       unless rule.imports.contains imported do
         fail s!"{rule.module} imports forbidden dependency {imported}"
+  unless importsWithinDesign designRules actualRules do
+    fail "actual product imports are not a subset of Design Package authority"
+  let invalidFixture := actualRules.map fun rule =>
+    if rule.module = "AgentWorkbench.Domain.Work" then
+      { rule with imports := rule.imports.push "AgentWorkbench.Domain.Review" }
+    else rule
+  if importsWithinDesign designRules invalidFixture then
+    fail "negative out-of-map import fixture was accepted"
   auditReverificationBounds actualRules
   let cliImports ← sourceImports "Main"
   unless cliImports = #["AgentWorkbench.Cli.Program"] do
@@ -372,7 +437,7 @@ def auditCliMutation : IO Unit := do
       unless (Application.Service.queryValidity transaction.result).value = .pass do
         fail "CLI mutation result is not valid"
 
-def traceModuleRules : Array ModuleRule := moduleRules ++ #[
+def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := designRules ++ #[
   ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Cli.Program", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"Main", #["AgentWorkbench.Cli.Program"]⟩,
@@ -381,30 +446,12 @@ def traceModuleRules : Array ModuleRule := moduleRules ++ #[
   ⟨"AgentWorkbench.Audit.Main", #["AgentWorkbench.Audit.Expected", "AgentWorkbench.Cli.Program"]⟩
 ]
 
-def traceProjectFiles : Array String := #[
+def traceProjectFiles (designRules : Array ModuleRule) : Array String :=
+  designRules.map (fun rule => (rule.module.replace "." "/") ++ ".lean") ++ #[
   "AgentWorkbench.lean",
-  "AgentWorkbench/Application/Service.lean",
   "AgentWorkbench/Audit/Expected.lean",
   "AgentWorkbench/Audit/Main.lean",
   "AgentWorkbench/Cli/Program.lean",
-  "AgentWorkbench/Domain/Design.lean",
-  "AgentWorkbench/Domain/Evidence.lean",
-  "AgentWorkbench/Domain/ExternalOperation.lean",
-  "AgentWorkbench/Domain/Facts.lean",
-  "AgentWorkbench/Domain/Identity.lean",
-  "AgentWorkbench/Domain/Lifecycle.lean",
-  "AgentWorkbench/Domain/Projection.lean",
-  "AgentWorkbench/Domain/Review.lean",
-  "AgentWorkbench/Domain/Work.lean",
-  "AgentWorkbench/Kernel/Decide.lean",
-  "AgentWorkbench/Kernel/Gates.lean",
-  "AgentWorkbench/Kernel/Projection.lean",
-  "AgentWorkbench/Kernel/Replay.lean",
-  "AgentWorkbench/Kernel/Resolver.lean",
-  "AgentWorkbench/Policy/Authority.lean",
-  "AgentWorkbench/Policy/Completion.lean",
-  "AgentWorkbench/Policy/Traceability.lean",
-  "AgentWorkbench/Policy/Update.lean",
   "AgentWorkbench/Tests/KernelLaws.lean",
   "Main.lean",
   "lake-manifest.json",
@@ -426,8 +473,8 @@ def rebuildTraceCases : Array RebuildTraceCase := #[
   ⟨"domain-identity", "AgentWorkbench.Domain.Identity", "AgentWorkbench/Domain/Identity.lean", false⟩
 ]
 
-def copyTraceProject (target : System.FilePath) : IO Unit := do
-  for relative in traceProjectFiles do
+def copyTraceProject (target : System.FilePath) (designRules : Array ModuleRule) : IO Unit := do
+  for relative in traceProjectFiles designRules do
     let source := System.FilePath.mk relative
     let destination := target / relative
     if let some parent := destination.parent then IO.FS.createDirAll parent
@@ -465,9 +512,10 @@ def mutateTraceSource (case : RebuildTraceCase) (source : String) : Except Strin
   else
     .ok <| source ++ s!"\n\ndef agentWorkbenchTraceProbe_{case.key.replace "-" "_"} : Unit := ()\n"
 
-def allowedTraceModules (case : RebuildTraceCase) : List String :=
+def allowedTraceModules (normativeRules : Array ModuleRule)
+    (case : RebuildTraceCase) : List String :=
   if case.privateProof then [case.module]
-  else case.module :: dependentClosure traceModuleRules case.module
+  else case.module :: dependentClosure normativeRules case.module
 
 def requiredTraceModules (actualRules : Array ModuleRule)
     (case : RebuildTraceCase) : List String :=
@@ -475,27 +523,28 @@ def requiredTraceModules (actualRules : Array ModuleRule)
   else case.module :: dependentClosure actualRules case.module
 
 def traceSatisfiesBounds (actualRules : Array ModuleRule)
-    (case : RebuildTraceCase) (trace : List String) : Bool :=
-  let allowed := allowedTraceModules case
+    (normativeRules : Array ModuleRule) (case : RebuildTraceCase)
+    (trace : List String) : Bool :=
+  let allowed := allowedTraceModules normativeRules case
   let required := requiredTraceModules actualRules case
   required.all trace.contains && trace.all allowed.contains
 
 def auditIncompleteTraceFixture (actualRules : Array ModuleRule)
-    (case : RebuildTraceCase) : IO Unit := do
+    (normativeRules : Array ModuleRule) (case : RebuildTraceCase) : IO Unit := do
   if !case.privateProof then
     let required := requiredTraceModules actualRules case
     match required.reverse with
     | [] => fail s!"public trace {case.key} has no required modules"
     | missing :: _ =>
         let incomplete := required.filter (· != missing)
-        if traceSatisfiesBounds actualRules case incomplete then
+        if traceSatisfiesBounds actualRules normativeRules case incomplete then
           fail s!"incomplete public trace fixture was accepted for {case.key}; missing {missing}"
 
 def auditRebuildTrace (lake project : System.FilePath) (actualRules : Array ModuleRule)
-    (case : RebuildTraceCase) : IO Unit := do
-  unless traceModuleRules.any (fun rule => rule.module = case.module) do
+    (normativeRules : Array ModuleRule) (case : RebuildTraceCase) : IO Unit := do
+  unless normativeRules.any (fun rule => rule.module = case.module) do
     fail s!"trace owner {case.module} is outside the normative module map"
-  if case.privateProof && (dependentClosure traceModuleRules case.module).isEmpty then
+  if case.privateProof && (dependentClosure normativeRules case.module).isEmpty then
     fail s!"private-proof trace owner {case.module} has no normative importers"
   if case.privateProof && !theoremRules.any (fun rule =>
       rule.declaration = "AgentWorkbench.Domain.Work.single_active_activation") then
@@ -514,7 +563,7 @@ def auditRebuildTrace (lake project : System.FilePath) (actualRules : Array Modu
   if trace.isEmpty then fail s!"Lake emitted no rebuild trace for {case.key}"
   unless trace.contains case.module do
     fail s!"Lake did not rebuild changed module {case.module} for {case.key}"
-  let allowed := allowedTraceModules case
+  let allowed := allowedTraceModules normativeRules case
   for rebuilt in trace do
     unless allowed.contains rebuilt do
       fail s!"{case.key} rebuilt {rebuilt} outside its normative reverse closure"
@@ -522,36 +571,42 @@ def auditRebuildTrace (lake project : System.FilePath) (actualRules : Array Modu
   for dependent in required do
     unless trace.contains dependent do
       fail s!"{case.key} omitted required reverse-dependent module {dependent}"
-  unless traceSatisfiesBounds actualRules case trace do
+  unless traceSatisfiesBounds actualRules normativeRules case trace do
     fail s!"{case.key} rebuild trace does not equal its required bounded closure"
-  auditIncompleteTraceFixture actualRules case
+  auditIncompleteTraceFixture actualRules normativeRules case
   IO.println s!"verified-core trace {case.key}: required={String.intercalate "," required}; rebuilt={String.intercalate "," trace}"
   IO.FS.writeFile path original
   discard <| runLakeBuild lake project
 
-def auditRepresentativeRebuilds : IO Unit := do
+def auditRepresentativeRebuilds (designRules : Array ModuleRule) : IO Unit := do
   let lake := (← findSysroot) / "bin" / "lake"
   unless ← lake.pathExists do fail s!"Lake executable is absent: {lake}"
+  let normativeRules := traceModuleRules designRules
   let mut actualRules : Array ModuleRule := #[]
-  for expected in traceModuleRules do
+  for expected in normativeRules do
     let imports := (← sourceImports expected.module).filter fun imported =>
-      traceModuleRules.any (·.module = imported)
+      normativeRules.any (·.module = imported)
     for imported in imports do
       unless expected.imports.contains imported do
         fail s!"trace module {expected.module} imports {imported} outside its normative bound"
     actualRules := actualRules.push ⟨expected.module, imports⟩
   IO.FS.withTempDir fun project => do
-    copyTraceProject project
+    copyTraceProject project designRules
     discard <| runLakeBuild lake project
-    for case in rebuildTraceCases do auditRebuildTrace lake project actualRules case
+    for case in rebuildTraceCases do
+      auditRebuildTrace lake project actualRules normativeRules case
 
 def main : IO Unit := do
+  let designMap ← IO.FS.readFile designModuleMapPath
+  let designRules ← match parseDesignModuleRules designMap with
+    | .ok rules => pure rules
+    | .error error => fail error
   let manifest ← IO.FS.readFile "proof-manifest.toml"
-  match validateManifestContent manifest with
+  match validateManifestContent designRules manifest with
   | .error error => fail error
   | .ok _ => pure ()
-  auditNegativeFixtures manifest
-  auditArchitecture
+  auditNegativeFixtures designRules manifest
+  auditArchitecture designRules
   initSearchPath (← findSysroot) [".lake/build/lib/lean"]
   let env ← importModules #[
     { module := `AgentWorkbench.Audit.Expected },
@@ -559,7 +614,7 @@ def main : IO Unit := do
   auditTheorems env
   auditDeclarations env
   auditCliMutation
-  auditRepresentativeRebuilds
+  auditRepresentativeRebuilds designRules
   IO.println "verified-core audit: pass"
 
 end AgentWorkbench.Audit

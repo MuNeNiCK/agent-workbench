@@ -98,7 +98,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
   | .planCompletion _ plan =>
       if state.lifecycle.any (fun completion => completion.plan.work == plan.work) then
         .error (.invalidTransition "completion plan already exists")
-      else if Lifecycle.ValidPlan state.work plan then
+      else if Lifecycle.ValidPlan (state.work.map (·.id)) plan then
         .ok ⟨[.completionPlanned plan], by simp⟩
       else
         .error (.invalidTransition "completion plan is not authoritative or well formed")
@@ -326,6 +326,21 @@ theorem decide_complete_requires_closeable (target : WorkId) (state : State)
   · split at derivedBy
     · assumption
     · contradiction
+
+theorem replay_completion_applicability_matches_policy (target : WorkId)
+    (state : State) :
+    completionApplicable target state =
+      Policy.Completion.closeable target state.work state.activations
+        state.claims state.adjudications state.lifecycle
+        state.evidence state.obligations := by
+  unfold completionApplicable completionObligationsReady
+    completionObligationSatisfied completionRelatedWorkTerminal
+    completionReviewsReady latestAcceptedCompletionReview
+    Policy.Completion.closeable Policy.Completion.obligationsReady
+    Policy.Completion.obligationSatisfied Policy.Completion.authoritativeReady
+    Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
+    Policy.Completion.latestAcceptedReviewClaim
+  rfl
 
 theorem close_work_emits_atomic_event (target : WorkId) (state : State)
     {transaction : CompletionTransaction}
