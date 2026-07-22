@@ -49,7 +49,10 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
   | .recordEvidence _ evidence =>
       .ok ⟨[.evidenceRecorded evidence], by simp⟩
   | .recordExternalOperation _ attempt =>
-      .ok ⟨[.externalOperationRecorded attempt], by simp⟩
+      if attempt.state == .prepared then
+        .ok ⟨[.externalOperationRecorded attempt], by simp⟩
+      else
+        .error (.invalidTransition "external operation must begin prepared")
   | .recordObligation _ obligation =>
       .ok ⟨[.obligationRecorded obligation], by simp⟩
   | .recordCompletionEvidence _ facts obligations =>

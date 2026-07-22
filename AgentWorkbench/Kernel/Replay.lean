@@ -25,6 +25,7 @@ def ValidState (state : State) : Prop :=
   Review.ValidReviewState state.claims state.adjudications ∧
   Evidence.UniqueEvidenceIds state.evidence ∧
   Evidence.EvidenceWellFormed state.evidence ∧
+  Evidence.EvidenceCurrentAt state.revision state.evidence ∧
   Evidence.EvidenceReferencesObligations state.evidence state.obligations ∧
   ExternalOperation.UniqueOperations state.externalOperations ∧
   ExternalOperation.AttemptsWellFormed state.externalOperations ∧
@@ -39,10 +40,11 @@ def ValidState (state : State) : Prop :=
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
-    Work.ActivationsReferenceWork
+    Work.ActivationsReferenceWork Work.ReadySuspendedReferencesOpenWork
     Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
     Review.AdjudicationsReferenceClaims
     Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
+    Evidence.EvidenceCurrentAt
     Evidence.EvidenceReferencesObligations
     ExternalOperation.UniqueOperations ExternalOperation.AttemptsWellFormed
     Work.UniqueCompletionFacts Work.CompletionFactsReferenceWork
@@ -74,6 +76,7 @@ def applyUnchecked (event : Event) (state : State) : State :=
   let invalidated := {
     state with
     revision := revised
+    evidence := Evidence.invalidateEvidence state.evidence
     completionFacts := Work.invalidateCompletionFacts state.completionFacts
     obligations := Evidence.invalidate state.obligations }
   match event with
@@ -82,7 +85,15 @@ def applyUnchecked (event : Event) (state : State) : State :=
   | .reviewClaimed claim => { invalidated with claims := state.claims ++ [claim] }
   | .reviewAdjudicated decision =>
       { invalidated with adjudications := state.adjudications ++ [decision] }
-  | .evidenceRecorded item => { invalidated with evidence := state.evidence ++ [item] }
+  | .evidenceRecorded item =>
+      let obligations := (Evidence.invalidate state.obligations).map fun obligation =>
+        if obligation.work == item.work && obligation.key == item.obligation then
+          { obligation with revision := revised, current := true }
+        else obligation
+      { invalidated with
+        evidence := Evidence.invalidateEvidence state.evidence ++
+          [{ item with revision := revised, current := true }]
+        obligations }
   | .externalOperationRecorded attempt =>
       { invalidated with externalOperations := state.externalOperations ++ [attempt] }
   | .obligationRecorded obligation =>
@@ -92,8 +103,9 @@ def applyUnchecked (event : Event) (state : State) : State :=
   | .completionEvidenceRecorded facts obligations =>
       let retainedFacts := (Work.invalidateCompletionFacts state.completionFacts).filter
         (·.work != facts.work)
-      let retainedObligations := (Evidence.invalidate state.obligations).filter
-        (·.work != facts.work)
+      let retainedObligations := (Evidence.invalidate state.obligations).filter fun existing =>
+        existing.work != facts.work ||
+          !(obligations.any fun replacement => replacement.key == existing.key)
       { invalidated with
         completionFacts := retainedFacts ++ [{ facts with revision := revised, current := true }]
         obligations := retainedObligations ++ obligations.map fun obligation =>
@@ -156,10 +168,12 @@ theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
     Work.ActiveReferencesOpenWork, Work.ActivationsReferenceWork,
+    Work.ReadySuspendedReferencesOpenWork,
     Review.ValidReviewState,
     Review.UniqueClaimIds, Review.UniqueAdjudications,
     Review.AdjudicationsReferenceClaims, Evidence.UniqueEvidenceIds,
-    Evidence.EvidenceWellFormed, Evidence.EvidenceReferencesObligations,
+    Evidence.EvidenceWellFormed, Evidence.EvidenceCurrentAt,
+    Evidence.EvidenceReferencesObligations,
     ExternalOperation.UniqueOperations,
     ExternalOperation.AttemptsWellFormed, Work.UniqueCompletionFacts,
     Work.CompletionFactsReferenceWork, Work.CompletionFactsCurrent,

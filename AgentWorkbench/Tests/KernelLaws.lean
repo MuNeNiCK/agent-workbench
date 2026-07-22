@@ -100,11 +100,19 @@ def main : IO Unit := do
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let item : Domain.Evidence.Evidence :=
-    { id := ⟨1⟩, obligation := "proof", artifactDigest := "sha256:evidence", current := true }
+    { id := ⟨1⟩, work := firstWork.id, obligation := "proof", revision := obligated.revision
+      artifactDigest := "sha256:evidence", current := true }
   let evidenced ← match Application.Service.execute
       (.recordEvidence obligated.revision item) obligated with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid evidence rejected: {repr error}"
+  expect (evidenced.evidence.any fun recorded =>
+    recorded.current && recorded.revision == evidenced.revision)
+    "recorded current evidence must bind the resulting revision"
+  expect (evidenced.obligations.any fun obligation =>
+    obligation.work == firstWork.id && obligation.key == "proof" &&
+      obligation.current && obligation.revision == evidenced.revision)
+    "current evidence must atomically refresh its referenced obligation"
   expectRejectedNoEffect (.recordEvidence evidenced.revision item) evidenced
     "duplicate evidence identity"
   let malformedItem := { item with id := ⟨2⟩, artifactDigest := "" }
@@ -126,6 +134,9 @@ def main : IO Unit := do
   let emptyOperation := { attempt with operation := ⟨""⟩ }
   expectRejectedNoEffect (.recordExternalOperation first.revision emptyOperation) first
     "empty external operation identity"
+  let bypassedOperation := { attempt with operation := ⟨"publish-3"⟩, state := .succeeded }
+  expectRejectedNoEffect (.recordExternalOperation first.revision bypassedOperation) first
+    "external operation lifecycle bypass"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
   let suspended := { firstActivation with status := .suspended, readyToResume := false }
@@ -138,6 +149,10 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.replaceWorkState initial.revision [] [orphanActivation]) initial
     "activation referencing missing work"
+  let closedWork := { firstWork with status := .closed }
+  expectRejectedNoEffect
+    (.replaceWorkState initial.revision [closedWork] [ready]) initial
+    "ready suspended activation referencing closed work"
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"

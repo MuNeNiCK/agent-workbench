@@ -14,7 +14,9 @@ deriving DecidableEq, Repr
 
 structure Evidence where
   id : EvidenceId
+  work : WorkId
   obligation : String
+  revision : Revision
   artifactDigest : String
   current : Bool
 deriving DecidableEq, Repr
@@ -35,6 +37,9 @@ def EvidenceWellFormed (evidence : List Evidence) : Prop :=
   (evidence.all fun item =>
     !item.obligation.isEmpty && !item.artifactDigest.isEmpty) = true
 
+def EvidenceCurrentAt (revision : Revision) (evidence : List Evidence) : Prop :=
+  (evidence.all fun item => !item.current || item.revision == revision) = true
+
 def ObligationsWellFormed (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => !obligation.key.isEmpty) = true
 
@@ -43,7 +48,13 @@ def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation
 
 def EvidenceReferencesObligations (evidence : List Evidence)
     (obligations : List Obligation) : Prop :=
-  (evidence.all fun item => obligations.any (·.key == item.obligation)) = true
+  (evidence.all fun item => obligations.any fun obligation =>
+    obligation.work == item.work && obligation.key == item.obligation &&
+      (!item.current ||
+        (obligation.current && obligation.revision == item.revision))) = true
+
+def invalidateEvidence (evidence : List Evidence) : List Evidence :=
+  evidence.map fun item => { item with current := false }
 
 def ObligationsCurrentAt (revision : Revision) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => !obligation.current || obligation.revision == revision) = true
