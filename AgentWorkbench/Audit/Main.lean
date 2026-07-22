@@ -62,17 +62,62 @@ def sourceImports (module : String) : IO (Array String) := do
       imports.push (trimmed.drop 7).trimAscii.toString
     else imports
 
+def directImports (rules : Array ModuleRule) (module : String) : List String :=
+  match rules.find? (·.module = module) with
+  | some rule => rule.imports.toList
+  | none => []
+
+def directDependents (rules : Array ModuleRule) (module : String) : List String :=
+  (rules.filterMap fun rule =>
+    if rule.imports.contains module then some rule.module else none).toList
+
+partial def transitiveVisit (next : String → List String) : List String → List String → List String
+  | [], visited => visited
+  | module :: remaining, visited =>
+      if visited.contains module then
+        transitiveVisit next remaining visited
+      else
+        transitiveVisit next (next module ++ remaining) (module :: visited)
+
+def importClosure (rules : Array ModuleRule) (module : String) : List String :=
+  transitiveVisit (directImports rules) (directImports rules module) []
+
+def dependentClosure (rules : Array ModuleRule) (module : String) : List String :=
+  transitiveVisit (directDependents rules) (directDependents rules module) []
+
+def auditReverificationBounds (actual : Array ModuleRule) : IO Unit := do
+  for rule in actual do
+    if (importClosure actual rule.module).contains rule.module then
+      fail s!"module dependency cycle reaches {rule.module}"
+  let workDependents := dependentClosure actual "AgentWorkbench.Domain.Work"
+  for sibling in #["AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review",
+      "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation"] do
+    if workDependents.contains sibling then
+      fail s!"Domain.Work change reaches sibling module {sibling}"
+  let completionDependents := dependentClosure actual "AgentWorkbench.Policy.Completion"
+  for lower in actual.filter fun rule =>
+      rule.module.startsWith "AgentWorkbench.Domain." do
+    if completionDependents.contains lower.module then
+      fail s!"Policy.Completion change reaches lower-level module {lower.module}"
+  unless workDependents.contains "AgentWorkbench.Application.Service" do
+    fail "Domain.Work dependent closure does not reach the application boundary"
+  unless completionDependents.contains "AgentWorkbench.Application.Service" do
+    fail "Policy.Completion dependent closure does not reach the application boundary"
+
 def auditArchitecture (manifestModules : Array String) : IO Unit := do
   let normativeModules := moduleRules.map (·.module)
   unless manifestModules.qsort (· < ·) = normativeModules.qsort (· < ·) do
     fail "proof manifest module closure differs from the normative module map"
+  let mut actualRules : Array ModuleRule := #[]
   for rule in moduleRules do
     unless ← (modulePath rule.module).pathExists do
       fail s!"missing normative module {rule.module}"
     let actual ← sourceImports rule.module
+    actualRules := actualRules.push ⟨rule.module, actual⟩
     for imported in actual do
       unless rule.imports.contains imported do
         fail s!"{rule.module} imports forbidden dependency {imported}"
+  auditReverificationBounds actualRules
   let cliImports ← sourceImports "Main"
   unless cliImports = #["AgentWorkbench.Application.Service"] do
     fail "CLI must import only AgentWorkbench.Application.Service"
