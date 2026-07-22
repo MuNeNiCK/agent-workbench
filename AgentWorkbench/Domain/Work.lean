@@ -19,6 +19,8 @@ deriving DecidableEq, Repr
 
 structure CompletionFacts where
   work : WorkId
+  revision : Revision
+  current : Bool
   dependentWorkTerminal : Bool
   phasesTerminal : Bool
   tasksComplete : Bool
@@ -29,6 +31,9 @@ structure CompletionFacts where
   workRecordsLinked : Bool
   correctionsResolved : Bool
 deriving DecidableEq, Repr
+
+def UniqueCompletionFacts (facts : List CompletionFacts) : Prop :=
+  (facts.map (·.work)).Nodup
 
 def activeActivations (activations : List Activation) : List Activation :=
   activations.filter (fun activation => activation.status == .active)

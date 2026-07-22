@@ -21,11 +21,14 @@ structure State where
 deriving DecidableEq, Repr
 
 def ValidState (state : State) : Prop :=
-  Work.ValidWorkState state.work state.activations
+  Work.ValidWorkState state.work state.activations ∧
+  Work.UniqueCompletionFacts state.completionFacts ∧
+  Evidence.UniqueObligations state.obligations
 
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
+    Work.UniqueCompletionFacts Evidence.UniqueObligations
   infer_instance
 
 structure VerifiedState where
@@ -93,6 +96,13 @@ theorem replay_preserves_valid (events : List Event) (initial : State)
     ValidState result.state :=
   result.valid
 
+theorem work_completed_event_exact (state : State) (work : WorkId) (activation : ActivationId) :
+    let completed := applyUnchecked (.workCompleted work activation) state
+    completed.work = Work.closeWork state.work work ∧
+    completed.activations = Work.closeActivation state.activations activation ∧
+    completed.revision = state.revision.next := by
+  simp [applyUnchecked]
+
 def emptyState : State :=
   { revision := ⟨0⟩
     work := []
@@ -107,6 +117,7 @@ def emptyState : State :=
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
-    Work.ActiveReferencesOpenWork, Work.activeActivations, emptyState]
+    Work.ActiveReferencesOpenWork, Work.UniqueCompletionFacts,
+    Evidence.UniqueObligations, Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay

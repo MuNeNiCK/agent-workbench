@@ -14,6 +14,7 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Domain.Work
 
 def factsComplete (facts : CompletionFacts) : Bool :=
+  facts.current &&
   facts.dependentWorkTerminal &&
   facts.phasesTerminal &&
   facts.tasksComplete &&

@@ -29,6 +29,8 @@ def expect (condition : Bool) (message : String) : IO Unit :=
 
 def completeFacts : Domain.Work.CompletionFacts :=
   { work := firstWork.id
+    revision := ⟨2⟩
+    current := true
     dependentWorkTerminal := true
     phasesTerminal := true
     tasksComplete := true
@@ -73,9 +75,9 @@ def main : IO Unit := do
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
   let currentObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", current := true }
+    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := true }
   let staleObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", current := false }
+    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := false }
   expect (Policy.Completion.closeable firstWork.id first.work first.activations
     [completeFacts] [currentObligation])
     "complete current obligations must allow completion"
@@ -95,6 +97,27 @@ def main : IO Unit := do
     "completion must atomically close the owning activation"
   expect (completed.revision == completable.revision.next)
     "atomic completion must advance exactly one revision"
+  let contradictory := { completable with completionFacts :=
+    [completeFacts, { completeFacts with revision := ⟨3⟩, tasksComplete := false }] }
+  match Kernel.Replay.verifyState contradictory with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "contradictory completion facts must invalidate state"
+  match Application.Service.complete firstWork.id contradictory with
+  | .error (.invariantViolation _) => pure ()
+  | _ => throw <| IO.userError "invalid contradictory facts must not authorize completion"
+  let unrelated : Domain.Work.Activation :=
+    { id := ⟨2⟩, work := ⟨2⟩, status := .suspended, readyToResume := true }
+  let withUnrelated := { completable with
+    work := [firstWork, secondWork]
+    activations := [firstActivation, unrelated] }
+  let afterUnrelated ← match Application.Service.complete firstWork.id withUnrelated with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"completion with unrelated activation failed: {repr error}"
+  expect (afterUnrelated.activations.any fun activation => activation == unrelated)
+    "completion must preserve unrelated suspended activations"
+  match Application.Service.complete secondWork.id withUnrelated with
+  | .error (.invalidTransition _) => pure ()
+  | _ => throw <| IO.userError "inactive target completion must reject"
   let receipt : Policy.Update.Receipt :=
     { operation := ⟨"operation-1"⟩, payloadDigest := "payload", resultDigest := "result" }
   expect (Policy.Update.resolveRetry receipt.operation "payload" ⟨0⟩ ⟨99⟩ [receipt] ==

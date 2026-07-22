@@ -3,6 +3,7 @@ version = 1
 theorems = [
   "AgentWorkbench.Kernel.Replay.replay_deterministic",
   "AgentWorkbench.Kernel.Replay.replay_preserves_valid",
+  "AgentWorkbench.Kernel.Replay.work_completed_event_exact",
   "AgentWorkbench.Kernel.Decide.decide_preserves_valid",
   "AgentWorkbench.Kernel.Decide.decide_rejection_has_no_effect",
   "AgentWorkbench.Kernel.Decide.close_work_preserves_valid",
