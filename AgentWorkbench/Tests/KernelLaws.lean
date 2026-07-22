@@ -20,12 +20,21 @@ def secondWork : Domain.Work.WorkUnit :=
 def replaceWorkAndActivations (state : Kernel.Replay.State)
     (work : List Domain.Work.WorkUnit)
     (activations : List Domain.Work.Activation) : Kernel.Decide.Command :=
-  { expectedRevision := state.revision
-    events := [.replaceWork work, .replaceActivations activations]
-    eventsNonempty := by simp }
+  .replaceWorkState state.revision work activations
 
 def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError message
+
+def expectRejectedNoEffect (command : Kernel.Decide.Command)
+    (state : Kernel.Replay.State) (message : String) : IO Unit := do
+  let result := Application.Service.execute command state
+  match result with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError s!"{message}: command unexpectedly accepted"
+  expect (Kernel.Decide.committedEvents result).isEmpty
+    s!"{message}: rejected command exposed events"
+  expect (Kernel.Decide.committedState result state == state)
+    s!"{message}: rejected command changed state or revision"
 
 def completeFacts : Domain.Work.CompletionFacts :=
   { work := firstWork.id
@@ -58,10 +67,53 @@ def main : IO Unit := do
   expect (Kernel.Decide.committedState
     (Application.Service.execute invalid first)
     first == first) "rejection must leave the state unchanged"
-  let stale := { invalid with expectedRevision := ⟨0⟩ }
+  expect (Kernel.Decide.committedEvents
+    (Application.Service.execute invalid first)).isEmpty
+    "rejection must expose no accepted events"
+  let stale : Kernel.Decide.Command :=
+    .replaceWorkState ⟨0⟩ [firstWork, secondWork] [firstActivation, secondActivation]
   match Application.Service.execute stale first with
   | .error .staleRevision => pure ()
   | _ => throw <| IO.userError "stale command must be rejected"
+  expectRejectedNoEffect stale first "stale revision rejection"
+  let claim : Domain.Review.Claim := { id := ⟨1⟩, claim := .clean }
+  let claimed ← match Application.Service.execute
+      (.recordReviewClaim first.revision claim) first with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"valid review claim rejected: {repr error}"
+  expectRejectedNoEffect (.recordReviewClaim claimed.revision claim) claimed
+    "duplicate review claim"
+  let unknownAdjudication : Domain.Review.Adjudication :=
+    { review := ⟨99⟩, decision := .accepted }
+  expectRejectedNoEffect (.recordReviewAdjudication first.revision unknownAdjudication) first
+    "adjudication without claim"
+  let adjudication : Domain.Review.Adjudication :=
+    { review := claim.id, decision := .accepted }
+  match Application.Service.execute
+      (.recordReviewAdjudication claimed.revision adjudication) claimed with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"valid adjudication rejected: {repr error}"
+  let item : Domain.Evidence.Evidence :=
+    { id := ⟨1⟩, obligation := "proof", artifactDigest := "sha256:evidence", current := true }
+  let evidenced ← match Application.Service.execute (.recordEvidence first.revision item) first with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"valid evidence rejected: {repr error}"
+  expectRejectedNoEffect (.recordEvidence evidenced.revision item) evidenced
+    "duplicate evidence identity"
+  let malformedItem := { item with id := ⟨2⟩, artifactDigest := "" }
+  expectRejectedNoEffect (.recordEvidence first.revision malformedItem) first
+    "malformed evidence"
+  let attempt : Domain.ExternalOperation.Attempt :=
+    { operation := ⟨"publish-1"⟩, artifactDigest := "sha256:artifact", state := .prepared }
+  let externalized ← match Application.Service.execute
+      (.recordExternalOperation first.revision attempt) first with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"valid external attempt rejected: {repr error}"
+  expectRejectedNoEffect (.recordExternalOperation externalized.revision attempt) externalized
+    "duplicate external operation"
+  let malformedAttempt := { attempt with operation := ⟨"publish-2"⟩, artifactDigest := "" }
+  expectRejectedNoEffect (.recordExternalOperation first.revision malformedAttempt) first
+    "malformed external operation"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
   let suspended := { firstActivation with status := .suspended, readyToResume := false }
@@ -71,13 +123,22 @@ def main : IO Unit := do
   expect (Domain.Work.resume [ready] ready.id).isSome
     "resume must accept a ready activation when no activation is active"
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
-  let claim : Domain.Review.Claim := { id := ⟨1⟩, claim := .clean }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
   let currentObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := true }
   let staleObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := false }
+  match Application.Service.execute (.recordObligation first.revision currentObligation) first with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
+  let malformedObligation := { currentObligation with key := "" }
+  expectRejectedNoEffect (.recordObligation first.revision malformedObligation) first
+    "malformed obligation"
+  expectRejectedNoEffect
+    (.recordCompletionEvidence first.revision completeFacts
+      [currentObligation, currentObligation]) first
+    "duplicate completion obligations"
   expect (Policy.Completion.closeable firstWork.id first.work first.activations
     [completeFacts] [currentObligation])
     "complete current obligations must allow completion"

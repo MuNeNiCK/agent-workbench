@@ -22,16 +22,27 @@ deriving DecidableEq, Repr
 
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
+  Review.ValidReviewState state.claims state.adjudications ∧
+  Evidence.UniqueEvidenceIds state.evidence ∧
+  Evidence.EvidenceWellFormed state.evidence ∧
+  ExternalOperation.UniqueOperations state.externalOperations ∧
+  ExternalOperation.AttemptsWellFormed state.externalOperations ∧
   Work.UniqueCompletionFacts state.completionFacts ∧
   Work.CompletionFactsCurrent state.revision state.completionFacts ∧
   Evidence.UniqueObligations state.obligations ∧
+  Evidence.ObligationsWellFormed state.obligations ∧
   Evidence.ObligationsCurrentAt state.revision state.obligations
 
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
+    Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
+    Review.AdjudicationsReferenceClaims
+    Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
+    ExternalOperation.UniqueOperations ExternalOperation.AttemptsWellFormed
     Work.UniqueCompletionFacts Work.CompletionFactsCurrent
-    Evidence.UniqueObligations Evidence.ObligationsCurrentAt
+    Evidence.UniqueObligations Evidence.ObligationsWellFormed
+    Evidence.ObligationsCurrentAt
   infer_instance
 
 structure VerifiedState where
@@ -89,7 +100,7 @@ def verifyState (state : State) : Except DomainError VerifiedState :=
   if valid : ValidState state then
     .ok ⟨state, valid⟩
   else
-    .error (.invariantViolation "more than one active activation")
+    .error (.invariantViolation "state invariant violation")
 
 def applyEvent (event : Event) (verified : VerifiedState) : Except DomainError VerifiedState :=
   verifyState (applyUnchecked event verified.state)
@@ -137,8 +148,13 @@ def emptyState : State :=
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
-    Work.ActiveReferencesOpenWork, Work.UniqueCompletionFacts,
+    Work.ActiveReferencesOpenWork, Review.ValidReviewState,
+    Review.UniqueClaimIds, Review.UniqueAdjudications,
+    Review.AdjudicationsReferenceClaims, Evidence.UniqueEvidenceIds,
+    Evidence.EvidenceWellFormed, ExternalOperation.UniqueOperations,
+    ExternalOperation.AttemptsWellFormed, Work.UniqueCompletionFacts,
     Work.CompletionFactsCurrent, Evidence.UniqueObligations,
-    Evidence.ObligationsCurrentAt, Work.activeActivations, emptyState]
+    Evidence.ObligationsWellFormed, Evidence.ObligationsCurrentAt,
+    Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay

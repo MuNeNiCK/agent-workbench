@@ -23,4 +23,10 @@ structure Attempt where
   state : AttemptState
 deriving DecidableEq, Repr
 
+def UniqueOperations (attempts : List Attempt) : Prop :=
+  (attempts.map (·.operation)).Nodup
+
+def AttemptsWellFormed (attempts : List Attempt) : Prop :=
+  (attempts.all fun attempt => !attempt.artifactDigest.isEmpty) = true
+
 end AgentWorkbench.Domain.ExternalOperation
