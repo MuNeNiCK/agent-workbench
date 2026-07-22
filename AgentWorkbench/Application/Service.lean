@@ -10,6 +10,11 @@ open AgentWorkbench.Kernel
 def initialState : Replay.State :=
   Replay.emptyState
 
+def bootstrapCommand : Decide.Command :=
+  .initializeWork ⟨0⟩
+    { id := ⟨1⟩, status := .open }
+    { id := ⟨1⟩, work := ⟨1⟩, status := .active, readyToResume := false }
+
 def execute (command : Decide.Command) (state : Replay.State) :
     Except DomainError Decide.AcceptedTransaction :=
   Decide.decide command state

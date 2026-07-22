@@ -1,4 +1,5 @@
 import Lean
+import AgentWorkbench.Audit.Expected
 
 open Lean
 
@@ -7,6 +8,17 @@ namespace AgentWorkbench.Audit
 structure ModuleRule where
   module : String
   imports : Array String
+
+structure TheoremRule where
+  declaration : String
+  expectedType : String
+
+structure ManifestPolicy where
+  theorems : Array String
+  modules : Array String
+  permittedAxioms : Array String
+  forbiddenAxioms : Array String
+  unsafeFfiModules : Array String
 
 def moduleRules : Array ModuleRule := #[
   ⟨"AgentWorkbench.Domain.Identity", #[]⟩,
@@ -25,6 +37,37 @@ def moduleRules : Array ModuleRule := #[
   ⟨"AgentWorkbench.Kernel.Gates", #["AgentWorkbench.Kernel.Replay", "AgentWorkbench.Policy.Completion"]⟩,
   ⟨"AgentWorkbench.Kernel.Resolver", #["AgentWorkbench.Kernel.Gates", "AgentWorkbench.Domain.Work"]⟩,
   ⟨"AgentWorkbench.Application.Service", #["AgentWorkbench.Kernel.Decide", "AgentWorkbench.Kernel.Gates", "AgentWorkbench.Kernel.Resolver"]⟩
+]
+
+def theoremRules : Array TheoremRule := #[
+  ⟨"AgentWorkbench.Kernel.Replay.replay_deterministic", "AgentWorkbench.Audit.Expected.replay_deterministic"⟩,
+  ⟨"AgentWorkbench.Kernel.Replay.replay_preserves_valid", "AgentWorkbench.Audit.Expected.replay_preserves_valid"⟩,
+  ⟨"AgentWorkbench.Kernel.Replay.work_completed_event_exact", "AgentWorkbench.Audit.Expected.work_completed_event_exact"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.decide_preserves_valid", "AgentWorkbench.Audit.Expected.decide_preserves_valid"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.decide_emits_only_derived_events", "AgentWorkbench.Audit.Expected.decide_emits_only_derived_events"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.decide_rejection_has_no_effect", "AgentWorkbench.Audit.Expected.decide_rejection_has_no_effect"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.close_work_preserves_valid", "AgentWorkbench.Audit.Expected.close_work_preserves_valid"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.close_work_emits_atomic_event", "AgentWorkbench.Audit.Expected.close_work_emits_atomic_event"⟩,
+  ⟨"AgentWorkbench.Domain.Work.single_active_activation", "AgentWorkbench.Audit.Expected.single_active_activation"⟩,
+  ⟨"AgentWorkbench.Domain.Work.resume_requires_readiness", "AgentWorkbench.Audit.Expected.resume_requires_readiness"⟩,
+  ⟨"AgentWorkbench.Policy.Authority.review_claim_has_no_authority", "AgentWorkbench.Audit.Expected.review_claim_has_no_authority"⟩,
+  ⟨"AgentWorkbench.Kernel.Gates.gate_is_read_only", "AgentWorkbench.Audit.Expected.gate_is_read_only"⟩,
+  ⟨"AgentWorkbench.Kernel.Resolver.next_is_allowed", "AgentWorkbench.Audit.Expected.next_is_allowed"⟩,
+  ⟨"AgentWorkbench.Policy.Completion.completion_requires_current_obligations", "AgentWorkbench.Audit.Expected.completion_requires_current_obligations"⟩,
+  ⟨"AgentWorkbench.Policy.Completion.completion_requires_active_target", "AgentWorkbench.Audit.Expected.completion_requires_active_target"⟩,
+  ⟨"AgentWorkbench.Policy.Update.exact_retry_returns_same_receipt", "AgentWorkbench.Audit.Expected.exact_retry_returns_same_receipt"⟩
+]
+
+def expectedPermittedAxioms : Array String :=
+  #["propext", "Quot.sound", "Classical.choice"]
+
+def expectedForbiddenAxioms : Array String := #["sorryAx"]
+
+def expectedUnsafeFfiModules : Array String := #[
+  "AgentWorkbench.Adapter.SQLite",
+  "AgentWorkbench.Adapter.DurableFilesystem",
+  "AgentWorkbench.Adapter.Process",
+  "AgentWorkbench.Adapter.Git"
 ]
 
 def fail (message : String) : IO α :=
@@ -51,6 +94,49 @@ def parseManifestArray (key content : String) : Except String (Array String) :=
   | [] => .error s!"missing manifest array: {key}"
   | _ :: rest => parseEntries key rest #[]
 
+def parseManifestPolicy (content : String) : Except String ManifestPolicy := do
+  unless (content.splitOn "\n").any (·.trimAscii.toString = "version = 1") do
+    throw "manifest version must be exactly 1"
+  return {
+    theorems := ← parseManifestArray "theorems" content
+    modules := ← parseManifestArray "modules" content
+    permittedAxioms := ← parseManifestArray "permitted_axioms" content
+    forbiddenAxioms := ← parseManifestArray "forbidden_axioms" content
+    unsafeFfiModules := ← parseManifestArray "unsafe_ffi_modules" content }
+
+def validateManifestPolicy (policy : ManifestPolicy) : Except String Unit := do
+  unless policy.theorems = theoremRules.map (·.declaration) do
+    throw "theorem manifest differs from immutable Lean policy"
+  unless policy.modules = moduleRules.map (·.module) do
+    throw "module manifest differs from immutable Lean policy"
+  unless policy.permittedAxioms = expectedPermittedAxioms do
+    throw "permitted axiom manifest differs from immutable Lean policy"
+  unless policy.forbiddenAxioms = expectedForbiddenAxioms do
+    throw "forbidden axiom manifest differs from immutable Lean policy"
+  unless policy.unsafeFfiModules = expectedUnsafeFfiModules do
+    throw "unsafe/FFI boundary differs from immutable Lean policy"
+
+def validateManifestContent (content : String) : Except String ManifestPolicy := do
+  let policy ← parseManifestPolicy content
+  validateManifestPolicy policy
+  return policy
+
+def auditNegativeFixtures (manifest : String) : IO Unit := do
+  let fixtures : Array (String × String) := #[
+    ("missing-theorem", manifest.replace
+      "AgentWorkbench.Kernel.Replay.replay_deterministic"
+      "AgentWorkbench.Kernel.Replay.unapproved_replacement"),
+    ("expanded-axioms", manifest.replace
+      "  \"Classical.choice\"," "  \"Classical.choice\",\n  \"sorryAx\","),
+    ("unsafe-boundary", manifest.replace
+      "AgentWorkbench.Adapter.SQLite" "AgentWorkbench.Application.Service")
+  ]
+  for (name, fixture) in fixtures do
+    if fixture = manifest then fail s!"negative fixture did not mutate manifest: {name}"
+    match validateManifestContent fixture with
+    | .error _ => pure ()
+    | .ok _ => fail s!"negative manifest fixture was accepted: {name}"
+
 def modulePath (module : String) : System.FilePath :=
   System.FilePath.mk <| (module.replace "." "/") ++ ".lean"
 
@@ -58,8 +144,7 @@ def sourceImports (module : String) : IO (Array String) := do
   let source ← IO.FS.readFile (modulePath module)
   return (source.splitOn "\n").foldl (init := #[]) fun imports line =>
     let trimmed := line.trimAscii.toString
-    if trimmed.startsWith "import " then
-      imports.push (trimmed.drop 7).trimAscii.toString
+    if trimmed.startsWith "import " then imports.push (trimmed.drop 7).trimAscii.toString
     else imports
 
 def directImports (rules : Array ModuleRule) (module : String) : List String :=
@@ -74,10 +159,8 @@ def directDependents (rules : Array ModuleRule) (module : String) : List String 
 partial def transitiveVisit (next : String → List String) : List String → List String → List String
   | [], visited => visited
   | module :: remaining, visited =>
-      if visited.contains module then
-        transitiveVisit next remaining visited
-      else
-        transitiveVisit next (next module ++ remaining) (module :: visited)
+      if visited.contains module then transitiveVisit next remaining visited
+      else transitiveVisit next (next module ++ remaining) (module :: visited)
 
 def importClosure (rules : Array ModuleRule) (module : String) : List String :=
   transitiveVisit (directImports rules) (directImports rules module) []
@@ -95,8 +178,7 @@ def auditReverificationBounds (actual : Array ModuleRule) : IO Unit := do
     if workDependents.contains sibling then
       fail s!"Domain.Work change reaches sibling module {sibling}"
   let completionDependents := dependentClosure actual "AgentWorkbench.Policy.Completion"
-  for lower in actual.filter fun rule =>
-      rule.module.startsWith "AgentWorkbench.Domain." do
+  for lower in actual.filter fun rule => rule.module.startsWith "AgentWorkbench.Domain." do
     if completionDependents.contains lower.module then
       fail s!"Policy.Completion change reaches lower-level module {lower.module}"
   unless workDependents.contains "AgentWorkbench.Application.Service" do
@@ -104,10 +186,7 @@ def auditReverificationBounds (actual : Array ModuleRule) : IO Unit := do
   unless completionDependents.contains "AgentWorkbench.Application.Service" do
     fail "Policy.Completion dependent closure does not reach the application boundary"
 
-def auditArchitecture (manifestModules : Array String) : IO Unit := do
-  let normativeModules := moduleRules.map (·.module)
-  unless manifestModules.qsort (· < ·) = normativeModules.qsort (· < ·) do
-    fail "proof manifest module closure differs from the normative module map"
+def auditArchitecture : IO Unit := do
   let mut actualRules : Array ModuleRule := #[]
   for rule in moduleRules do
     unless ← (modulePath rule.module).pathExists do
@@ -124,47 +203,95 @@ def auditArchitecture (manifestModules : Array String) : IO Unit := do
   let cli ← IO.FS.readFile "Main.lean"
   for forbidden in #["AgentWorkbench.Domain", "AgentWorkbench.Policy", "AgentWorkbench.Kernel",
       "Domain.", "Policy.", "Kernel."] do
-    if cli.contains forbidden then
-      fail s!"CLI bypasses Application.Service through {forbidden}"
+    if cli.contains forbidden then fail s!"CLI bypasses Application.Service through {forbidden}"
+  unless cli.contains
+      "Application.Service.execute Application.Service.bootstrapCommand state" do
+    fail "CLI does not execute its mutation through Application.Service.execute"
 
-def auditTheorems (theorems permitted forbidden : Array String) : IO Unit := do
-  initSearchPath (← findSysroot) [".lake/build/lib/lean"]
-  let env ← importModules #[{ module := `AgentWorkbench.Application.Service }] {}
-  let context : Core.Context := {
-    fileName := "<verified-core-audit>"
-    fileMap := FileMap.ofString ""
-  }
+def declarationDependencies (info : ConstantInfo) : List Name :=
+  let used (expr : Expr) := expr.getUsedConstants.toList
+  match info with
+  | .axiomInfo value => used value.type
+  | .defnInfo value => used value.type ++ used value.value
+  | .thmInfo value => used value.type ++ used value.value
+  | .opaqueInfo value => used value.type ++ used value.value
+  | .quotInfo _ => []
+  | .inductInfo value => used value.type ++ value.ctors
+  | .ctorInfo value => used value.type
+  | .recInfo value => used value.type
+
+partial def auditUnsafeReachability (env : Environment) : List Name → List Name → IO Unit
+  | [], _ => pure ()
+  | name :: rest, visited => do
+      if visited.contains name then
+        auditUnsafeReachability env rest visited
+      else
+        match env.find? name with
+        | none => auditUnsafeReachability env rest (name :: visited)
+        | some info =>
+            if info.isUnsafe then fail s!"unsafe declaration reachable from verified roots: {name}"
+            auditUnsafeReachability env (declarationDependencies info ++ rest) (name :: visited)
+
+def auditDeclarations (env : Environment) : IO Unit := do
+  for (name, info) in env.constants.toList do
+    let rendered := name.toString
+    if rendered.startsWith "AgentWorkbench." &&
+        !rendered.startsWith "AgentWorkbench.Audit." &&
+        !rendered.startsWith "AgentWorkbench.Tests." && info.isUnsafe then
+      fail s!"unsafe declaration entered normative implementation: {rendered}"
+  let roots := theoremRules.toList.map (·.declaration.toName) ++
+    [`AgentWorkbench.Application.Service.execute,
+     `AgentWorkbench.Application.Service.bootstrapCommand]
+  auditUnsafeReachability env roots []
+
+def auditTheorems (env : Environment) : IO Unit := do
+  let context : Core.Context := { fileName := "<verified-core-audit>", fileMap := FileMap.ofString "" }
   let state : Core.State := { env := env }
-  for theoremName in theorems do
-    let name := theoremName.toName
-    unless env.contains name do
-      fail s!"manifest declaration is absent: {theoremName}"
+  for rule in theoremRules do
+    let name := rule.declaration.toName
+    let expectedName := rule.expectedType.toName
+    let some info := env.find? name | fail s!"required declaration is absent: {rule.declaration}"
+    let some expected := env.find? expectedName |
+      fail s!"internal expected signature is absent: {rule.expectedType}"
+    match info with
+    | .thmInfo _ => pure ()
+    | _ => fail s!"required declaration is not a theorem: {rule.declaration}"
+    let (sameType, _, _) ← (Meta.isDefEq info.type expected.type).toIO context state
+    unless sameType do
+      fail s!"theorem type differs from immutable Lean signature: {rule.declaration}"
+    if info.isUnsafe then fail s!"required theorem is unsafe: {rule.declaration}"
     let collect : CoreM (Array Name) := collectAxioms name
     let axioms ← collect.toIO' context state
     for axiomName in axioms do
       let rendered := toString axiomName
-      if forbidden.contains rendered then
-        fail s!"forbidden axiom {rendered} reached {theoremName}"
-      unless permitted.contains rendered do
-        fail s!"unpermitted axiom {rendered} reached {theoremName}"
+      if expectedForbiddenAxioms.contains rendered then
+        fail s!"forbidden axiom {rendered} reached {rule.declaration}"
+      unless expectedPermittedAxioms.contains rendered do
+        fail s!"unpermitted axiom {rendered} reached {rule.declaration}"
+
+def auditCliMutation : IO Unit := do
+  let initial := Application.Service.initialState
+  match Application.Service.execute Application.Service.bootstrapCommand initial with
+  | .error error => fail s!"CLI mutation fixture was rejected: {repr error}"
+  | .ok transaction =>
+      unless transaction.events.length = 1 do fail "CLI mutation did not emit exactly one event"
+      unless transaction.result.state.revision = initial.revision.next do
+        fail "CLI mutation did not advance exactly one revision"
+      unless Application.Service.queryValidity transaction.result.state = .pass do
+        fail "CLI mutation result is not valid"
 
 def main : IO Unit := do
   let manifest ← IO.FS.readFile "proof-manifest.toml"
-  let parse (key : String) : IO (Array String) :=
-    match parseManifestArray key manifest with
-    | .ok values => pure values
-    | .error error => fail error
-  let theorems ← parse "theorems"
-  let modules ← parse "modules"
-  let permitted ← parse "permitted_axioms"
-  let forbidden ← parse "forbidden_axioms"
-  let unsafeModules ← parse "unsafe_ffi_modules"
-  if theorems.isEmpty then fail "theorem manifest is empty"
-  for unsafeModule in unsafeModules do
-    if modules.contains unsafeModule then
-      fail s!"unsafe/FFI module entered proof closure: {unsafeModule}"
-  auditArchitecture modules
-  auditTheorems theorems permitted forbidden
+  match validateManifestContent manifest with
+  | .error error => fail error
+  | .ok _ => pure ()
+  auditNegativeFixtures manifest
+  auditArchitecture
+  initSearchPath (← findSysroot) [".lake/build/lib/lean"]
+  let env ← importModules #[{ module := `AgentWorkbench.Audit.Expected }] {}
+  auditTheorems env
+  auditDeclarations env
+  auditCliMutation
   IO.println "verified-core audit: pass"
 
 end AgentWorkbench.Audit

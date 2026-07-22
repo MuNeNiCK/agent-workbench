@@ -5,6 +5,7 @@ theorems = [
   "AgentWorkbench.Kernel.Replay.replay_preserves_valid",
   "AgentWorkbench.Kernel.Replay.work_completed_event_exact",
   "AgentWorkbench.Kernel.Decide.decide_preserves_valid",
+  "AgentWorkbench.Kernel.Decide.decide_emits_only_derived_events",
   "AgentWorkbench.Kernel.Decide.decide_rejection_has_no_effect",
   "AgentWorkbench.Kernel.Decide.close_work_preserves_valid",
   "AgentWorkbench.Kernel.Decide.close_work_emits_atomic_event",
