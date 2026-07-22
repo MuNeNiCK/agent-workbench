@@ -10,10 +10,13 @@ open AgentWorkbench.Kernel
 def initialStore : Projection.Store :=
   Projection.initialStore
 
-def bootstrapCommand : Decide.Command :=
-  .initializeWork ⟨0⟩
+def bootstrapCommandAt (revision : Revision) : Decide.Command :=
+  .initializeWork revision
     { id := ⟨1⟩, status := .open }
     { id := ⟨1⟩, work := ⟨1⟩, status := .active, readyToResume := false }
+
+def bootstrapCommand : Decide.Command :=
+  bootstrapCommandAt ⟨0⟩
 
 structure QueryResult (α : Type) where
   store : Projection.Store
@@ -116,8 +119,8 @@ def executeAction (action : Resolver.Action) (store : Projection.Store) :
             .ok {
               store := transaction.adopted.result
               output := s!"{repr transaction.adopted.receipt}" }
-    | .initializeWork _ =>
-        match execute bootstrapCommand store with
+    | .initializeWork point =>
+        match execute (bootstrapCommandAt point.revision) store with
         | .error error => .error s!"{repr error}"
         | .ok transaction =>
             .ok { store := transaction.result, output := s!"{repr action}" }

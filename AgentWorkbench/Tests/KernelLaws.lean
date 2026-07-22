@@ -446,6 +446,39 @@ def main : IO Unit := do
     .exact receipt) "an exact retry must return its receipt despite a later revision"
   expect (Policy.Update.resolveRetry receipt.operation "changed" ⟨0⟩ ⟨99⟩ [receipt] ==
     .payloadConflict) "a changed retry payload must conflict"
+  let preInitializationAttempt : Domain.ExternalOperation.Attempt :=
+    { operation := ⟨"pre-initialization-1"⟩
+      artifactDigest := "sha256:pre-initialization-1"
+      state := .prepared }
+  let nonzeroEmptyStore ← executeStore
+    (.recordExternalOperation Application.Service.initialStore.ledger.storedHead
+      preInitializationAttempt)
+    Application.Service.initialStore "pre-initialization operation rejected"
+  expect (nonzeroEmptyStore.ledger.storedHead == ⟨1⟩)
+    "pre-initialization mutation must advance the empty ledger"
+  let nonzeroInitializeAction ← match
+      (Application.Service.resolve nonzeroEmptyStore).value with
+    | .action action@(.initializeWork point) =>
+        expect (point.revision == nonzeroEmptyStore.ledger.storedHead)
+          "initialization action did not preserve its nonzero ledger binding"
+        pure action
+    | _ => throw <| IO.userError "nonzero-revision empty store did not emit initialization"
+  let initializedFromNonzero ← executeResolverAction nonzeroInitializeAction
+    nonzeroEmptyStore "nonzero-revision initialization action rejected"
+  expect (initializedFromNonzero.ledger.storedHead == ⟨2⟩)
+    "nonzero-revision initialization did not advance exactly once"
+  let driftAttempt : Domain.ExternalOperation.Attempt :=
+    { operation := ⟨"pre-initialization-2"⟩
+      artifactDigest := "sha256:pre-initialization-2"
+      state := .prepared }
+  let driftedEmptyStore ← executeStore
+    (.recordExternalOperation nonzeroEmptyStore.ledger.storedHead driftAttempt)
+    nonzeroEmptyStore "pre-initialization drift operation rejected"
+  expect (!nonzeroInitializeAction.executable
+    (Kernel.Projection.inspect driftedEmptyStore))
+    "nonzero initialization action remained executable after ledger drift"
+  expectResolverActionRejected nonzeroInitializeAction driftedEmptyStore
+    "nonzero initialization action did not reject after ledger drift"
   let initializeAction ← match
       (Application.Service.resolve Application.Service.initialStore).value with
     | .action action@(.initializeWork _) => pure action
