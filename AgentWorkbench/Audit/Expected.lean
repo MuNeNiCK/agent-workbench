@@ -155,6 +155,13 @@ axiom completion_requires_active_target (target : WorkId)
       lifecycle evidence obligations = true) :
     (Work.activeFor activations target).isSome = true
 
+axiom replay_completion_applicability_matches_policy (target : WorkId)
+    (state : Replay.State) :
+    Replay.completionApplicable target state =
+      Policy.Completion.closeable target state.work state.activations
+        state.claims state.adjudications state.lifecycle
+        state.evidence state.obligations
+
 axiom exact_retry_returns_same_receipt
     (operation : OperationId) (payloadDigest : String)
     (expectedRevision currentRevision : Revision) (receipts : List Policy.Update.Receipt)

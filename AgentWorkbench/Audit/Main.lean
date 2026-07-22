@@ -102,6 +102,7 @@ def theoremRules : Array TheoremRule := #[
   ⟨"AgentWorkbench.Kernel.Decide.close_work_preserves_valid", "AgentWorkbench.Audit.Expected.close_work_preserves_valid"⟩,
   ⟨"AgentWorkbench.Kernel.Decide.close_work_emits_atomic_event", "AgentWorkbench.Audit.Expected.close_work_emits_atomic_event"⟩,
   ⟨"AgentWorkbench.Kernel.Decide.decide_complete_requires_closeable", "AgentWorkbench.Audit.Expected.decide_complete_requires_closeable"⟩,
+  ⟨"AgentWorkbench.Kernel.Decide.replay_completion_applicability_matches_policy", "AgentWorkbench.Audit.Expected.replay_completion_applicability_matches_policy"⟩,
   ⟨"AgentWorkbench.Domain.Work.single_active_activation", "AgentWorkbench.Audit.Expected.single_active_activation"⟩,
   ⟨"AgentWorkbench.Domain.Work.resume_requires_readiness", "AgentWorkbench.Audit.Expected.resume_requires_readiness"⟩,
   ⟨"AgentWorkbench.Policy.Authority.review_claim_has_no_authority", "AgentWorkbench.Audit.Expected.review_claim_has_no_authority"⟩,

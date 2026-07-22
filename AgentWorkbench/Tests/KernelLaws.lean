@@ -325,6 +325,11 @@ def main : IO Unit := do
     planned.claims planned.adjudications planned.lifecycle
     planned.evidence planned.obligations))
     "an authoritative plan must begin unready instead of self-attested complete"
+  expect (Kernel.Replay.completionApplicable firstWork.id planned ==
+    Policy.Completion.closeable firstWork.id planned.work planned.activations
+      planned.claims planned.adjudications planned.lifecycle
+      planned.evidence planned.obligations)
+    "replay completion applicability diverged from authoritative policy"
   match Kernel.Replay.replay
       [.workCompleted firstWork.id firstActivation.id] planned with
   | .error (.invalidTransition _) => pure ()
