@@ -105,6 +105,15 @@ def main : IO Unit := do
   match Application.Service.complete firstWork.id contradictory with
   | .error (.invariantViolation _) => pure ()
   | _ => throw <| IO.userError "invalid contradictory facts must not authorize completion"
+  let staleRevisionState := { completable with
+    completionFacts := [{ completeFacts with revision := ⟨0⟩ }]
+    obligations := [{ currentObligation with revision := ⟨0⟩ }] }
+  match Kernel.Replay.verifyState staleRevisionState with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "stale-revision current evidence must invalidate state"
+  match Application.Service.complete firstWork.id staleRevisionState with
+  | .error (.invariantViolation _) => pure ()
+  | _ => throw <| IO.userError "stale-revision evidence must not authorize completion"
   let unrelated : Domain.Work.Activation :=
     { id := ⟨2⟩, work := ⟨2⟩, status := .suspended, readyToResume := true }
   let withUnrelated := { completable with

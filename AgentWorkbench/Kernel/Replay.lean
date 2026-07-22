@@ -23,12 +23,15 @@ deriving DecidableEq, Repr
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
   Work.UniqueCompletionFacts state.completionFacts ∧
-  Evidence.UniqueObligations state.obligations
+  Work.CompletionFactsCurrent state.revision state.completionFacts ∧
+  Evidence.UniqueObligations state.obligations ∧
+  Evidence.ObligationsCurrentAt state.revision state.obligations
 
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
-    Work.UniqueCompletionFacts Evidence.UniqueObligations
+    Work.UniqueCompletionFacts Work.CompletionFactsCurrent
+    Evidence.UniqueObligations Evidence.ObligationsCurrentAt
   infer_instance
 
 structure VerifiedState where
@@ -43,25 +46,42 @@ inductive Event
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
+  | completionEvidenceRecorded (facts : Work.CompletionFacts)
+      (obligations : List Evidence.Obligation)
   | workCompleted (work : WorkId) (activation : ActivationId)
 deriving DecidableEq, Repr
 
 def applyUnchecked (event : Event) (state : State) : State :=
   let revised := state.revision.next
+  let invalidated := {
+    state with
+    revision := revised
+    completionFacts := Work.invalidateCompletionFacts state.completionFacts
+    obligations := Evidence.invalidate state.obligations }
   match event with
-  | .replaceWork work => { state with revision := revised, work }
-  | .replaceActivations activations => { state with revision := revised, activations }
-  | .reviewClaimed claim => { state with revision := revised, claims := state.claims ++ [claim] }
+  | .replaceWork work => { invalidated with work }
+  | .replaceActivations activations => { invalidated with activations }
+  | .reviewClaimed claim => { invalidated with claims := state.claims ++ [claim] }
   | .reviewAdjudicated decision =>
-      { state with revision := revised, adjudications := state.adjudications ++ [decision] }
-  | .evidenceRecorded item => { state with revision := revised, evidence := state.evidence ++ [item] }
+      { invalidated with adjudications := state.adjudications ++ [decision] }
+  | .evidenceRecorded item => { invalidated with evidence := state.evidence ++ [item] }
   | .externalOperationRecorded attempt =>
-      { state with revision := revised, externalOperations := state.externalOperations ++ [attempt] }
+      { invalidated with externalOperations := state.externalOperations ++ [attempt] }
   | .obligationRecorded obligation =>
-      { state with revision := revised, obligations := state.obligations ++ [obligation] }
+      let retained := (Evidence.invalidate state.obligations).filter fun existing =>
+        existing.work != obligation.work || existing.key != obligation.key
+      { invalidated with obligations := retained ++ [{ obligation with revision := revised, current := true }] }
+  | .completionEvidenceRecorded facts obligations =>
+      let retainedFacts := (Work.invalidateCompletionFacts state.completionFacts).filter
+        (·.work != facts.work)
+      let retainedObligations := (Evidence.invalidate state.obligations).filter
+        (·.work != facts.work)
+      { invalidated with
+        completionFacts := retainedFacts ++ [{ facts with revision := revised, current := true }]
+        obligations := retainedObligations ++ obligations.map fun obligation =>
+          { obligation with work := facts.work, revision := revised, current := true } }
   | .workCompleted work activation =>
-      { state with
-        revision := revised
+      { invalidated with
         work := Work.closeWork state.work work
         activations := Work.closeActivation state.activations activation }
 
@@ -118,6 +138,7 @@ theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
     Work.ActiveReferencesOpenWork, Work.UniqueCompletionFacts,
-    Evidence.UniqueObligations, Work.activeActivations, emptyState]
+    Work.CompletionFactsCurrent, Evidence.UniqueObligations,
+    Evidence.ObligationsCurrentAt, Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay

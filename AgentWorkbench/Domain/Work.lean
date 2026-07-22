@@ -35,6 +35,12 @@ deriving DecidableEq, Repr
 def UniqueCompletionFacts (facts : List CompletionFacts) : Prop :=
   (facts.map (·.work)).Nodup
 
+def CompletionFactsCurrent (revision : Revision) (facts : List CompletionFacts) : Prop :=
+  (facts.all fun fact => !fact.current || fact.revision == revision) = true
+
+def invalidateCompletionFacts (facts : List CompletionFacts) : List CompletionFacts :=
+  facts.map fun fact => { fact with current := false }
+
 def activeActivations (activations : List Activation) : List Activation :=
   activations.filter (fun activation => activation.status == .active)
 
