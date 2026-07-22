@@ -25,23 +25,30 @@ def ValidState (state : State) : Prop :=
   Review.ValidReviewState state.claims state.adjudications ∧
   Evidence.UniqueEvidenceIds state.evidence ∧
   Evidence.EvidenceWellFormed state.evidence ∧
+  Evidence.EvidenceReferencesObligations state.evidence state.obligations ∧
   ExternalOperation.UniqueOperations state.externalOperations ∧
   ExternalOperation.AttemptsWellFormed state.externalOperations ∧
   Work.UniqueCompletionFacts state.completionFacts ∧
+  Work.CompletionFactsReferenceWork state.work state.completionFacts ∧
   Work.CompletionFactsCurrent state.revision state.completionFacts ∧
   Evidence.UniqueObligations state.obligations ∧
   Evidence.ObligationsWellFormed state.obligations ∧
+  Evidence.ObligationsReferenceWork (state.work.map (·.id)) state.obligations ∧
   Evidence.ObligationsCurrentAt state.revision state.obligations
 
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
+    Work.ActivationsReferenceWork
     Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
     Review.AdjudicationsReferenceClaims
     Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
+    Evidence.EvidenceReferencesObligations
     ExternalOperation.UniqueOperations ExternalOperation.AttemptsWellFormed
-    Work.UniqueCompletionFacts Work.CompletionFactsCurrent
+    Work.UniqueCompletionFacts Work.CompletionFactsReferenceWork
+    Work.CompletionFactsCurrent
     Evidence.UniqueObligations Evidence.ObligationsWellFormed
+    Evidence.ObligationsReferenceWork
     Evidence.ObligationsCurrentAt
   infer_instance
 
@@ -148,13 +155,16 @@ def emptyState : State :=
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
-    Work.ActiveReferencesOpenWork, Review.ValidReviewState,
+    Work.ActiveReferencesOpenWork, Work.ActivationsReferenceWork,
+    Review.ValidReviewState,
     Review.UniqueClaimIds, Review.UniqueAdjudications,
     Review.AdjudicationsReferenceClaims, Evidence.UniqueEvidenceIds,
-    Evidence.EvidenceWellFormed, ExternalOperation.UniqueOperations,
+    Evidence.EvidenceWellFormed, Evidence.EvidenceReferencesObligations,
+    ExternalOperation.UniqueOperations,
     ExternalOperation.AttemptsWellFormed, Work.UniqueCompletionFacts,
-    Work.CompletionFactsCurrent, Evidence.UniqueObligations,
-    Evidence.ObligationsWellFormed, Evidence.ObligationsCurrentAt,
+    Work.CompletionFactsReferenceWork, Work.CompletionFactsCurrent,
+    Evidence.UniqueObligations, Evidence.ObligationsWellFormed,
+    Evidence.ObligationsReferenceWork, Evidence.ObligationsCurrentAt,
     Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay

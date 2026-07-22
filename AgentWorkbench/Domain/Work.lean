@@ -58,11 +58,19 @@ def ActiveReferencesOpenWork (work : List WorkUnit) (activations : List Activati
     activation.status != .active ||
       work.any fun unit => unit.id == activation.work && unit.status == .open) = true
 
+def ActivationsReferenceWork (work : List WorkUnit) (activations : List Activation) : Prop :=
+  (activations.all fun activation => work.any (·.id == activation.work)) = true
+
+def CompletionFactsReferenceWork (work : List WorkUnit)
+    (facts : List CompletionFacts) : Prop :=
+  (facts.all fun fact => work.any (·.id == fact.work)) = true
+
 def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop :=
   UniqueWorkIds work ∧
   UniqueActivationIds activations ∧
   AtMostOneActive activations ∧
-  ActiveReferencesOpenWork work activations
+  ActiveReferencesOpenWork work activations ∧
+  ActivationsReferenceWork work activations
 
 theorem single_active_activation {activations : List Activation}
     (valid : AtMostOneActive activations) :

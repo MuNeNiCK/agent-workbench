@@ -112,12 +112,24 @@ def committedState (result : Except DomainError AcceptedTransaction) (original :
   | .ok transaction => transaction.result.state
   | .error _ => original
 
+inductive Commits (command : Command) (initial : State) : List Event → State → Prop
+  | accepted (transaction : AcceptedTransaction)
+      (accepted : decide command initial = .ok transaction) :
+      Commits command initial transaction.events transaction.result.state
+
 theorem decide_rejection_has_no_effect (command : Command) (state : State)
     (error : DomainError) (rejected : decide command state = .error error) :
+    (¬ ∃ events result, Commits command state events result) ∧
     committedEvents (decide command state) = [] ∧
     committedState (decide command state) state = state ∧
     (committedState (decide command state) state).revision = state.revision := by
-  simp [committedEvents, committedState, rejected]
+  constructor
+  · rintro ⟨_, _, commit⟩
+    cases commit with
+    | accepted transaction accepted =>
+        rw [rejected] at accepted
+        contradiction
+  · simp [committedEvents, committedState, rejected]
 
 structure CompletionTransaction extends AcceptedTransaction where
   target : WorkId

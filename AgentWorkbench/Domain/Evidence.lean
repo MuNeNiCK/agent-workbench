@@ -38,6 +38,13 @@ def EvidenceWellFormed (evidence : List Evidence) : Prop :=
 def ObligationsWellFormed (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => !obligation.key.isEmpty) = true
 
+def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation) : Prop :=
+  (obligations.all fun obligation => work.contains obligation.work) = true
+
+def EvidenceReferencesObligations (evidence : List Evidence)
+    (obligations : List Obligation) : Prop :=
+  (evidence.all fun item => obligations.any (·.key == item.obligation)) = true
+
 def ObligationsCurrentAt (revision : Revision) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => !obligation.current || obligation.revision == revision) = true
 

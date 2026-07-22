@@ -93,16 +93,25 @@ def main : IO Unit := do
       (.recordReviewAdjudication claimed.revision adjudication) claimed with
   | .ok _ => pure ()
   | .error error => throw <| IO.userError s!"valid adjudication rejected: {repr error}"
+  let currentObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := true }
+  let obligated ← match Application.Service.execute
+      (.recordObligation first.revision currentObligation) first with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let item : Domain.Evidence.Evidence :=
     { id := ⟨1⟩, obligation := "proof", artifactDigest := "sha256:evidence", current := true }
-  let evidenced ← match Application.Service.execute (.recordEvidence first.revision item) first with
+  let evidenced ← match Application.Service.execute
+      (.recordEvidence obligated.revision item) obligated with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid evidence rejected: {repr error}"
   expectRejectedNoEffect (.recordEvidence evidenced.revision item) evidenced
     "duplicate evidence identity"
   let malformedItem := { item with id := ⟨2⟩, artifactDigest := "" }
-  expectRejectedNoEffect (.recordEvidence first.revision malformedItem) first
+  expectRejectedNoEffect (.recordEvidence obligated.revision malformedItem) obligated
     "malformed evidence"
+  expectRejectedNoEffect (.recordEvidence first.revision item) first
+    "evidence without a recorded obligation"
   let attempt : Domain.ExternalOperation.Attempt :=
     { operation := ⟨"publish-1"⟩, artifactDigest := "sha256:artifact", state := .prepared }
   let externalized ← match Application.Service.execute
@@ -114,6 +123,9 @@ def main : IO Unit := do
   let malformedAttempt := { attempt with operation := ⟨"publish-2"⟩, artifactDigest := "" }
   expectRejectedNoEffect (.recordExternalOperation first.revision malformedAttempt) first
     "malformed external operation"
+  let emptyOperation := { attempt with operation := ⟨""⟩ }
+  expectRejectedNoEffect (.recordExternalOperation first.revision emptyOperation) first
+    "empty external operation identity"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
   let suspended := { firstActivation with status := .suspended, readyToResume := false }
@@ -122,16 +134,15 @@ def main : IO Unit := do
   let ready := { suspended with readyToResume := true }
   expect (Domain.Work.resume [ready] ready.id).isSome
     "resume must accept a ready activation when no activation is active"
+  let orphanActivation := { ready with work := ⟨99⟩ }
+  expectRejectedNoEffect
+    (.replaceWorkState initial.revision [] [orphanActivation]) initial
+    "activation referencing missing work"
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
-  let currentObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := true }
   let staleObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := false }
-  match Application.Service.execute (.recordObligation first.revision currentObligation) first with
-  | .ok _ => pure ()
-  | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let malformedObligation := { currentObligation with key := "" }
   expectRejectedNoEffect (.recordObligation first.revision malformedObligation) first
     "malformed obligation"
@@ -139,6 +150,13 @@ def main : IO Unit := do
     (.recordCompletionEvidence first.revision completeFacts
       [currentObligation, currentObligation]) first
     "duplicate completion obligations"
+  let orphanObligation := { currentObligation with work := ⟨99⟩ }
+  expectRejectedNoEffect (.recordObligation first.revision orphanObligation) first
+    "obligation owned by missing work"
+  let orphanFacts := { completeFacts with work := ⟨99⟩ }
+  expectRejectedNoEffect
+    (.recordCompletionEvidence first.revision orphanFacts [orphanObligation]) first
+    "completion evidence owned by missing work"
   expect (Policy.Completion.closeable firstWork.id first.work first.activations
     [completeFacts] [currentObligation])
     "complete current obligations must allow completion"
