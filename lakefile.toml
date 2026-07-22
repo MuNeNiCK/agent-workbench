@@ -1,0 +1,18 @@
+name = "agent-workbench"
+version = "0.1.0"
+defaultTargets = ["agent-workbench", "kernel-laws", "verified-core-audit"]
+
+[[lean_lib]]
+name = "AgentWorkbench"
+
+[[lean_exe]]
+name = "agent-workbench"
+root = "Main"
+
+[[lean_exe]]
+name = "kernel-laws"
+root = "AgentWorkbench.Tests.KernelLaws"
+
+[[lean_exe]]
+name = "verified-core-audit"
+root = "AgentWorkbench.Audit.Main"

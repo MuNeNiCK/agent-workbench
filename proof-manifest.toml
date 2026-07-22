@@ -1,0 +1,50 @@
+version = 1
+
+theorems = [
+  "AgentWorkbench.Kernel.Replay.replay_deterministic",
+  "AgentWorkbench.Kernel.Replay.replay_preserves_valid",
+  "AgentWorkbench.Kernel.Decide.decide_preserves_valid",
+  "AgentWorkbench.Kernel.Decide.decide_rejection_has_no_effect",
+  "AgentWorkbench.Domain.Work.single_active_activation",
+  "AgentWorkbench.Domain.Work.resume_requires_readiness",
+  "AgentWorkbench.Policy.Authority.review_claim_has_no_authority",
+  "AgentWorkbench.Kernel.Gates.gate_is_read_only",
+  "AgentWorkbench.Kernel.Resolver.next_is_allowed",
+  "AgentWorkbench.Policy.Completion.completion_requires_current_obligations",
+  "AgentWorkbench.Policy.Completion.completion_requires_active_target",
+  "AgentWorkbench.Policy.Update.exact_retry_returns_same_receipt",
+]
+
+modules = [
+  "AgentWorkbench.Domain.Identity",
+  "AgentWorkbench.Domain.Facts",
+  "AgentWorkbench.Domain.Work",
+  "AgentWorkbench.Domain.Design",
+  "AgentWorkbench.Domain.Review",
+  "AgentWorkbench.Domain.Evidence",
+  "AgentWorkbench.Domain.ExternalOperation",
+  "AgentWorkbench.Policy.Traceability",
+  "AgentWorkbench.Policy.Authority",
+  "AgentWorkbench.Policy.Completion",
+  "AgentWorkbench.Policy.Update",
+  "AgentWorkbench.Kernel.Replay",
+  "AgentWorkbench.Kernel.Decide",
+  "AgentWorkbench.Kernel.Gates",
+  "AgentWorkbench.Kernel.Resolver",
+  "AgentWorkbench.Application.Service",
+]
+
+permitted_axioms = [
+  "propext",
+  "Quot.sound",
+  "Classical.choice",
+]
+forbidden_axioms = [
+  "sorryAx",
+]
+unsafe_ffi_modules = [
+  "AgentWorkbench.Adapter.SQLite",
+  "AgentWorkbench.Adapter.DurableFilesystem",
+  "AgentWorkbench.Adapter.Process",
+  "AgentWorkbench.Adapter.Git",
+]
