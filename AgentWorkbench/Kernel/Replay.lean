@@ -3,6 +3,7 @@ import AgentWorkbench.Domain.Design
 import AgentWorkbench.Domain.Review
 import AgentWorkbench.Domain.Evidence
 import AgentWorkbench.Domain.ExternalOperation
+import AgentWorkbench.Domain.Projection
 
 namespace AgentWorkbench.Kernel.Replay
 
@@ -134,6 +135,56 @@ def replayFrom : List Event → VerifiedState → Except DomainError VerifiedSta
 
 def replay (events : List Event) (initial : State) : Except DomainError VerifiedState := do
   replayFrom events (← verifyState initial)
+
+def eventDigest (events : List Event) : Digest :=
+  ⟨s!"{repr events}"⟩
+
+def stateDigest (state : State) : Digest :=
+  ⟨s!"{repr state}"⟩
+
+structure LedgerImage where
+  id : LedgerId
+  initial : State
+  events : List Event
+  storedHead : Revision
+  storedHistoryDigest : Digest
+deriving DecidableEq, Repr
+
+structure VerifiedLedger where
+  image : LedgerImage
+  head : VerifiedState
+  replayed : replay image.events image.initial = .ok head
+  revisionExact : head.state.revision = image.storedHead
+  digestExact : eventDigest image.events = image.storedHistoryDigest
+
+def verifyLedger (image : LedgerImage) : Except Projection.LedgerFault VerifiedLedger :=
+  match replayed : replay image.events image.initial with
+  | .error error => .error (.replayRejected error)
+  | .ok head =>
+      if revisionExact : head.state.revision = image.storedHead then
+        if digestExact : eventDigest image.events = image.storedHistoryDigest then
+          .ok ⟨image, head, replayed, revisionExact, digestExact⟩
+        else
+          .error (.historyDigestMismatch (eventDigest image.events) image.storedHistoryDigest)
+      else
+        .error (.headRevisionMismatch head.state.revision image.storedHead)
+
+def VerifiedLedger.point (ledger : VerifiedLedger) : Projection.LedgerPoint :=
+  { ledger := ledger.image.id
+    revision := ledger.head.state.revision
+    historyDigest := eventDigest ledger.image.events }
+
+def replayAt (ledger : VerifiedLedger) (revision : Revision) :
+    Except Projection.LedgerFault VerifiedState :=
+  match replay (ledger.image.events.take revision.value) ledger.image.initial with
+  | .error error => .error (.replayRejected error)
+  | .ok state =>
+      if state.state.revision = revision then .ok state
+      else .error (.headRevisionMismatch state.state.revision revision)
+
+theorem verified_ledger_head_is_replay (ledger : VerifiedLedger) :
+    replay ledger.image.events ledger.image.initial = .ok ledger.head :=
+  ledger.replayed
 
 theorem replay_deterministic (events : List Event) (initial : State)
     {left right : VerifiedState}

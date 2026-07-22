@@ -11,14 +11,14 @@ def cliWithoutMutationFixture : IO Unit :=
 
 def expectedExecuteBootstrap :=
   Application.Service.execute Application.Service.bootstrapCommand
-    Application.Service.initialState
+    Application.Service.initialStore
 
 def expectedCliRun : IO Unit := do
   match expectedExecuteBootstrap with
   | .error error => throw <| IO.userError s!"verified mutation rejected: {repr error}"
   | .ok transaction =>
-      match Application.Service.queryValidity transaction.result.state,
-          Application.Service.resolve transaction.result.state with
+      match (Application.Service.queryValidity transaction.result).value,
+          (Application.Service.resolve transaction.result).value with
       | .pass, .action action => IO.println s!"agent-workbench verified core: {repr action}"
       | .blocked reason, _ => throw <| IO.userError reason
       | _, .blocked blocker => throw <| IO.userError s!"resolver blocked: {repr blocker}"
@@ -27,7 +27,7 @@ def cliConditionalBypassFixture : IO Unit := do
   let takeMutation ← pure false
   if takeMutation then
     match Application.Service.execute Application.Service.bootstrapCommand
-        Application.Service.initialState with
+        Application.Service.initialStore with
     | .ok _ => pure ()
     | .error _ => pure ()
   else
@@ -90,13 +90,33 @@ axiom review_claim_has_no_authority (state : Policy.Authority.ReviewState)
     Policy.Authority.authority (Policy.Authority.recordClaim state claim) =
       Policy.Authority.authority state
 
-axiom gate_is_read_only (gate : State → GateResult) (state : State) :
-    (Gates.observeGate gate state).1 = state
+axiom gate_is_read_only (gate : Projection.Store → GateResult) (store : Projection.Store) :
+    (Gates.observeGate gate store).1 = store
 
-axiom next_is_allowed (state : State) :
-    match Resolver.next state with
-    | .action action => action.executable state = true
-    | .blocked blocker => blocker.exact state
+axiom next_is_allowed (inspection : Projection.Inspection) :
+    match Resolver.next inspection with
+    | .action action => action.executable inspection = true
+    | .blocked blocker => blocker.exact inspection
+
+axiom status_is_read_only (store : Projection.Store) :
+    (Application.Service.status store).store = store
+
+axiom next_is_read_only (store : Projection.Store) :
+    (Application.Service.resolve store).store = store
+
+axiom gates_all_read_only (request : Gates.Request) (store : Projection.Store) :
+    (Gates.observeGate (Gates.run request) store).1 = store
+
+axiom every_gate_is_read_only (request : Gates.Request) (store : Projection.Store) :
+    (Application.Service.queryGate request store).store = store
+
+axiom verified_stage_matches_replay (verified : Projection.VerifiedStage) :
+    verified.candidateState = verified.ledger.head.state ∧
+    Projection.projectionMatchesHead verified.ledger verified.stage.candidate = true
+
+axiom adoption_is_atomic (transaction : Projection.AdoptionTransaction) :
+    transaction.result.ledger = transaction.sourceLedger ∧
+    transaction.result.active = some transaction.candidate
 
 axiom completion_requires_current_obligations (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)

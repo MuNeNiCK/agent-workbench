@@ -24,6 +24,22 @@ structure OperationId where
   value : String
 deriving DecidableEq, Repr, BEq
 
+structure LedgerId where
+  value : String
+deriving DecidableEq, Repr, BEq
+
+structure ProjectionId where
+  value : String
+deriving DecidableEq, Repr, BEq
+
+structure Digest where
+  value : String
+deriving DecidableEq, Repr, BEq
+
+structure StageId where
+  value : Nat
+deriving DecidableEq, Repr, BEq
+
 structure Revision where
   value : Nat
 deriving DecidableEq, Repr, BEq, Ord

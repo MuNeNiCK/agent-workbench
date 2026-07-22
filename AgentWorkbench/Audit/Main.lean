@@ -24,6 +24,7 @@ structure ManifestPolicy where
 def moduleRules : Array ModuleRule := #[
   ⟨"AgentWorkbench.Domain.Identity", #[]⟩,
   ⟨"AgentWorkbench.Domain.Facts", #[]⟩,
+  ⟨"AgentWorkbench.Domain.Projection", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Domain.Work", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Domain.Design", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Domain.Review", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
@@ -33,9 +34,10 @@ def moduleRules : Array ModuleRule := #[
   ⟨"AgentWorkbench.Policy.Authority", #["AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Policy.Completion", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation", "AgentWorkbench.Policy.Traceability", "AgentWorkbench.Policy.Authority"]⟩,
   ⟨"AgentWorkbench.Policy.Update", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Kernel.Replay", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation"]⟩,
+  ⟨"AgentWorkbench.Kernel.Replay", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation", "AgentWorkbench.Domain.Projection"]⟩,
+  ⟨"AgentWorkbench.Kernel.Projection", #["AgentWorkbench.Kernel.Replay"]⟩,
   ⟨"AgentWorkbench.Kernel.Decide", #["AgentWorkbench.Kernel.Replay", "AgentWorkbench.Policy.Traceability", "AgentWorkbench.Policy.Authority", "AgentWorkbench.Policy.Completion", "AgentWorkbench.Policy.Update"]⟩,
-  ⟨"AgentWorkbench.Kernel.Gates", #["AgentWorkbench.Kernel.Replay", "AgentWorkbench.Policy.Completion"]⟩,
+  ⟨"AgentWorkbench.Kernel.Gates", #["AgentWorkbench.Kernel.Projection", "AgentWorkbench.Policy.Completion"]⟩,
   ⟨"AgentWorkbench.Kernel.Resolver", #["AgentWorkbench.Kernel.Gates", "AgentWorkbench.Domain.Work"]⟩,
   ⟨"AgentWorkbench.Application.Service", #["AgentWorkbench.Kernel.Decide", "AgentWorkbench.Kernel.Gates", "AgentWorkbench.Kernel.Resolver"]⟩
 ]
@@ -53,7 +55,13 @@ def theoremRules : Array TheoremRule := #[
   ⟨"AgentWorkbench.Domain.Work.resume_requires_readiness", "AgentWorkbench.Audit.Expected.resume_requires_readiness"⟩,
   ⟨"AgentWorkbench.Policy.Authority.review_claim_has_no_authority", "AgentWorkbench.Audit.Expected.review_claim_has_no_authority"⟩,
   ⟨"AgentWorkbench.Kernel.Gates.gate_is_read_only", "AgentWorkbench.Audit.Expected.gate_is_read_only"⟩,
+  ⟨"AgentWorkbench.Kernel.Gates.all_gates_are_read_only", "AgentWorkbench.Audit.Expected.gates_all_read_only"⟩,
   ⟨"AgentWorkbench.Kernel.Resolver.next_is_allowed", "AgentWorkbench.Audit.Expected.next_is_allowed"⟩,
+  ⟨"AgentWorkbench.Application.Service.status_is_read_only", "AgentWorkbench.Audit.Expected.status_is_read_only"⟩,
+  ⟨"AgentWorkbench.Application.Service.next_is_read_only", "AgentWorkbench.Audit.Expected.next_is_read_only"⟩,
+  ⟨"AgentWorkbench.Application.Service.every_gate_is_read_only", "AgentWorkbench.Audit.Expected.every_gate_is_read_only"⟩,
+  ⟨"AgentWorkbench.Kernel.Projection.verified_stage_matches_replay", "AgentWorkbench.Audit.Expected.verified_stage_matches_replay"⟩,
+  ⟨"AgentWorkbench.Kernel.Projection.adoption_is_atomic", "AgentWorkbench.Audit.Expected.adoption_is_atomic"⟩,
   ⟨"AgentWorkbench.Policy.Completion.completion_requires_current_obligations", "AgentWorkbench.Audit.Expected.completion_requires_current_obligations"⟩,
   ⟨"AgentWorkbench.Policy.Completion.completion_requires_active_target", "AgentWorkbench.Audit.Expected.completion_requires_active_target"⟩,
   ⟨"AgentWorkbench.Policy.Update.exact_retry_returns_same_receipt", "AgentWorkbench.Audit.Expected.exact_retry_returns_same_receipt"⟩
@@ -272,6 +280,7 @@ def auditDeclarations (env : Environment) : IO Unit := do
     [`AgentWorkbench.Application.Service.execute,
      `AgentWorkbench.Application.Service.bootstrapCommand,
      `AgentWorkbench.Cli.Program.executeBootstrap,
+     `AgentWorkbench.Cli.Program.executeRequest,
      `AgentWorkbench.Cli.Program.run]
   auditUnsafeReachability env roots []
   unless declarationReaches env `AgentWorkbench.Application.Service.execute
@@ -279,6 +288,12 @@ def auditDeclarations (env : Environment) : IO Unit := do
     let runDeps := (env.find? `AgentWorkbench.Cli.Program.run).map declarationDependencies
     let bootstrapDeps := (env.find? `AgentWorkbench.Cli.Program.executeBootstrap).map declarationDependencies
     fail s!"compiled CLI program does not reach Application.Service.execute; run={repr runDeps}; bootstrap={repr bootstrapDeps}"
+  unless declarationReaches env `AgentWorkbench.Application.Service.executeRequest
+      [`AgentWorkbench.Cli.Program.executeRequest] [] do
+    fail "compiled CLI request path does not reach Application.Service.executeRequest"
+  unless declarationReaches env `AgentWorkbench.Application.Service.repairProjection
+      [`AgentWorkbench.Cli.Program.executeRequest] [] do
+    fail "compiled CLI request path does not reach the explicit projection repair mutation"
   if declarationReaches env `AgentWorkbench.Application.Service.execute
       [`AgentWorkbench.Audit.Expected.cliWithoutMutationFixture] [] then
     fail "negative compiled CLI dependency fixture unexpectedly reaches Service.execute"
@@ -336,21 +351,22 @@ def auditTheorems (env : Environment) : IO Unit := do
         fail s!"unpermitted axiom {rendered} reached {rule.declaration}"
 
 def auditCliMutation : IO Unit := do
-  let initial := Application.Service.initialState
+  let initial := Application.Service.initialStore
   match Cli.Program.executeBootstrap with
   | .error error => fail s!"CLI mutation fixture was rejected: {repr error}"
   | .ok transaction =>
-      unless transaction.events.length = 1 do fail "CLI mutation did not emit exactly one event"
-      unless transaction.result.state.revision = initial.revision.next do
+      unless transaction.accepted.events.length = 1 do
+        fail "CLI mutation did not emit exactly one event"
+      unless transaction.accepted.result.state.revision = initial.ledger.storedHead.next do
         fail "CLI mutation did not advance exactly one revision"
-      unless Application.Service.queryValidity transaction.result.state = .pass do
+      unless (Application.Service.queryValidity transaction.result).value = .pass do
         fail "CLI mutation result is not valid"
 
 def traceModuleRules : Array ModuleRule := moduleRules ++ #[
   ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Cli.Program", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"Main", #["AgentWorkbench.Cli.Program"]⟩,
-  ⟨"AgentWorkbench.Tests.KernelLaws", #["AgentWorkbench.Application.Service"]⟩,
+  ⟨"AgentWorkbench.Tests.KernelLaws", #["AgentWorkbench.Cli.Program"]⟩,
   ⟨"AgentWorkbench.Audit.Expected", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Audit.Main", #["AgentWorkbench.Audit.Expected", "AgentWorkbench.Cli.Program"]⟩
 ]
@@ -366,10 +382,12 @@ def traceProjectFiles : Array String := #[
   "AgentWorkbench/Domain/ExternalOperation.lean",
   "AgentWorkbench/Domain/Facts.lean",
   "AgentWorkbench/Domain/Identity.lean",
+  "AgentWorkbench/Domain/Projection.lean",
   "AgentWorkbench/Domain/Review.lean",
   "AgentWorkbench/Domain/Work.lean",
   "AgentWorkbench/Kernel/Decide.lean",
   "AgentWorkbench/Kernel/Gates.lean",
+  "AgentWorkbench/Kernel/Projection.lean",
   "AgentWorkbench/Kernel/Replay.lean",
   "AgentWorkbench/Kernel/Resolver.lean",
   "AgentWorkbench/Policy/Authority.lean",
