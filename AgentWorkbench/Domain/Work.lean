@@ -86,8 +86,8 @@ def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop
 
 theorem single_active_activation {activations : List Activation}
     (valid : AtMostOneActive activations) :
-    (activeActivations activations).length ≤ 1 :=
-  valid
+    (activeActivations activations).length ≤ 1 := by
+  exact valid
 
 def noActive (activations : List Activation) : Bool :=
   (activeActivations activations).isEmpty

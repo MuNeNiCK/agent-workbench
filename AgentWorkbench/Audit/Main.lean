@@ -377,7 +377,6 @@ def traceProjectFiles : Array String := #[
   "AgentWorkbench/Policy/Traceability.lean",
   "AgentWorkbench/Policy/Update.lean",
   "AgentWorkbench/Tests/KernelLaws.lean",
-  "AgentWorkbench/Trace/PrivateProof.lean",
   "Main.lean",
   "lake-manifest.json",
   "lakefile.toml",
@@ -392,7 +391,7 @@ structure RebuildTraceCase where
   privateProof : Bool := false
 
 def rebuildTraceCases : Array RebuildTraceCase := #[
-  ⟨"private-proof", "AgentWorkbench.Trace.PrivateProof", "AgentWorkbench/Trace/PrivateProof.lean", true⟩,
+  ⟨"private-proof", "AgentWorkbench.Domain.Work", "AgentWorkbench/Domain/Work.lean", true⟩,
   ⟨"domain-work", "AgentWorkbench.Domain.Work", "AgentWorkbench/Domain/Work.lean", false⟩,
   ⟨"policy-completion", "AgentWorkbench.Policy.Completion", "AgentWorkbench/Policy/Completion.lean", false⟩,
   ⟨"domain-identity", "AgentWorkbench.Domain.Identity", "AgentWorkbench/Domain/Identity.lean", false⟩
@@ -405,15 +404,17 @@ def copyTraceProject (target : System.FilePath) : IO Unit := do
     if let some parent := destination.parent then IO.FS.createDirAll parent
     IO.FS.writeFile destination (← IO.FS.readFile source)
 
-def runLakeBuild (lake project : System.FilePath) (targets : Array String := #[]) : IO String := do
+def runLakeBuild (lake project : System.FilePath) (targets : Array String := #[])
+    (oldMode : Bool := false) : IO String := do
+  let argsPrefix := if oldMode then #["--old", "build"] else #["build"]
   let output ← IO.Process.output {
-    cmd := lake.toString, args := #["build"] ++ targets, cwd := some project }
+    cmd := lake.toString, args := argsPrefix ++ targets, cwd := some project }
   unless output.exitCode = 0 do
     fail s!"representative Lake rebuild failed:\n{output.stdout}\n{output.stderr}"
   return output.stdout ++ "\n" ++ output.stderr
 
 def builtModules (output : String) : List String :=
-  (output.splitOn "\n").filterMap fun line =>
+  ((output.splitOn "\n").filterMap fun line =>
     match line.splitOn "Built " with
     | _ :: built :: _ =>
         match built.trimAscii.toString.splitOn " " with
@@ -421,14 +422,14 @@ def builtModules (output : String) : List String :=
             let module := (token.splitOn ":").head?.getD token
             if module = "Main" || module.startsWith "AgentWorkbench." then some module else none
         | _ => none
-    | _ => none
+    | _ => none).eraseDups
 
 def mutateTraceSource (case : RebuildTraceCase) (source : String) : Except String String :=
   if case.privateProof then
     let before :=
-      "private theorem proofBodyFixture : True := by\n  trivial"
+      "theorem single_active_activation {activations : List Activation}\n    (valid : AtMostOneActive activations) :\n    (activeActivations activations).length ≤ 1 := by\n  exact valid"
     let after :=
-      "private theorem proofBodyFixture : True := by\n  exact True.intro"
+      "theorem single_active_activation {activations : List Activation}\n    (valid : AtMostOneActive activations) :\n    (activeActivations activations).length ≤ 1 := by\n  assumption "
     let changed := source.replace before after
     if changed = source then .error "private-proof trace mutation anchor was not found" else .ok changed
   else
@@ -439,14 +440,22 @@ def allowedTraceModules (case : RebuildTraceCase) : List String :=
   else case.module :: dependentClosure traceModuleRules case.module
 
 def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase) : IO Unit := do
+  unless traceModuleRules.any (fun rule => rule.module = case.module) do
+    fail s!"trace owner {case.module} is outside the normative module map"
+  if case.privateProof && (dependentClosure traceModuleRules case.module).isEmpty then
+    fail s!"private-proof trace owner {case.module} has no normative importers"
+  if case.privateProof && !theoremRules.any (fun rule =>
+      rule.declaration = "AgentWorkbench.Domain.Work.single_active_activation") then
+    fail "private-proof trace theorem is not protected by the immutable theorem policy"
   let path := project / case.file
   let original ← IO.FS.readFile path
   let changed ← match mutateTraceSource case original with
     | .ok changed => pure changed
     | .error error => fail error
   IO.FS.writeFile path changed
-  let targets := if case.privateProof then #[case.module] else #[]
-  let trace := builtModules (← runLakeBuild lake project targets)
+  -- `--old` is sound only for this manifest-locked theorem proof body: its
+  -- exported type is immutable and Lean proof irrelevance hides its value.
+  let trace := builtModules (← runLakeBuild lake project (oldMode := case.privateProof))
   if trace.isEmpty then fail s!"Lake emitted no rebuild trace for {case.key}"
   unless trace.contains case.module do
     fail s!"Lake did not rebuild changed module {case.module} for {case.key}"
@@ -456,7 +465,7 @@ def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase)
       fail s!"{case.key} rebuilt {rebuilt} outside its normative reverse closure"
   IO.println s!"verified-core trace {case.key}: {String.intercalate "," trace}"
   IO.FS.writeFile path original
-  discard <| runLakeBuild lake project targets
+  discard <| runLakeBuild lake project
 
 def auditRepresentativeRebuilds : IO Unit := do
   let lake := (← findSysroot) / "bin" / "lake"
@@ -464,7 +473,6 @@ def auditRepresentativeRebuilds : IO Unit := do
   IO.FS.withTempDir fun project => do
     copyTraceProject project
     discard <| runLakeBuild lake project
-    discard <| runLakeBuild lake project #["AgentWorkbench.Trace.PrivateProof"]
     for case in rebuildTraceCases do auditRebuildTrace lake project case
 
 def main : IO Unit := do
