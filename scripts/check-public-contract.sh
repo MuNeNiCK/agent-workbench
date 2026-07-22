@@ -34,8 +34,26 @@ AGENT_WORKBENCH_UNDER_TEST="$workbench_binary" \
   cargo test --locked --test command_line
 
 if test -d .agents/skills/agent-workbench; then
-  if ! diff -qr skills/agent-workbench .agents/skills/agent-workbench >/dev/null; then
+  if ! diff -qr --exclude=SKILL.md skills/agent-workbench .agents/skills/agent-workbench >/dev/null; then
     echo "installed skill differs from the release skill" >&2
+    exit 1
+  fi
+  for key in name description license; do
+    release_value="$(sed -n "s/^$key:[[:space:]]*//p" skills/agent-workbench/SKILL.md | head -n 1)"
+    installed_value="$(sed -n "s/^$key:[[:space:]]*//p" .agents/skills/agent-workbench/SKILL.md | head -n 1)"
+    if test "$installed_value" != "$release_value"; then
+      echo "installed skill $key differs from the release skill" >&2
+      exit 1
+    fi
+  done
+  contract_tmp="$(mktemp -d)"
+  trap 'rm -rf "$contract_tmp"' EXIT HUP INT TERM
+  awk 'BEGIN { separators=0; body=0 } /^---$/ { separators++; next } separators>=2 && body==0 && /^[[:space:]]*$/ { next } separators>=2 { body=1; print }' \
+    skills/agent-workbench/SKILL.md >"$contract_tmp/release-body"
+  awk 'BEGIN { separators=0; body=0 } /^---$/ { separators++; next } separators>=2 && body==0 && /^[[:space:]]*$/ { next } separators>=2 { body=1; print }' \
+    .agents/skills/agent-workbench/SKILL.md >"$contract_tmp/installed-body"
+  if ! diff -q "$contract_tmp/release-body" "$contract_tmp/installed-body" >/dev/null; then
+    echo "installed skill body differs from the release skill" >&2
     exit 1
   fi
 fi

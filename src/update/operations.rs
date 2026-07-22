@@ -31,17 +31,16 @@ where
     let root = normalized_root(root)?;
     let directory = root.join(crate::db::LEDGER_DIR);
     let ledger = ledger_path(&root);
-    let backups = backup_dir(&root);
-    fs::create_dir_all(&backups)?;
     let lock = update_lock(&directory)?;
     lock.lock_exclusive()?;
     let operation_handle = digest_handle(
         "update_operation_",
         &["restore", backup_handle, expected_current, idempotency_key],
     );
-    if let Some(journal) = journal_for_key(&root, idempotency_key)? {
+    let existing = journal_for_key(&root, idempotency_key)?;
+    if let Some(journal) = existing.as_ref() {
         ensure_journal_payload(
-            &journal,
+            journal,
             &operation_handle,
             "restore",
             "",
@@ -49,8 +48,22 @@ where
             backup_handle,
         )?;
         if journal.status == "completed" {
-            return restore_outcome_from_journal(&journal, true);
+            return restore_outcome_from_journal(journal, true);
         }
+    }
+    if let Some(mut journal) = existing.clone()
+        && let Some(result_identity) = restore_publication_result(&ledger, &journal)?
+    {
+        journal.result_identity = Some(result_identity);
+        record_restore_in_ledger(&root, &ledger, &journal)?;
+        checkpoint(&ledger)?;
+        complete_journal(&root, &mut journal)?;
+        return restore_outcome_from_journal(&journal, false);
+    }
+    let backups = backup_dir(&root);
+    fs::create_dir_all(&backups)?;
+    if !fs::symlink_metadata(&backups)?.file_type().is_dir() {
+        bail!("managed backup location is not a project-owned directory");
     }
     let inspection = inspect_update_locked(&root)?;
     if inspection.status == "owner_input_required" {
@@ -73,23 +86,13 @@ where
     }
 
     let requested = backups.join(format!("{backup_handle}.sqlite"));
+    require_standalone_snapshot(&requested)?;
     if sha256_file(&requested)? != backup_handle {
         bail!("backup handle does not match the backup content");
     }
     verify_restorable_ledger(&requested, &root)?;
     let requested_semantics = semantic_ledger_identity(&requested)?;
     let observed = ledger_state_identity(&ledger)?;
-    let existing = journal_for_key(&root, idempotency_key)?;
-    if let Some(mut journal) = existing.clone()
-        && let Some(result_identity) = restore_publication_result(&ledger, &journal)?
-    {
-        journal.result_identity = Some(result_identity);
-        record_restore_in_ledger(&root, &ledger, &journal)?;
-        checkpoint(&ledger)?;
-        journal.status = "completed".to_string();
-        write_journal(&root, &journal)?;
-        return restore_outcome_from_journal(&journal, false);
-    }
     if observed != expected_current && existing.is_none() {
         bail!(
             "current identity changed: expected {expected_current}, found {observed}\n{}",
@@ -97,14 +100,14 @@ where
         );
     }
     observer(UpdateBoundary::SourceRechecked)?;
+    require_standalone_snapshot(&requested)?;
     if sha256_file(&ledger).ok().as_deref() == Some(backup_handle)
         && let Some(mut journal) = existing
     {
         record_restore_in_ledger(&root, &ledger, &journal)?;
         checkpoint(&ledger)?;
         journal.result_identity = Some(sha256_file(&ledger)?);
-        journal.status = "completed".to_string();
-        write_journal(&root, &journal)?;
+        complete_journal(&root, &mut journal)?;
         return restore_outcome_from_journal(&journal, false);
     }
     if observed != expected_current {
@@ -118,13 +121,10 @@ where
     checkpoint_restore_source(&ledger)?;
     let source_file_identity = sha256_file(&ledger)?;
     let recovery_path = backups.join(format!("{source_file_identity}.sqlite"));
-    if recovery_path.exists() {
-        if sha256_file(&recovery_path)? != source_file_identity {
-            bail!("existing recovery backup does not match its content-addressed name");
-        }
-    } else {
+    if !recovery_path.exists() {
         install_copy(&ledger, &recovery_path, &source_file_identity)?;
     }
+    verify_content_addressed_snapshot(&recovery_path, &source_file_identity)?;
     observer(UpdateBoundary::BackupDurable)?;
     let mut journal = UpdateOperationJournal {
         operation_handle: operation_handle.clone(),
@@ -136,6 +136,7 @@ where
         backup_handle: source_file_identity,
         idempotency_key: idempotency_key.to_string(),
         status: "prepared".to_string(),
+        completion_sequence: None,
         authority_event_id: None,
         recovery_authority_handle: None,
         authority_provenance: None,
@@ -164,8 +165,7 @@ where
         .context("published restore result lineage is missing")?;
     record_restore_in_ledger(&root, &ledger, &journal)?;
     checkpoint(&ledger)?;
-    journal.status = "completed".to_string();
-    write_journal(&root, &journal)?;
+    complete_journal(&root, &mut journal)?;
     observer(UpdateBoundary::CompletionDurable)?;
     restore_outcome_from_journal(&journal, false)
 }
@@ -210,8 +210,6 @@ where
     let root = normalized_root(root)?;
     let directory = root.join(crate::db::LEDGER_DIR);
     let ledger = ledger_path(&root);
-    let backups = backup_dir(&root);
-    fs::create_dir_all(&backups)?;
     let lock = update_lock(&directory)?;
     lock.lock_exclusive()?;
     let operation_handle = digest_handle(
@@ -239,10 +237,15 @@ where
             complete_apply_receipt(&ledger, &operation_handle)?;
             checkpoint(&ledger)?;
             journal.result_identity = Some(sha256_file(&ledger)?);
-            journal.status = "completed".to_string();
-            write_journal(&root, &journal)?;
+            complete_journal(&root, &mut journal)?;
             return apply_outcome_from_journal(&journal, false);
         }
+    }
+
+    let backups = backup_dir(&root);
+    fs::create_dir_all(&backups)?;
+    if !fs::symlink_metadata(&backups)?.file_type().is_dir() {
+        bail!("managed backup location is not a project-owned directory");
     }
 
     let observed = ledger_state_identity(&ledger)?;
@@ -279,6 +282,8 @@ where
     if !backup.exists() {
         install_copy(&ledger, &backup, &source_file_identity)?;
     }
+    verify_content_addressed_snapshot(&backup, &source_file_identity)?;
+    preflight_update_source(&backup, &root)?;
     observer(UpdateBoundary::BackupDurable)?;
     let staged = directory.join(format!("update-{operation_handle}.tmp"));
     remove_staged(&staged)?;
@@ -322,6 +327,7 @@ where
         backup_handle: source_file_identity,
         idempotency_key: idempotency_key.to_string(),
         status: "prepared".to_string(),
+        completion_sequence: None,
         authority_event_id: None,
         recovery_authority_handle: None,
         authority_provenance: None,
@@ -337,8 +343,7 @@ where
     complete_apply_receipt(&ledger, &operation_handle)?;
     checkpoint(&ledger)?;
     journal.result_identity = Some(sha256_file(&ledger)?);
-    journal.status = "completed".to_string();
-    write_journal(&root, &journal)?;
+    complete_journal(&root, &mut journal)?;
     observer(UpdateBoundary::CompletionDurable)?;
     apply_outcome_from_journal(&journal, false)
 }

@@ -2961,6 +2961,7 @@ fn prepare_adjudication_for_schema(conn: &Connection) -> Result<()> {
             )?;
         }
         if has_capability || has_principal {
+            let dependent_triggers = take_triggers_referencing_table(conn, "owner_decisions")?;
             conn.execute_batch(
                 r#"
                 create table owner_decisions_without_retired_authority (
@@ -2989,7 +2990,72 @@ fn prepare_adjudication_for_schema(conn: &Connection) -> Result<()> {
                 alter table owner_decisions_without_retired_authority rename to owner_decisions;
                 "#,
             )?;
+            for trigger in dependent_triggers {
+                conn.execute_batch(&trigger)?;
+            }
         }
     }
     Ok(())
+}
+
+fn take_triggers_referencing_table(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let pattern = format!("%{}%", table.to_ascii_lowercase());
+    let triggers = conn
+        .prepare(
+            "select name,sql from sqlite_schema where type='trigger' and lower(coalesce(sql,'')) like ?1 order by name",
+        )?
+        .query_map([pattern], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (name, _) in &triggers {
+        let quoted = name.replace('"', "\"\"");
+        conn.execute_batch(&format!("drop trigger \"{quoted}\";"))?;
+    }
+    Ok(triggers.into_iter().map(|(_, sql)| sql).collect())
+}
+
+#[cfg(test)]
+mod dependent_trigger_tests {
+    use super::*;
+
+    #[test]
+    fn table_replacement_preserves_every_dependent_guard() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            create table decisions(id integer primary key, project_id integer not null, retired text);
+            create table effects(id integer primary key, project_id integer not null, decision_id integer not null);
+            create trigger guard_effect_project
+            before insert on effects
+            when not exists(
+              select 1 from decisions
+              where id=new.decision_id and project_id=new.project_id
+            ) begin select raise(abort,'project mismatch'); end;
+            insert into decisions values(1,7,'legacy');
+            "#,
+        )
+        .unwrap();
+
+        let guards = take_triggers_referencing_table(&conn, "decisions").unwrap();
+        conn.execute_batch(
+            r#"
+            create table decisions_current(id integer primary key, project_id integer not null);
+            insert into decisions_current select id,project_id from decisions;
+            drop table decisions;
+            alter table decisions_current rename to decisions;
+            "#,
+        )
+        .unwrap();
+        for guard in guards {
+            conn.execute_batch(&guard).unwrap();
+        }
+
+        conn.execute("insert into effects values(1,7,1)", [])
+            .unwrap();
+        assert!(
+            conn.execute("insert into effects values(2,8,1)", [])
+                .is_err()
+        );
+    }
 }

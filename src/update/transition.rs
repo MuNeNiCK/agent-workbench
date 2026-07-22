@@ -353,6 +353,13 @@ pub(crate) fn classify_storage_header(conn: &Connection) -> Result<StorageHeader
 
 pub(crate) fn classify_update_route(conn: &Connection, root: &Path) -> Result<UpdateRoute> {
     validate_transition_registry()?;
+    classify_update_route_with_validated_registry(conn, root)
+}
+
+pub(crate) fn classify_update_route_with_validated_registry(
+    conn: &Connection,
+    root: &Path,
+) -> Result<UpdateRoute> {
     let header = classify_storage_header(conn)?;
     if matches!(header, StorageHeader::Reset { .. }) {
         return Ok(UpdateRoute::RecoveryRequired);

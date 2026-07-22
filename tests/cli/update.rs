@@ -29,6 +29,39 @@ fn update_inspection_reports_public_state_and_executable_next_action() {
 }
 
 #[test]
+fn update_inspection_keeps_verified_backup_inventory_visible_in_normal_routes() {
+    let current = tempfile::tempdir().unwrap();
+    ok(current.path(), &["init"]);
+    let current_backup = copy_current_backup(current.path());
+    let current_ineligible = write_update_ineligible_backup(current.path());
+    let current_inspection = ok(current.path(), &["update", "inspect"]);
+    assert!(current_inspection.contains("update_status: current"));
+    assert!(
+        current_inspection.contains(&format!("backup: {current_backup}")),
+        "{current_inspection}"
+    );
+    assert!(current_inspection.contains(&format!("backup: {current_ineligible}")));
+    assert!(!current_inspection.contains(&format!("restore:{current_ineligible}")));
+
+    let ready = tempfile::tempdir().unwrap();
+    ok(ready.path(), &["init"]);
+    let ready_backup = copy_current_backup(ready.path());
+    let ready_ineligible = write_update_ineligible_backup(ready.path());
+    let ledger = ready.path().join(".agent-workbench/ledger.sqlite");
+    let conn = Connection::open(&ledger).unwrap();
+    conn.execute_batch("drop view current_tasks").unwrap();
+    drop(conn);
+    let ready_inspection = ok(ready.path(), &["update", "inspect"]);
+    assert!(ready_inspection.contains("update_status: ready_to_apply"));
+    assert!(
+        ready_inspection.contains(&format!("backup: {ready_backup}")),
+        "{ready_inspection}"
+    );
+    assert!(ready_inspection.contains(&format!("backup: {ready_ineligible}")));
+    assert!(!ready_inspection.contains(&format!("restore:{ready_ineligible}")));
+}
+
+#[test]
 fn recovery_only_state_never_runs_the_normal_update_path() {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
@@ -65,6 +98,430 @@ fn recovery_only_state_never_runs_the_normal_update_path() {
     assert!(!apply.status.success());
     assert!(String::from_utf8_lossy(&apply.stderr).contains("recovery source is required"));
     assert_eq!(fs::read(&ledger).unwrap(), before);
+}
+
+#[test]
+fn sqlite_page_corruption_has_an_executable_restore_action() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let backup = copy_current_backup(temp.path());
+    let ledger = temp.path().join(".agent-workbench/ledger.sqlite");
+    let mut bytes = fs::read(&ledger).unwrap();
+    assert_eq!(&bytes[..16], b"SQLite format 3\0");
+    bytes[100] = 0xff;
+    fs::write(&ledger, bytes).unwrap();
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: recovery_required"));
+    assert!(inspection.contains(&format!("update restore --backup {backup}")));
+    ok(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &backup,
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "restore-corrupt-sqlite-page",
+        ],
+    );
+}
+
+#[test]
+fn recovery_offers_only_backups_with_a_complete_registered_update_path() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let usable = copy_current_backup(temp.path());
+    let unsupported_handle = write_update_ineligible_backup(temp.path());
+    replace_current_with_unreadable_state(temp.path());
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: recovery_required"));
+    assert!(inspection.contains(&format!("update restore --backup {usable}")));
+    assert!(inspection.contains(&format!("backup: {unsupported_handle}")));
+    assert!(!inspection.contains(&format!("decision_choice: restore:{unsupported_handle}")));
+    assert!(!inspection.contains(&format!("update restore --backup {unsupported_handle}")));
+}
+
+#[test]
+fn recovery_preflight_does_not_require_external_temporary_storage() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let usable = copy_current_backup(temp.path());
+    replace_current_with_unreadable_state(temp.path());
+    let unavailable_temp = temp.path().join("not-a-directory");
+    fs::write(&unavailable_temp, b"occupied").unwrap();
+
+    let inspection = ok_env(
+        temp.path(),
+        &["update", "inspect"],
+        &[("TMPDIR", unavailable_temp.to_str().unwrap())],
+    );
+    assert!(inspection.contains("update_status: recovery_required"));
+    assert!(
+        inspection.contains(&format!("update restore --backup {usable}")),
+        "{inspection}"
+    );
+}
+
+#[test]
+fn recovery_never_offers_a_snapshot_with_database_sidecars() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let original = copy_current_backup(temp.path());
+    let backups = temp.path().join(".agent-workbench/update-backups");
+    let original_path = backups.join(format!("{original}.sqlite"));
+    let conn = Connection::open(&original_path).unwrap();
+    conn.pragma_update(None, "journal_mode", "wal").unwrap();
+    drop(conn);
+    let standalone = format!("{:x}", Sha256::digest(fs::read(&original_path).unwrap()));
+    let wal_path = backups.join(format!("{standalone}.sqlite"));
+    fs::rename(&original_path, &wal_path).unwrap();
+    let writer = Connection::open(&wal_path).unwrap();
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    writer
+        .execute_batch(
+            "create table sidecar_probe(value text); insert into sidecar_probe values('pending');",
+        )
+        .unwrap();
+    assert!(PathBuf::from(format!("{}-wal", wal_path.display())).exists());
+    replace_current_with_unreadable_state(temp.path());
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: owner_input_required"));
+    assert!(!inspection.contains(&format!("backup: {standalone}")));
+    assert!(!inspection.contains(&format!("update restore --backup {standalone}")));
+    let restore = aw(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &standalone,
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "reject-sidecar-snapshot",
+        ],
+    );
+    assert!(!restore.status.success());
+    assert!(
+        !String::from_utf8_lossy(&restore.stderr)
+            .contains(&format!("update restore --backup {standalone}"))
+    );
+    drop(writer);
+}
+
+#[test]
+fn recovery_never_offers_a_snapshot_with_a_hot_rollback_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let original = copy_current_backup(temp.path());
+    let backups = temp.path().join(".agent-workbench/update-backups");
+    let original_path = backups.join(format!("{original}.sqlite"));
+    let writer = Connection::open(&original_path).unwrap();
+    writer
+        .pragma_update(None, "journal_mode", "delete")
+        .unwrap();
+    writer.pragma_update(None, "cache_size", 1).unwrap();
+    writer.execute_batch("begin immediate").unwrap();
+    writer
+        .execute_batch(
+            r#"
+            create table rollback_probe(value text);
+            with recursive rows(value) as (
+                values(1)
+                union all
+                select value + 1 from rows where value < 4096
+            )
+            insert into rollback_probe(value)
+            select printf('%01024d', value) from rows;
+            "#,
+        )
+        .unwrap();
+    let original_journal = PathBuf::from(format!("{}-journal", original_path.display()));
+    assert!(original_journal.exists());
+    let main_bytes = fs::read(&original_path).unwrap();
+    let journal_bytes = fs::read(&original_journal).unwrap();
+    let handle = format!("{:x}", Sha256::digest(&main_bytes));
+    assert_ne!(handle, original);
+    let snapshot = backups.join(format!("{handle}.sqlite"));
+    let snapshot_journal = PathBuf::from(format!("{}-journal", snapshot.display()));
+    fs::write(&snapshot, main_bytes).unwrap();
+    fs::write(&snapshot_journal, journal_bytes).unwrap();
+    drop(writer);
+    if original_path != snapshot {
+        fs::remove_file(&original_path).unwrap();
+    }
+    replace_current_with_unreadable_state(temp.path());
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: owner_input_required"));
+    assert!(!inspection.contains(&format!("backup: {handle}")));
+    assert!(!inspection.contains(&format!("update restore --backup {handle}")));
+}
+
+#[test]
+fn recovery_inspection_keeps_a_wal_mode_standalone_snapshot_immutable() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let original = copy_current_backup(temp.path());
+    let backups = temp.path().join(".agent-workbench/update-backups");
+    let original_path = backups.join(format!("{original}.sqlite"));
+    let conn = Connection::open(&original_path).unwrap();
+    conn.pragma_update(None, "journal_mode", "wal").unwrap();
+    drop(conn);
+    let standalone = format!("{:x}", Sha256::digest(fs::read(&original_path).unwrap()));
+    let wal_mode_path = backups.join(format!("{standalone}.sqlite"));
+    fs::rename(&original_path, &wal_mode_path).unwrap();
+    let wal_sidecar = PathBuf::from(format!("{}-wal", wal_mode_path.display()));
+    let shm_sidecar = PathBuf::from(format!("{}-shm", wal_mode_path.display()));
+    assert!(!wal_sidecar.exists());
+    assert!(!shm_sidecar.exists());
+    replace_current_with_unreadable_state(temp.path());
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains(&format!("update restore --backup {standalone}")));
+    assert!(!wal_sidecar.exists());
+    assert!(!shm_sidecar.exists());
+    ok(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &standalone,
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "restore-wal-mode-standalone",
+        ],
+    );
+}
+
+#[test]
+fn managed_recovery_selection_keeps_external_restorable_inventory_visible() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let ledger = temp.path().join(".agent-workbench/ledger.sqlite");
+    let conn = Connection::open(&ledger).unwrap();
+    conn.execute_batch("drop view current_tasks").unwrap();
+    drop(conn);
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    let applied = ok(
+        temp.path(),
+        &[
+            "update",
+            "apply",
+            value(&inspection, "inspection_handle"),
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "managed-inventory-selection",
+        ],
+    );
+    let managed = value(&applied, "backup_identity");
+    let external = write_update_ineligible_backup(temp.path());
+    replace_current_with_unreadable_state(temp.path());
+
+    let recovery = ok(temp.path(), &["update", "inspect"]);
+    assert!(
+        recovery.contains(&format!("backup: {managed}")),
+        "{recovery}"
+    );
+    assert!(
+        recovery.contains(&format!("backup: {external}")),
+        "{recovery}"
+    );
+    assert!(
+        recovery.contains(&format!("update restore --backup {managed}")),
+        "{recovery}"
+    );
+    assert!(
+        !recovery.contains(&format!("restore:{external}")),
+        "{recovery}"
+    );
+}
+
+#[test]
+fn completed_restore_lineage_recovers_its_published_target_not_its_pre_restore_image() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let target = copy_current_backup(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "kpt",
+            "start",
+            "--scope",
+            "project",
+            "--summary",
+            "pre-restore state",
+        ],
+    );
+    let before_restore = ok(temp.path(), &["update", "inspect"]);
+    let restored = ok(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &target,
+            "--expected-current",
+            value(&before_restore, "current_identity"),
+            "--idempotency-key",
+            "restore-lineage-direction",
+        ],
+    );
+    let pre_restore = value(&restored, "recovery_backup_identity");
+    assert_ne!(target, pre_restore);
+    replace_current_with_unreadable_state(temp.path());
+
+    let recovery = ok(temp.path(), &["update", "inspect"]);
+    assert!(
+        recovery.contains(&format!("update restore --backup {target}")),
+        "{recovery}"
+    );
+    assert!(recovery.contains(&format!("backup: {pre_restore}")));
+    assert!(!recovery.contains(&format!("update restore --backup {pre_restore}")));
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_rejects_a_symlink_substituted_backup() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let backup = copy_current_backup(temp.path());
+    let backup_path = temp
+        .path()
+        .join(format!(".agent-workbench/update-backups/{backup}.sqlite"));
+    let external = temp.path().join("external-backup.sqlite");
+    fs::rename(&backup_path, &external).unwrap();
+    symlink(&external, &backup_path).unwrap();
+    ok(
+        temp.path(),
+        &[
+            "kpt",
+            "start",
+            "--scope",
+            "project",
+            "--summary",
+            "changed current state",
+        ],
+    );
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    let restore = aw(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &backup,
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "reject-symlink-backup",
+        ],
+    );
+    assert!(!restore.status.success());
+    assert!(
+        String::from_utf8_lossy(&restore.stderr).contains("update restore could not be completed")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_inspection_never_offers_a_symlinked_backup_directory() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let backup = copy_current_backup(temp.path());
+    let backups = temp.path().join(".agent-workbench/update-backups");
+    let external = temp.path().join("external-backup-directory");
+    fs::rename(&backups, &external).unwrap();
+    symlink(&external, &backups).unwrap();
+    replace_current_with_unreadable_state(temp.path());
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: owner_input_required"));
+    assert!(!inspection.contains(&format!("backup: {backup}")));
+    assert!(!inspection.contains("update restore --backup"));
+    assert!(inspection.contains("provide a verified project-owned recovery source"));
+
+    let restore = aw(
+        temp.path(),
+        &[
+            "update",
+            "restore",
+            "--backup",
+            &backup,
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "reject-symlink-backup-directory",
+        ],
+    );
+    assert!(!restore.status.success());
+    let error = String::from_utf8_lossy(&restore.stderr);
+    assert!(!error.contains("update restore --backup"), "{error}");
+    assert!(error.contains("provide a verified project-owned recovery source"));
+}
+
+#[test]
+fn unusable_managed_checkpoint_falls_back_to_ambiguous_external_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    ok(temp.path(), &["init"]);
+    let ledger = temp.path().join(".agent-workbench/ledger.sqlite");
+    let conn = Connection::open(&ledger).unwrap();
+    conn.execute_batch("drop view current_tasks").unwrap();
+    drop(conn);
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    let applied = ok(
+        temp.path(),
+        &[
+            "update",
+            "apply",
+            value(&inspection, "inspection_handle"),
+            "--expected-current",
+            value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "create-managed-recovery-lineage",
+        ],
+    );
+    let managed = value(&applied, "backup_identity");
+    fs::write(
+        temp.path()
+            .join(format!(".agent-workbench/update-backups/{managed}.sqlite")),
+        b"corrupted managed checkpoint",
+    )
+    .unwrap();
+
+    let first_external = copy_current_backup(temp.path());
+    ok(
+        temp.path(),
+        &[
+            "kpt",
+            "start",
+            "--scope",
+            "project",
+            "--summary",
+            "second external recovery state",
+        ],
+    );
+    let second_external = copy_current_backup(temp.path());
+    replace_current_with_unreadable_state(temp.path());
+
+    let recovery = ok(temp.path(), &["update", "inspect"]);
+    assert!(recovery.contains("update_status: owner_input_required"));
+    assert_eq!(recovery.matches("decision_choice: restore:").count(), 2);
+    assert!(recovery.contains(&format!("decision_choice: restore:{first_external}")));
+    assert!(recovery.contains(&format!("decision_choice: restore:{second_external}")));
+    assert!(!recovery.contains(&format!("decision_choice: restore:{managed}")));
 }
 
 #[test]
@@ -1001,6 +1458,31 @@ fn copy_current_backup(root: &Path) -> String {
     fs::create_dir_all(&backups).unwrap();
     fs::write(backups.join(format!("{identity}.sqlite")), bytes).unwrap();
     identity
+}
+
+fn write_update_ineligible_backup(root: &Path) -> String {
+    let backups = root.join(".agent-workbench/update-backups");
+    fs::create_dir_all(&backups).unwrap();
+    let unsupported_path = backups.join("unsupported.sqlite");
+    let unsupported = Connection::open(&unsupported_path).unwrap();
+    unsupported
+        .execute_batch(
+            "create table schema_migrations(version integer primary key,applied_at text not null);\
+             insert into schema_migrations values(25,current_timestamp);\
+             create table projects(id integer primary key,root_path text not null);",
+        )
+        .unwrap();
+    unsupported
+        .execute(
+            "insert into projects(id,root_path) values(1,?1)",
+            [root.canonicalize().unwrap().to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    drop(unsupported);
+    let bytes = fs::read(&unsupported_path).unwrap();
+    let handle = format!("{:x}", Sha256::digest(&bytes));
+    fs::rename(&unsupported_path, backups.join(format!("{handle}.sqlite"))).unwrap();
+    handle
 }
 
 fn replace_current_with_unreadable_state(root: &Path) {

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 const RESTORE_PUBLICATION_SQL: &str = r#"
 create table if not exists restore_publications (
@@ -33,6 +34,8 @@ pub(in crate::update) struct UpdateOperationJournal {
     pub(in crate::update) backup_handle: String,
     pub(in crate::update) idempotency_key: String,
     pub(in crate::update) status: String,
+    #[serde(default)]
+    pub(in crate::update) completion_sequence: Option<u64>,
     #[serde(default)]
     pub(in crate::update) authority_event_id: Option<i64>,
     #[serde(default)]
@@ -242,15 +245,22 @@ pub(super) fn restore_publication_result(
     journal: &UpdateOperationJournal,
 ) -> Result<Option<String>> {
     let conn = Connection::open_with_flags(ledger, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let has_table: bool = conn.query_row(
+    let has_table: bool = match conn.query_row(
         "select exists(select 1 from sqlite_schema where type='table' and name='restore_publications')",
         [],
         |row| row.get(0),
-    )?;
+    ) {
+        Ok(has_table) => has_table,
+        Err(error) if is_unreadable_ledger_error(&error) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
     if !has_table {
         return Ok(None);
     }
-    let marker = conn
+    let marker = match conn
         .query_row(
             r#"
             select source_identity, target_backup_identity, recovery_backup_identity,
@@ -269,7 +279,12 @@ pub(super) fn restore_publication_result(
                 ))
             },
         )
-        .optional()?;
+        .optional()
+    {
+        Ok(marker) => marker,
+        Err(error) if is_unreadable_ledger_error(&error) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     let Some((source, target, recovery, result, idempotency_key)) = marker else {
         return Ok(None);
     };
@@ -481,7 +496,7 @@ pub(super) fn decision_for_source(
 }
 
 pub(super) fn recovery_authority(path: &Path) -> Result<Option<(i64, String)>> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_immutable_snapshot(path)?;
     let has_authority: bool = conn.query_row(
         "select exists(select 1 from sqlite_schema where type='table' and name='authority_events')",
         [],
@@ -509,7 +524,7 @@ pub(super) fn recovery_authority_exists(
     authority_event_id: i64,
     reason: &str,
 ) -> Result<bool> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_immutable_snapshot(path)?;
     conn.query_row(
         "select exists(select 1 from authority_events where id=?1 and status='active' and event_type='user_instruction' and coalesce(scope,'project')='project' and text_or_summary=?2)",
         params![authority_event_id, reason],
@@ -567,6 +582,74 @@ pub(super) fn journal_for_result(
     Ok(found)
 }
 
+pub(super) fn managed_backup_priorities(root: &Path) -> Result<BTreeMap<String, (u64, u8)>> {
+    let directory = operation_dir(root);
+    let mut handles = BTreeMap::new();
+    if !directory.is_dir() {
+        return Ok(handles);
+    }
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let journal: UpdateOperationJournal = serde_json::from_slice(&fs::read(&path)?)
+            .with_context(|| format!("cannot read update operation {}", path.display()))?;
+        let Some(sequence) = journal.completion_sequence else {
+            continue;
+        };
+        if journal.status != "completed" || !matches!(journal.action.as_str(), "apply" | "restore")
+        {
+            continue;
+        }
+        let mut record = |handle: String, rank: u8| {
+            if !valid_handle(&handle) {
+                return;
+            }
+            let priority = (sequence, rank);
+            if handles.get(&handle).is_none_or(|current| {
+                priority.0 > current.0 || (priority.0 == current.0 && priority.1 < current.1)
+            }) {
+                handles.insert(handle, priority);
+            }
+        };
+        if journal.action == "restore" {
+            if let Some(target) = journal.target_identity {
+                record(target, 0);
+            }
+            record(journal.backup_handle, 1);
+        } else {
+            record(journal.backup_handle, 0);
+        }
+    }
+    Ok(handles)
+}
+
+pub(super) fn complete_journal(root: &Path, journal: &mut UpdateOperationJournal) -> Result<()> {
+    if journal.completion_sequence.is_none() {
+        let directory = operation_dir(root);
+        let mut latest = 0_u64;
+        if directory.is_dir() {
+            for entry in fs::read_dir(&directory)? {
+                let path = entry?.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let existing: UpdateOperationJournal = serde_json::from_slice(&fs::read(&path)?)
+                    .with_context(|| format!("cannot read update operation {}", path.display()))?;
+                latest = latest.max(existing.completion_sequence.unwrap_or(0));
+            }
+        }
+        journal.completion_sequence = Some(
+            latest
+                .checked_add(1)
+                .context("update operation completion sequence is exhausted")?,
+        );
+    }
+    journal.status = "completed".to_string();
+    write_journal(root, journal)
+}
+
 pub(super) fn write_journal(root: &Path, journal: &UpdateOperationJournal) -> Result<()> {
     let directory = operation_dir(root);
     fs::create_dir_all(&directory)?;
@@ -599,12 +682,64 @@ pub(super) fn remove_staged(path: &Path) -> Result<()> {
 }
 
 pub(super) fn verify_restorable_ledger(path: &Path, root: &Path) -> Result<()> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    require_standalone_snapshot(path)?;
+    let conn = open_immutable_snapshot(path)?;
+    verify_restorable_connection(&conn, root)
+}
+
+pub(super) fn verify_content_addressed_snapshot(
+    path: &Path,
+    expected_identity: &str,
+) -> Result<()> {
+    require_standalone_snapshot(path)?;
+    if sha256_file(path)? != expected_identity {
+        bail!("managed backup does not match its content-addressed name");
+    }
+    Ok(())
+}
+
+pub(super) fn require_standalone_snapshot(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        match fs::symlink_metadata(PathBuf::from(sidecar)) {
+            Ok(_) => bail!("managed update source is not a standalone snapshot"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn open_immutable_snapshot(path: &Path) -> Result<Connection> {
+    require_standalone_snapshot(path)?;
+    let absolute = fs::canonicalize(path)?;
+    let mut uri = String::from("file:");
+    for byte in absolute.as_os_str().as_encoded_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~' => {
+                uri.push(char::from(*byte));
+            }
+            _ => {
+                use std::fmt::Write as _;
+                write!(&mut uri, "%{byte:02X}")?;
+            }
+        }
+    }
+    uri.push_str("?immutable=1");
+    Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(Into::into)
+}
+
+pub(super) fn verify_restorable_connection(conn: &Connection, root: &Path) -> Result<()> {
     let integrity: String = conn.query_row("pragma integrity_check", [], |row| row.get(0))?;
     if integrity != "ok" {
         bail!("backup integrity check failed: {integrity}");
     }
-    transition::classify_storage_header(&conn)
+    transition::classify_storage_header(conn)
         .context("backup is not a recognized restorable Agent Workbench ledger")?;
     let root_text = root.to_string_lossy();
     let project_count: i64 = conn.query_row(
@@ -626,7 +761,7 @@ pub(super) fn verify_restorable_ledger(path: &Path, root: &Path) -> Result<()> {
 }
 
 pub(super) fn semantic_ledger_identity(path: &Path) -> Result<String> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_immutable_snapshot(path)?;
     transition::semantic_storage_identity(&conn)
 }
 
@@ -642,13 +777,7 @@ pub(super) fn checkpoint_restore_source(path: &Path) -> Result<()> {
         Err(error)
             if error
                 .downcast_ref::<rusqlite::Error>()
-                .is_some_and(|error| {
-                    matches!(
-                        error,
-                        rusqlite::Error::SqliteFailure(code, _)
-                            if code.code == rusqlite::ffi::ErrorCode::NotADatabase
-                    )
-                }) =>
+                .is_some_and(is_unreadable_ledger_error) =>
         {
             Ok(())
         }
@@ -656,12 +785,24 @@ pub(super) fn checkpoint_restore_source(path: &Path) -> Result<()> {
     }
 }
 
+fn is_unreadable_ledger_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.code,
+                rusqlite::ffi::ErrorCode::NotADatabase
+                    | rusqlite::ffi::ErrorCode::DatabaseCorrupt
+            )
+    )
+}
+
 pub(super) fn update_lock(directory: &Path) -> Result<File> {
     File::open(directory).map_err(Into::into)
 }
 
 pub(crate) fn install_copy(source: &Path, target: &Path, expected_identity: &str) -> Result<()> {
-    let mut input = File::open(source)?;
+    let mut input = open_regular_file(source)?;
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -682,7 +823,7 @@ pub(crate) fn install_copy(source: &Path, target: &Path, expected_identity: &str
 }
 
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let mut file = open_regular_file(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -693,6 +834,19 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn open_regular_file(path: &Path) -> Result<File> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("cannot inspect {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("managed update source is not a regular file");
+    }
+    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    if !file.metadata()?.is_file() {
+        bail!("managed update source is not a regular file");
+    }
+    Ok(file)
 }
 
 pub(super) fn ledger_state_identity(ledger: &Path) -> Result<String> {

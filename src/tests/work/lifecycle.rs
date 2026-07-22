@@ -3,6 +3,142 @@ use std::path::Path;
 use super::*;
 
 #[test]
+fn exact_close_uses_active_remediation_epoch_over_its_suspended_predecessor() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "remediated owner", None).unwrap();
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    conn.execute(
+        "update work_unit_activations set status='suspended' where id=?1",
+        [work.activation_id],
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id,work_unit_id,parent_activation_id,stack_depth,status,
+            activation_reason,opened_at
+        )
+        select project_id,work_unit_id,id,stack_depth+1,'active',
+               'follow_up',current_timestamp
+        from work_unit_activations where id=?1
+        "#,
+        [work.activation_id],
+    )
+    .unwrap();
+    let active_activation_id = conn.last_insert_rowid();
+    conn.execute(
+        "update work_unit_activations set suspended_by_activation_id=?1 where id=?2",
+        rusqlite::params![active_activation_id, work.activation_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    create_work_record(
+        temp.path(),
+        NewWorkRecord {
+            work_unit_id: Some(work.work_unit_id),
+            topic: "remediation complete",
+            work_performed: Some("validated the current remediation epoch"),
+            next_actions: None,
+            notable_operations: None,
+            export_path: None,
+        },
+    )
+    .unwrap();
+    add_repository(
+        temp.path(),
+        NewRepository {
+            name: "main",
+            path: ".",
+            current_head: Some("abc123"),
+            status_summary: Some("clean"),
+        },
+    )
+    .unwrap();
+    add_repository_snapshot(
+        temp.path(),
+        NewRepositorySnapshot {
+            repository: "main",
+            work_unit_activation_id: Some(active_activation_id),
+            head_sha: Some("abc123"),
+            branch: Some("main"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap();
+
+    let ready = close_ready_for(temp.path(), work.work_unit_id).unwrap();
+    assert_eq!(ready.result, "pass", "{ready:?}");
+    assert_eq!(ready.activation_id, Some(active_activation_id));
+    assert!(
+        ready
+            .blocking_reason
+            .as_deref()
+            .is_none_or(|reason| !reason.contains("invalid current activation relation")),
+        "{ready:?}"
+    );
+    close_work(
+        temp.path(),
+        Some(work.work_unit_id),
+        "remediation epochs complete",
+        None,
+    )
+    .unwrap();
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    let nonterminal: i64 = conn
+        .query_row(
+            "select count(*) from work_unit_activations where work_unit_id=?1 and status in ('active','suspended')",
+            [work.work_unit_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(nonterminal, 0);
+}
+
+#[test]
+fn exact_close_rejects_duplicate_active_legacy_relations_without_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "duplicate active owner", None).unwrap();
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    conn.execute_batch("drop index ux_one_active_activation")
+        .unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id,work_unit_id,parent_activation_id,stack_depth,status,
+            activation_reason,opened_at
+        )
+        select project_id,work_unit_id,id,stack_depth+1,'active',
+               'follow_up',current_timestamp
+        from work_unit_activations where id=?1
+        "#,
+        [work.activation_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = close_ready_for(temp.path(), work.work_unit_id).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid current activation relation"),
+        "{error:#}"
+    );
+    let conn = crate::db::open_existing_project(temp.path()).unwrap();
+    let state: (String, i64) = conn
+        .query_row(
+            "select status,(select count(*) from work_unit_activations where work_unit_id=?1 and status='active') from work_units where id=?1",
+            [work.work_unit_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("open".to_string(), 2));
+}
+
+#[test]
 fn explicit_close_without_activation_leaves_unrelated_active_owner_unchanged() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

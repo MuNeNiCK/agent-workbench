@@ -277,12 +277,12 @@ pub fn close_work(
             target.work_unit_id
         );
     }
-    if let Some(activation) = &activation {
+    if activation.is_some() {
         let changed = tx.execute(
-            "update work_unit_activations set status='completed',completed_at=current_timestamp where id=?1 and project_id=?2 and work_unit_id=?3 and status='active'",
-            params![activation.activation_id, project, target.work_unit_id],
+            "update work_unit_activations set status='completed',completed_at=coalesce(completed_at,current_timestamp) where project_id=?1 and work_unit_id=?2 and status in ('active','suspended')",
+            params![project, target.work_unit_id],
         )?;
-        if changed != 1 {
+        if changed == 0 {
             bail!(
                 "activation changed while closing work unit {}; next: agent-workbench status --work {}",
                 target.work_unit_id,
@@ -420,7 +420,9 @@ fn current_activation_for_work(
         select id,project_id,work_unit_id,stack_depth,status
         from work_unit_activations
         where work_unit_id=?1 and status in ('active','suspended')
-        order by id
+        order by case status when 'active' then 0 else 1 end,
+                 stack_depth desc,
+                 id desc
         "#,
     )?;
     let activations = stmt
@@ -434,7 +436,16 @@ fn current_activation_for_work(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if activations.len() > 1
+    let active_count = activations
+        .iter()
+        .filter(|activation| activation.status == "active")
+        .count();
+    let suspended_count = activations
+        .iter()
+        .filter(|activation| activation.status == "suspended")
+        .count();
+    if active_count > 1
+        || (active_count == 0 && suspended_count > 1)
         || activations
             .first()
             .is_some_and(|activation| activation.project_id != project)

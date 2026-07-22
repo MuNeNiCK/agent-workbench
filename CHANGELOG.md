@@ -1,5 +1,28 @@
 # Release history
 
+## v0.1.23 — 2026-07-22
+
+- Make recovery selection preflight the complete staged transition so it never
+  offers a checkpoint that cannot finish the update.
+- Recover from the newest verified checkpoint in the formal update/restore
+  lineage while preserving explicit owner selection for externally supplied
+  ambiguous backups.
+- Preserve and rebuild every dependent trigger when replacing a retained table
+  during migration; existing generation 24 projects now reach generation 25
+  without dropping review, finding, continuation, or owner-decision guards.
+- Keep every verified backup discoverable in normal and recovery inspection,
+  while running the complete staged update preflight only when a recovery
+  source must be selected.
+- Follow completed apply/restore direction and sequence when selecting a
+  managed recovery checkpoint, reject symlink-substituted or sidecar-dependent
+  restore sources, and preserve explicit owner selection for sequence-less or
+  external history.
+- Validate recovery transitions in memory so inspection never stages a private
+  project ledger in shared operating-system temporary storage.
+- Close every active or suspended activation epoch owned by a completed work
+  unit, and keep release-asset verification hermetic under an external Cargo
+  target directory.
+
 ## v0.1.22 — 2026-07-22
 
 - Make public-contract verification treat the project-local installed Skill

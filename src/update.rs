@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
@@ -149,9 +150,17 @@ pub fn inspect_update(root: &Path) -> Result<UpdateInspection> {
 fn inspect_update_locked(root: &Path) -> Result<UpdateInspection> {
     let ledger = ledger_path(root);
     let current_identity = ledger_state_identity(&ledger)?;
-    let (restorable_backups, recovery_sources) = verified_update_backups(root)?;
     let conn = Connection::open_with_flags(&ledger, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let route = match transition::classify_update_route(&conn, root) {
+    let classified_route = transition::classify_update_route(&conn, root);
+    let requires_recovery_scan = matches!(
+        classified_route,
+        Err(_)
+            | Ok(transition::UpdateRoute::RecoveryRequired
+                | transition::UpdateRoute::UnsupportedSource)
+    );
+    let (restorable_backups, recovery_sources) =
+        verified_update_backups(root, requires_recovery_scan)?;
+    let route = match classified_route {
         Ok(transition::UpdateRoute::UnsupportedSource) if !recovery_sources.is_empty() => {
             transition::UpdateRoute::RecoveryRequired
         }
@@ -261,38 +270,156 @@ pub(crate) fn connection_requires_update(conn: &Connection) -> Result<bool> {
     )
 }
 
-fn verified_update_backups(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
-    let mut restorable = Vec::new();
-    let mut recovery_sources = Vec::new();
+fn verified_update_backups(
+    root: &Path,
+    select_recovery_sources: bool,
+) -> Result<(Vec<String>, Vec<String>)> {
     let backups = backup_dir(root);
-    if !backups.is_dir() {
-        return Ok((restorable, recovery_sources));
+    let Ok(metadata) = fs::symlink_metadata(&backups) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok((Vec::new(), Vec::new()));
     }
+    let mut candidates = Vec::new();
     for entry in fs::read_dir(&backups)? {
         let path = entry?.path();
+        let Ok(metadata) = path.symlink_metadata() else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         let Some(handle) = name.strip_suffix(".sqlite") else {
             continue;
         };
-        if valid_handle(handle)
-            && sha256_file(&path).is_ok_and(|identity| identity == handle)
-            && verify_restorable_ledger(&path, root).is_ok()
-        {
-            restorable.push(handle.to_string());
-            let backup = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            if matches!(
-                transition::classify_storage_header(&backup)?,
-                transition::StorageHeader::Full { .. }
-            ) {
-                recovery_sources.push(handle.to_string());
+        if valid_handle(handle) {
+            candidates.push((handle.to_string(), path));
+        }
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    let candidates = verified_restorable_candidates(candidates, root);
+    let mut restorable = candidates
+        .iter()
+        .map(|(handle, _)| handle.clone())
+        .collect::<Vec<_>>();
+    restorable.sort();
+    if !select_recovery_sources {
+        return Ok((restorable, Vec::new()));
+    }
+    let managed_priorities = managed_backup_priorities(root)?;
+    let (mut managed, external): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|(handle, _)| managed_priorities.contains_key(handle));
+    managed.sort_by(|left, right| {
+        let left_priority = managed_priorities[&left.0];
+        let right_priority = managed_priorities[&right.0];
+        right_priority
+            .0
+            .cmp(&left_priority.0)
+            .then_with(|| left_priority.1.cmp(&right_priority.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let recovery_sources = preflight_recovery_candidates(&managed, root, true);
+    if !recovery_sources.is_empty() {
+        return Ok((restorable, recovery_sources));
+    }
+    let recovery_sources = preflight_recovery_candidates(&external, root, false);
+    Ok((restorable, recovery_sources))
+}
+
+fn verified_restorable_candidates(
+    candidates: Vec<(String, PathBuf)>,
+    root: &Path,
+) -> Vec<(String, PathBuf)> {
+    let concurrency = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4)
+        .clamp(1, 8);
+    candidates
+        .chunks(concurrency)
+        .flat_map(|batch| {
+            std::thread::scope(|scope| {
+                batch
+                    .iter()
+                    .map(|(handle, path)| {
+                        scope.spawn(move || {
+                            let restorable = sha256_file(path).ok().as_deref()
+                                == Some(handle.as_str())
+                                && verify_restorable_ledger(path, root).is_ok();
+                            restorable.then(|| (handle.clone(), path.clone()))
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .filter_map(|worker| worker.join().expect("backup inventory worker panicked"))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect()
+}
+
+fn preflight_recovery_candidates(
+    candidates: &[(String, PathBuf)],
+    root: &Path,
+    latest_only: bool,
+) -> Vec<String> {
+    let mut recovery_sources = Vec::new();
+    // Each probe contains a complete mutable ledger image. Serialize probes so
+    // recovery memory is bounded to one candidate rather than candidate count.
+    for (handle, path) in candidates {
+        if preflight_update_source(path, root).is_ok() {
+            recovery_sources.push(handle.clone());
+            if latest_only {
+                break;
             }
         }
     }
-    restorable.sort();
     recovery_sources.sort();
-    Ok((restorable, recovery_sources))
+    recovery_sources
+}
+
+fn preflight_update_source(source: &Path, root: &Path) -> Result<()> {
+    // The recovery probe may contain the complete private project ledger. Keep its
+    // mutable copy in memory so interruption cannot strand it outside the project.
+    sha256_file(source)?;
+    let source_conn = open_immutable_snapshot(source)?;
+    let mut staged = in_memory_update_staging()?;
+    {
+        let backup = rusqlite::backup::Backup::new(&source_conn, &mut staged)?;
+        backup.run_to_completion(256, Duration::from_millis(1), None)?;
+    }
+    drop(source_conn);
+    staged.pragma_update(None, "foreign_keys", true)?;
+    let route = transition::classify_update_route(&staged, root)?;
+    if matches!(
+        route,
+        transition::UpdateRoute::RecoveryRequired | transition::UpdateRoute::UnsupportedSource
+    ) {
+        bail!("project checkpoint has no complete update path");
+    }
+    transition::apply_update_route(&staged, &route, root)?;
+    crate::db::ensure_project(&staged, root)?;
+    crate::db::sync_agents_md_authority(&staged, root)?;
+    crate::db::sync_commit_message_policy(&staged)?;
+    if !crate::db::pending_update_changes(&staged)?.is_empty() {
+        bail!("project checkpoint update is incomplete");
+    }
+    verify_restorable_connection(&staged, root)?;
+    Ok(())
+}
+
+pub(crate) fn in_memory_update_staging() -> Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    let temp_store: i64 = conn.pragma_query_value(None, "temp_store", |row| row.get(0))?;
+    if temp_store != 2 {
+        bail!("recovery preflight temporary storage is not memory-only");
+    }
+    Ok(conn)
 }
 
 pub fn decide_update(
@@ -417,6 +544,7 @@ pub fn record_update_recovery_authority(
             backup_handle: backup_handle.to_string(),
             idempotency_key: idempotency_key.to_string(),
             status: "completed".to_string(),
+            completion_sequence: None,
             authority_event_id: None,
             recovery_authority_handle: Some(authority_handle.clone()),
             authority_provenance: Some(provenance.to_string()),
@@ -555,6 +683,7 @@ pub fn decide_update_with_authority(
                 backup_handle: backup_handle.to_string(),
                 idempotency_key: decision_handle.clone(),
                 status: "completed".to_string(),
+                completion_sequence: None,
                 authority_event_id,
                 recovery_authority_handle,
                 authority_provenance: None,
@@ -595,6 +724,7 @@ pub fn decide_update_with_authority(
             backup_handle: String::new(),
             idempotency_key: decision_handle.clone(),
             status: "completed".to_string(),
+            completion_sequence: None,
             authority_event_id: Some(authority_event_id),
             recovery_authority_handle: None,
             authority_provenance: None,

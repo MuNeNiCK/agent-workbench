@@ -324,6 +324,7 @@ fn source_release_inventory_excludes_managed_project_state() {
         .arg("v0.2.0")
         .arg(&artifacts)
         .env("PATH", path)
+        .env("CARGO_TARGET_DIR", root.join("target"))
         .output()
         .unwrap();
     assert!(

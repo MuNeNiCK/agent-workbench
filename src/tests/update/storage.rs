@@ -1,7 +1,7 @@
 use crate::update::{
-    UpdateBoundary, apply_update_operation_inner, backup_dir, checkpoint, install_copy,
-    ledger_path, restore_update_operation_inner, set_shared_lock_blocked_observer, sha256_file,
-    sync_dir,
+    UpdateBoundary, apply_update_operation_inner, backup_dir, checkpoint, in_memory_update_staging,
+    install_copy, ledger_path, restore_update_operation_inner, set_shared_lock_blocked_observer,
+    sha256_file, sync_dir,
 };
 use crate::{
     UpdateInspection, apply_update_operation, inspect_update, restore_update,
@@ -20,6 +20,37 @@ fn require_registered_repair(root: &Path) -> UpdateInspection {
     let inspection = inspect_update(root).unwrap();
     assert_eq!(inspection.status, "ready_to_apply");
     inspection
+}
+
+#[test]
+fn recovery_preflight_keeps_main_and_temporary_storage_in_memory() {
+    let conn = in_memory_update_staging().unwrap();
+    conn.execute_batch(
+        r#"
+        create temp table spill_probe(value text not null);
+        with recursive rows(value) as (
+            values(1)
+            union all
+            select value + 1 from rows where value < 8192
+        )
+        insert into spill_probe(value)
+        select printf('%01024d', value) from rows;
+        create index spill_probe_value on spill_probe(value);
+        "#,
+    )
+    .unwrap();
+
+    let temp_store: i64 = conn
+        .pragma_query_value(None, "temp_store", |row| row.get(0))
+        .unwrap();
+    assert_eq!(temp_store, 2);
+    let mut databases = conn.prepare("pragma database_list").unwrap();
+    let files = databases
+        .query_map([], |row| row.get::<_, String>(2))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(files.iter().all(String::is_empty), "{files:?}");
 }
 
 #[test]
@@ -167,6 +198,8 @@ fn restore_retry_replays_the_published_result_without_overwriting_a_later_writer
             |row| row.get(0),
         )
         .unwrap();
+    fs::remove_dir_all(&backups).unwrap();
+    fs::write(&backups, b"managed backup directory unavailable").unwrap();
     let writer = crate::start_work(&root, "writer after interrupted restore", None).unwrap();
     assert_eq!(crate::project_status(&root).unwrap().open_work_units, 1);
 
@@ -218,6 +251,10 @@ fn apply_retry_replays_the_published_result_without_overwriting_a_later_writer()
             .to_string()
             .contains("injected interruption after update publication")
     );
+
+    let backups = backup_dir(&root);
+    fs::remove_dir_all(&backups).unwrap();
+    fs::write(&backups, b"managed backup directory unavailable").unwrap();
 
     let writer = crate::start_work(&root, "writer after interrupted update", None).unwrap();
     let recovered = apply_update_operation(
@@ -440,4 +477,265 @@ fn unreadable_current_is_preserved_at_the_durable_backup_boundary() {
     .unwrap();
     assert_eq!(restored.recovery_backup_identity, unreadable_identity);
     assert!(crate::project_status(&root).unwrap().initialized);
+}
+
+#[test]
+fn unreadable_current_restore_retries_before_publication() {
+    for boundary in [
+        UpdateBoundary::ReceiptPrepared,
+        UpdateBoundary::BeforePublication,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        crate::init_project(temp.path()).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let ledger = ledger_path(&root);
+        checkpoint(&ledger).unwrap();
+        let backup_identity = sha256_file(&ledger).unwrap();
+        let backups = backup_dir(&root);
+        fs::create_dir_all(&backups).unwrap();
+        install_copy(
+            &ledger,
+            &backups.join(format!("{backup_identity}.sqlite")),
+            &backup_identity,
+        )
+        .unwrap();
+        fs::write(&ledger, b"unreadable current ledger state").unwrap();
+        File::open(&ledger).unwrap().sync_all().unwrap();
+        sync_dir(ledger.parent().unwrap()).unwrap();
+        let inspection = inspect_update(&root).unwrap();
+        let key = match boundary {
+            UpdateBoundary::ReceiptPrepared => "unreadable-after-receipt-prepared",
+            UpdateBoundary::BeforePublication => "unreadable-before-publication",
+            _ => unreachable!(),
+        };
+
+        let failure = restore_update_operation_inner(
+            &root,
+            &backup_identity,
+            &inspection.current_identity,
+            key,
+            &mut |observed| {
+                if observed == boundary {
+                    bail!("injected interruption")
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(failure.to_string().contains("injected interruption"));
+
+        restore_update_operation(&root, &backup_identity, &inspection.current_identity, key)
+            .unwrap();
+        assert!(crate::project_status(&root).unwrap().initialized);
+    }
+}
+
+#[test]
+fn corrupt_sqlite_current_restore_retries_before_publication() {
+    for boundary in [None, Some(UpdateBoundary::ReceiptPrepared)] {
+        let temp = tempfile::tempdir().unwrap();
+        crate::init_project(temp.path()).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let ledger = ledger_path(&root);
+        checkpoint(&ledger).unwrap();
+        let backup_identity = sha256_file(&ledger).unwrap();
+        let backups = backup_dir(&root);
+        fs::create_dir_all(&backups).unwrap();
+        install_copy(
+            &ledger,
+            &backups.join(format!("{backup_identity}.sqlite")),
+            &backup_identity,
+        )
+        .unwrap();
+        let mut bytes = fs::read(&ledger).unwrap();
+        assert_eq!(&bytes[..16], b"SQLite format 3\0");
+        bytes[100] = 0xff;
+        fs::write(&ledger, bytes).unwrap();
+        File::open(&ledger).unwrap().sync_all().unwrap();
+        sync_dir(ledger.parent().unwrap()).unwrap();
+        let inspection = inspect_update(&root).unwrap();
+        assert_eq!(inspection.status, "recovery_required");
+        let key = if boundary.is_some() {
+            "corrupt-after-receipt-prepared"
+        } else {
+            "corrupt-direct-restore"
+        };
+
+        if let Some(boundary) = boundary {
+            let failure = restore_update_operation_inner(
+                &root,
+                &backup_identity,
+                &inspection.current_identity,
+                key,
+                &mut |observed| {
+                    if observed == boundary {
+                        bail!("injected interruption")
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(failure.to_string().contains("injected interruption"));
+        }
+        restore_update_operation(&root, &backup_identity, &inspection.current_identity, key)
+            .unwrap();
+        assert!(crate::project_status(&root).unwrap().initialized);
+    }
+}
+
+#[test]
+fn corrupt_restore_publication_page_does_not_block_prepared_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::init_project(temp.path()).unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let ledger = ledger_path(&root);
+    Connection::open(&ledger)
+        .unwrap()
+        .execute_batch(
+            r#"
+            create table restore_publications (
+                operation_handle text primary key,
+                source_identity text not null,
+                target_backup_identity text not null,
+                recovery_backup_identity text not null,
+                result_identity text not null,
+                idempotency_key text not null unique,
+                published_at text not null
+            );
+            "#,
+        )
+        .unwrap();
+    checkpoint(&ledger).unwrap();
+    let backup_identity = sha256_file(&ledger).unwrap();
+    let backups = backup_dir(&root);
+    fs::create_dir_all(&backups).unwrap();
+    install_copy(
+        &ledger,
+        &backups.join(format!("{backup_identity}.sqlite")),
+        &backup_identity,
+    )
+    .unwrap();
+    crate::start_work(&root, "state before publication-page interruption", None).unwrap();
+    checkpoint(&ledger).unwrap();
+    let conn = Connection::open(&ledger).unwrap();
+    let page_size: i64 = conn
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .unwrap();
+    let root_page: i64 = conn
+        .query_row(
+            "select rootpage from sqlite_schema where type='table' and name='restore_publications'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let mut bytes = fs::read(&ledger).unwrap();
+    let page_offset = usize::try_from((root_page - 1) * page_size).unwrap();
+    bytes[page_offset] = 0xff;
+    fs::write(&ledger, bytes).unwrap();
+    File::open(&ledger).unwrap().sync_all().unwrap();
+    sync_dir(ledger.parent().unwrap()).unwrap();
+    let inspection = inspect_update(&root).unwrap();
+    let failure = restore_update_operation_inner(
+        &root,
+        &backup_identity,
+        &inspection.current_identity,
+        "corrupt-publication-page-retry",
+        &mut |observed| {
+            if observed == UpdateBoundary::ReceiptPrepared {
+                bail!("injected interruption")
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert!(failure.to_string().contains("injected interruption"));
+
+    restore_update_operation(
+        &root,
+        &backup_identity,
+        &inspection.current_identity,
+        "corrupt-publication-page-retry",
+    )
+    .unwrap();
+    assert!(crate::project_status(&root).unwrap().initialized);
+}
+
+#[test]
+fn apply_never_declares_an_existing_sidecar_backup_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::init_project(temp.path()).unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let inspection = require_registered_repair(&root);
+    let ledger = ledger_path(&root);
+    checkpoint(&ledger).unwrap();
+    let source_identity = sha256_file(&ledger).unwrap();
+    let backups = backup_dir(&root);
+    fs::create_dir_all(&backups).unwrap();
+    let backup = backups.join(format!("{source_identity}.sqlite"));
+    install_copy(&ledger, &backup, &source_identity).unwrap();
+    let wal = std::path::PathBuf::from(format!("{}-wal", backup.display()));
+    fs::write(&wal, b"unpublished sidecar state").unwrap();
+    let reached_durable = std::cell::Cell::new(false);
+
+    let failure = apply_update_operation_inner(
+        &root,
+        &inspection.inspection_handle,
+        &inspection.current_identity,
+        "reject-existing-sidecar-backup",
+        &mut |boundary| {
+            if boundary == UpdateBoundary::BackupDurable {
+                reached_durable.set(true);
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert!(!reached_durable.get());
+    assert!(failure.to_string().contains("not a standalone snapshot"));
+    assert_eq!(fs::read(&wal).unwrap(), b"unpublished sidecar state");
+}
+
+#[test]
+fn restore_never_declares_an_existing_sidecar_recovery_image_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::init_project(temp.path()).unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let ledger = ledger_path(&root);
+    checkpoint(&ledger).unwrap();
+    let target_identity = sha256_file(&ledger).unwrap();
+    let backups = backup_dir(&root);
+    fs::create_dir_all(&backups).unwrap();
+    install_copy(
+        &ledger,
+        &backups.join(format!("{target_identity}.sqlite")),
+        &target_identity,
+    )
+    .unwrap();
+    crate::start_work(&root, "state requiring preservation", None).unwrap();
+    checkpoint(&ledger).unwrap();
+    let source_identity = sha256_file(&ledger).unwrap();
+    let recovery = backups.join(format!("{source_identity}.sqlite"));
+    install_copy(&ledger, &recovery, &source_identity).unwrap();
+    let wal = std::path::PathBuf::from(format!("{}-wal", recovery.display()));
+    fs::write(&wal, b"unpublished sidecar state").unwrap();
+    let inspection = inspect_update(&root).unwrap();
+    let reached_durable = std::cell::Cell::new(false);
+
+    let failure = restore_update_operation_inner(
+        &root,
+        &target_identity,
+        &inspection.current_identity,
+        "reject-existing-sidecar-recovery-image",
+        &mut |boundary| {
+            if boundary == UpdateBoundary::BackupDurable {
+                reached_durable.set(true);
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert!(!reached_durable.get());
+    assert!(failure.to_string().contains("not a standalone snapshot"));
+    assert_eq!(fs::read(&wal).unwrap(), b"unpublished sidecar state");
 }
