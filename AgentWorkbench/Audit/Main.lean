@@ -346,6 +346,127 @@ def auditCliMutation : IO Unit := do
       unless Application.Service.queryValidity transaction.result.state = .pass do
         fail "CLI mutation result is not valid"
 
+def traceModuleRules : Array ModuleRule := moduleRules ++ #[
+  ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
+  ⟨"AgentWorkbench.Cli.Program", #["AgentWorkbench.Application.Service"]⟩,
+  ⟨"Main", #["AgentWorkbench.Cli.Program"]⟩,
+  ⟨"AgentWorkbench.Tests.KernelLaws", #["AgentWorkbench.Application.Service"]⟩,
+  ⟨"AgentWorkbench.Audit.Expected", #["AgentWorkbench.Application.Service"]⟩,
+  ⟨"AgentWorkbench.Audit.Main", #["AgentWorkbench.Audit.Expected", "AgentWorkbench.Cli.Program"]⟩
+]
+
+def traceProjectFiles : Array String := #[
+  "AgentWorkbench.lean",
+  "AgentWorkbench/Application/Service.lean",
+  "AgentWorkbench/Audit/Expected.lean",
+  "AgentWorkbench/Audit/Main.lean",
+  "AgentWorkbench/Cli/Program.lean",
+  "AgentWorkbench/Domain/Design.lean",
+  "AgentWorkbench/Domain/Evidence.lean",
+  "AgentWorkbench/Domain/ExternalOperation.lean",
+  "AgentWorkbench/Domain/Facts.lean",
+  "AgentWorkbench/Domain/Identity.lean",
+  "AgentWorkbench/Domain/Review.lean",
+  "AgentWorkbench/Domain/Work.lean",
+  "AgentWorkbench/Kernel/Decide.lean",
+  "AgentWorkbench/Kernel/Gates.lean",
+  "AgentWorkbench/Kernel/Replay.lean",
+  "AgentWorkbench/Kernel/Resolver.lean",
+  "AgentWorkbench/Policy/Authority.lean",
+  "AgentWorkbench/Policy/Completion.lean",
+  "AgentWorkbench/Policy/Traceability.lean",
+  "AgentWorkbench/Policy/Update.lean",
+  "AgentWorkbench/Tests/KernelLaws.lean",
+  "AgentWorkbench/Trace/PrivateProof.lean",
+  "Main.lean",
+  "lake-manifest.json",
+  "lakefile.toml",
+  "lean-toolchain",
+  "proof-manifest.toml"
+]
+
+structure RebuildTraceCase where
+  key : String
+  module : String
+  file : String
+  privateProof : Bool := false
+
+def rebuildTraceCases : Array RebuildTraceCase := #[
+  ⟨"private-proof", "AgentWorkbench.Trace.PrivateProof", "AgentWorkbench/Trace/PrivateProof.lean", true⟩,
+  ⟨"domain-work", "AgentWorkbench.Domain.Work", "AgentWorkbench/Domain/Work.lean", false⟩,
+  ⟨"policy-completion", "AgentWorkbench.Policy.Completion", "AgentWorkbench/Policy/Completion.lean", false⟩,
+  ⟨"domain-identity", "AgentWorkbench.Domain.Identity", "AgentWorkbench/Domain/Identity.lean", false⟩
+]
+
+def copyTraceProject (target : System.FilePath) : IO Unit := do
+  for relative in traceProjectFiles do
+    let source := System.FilePath.mk relative
+    let destination := target / relative
+    if let some parent := destination.parent then IO.FS.createDirAll parent
+    IO.FS.writeFile destination (← IO.FS.readFile source)
+
+def runLakeBuild (lake project : System.FilePath) (targets : Array String := #[]) : IO String := do
+  let output ← IO.Process.output {
+    cmd := lake.toString, args := #["build"] ++ targets, cwd := some project }
+  unless output.exitCode = 0 do
+    fail s!"representative Lake rebuild failed:\n{output.stdout}\n{output.stderr}"
+  return output.stdout ++ "\n" ++ output.stderr
+
+def builtModules (output : String) : List String :=
+  (output.splitOn "\n").filterMap fun line =>
+    match line.splitOn "Built " with
+    | _ :: built :: _ =>
+        match built.trimAscii.toString.splitOn " " with
+        | token :: _ =>
+            let module := (token.splitOn ":").head?.getD token
+            if module = "Main" || module.startsWith "AgentWorkbench." then some module else none
+        | _ => none
+    | _ => none
+
+def mutateTraceSource (case : RebuildTraceCase) (source : String) : Except String String :=
+  if case.privateProof then
+    let before :=
+      "private theorem proofBodyFixture : True := by\n  trivial"
+    let after :=
+      "private theorem proofBodyFixture : True := by\n  exact True.intro"
+    let changed := source.replace before after
+    if changed = source then .error "private-proof trace mutation anchor was not found" else .ok changed
+  else
+    .ok <| source ++ s!"\n\ndef agentWorkbenchTraceProbe_{case.key.replace "-" "_"} : Unit := ()\n"
+
+def allowedTraceModules (case : RebuildTraceCase) : List String :=
+  if case.privateProof then [case.module]
+  else case.module :: dependentClosure traceModuleRules case.module
+
+def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase) : IO Unit := do
+  let path := project / case.file
+  let original ← IO.FS.readFile path
+  let changed ← match mutateTraceSource case original with
+    | .ok changed => pure changed
+    | .error error => fail error
+  IO.FS.writeFile path changed
+  let targets := if case.privateProof then #[case.module] else #[]
+  let trace := builtModules (← runLakeBuild lake project targets)
+  if trace.isEmpty then fail s!"Lake emitted no rebuild trace for {case.key}"
+  unless trace.contains case.module do
+    fail s!"Lake did not rebuild changed module {case.module} for {case.key}"
+  let allowed := allowedTraceModules case
+  for rebuilt in trace do
+    unless allowed.contains rebuilt do
+      fail s!"{case.key} rebuilt {rebuilt} outside its normative reverse closure"
+  IO.println s!"verified-core trace {case.key}: {String.intercalate "," trace}"
+  IO.FS.writeFile path original
+  discard <| runLakeBuild lake project targets
+
+def auditRepresentativeRebuilds : IO Unit := do
+  let lake := (← findSysroot) / "bin" / "lake"
+  unless ← lake.pathExists do fail s!"Lake executable is absent: {lake}"
+  IO.FS.withTempDir fun project => do
+    copyTraceProject project
+    discard <| runLakeBuild lake project
+    discard <| runLakeBuild lake project #["AgentWorkbench.Trace.PrivateProof"]
+    for case in rebuildTraceCases do auditRebuildTrace lake project case
+
 def main : IO Unit := do
   let manifest ← IO.FS.readFile "proof-manifest.toml"
   match validateManifestContent manifest with
@@ -360,6 +481,7 @@ def main : IO Unit := do
   auditTheorems env
   auditDeclarations env
   auditCliMutation
+  auditRepresentativeRebuilds
   IO.println "verified-core audit: pass"
 
 end AgentWorkbench.Audit
