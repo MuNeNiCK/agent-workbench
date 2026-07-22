@@ -1,6 +1,16 @@
 {"version": "1.2.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"url": "https://github.com/leanprover/leansqlite",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "a1d21d8b5f230205bb04c3bff479383f66802c0b",
+   "name": "leansqlite",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "v4.30.0",
+   "inherited": false,
+   "configFile": "lakefile.lean"}],
  "name": "«agent-workbench»",
  "lakeDir": ".lake",
  "fixedToolchain": false}

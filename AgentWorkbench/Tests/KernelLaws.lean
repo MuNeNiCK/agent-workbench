@@ -134,6 +134,11 @@ def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) 
       work
       obligation := key
       revision := store.ledger.storedHead
+      commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws"
+      exitCode := 0
+      repository := "main"
+      snapshot := "fixture"
       artifactDigest := s!"sha256:minimal-{work.value}"
       current := true }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
@@ -258,7 +263,10 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     "completion obligation rejected"
   let evidence : Domain.Evidence.Evidence :=
     { id := ⟨100⟩, work := firstWork.id, obligation := obligation.key,
-      revision := store.ledger.storedHead, artifactDigest := "proof:matrix", current := true }
+      revision := store.ledger.storedHead, commandProfile := "kernel-laws",
+      invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
+      repository := "main", snapshot := "fixture",
+      artifactDigest := "proof:matrix", current := true }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
     "completion evidence rejected"
   pure store
@@ -318,6 +326,8 @@ def main : IO Unit := do
     | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let item : Domain.Evidence.Evidence :=
     { id := ⟨1⟩, work := firstWork.id, obligation := "proof", revision := obligated.revision
+      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
+      exitCode := 0, repository := "main", snapshot := "fixture"
       artifactDigest := "sha256:evidence", current := true }
   let evidenced ← match Kernel.Decide.decide
       (.recordEvidence obligated.revision item) obligated with
@@ -497,7 +507,9 @@ def main : IO Unit := do
     "completion obligation rejected"
   let completionEvidence : Domain.Evidence.Evidence :=
     { id := ⟨100⟩, work := firstWork.id, obligation := completionObligation.key,
-      revision := obligatedCompletion.revision, artifactDigest := "proof:complete",
+      revision := obligatedCompletion.revision, commandProfile := "kernel-laws",
+      invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
+      repository := "main", snapshot := "fixture", artifactDigest := "proof:complete",
       current := true }
   let completable ← executeState
     (.recordEvidence obligatedCompletion.revision completionEvidence) obligatedCompletion
@@ -769,6 +781,8 @@ def main : IO Unit := do
   let findingsEvidence : Domain.Evidence.Evidence :=
     { id := ⟨101⟩, work := firstWork.id, obligation := "completion-proof",
       revision := findingsAdjudicated.ledger.storedHead,
+      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
+      exitCode := 0, repository := "main", snapshot := "fixture",
       artifactDigest := "proof:after-findings", current := true }
   let findingsRefreshed ← executeStore
     (.recordEvidence findingsAdjudicated.ledger.storedHead findingsEvidence)
@@ -795,6 +809,8 @@ def main : IO Unit := do
   let recoveryEvidence : Domain.Evidence.Evidence :=
     { id := ⟨102⟩, work := firstWork.id, obligation := "completion-proof",
       revision := recoveryAdjudicated.ledger.storedHead,
+      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
+      exitCode := 0, repository := "main", snapshot := "fixture",
       artifactDigest := "proof:after-clean-recovery", current := true }
   let recoveredStore ← executeStore
     (.recordEvidence recoveryAdjudicated.ledger.storedHead recoveryEvidence)
@@ -829,6 +845,11 @@ def main : IO Unit := do
       work := firstWork.id
       obligation := "completion-proof"
       revision := staleCompletionRevision
+      commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws"
+      exitCode := 0
+      repository := "main"
+      snapshot := "fixture"
       artifactDigest := "proof:stale-completion-refresh"
       current := true }
   let advancedReadyStore ← executeStore

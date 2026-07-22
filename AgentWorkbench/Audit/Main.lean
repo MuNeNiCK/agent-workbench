@@ -520,9 +520,10 @@ def traceProjectFiles (designRules : Array ModuleRule) : Array String :=
   "AgentWorkbench/Audit/Main.lean",
   "AgentWorkbench/Cli/Program.lean",
   "AgentWorkbench/Tests/KernelLaws.lean",
+  "bindings/durable_filesystem.c",
   "Main.lean",
   "lake-manifest.json",
-  "lakefile.toml",
+  "lakefile.lean",
   "lean-toolchain",
   "proof-manifest.toml"
 ]
@@ -562,9 +563,12 @@ def builtModules (output : String) : List String :=
     | _ :: built :: _ =>
         match built.trimAscii.toString.splitOn " " with
         | token :: _ =>
-            let module := (token.splitOn ":").head?.getD token
-            if module = "Main" || module = "AgentWorkbench" ||
-                module.startsWith "AgentWorkbench." then some module else none
+            -- Reverification bounds concern Lean environment checks. Native
+            -- code generation/link artifacts (`:c.o`, `:dynlib`) are not a
+            -- semantic recheck of the named module.
+            if token.contains ':' then none
+            else if token = "Main" || token = "AgentWorkbench" ||
+                token.startsWith "AgentWorkbench." then some token else none
         | _ => none
     | _ => none).eraseDups
 

@@ -17,6 +17,11 @@ structure Evidence where
   work : WorkId
   obligation : String
   revision : Revision
+  commandProfile : String
+  invocation : String
+  exitCode : Int
+  repository : String
+  snapshot : String
   artifactDigest : String
   current : Bool
 deriving DecidableEq, Repr
@@ -35,7 +40,9 @@ def UniqueEvidenceIds (evidence : List Evidence) : Prop :=
 
 def EvidenceWellFormed (evidence : List Evidence) : Prop :=
   (evidence.all fun item =>
-    !item.obligation.isEmpty && !item.artifactDigest.isEmpty) = true
+    !item.obligation.isEmpty && !item.commandProfile.isEmpty &&
+      !item.invocation.isEmpty && !item.repository.isEmpty &&
+      !item.snapshot.isEmpty && !item.artifactDigest.isEmpty) = true
 
 def EvidenceCurrentAt (revision : Revision) (evidence : List Evidence) : Prop :=
   (evidence.all fun item => !item.current || item.revision == revision) = true
