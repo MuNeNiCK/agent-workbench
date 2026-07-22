@@ -69,13 +69,13 @@ def execute (command : Decide.Command) (store : Projection.Store) :
       | .fresh _ _ => .ok { accepted, result }
       | _ => .error (.invariantViolation "atomic ledger/projection commit is not fresh")
 
-def complete (target : WorkId) (store : Projection.Store) :
+def complete (expectedRevision : Revision) (target : WorkId) (store : Projection.Store) :
     Except DomainError CompletionTransaction :=
   let inspection := Projection.inspect store
   match inspection.currentState? with
   | none => .error (.invalidTransition "projection repair required before completion")
   | some state => do
-      let accepted ← Decide.closeWork target state
+      let accepted ← Decide.closeWork expectedRevision target state
       let result := commitAccepted store accepted.toAcceptedTransaction
       match Projection.inspect result with
       | .fresh _ _ => .ok { accepted, result }

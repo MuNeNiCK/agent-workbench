@@ -57,6 +57,8 @@ def Action.executable (inspection : Projection.Inspection) : Action → Bool
       | some state, some current =>
           decide (point = current) && decide (ValidState state) &&
             Domain.Work.workIsOpen state.work work &&
+            state.activations.any (fun candidate =>
+              candidate.id == activation && candidate.work == work) &&
             Domain.Work.resumable state.activations activation
       | _, _ => false
 

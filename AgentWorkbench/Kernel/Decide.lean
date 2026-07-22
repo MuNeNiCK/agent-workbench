@@ -276,42 +276,44 @@ structure CompletionTransaction extends AcceptedTransaction where
   target : WorkId
   activation : ActivationId
 
-def closeWork (target : WorkId) (state : State) : Except DomainError CompletionTransaction :=
+def closeWork (expectedRevision : Revision) (target : WorkId) (state : State) :
+    Except DomainError CompletionTransaction :=
   match Work.activeFor state.activations target with
   | none => .error (.invalidTransition "target work is not active")
   | some activation =>
-      match decide (.completeWork state.revision target) state with
+      match decide (.completeWork expectedRevision target) state with
       | .error error => .error error
       | .ok transaction => .ok { transaction with target, activation := activation.id }
 
-theorem close_work_preserves_valid (target : WorkId) (state : State)
+theorem close_work_preserves_valid (expectedRevision : Revision) (target : WorkId) (state : State)
     {transaction : CompletionTransaction}
-    (_accepted : closeWork target state = .ok transaction) :
+    (_accepted : closeWork expectedRevision target state = .ok transaction) :
     ValidState transaction.result.state :=
   transaction.result.valid
 
-theorem decide_complete_emits (target : WorkId) (state : State)
+theorem decide_complete_emits (expectedRevision : Revision) (target : WorkId) (state : State)
     (activation : Work.Activation) (transaction : AcceptedTransaction)
     (active : Work.activeFor state.activations target = some activation)
-    (accepted : decide (.completeWork state.revision target) state = .ok transaction) :
+    (accepted : decide (.completeWork expectedRevision target) state = .ok transaction) :
     transaction.events = [.workCompleted target activation.id] := by
   unfold decide at accepted
   simp only [Command.expectedRevision] at accepted
-  simp only [if_true] at accepted
-  by_cases ready : Policy.Completion.closeable target state.work state.activations
-      state.claims state.adjudications state.lifecycle state.evidence state.obligations = true
-  · simp only [deriveEvents, active, ready, if_true] at accepted
-    split at accepted
-    · cases accepted
-      rfl
-    · contradiction
-  · have notReady : Policy.Completion.closeable target state.work state.activations
-        state.claims state.adjudications state.lifecycle state.evidence state.obligations = false := by
-      cases result : Policy.Completion.closeable target state.work state.activations
-          state.claims state.adjudications state.lifecycle state.evidence state.obligations with
-      | false => rfl
-      | true => exact (ready result).elim
-    simp [deriveEvents, active, notReady] at accepted
+  split at accepted
+  · by_cases ready : Policy.Completion.closeable target state.work state.activations
+        state.claims state.adjudications state.lifecycle state.evidence state.obligations = true
+    · simp only [deriveEvents, active, ready, if_true] at accepted
+      split at accepted
+      · cases accepted
+        rfl
+      · contradiction
+    · have notReady : Policy.Completion.closeable target state.work state.activations
+          state.claims state.adjudications state.lifecycle state.evidence state.obligations = false := by
+        cases result : Policy.Completion.closeable target state.work state.activations
+            state.claims state.adjudications state.lifecycle state.evidence state.obligations with
+        | false => rfl
+        | true => exact (ready result).elim
+      simp [deriveEvents, active, notReady] at accepted
+  · contradiction
 
 theorem decide_complete_requires_closeable (target : WorkId) (state : State)
     {transaction : AcceptedTransaction}
@@ -342,9 +344,9 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
     Policy.Completion.latestAcceptedReviewClaim
   rfl
 
-theorem close_work_emits_atomic_event (target : WorkId) (state : State)
+theorem close_work_emits_atomic_event (expectedRevision : Revision) (target : WorkId) (state : State)
     {transaction : CompletionTransaction}
-    (accepted : closeWork target state = .ok transaction) :
+    (accepted : closeWork expectedRevision target state = .ok transaction) :
     transaction.events = [.workCompleted transaction.target transaction.activation] := by
   unfold closeWork at accepted
   split at accepted
@@ -352,6 +354,6 @@ theorem close_work_emits_atomic_event (target : WorkId) (state : State)
   · split at accepted
     · contradiction
     · cases accepted
-      exact decide_complete_emits target state _ _ (by assumption) (by assumption)
+      exact decide_complete_emits expectedRevision target state _ _ (by assumption) (by assumption)
 
 end AgentWorkbench.Kernel.Decide

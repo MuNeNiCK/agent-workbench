@@ -138,7 +138,7 @@ def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) 
       current := true }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
     s!"minimal evidence rejected for {work.value}"
-  match Application.Service.complete work store with
+  match Application.Service.complete store.ledger.storedHead work store with
   | .ok transaction => pure transaction.result
   | .error error => throw <| IO.userError s!"minimal authoritative completion rejected for {work.value}: {repr error}"
 
@@ -267,7 +267,7 @@ def expectPublicCompletionRejected (missing : MissingCompletionCondition)
     (label : String) : IO Unit := do
   let store ← buildCompletionStore (some missing)
   let state ← currentState store
-  match Application.Service.complete firstWork.id store with
+  match Application.Service.complete store.ledger.storedHead firstWork.id store with
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError s!"{label}: public completion unexpectedly accepted"
   let kernelResult := Kernel.Decide.decide
@@ -506,7 +506,7 @@ def main : IO Unit := do
     completable.claims completable.adjudications completable.lifecycle
     completable.evidence completable.obligations)
     "authoritative current lifecycle records must allow completion"
-  let completed ← match Kernel.Decide.closeWork firstWork.id completable with
+  let completed ← match Kernel.Decide.closeWork completable.revision firstWork.id completable with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid completion rejected: {repr error}"
   expect (completed.work.any fun unit =>
@@ -520,7 +520,7 @@ def main : IO Unit := do
     "current obligation for closed work"
   expect (completed.activations.any fun activation => activation == parentActivation)
     "completion must preserve unrelated suspended activations"
-  match Kernel.Decide.closeWork parentWork.id completable with
+  match Kernel.Decide.closeWork completable.revision parentWork.id completable with
   | .error (.invalidTransition _) => pure ()
   | _ => throw <| IO.userError "inactive target completion must reject"
   let receipt : Policy.Update.Receipt :=
@@ -778,7 +778,7 @@ def main : IO Unit := do
     findingsState.activations findingsState.claims findingsState.adjudications
     findingsState.lifecycle findingsState.evidence findingsState.obligations)
     "later accepted findings claim did not dominate an earlier clean claim"
-  match Application.Service.complete firstWork.id findingsRefreshed with
+  match Application.Service.complete findingsRefreshed.ledger.storedHead firstWork.id findingsRefreshed with
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError <|
       "completion accepted refreshed evidence with a current findings review"
@@ -804,7 +804,7 @@ def main : IO Unit := do
     recoveredState.activations recoveredState.claims recoveredState.adjudications
     recoveredState.lifecycle recoveredState.evidence recoveredState.obligations)
     "later accepted clean claim did not restore review readiness"
-  match Application.Service.complete firstWork.id recoveredStore with
+  match Application.Service.complete recoveredStore.ledger.storedHead firstWork.id recoveredStore with
   | .ok _ => pure ()
   | .error error => throw <| IO.userError s!"clean review recovery did not complete: {repr error}"
   let unmetObligation : Domain.Evidence.Obligation :=
@@ -814,7 +814,7 @@ def main : IO Unit := do
     (.recordObligation allReadyStore.ledger.storedHead unmetObligation) allReadyStore
     "unmet obligation setup rejected"
   let unmetState ← currentState withUnmetObligation
-  match Application.Service.complete firstWork.id withUnmetObligation with
+  match Application.Service.complete withUnmetObligation.ledger.storedHead firstWork.id withUnmetObligation with
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError "completion erased an unmet current obligation"
   let unmetResult := Kernel.Decide.decide
@@ -823,8 +823,29 @@ def main : IO Unit := do
     "unmet obligation rejection exposed an accepted event"
   expect (Kernel.Decide.committedState unmetResult unmetState == unmetState)
     "unmet obligation rejection changed authoritative state"
+  let staleCompletionRevision := allReadyStore.ledger.storedHead
+  let refreshEvidence : Domain.Evidence.Evidence :=
+    { id := ⟨101⟩
+      work := firstWork.id
+      obligation := "completion-proof"
+      revision := staleCompletionRevision
+      artifactDigest := "proof:stale-completion-refresh"
+      current := true }
+  let advancedReadyStore ← executeStore
+    (.recordEvidence staleCompletionRevision refreshEvidence) allReadyStore
+    "stale completion revision fixture rejected"
+  match Application.Service.complete staleCompletionRevision firstWork.id advancedReadyStore with
+  | .error .staleRevision => pure ()
+  | .error error => throw <| IO.userError s!"stale completion returned wrong error: {repr error}"
+  | .ok _ => throw <| IO.userError "stale public completion intent was accepted"
+  expect ((Application.Service.status advancedReadyStore).store == advancedReadyStore)
+    "stale completion intent changed the authoritative store"
+  match Application.Service.complete advancedReadyStore.ledger.storedHead
+      firstWork.id advancedReadyStore with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"current completion intent rejected: {repr error}"
   let beforeCompletion ← currentState allReadyStore
-  let completedTransaction ← match Application.Service.complete firstWork.id allReadyStore with
+  let completedTransaction ← match Application.Service.complete allReadyStore.ledger.storedHead firstWork.id allReadyStore with
     | .ok transaction => pure transaction
     | .error error => throw <| IO.userError s!"public all-ready completion rejected: {repr error}"
   expect (completedTransaction.accepted.events ==
@@ -850,6 +871,19 @@ def main : IO Unit := do
         activation.readyToResume)
     "completion resumed or lost the suspended parent"
   let completedStore := completedTransaction.result
+  let mismatchStore ← executeStore
+    (.registerWork completedStore.ledger.storedHead blockedRelatedWork) completedStore
+    "resume mismatch work registration rejected"
+  let mismatchInspection := Kernel.Projection.inspect mismatchStore
+  let mismatchPoint ← match mismatchInspection.ledgerPoint? with
+    | some point => pure point
+    | none => throw <| IO.userError "resume mismatch fixture lost ledger binding"
+  let mismatchedResume : Kernel.Resolver.Action :=
+    .resumeSuspendedWork mismatchPoint blockedRelatedWork.id parentActivation.id
+  expect (!mismatchedResume.executable mismatchInspection)
+    "resume action accepted an activation belonging to another work"
+  expectResolverActionRejected mismatchedResume mismatchStore
+    "public resume accepted a mismatched work/activation binding"
   match (Application.Service.resolve completedStore).value with
   | .action action@(.resumeSuspendedWork _ work activation) =>
       expect (work == parentWork.id && activation == ⟨4⟩)

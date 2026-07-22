@@ -17,6 +17,7 @@ structure TheoremRule where
 structure ManifestPolicy where
   theorems : Array String
   modules : Array String
+  sourceAuthorities : Array String
   permittedAxioms : Array String
   forbiddenAxioms : Array String
   unsafeFfiModules : Array String
@@ -132,6 +133,12 @@ def expectedUnsafeFfiModules : Array String := #[
   "AgentWorkbench.Adapter.Git"
 ]
 
+def expectedSourceAuthorityPaths : Array String := #[
+  "AgentWorkbench/Audit/Expected.lean",
+  "AgentWorkbench/Application/Service.lean",
+  "AgentWorkbench/Audit/Main.lean"
+]
+
 def expectedCliEntrypoint : String :=
   "import AgentWorkbench.Cli.Program\n\ndef main : IO Unit :=\n  AgentWorkbench.Cli.Program.run\n"
 
@@ -165,6 +172,7 @@ def parseManifestPolicy (content : String) : Except String ManifestPolicy := do
   return {
     theorems := ← parseManifestArray "theorems" content
     modules := ← parseManifestArray "modules" content
+    sourceAuthorities := ← parseManifestArray "source_authorities" content
     permittedAxioms := ← parseManifestArray "permitted_axioms" content
     forbiddenAxioms := ← parseManifestArray "forbidden_axioms" content
     unsafeFfiModules := ← parseManifestArray "unsafe_ffi_modules" content }
@@ -175,6 +183,16 @@ def validateManifestPolicy (designRules : Array ModuleRule)
     throw "theorem manifest differs from immutable Lean policy"
   unless policy.modules = designRules.map (·.module) do
     throw "module manifest differs from the approved Design Package module map"
+  let authorityPaths := policy.sourceAuthorities.map fun entry =>
+    (entry.splitOn "=").head?.getD ""
+  unless authorityPaths = expectedSourceAuthorityPaths do
+    throw "source authority paths differ from immutable Lean policy"
+  unless policy.sourceAuthorities.all fun entry =>
+      match entry.splitOn "=" with
+      | [_path, digest] => digest.length = 64 && digest.all fun char =>
+          char.isDigit || ('a' ≤ char && char ≤ 'f')
+      | _ => false do
+    throw "source authority entry must contain one lowercase SHA256 digest"
   unless policy.permittedAxioms = expectedPermittedAxioms do
     throw "permitted axiom manifest differs from immutable Lean policy"
   unless policy.forbiddenAxioms = expectedForbiddenAxioms do
@@ -187,6 +205,29 @@ def validateManifestContent (designRules : Array ModuleRule)
   let policy ← parseManifestPolicy content
   validateManifestPolicy designRules policy
   return policy
+
+def sha256File (path : String) : IO String := do
+  let output ← IO.Process.output { cmd := "sha256sum", args := #[path] }
+  unless output.exitCode = 0 do
+    fail s!"sha256 authority command failed for {path}: {output.stderr}"
+  match output.stdout.trimAscii.toString.splitOn " " with
+  | digest :: _ =>
+      unless digest.length = 64 do fail s!"invalid SHA256 output for {path}"
+      pure digest
+  | _ => fail s!"missing SHA256 output for {path}"
+
+def actualSourceAuthorities : IO (Array String) := do
+  let mut entries := #[]
+  for path in expectedSourceAuthorityPaths do
+    entries := entries.push s!"{path}={← sha256File path}"
+  pure entries
+
+def sourceAuthoritiesMatch (policy : ManifestPolicy) : IO Bool := do
+  return policy.sourceAuthorities = (← actualSourceAuthorities)
+
+def auditSourceAuthorities (policy : ManifestPolicy) : IO Unit := do
+  unless ← sourceAuthoritiesMatch policy do
+    fail "versioned source authority SHA256 differs from reviewed theorem/service boundary"
 
 def auditNegativeFixtures (designRules : Array ModuleRule) (manifest : String) : IO Unit := do
   let fixtures : Array (String × String) := #[
@@ -203,6 +244,16 @@ def auditNegativeFixtures (designRules : Array ModuleRule) (manifest : String) :
     match validateManifestContent designRules fixture with
     | .error _ => pure ()
     | .ok _ => fail s!"negative manifest fixture was accepted: {name}"
+  let actual ← actualSourceAuthorities
+  let some first := actual.toList.head? | fail "source authority fixture is missing"
+  let authorityFixture := manifest.replace first
+    "AgentWorkbench/Audit/Expected.lean=0000000000000000000000000000000000000000000000000000000000000000"
+  if authorityFixture = manifest then fail "source authority negative fixture did not mutate manifest"
+  let fixturePolicy ← match validateManifestContent designRules authorityFixture with
+    | .ok policy => pure policy
+    | .error error => fail s!"source authority fixture was structurally invalid: {error}"
+  if ← sourceAuthoritiesMatch fixturePolicy then
+    fail "synchronized source-authority weakening fixture was accepted"
 
 def modulePath (module : String) : System.FilePath :=
   System.FilePath.mk <| (module.replace "." "/") ++ ".lean"
@@ -367,6 +418,21 @@ def auditDeclarations (env : Environment) : IO Unit := do
   unless declarationReaches env `AgentWorkbench.Application.Service.execute
       [`AgentWorkbench.Application.Service.executeAction] [] do
     fail "resolver action execution does not reach governed mutation"
+  unless declarationReaches env `AgentWorkbench.Kernel.Decide.decide
+      [`AgentWorkbench.Application.Service.execute] [] do
+    fail "public Service.execute does not reach authoritative Decide.decide"
+  unless declarationReaches env `AgentWorkbench.Kernel.Decide.closeWork
+      [`AgentWorkbench.Application.Service.complete] [] do
+    fail "public Service.complete does not reach authoritative Decide.closeWork"
+  unless declarationReaches env `AgentWorkbench.Kernel.Gates.run
+      [`AgentWorkbench.Application.Service.queryGate] [] do
+    fail "public Service.queryGate does not reach authoritative Gates.run"
+  unless declarationReaches env `AgentWorkbench.Kernel.Resolver.next
+      [`AgentWorkbench.Application.Service.resolve] [] do
+    fail "public Service.resolve does not reach authoritative Resolver.next"
+  unless declarationReaches env `AgentWorkbench.Kernel.Projection.repair
+      [`AgentWorkbench.Application.Service.repairProjection] [] do
+    fail "public Service.repairProjection does not reach authoritative Projection.repair"
   unless declarationReaches env `AgentWorkbench.Application.Service.repairProjection
       [`AgentWorkbench.Cli.Program.executeRequest] [] do
     fail "compiled CLI request path does not reach the explicit projection repair mutation"
@@ -603,9 +669,10 @@ def main : IO Unit := do
     | .ok rules => pure rules
     | .error error => fail error
   let manifest ← IO.FS.readFile "proof-manifest.toml"
-  match validateManifestContent designRules manifest with
-  | .error error => fail error
-  | .ok _ => pure ()
+  let policy ← match validateManifestContent designRules manifest with
+    | .error error => fail error
+    | .ok policy => pure policy
+  auditSourceAuthorities policy
   auditNegativeFixtures designRules manifest
   auditArchitecture designRules
   initSearchPath (← findSysroot) [".lake/build/lib/lean"]

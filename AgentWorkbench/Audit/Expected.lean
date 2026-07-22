@@ -71,14 +71,14 @@ axiom decide_rejection_has_no_effect (command : Decide.Command) (state : State)
     Decide.committedState (Decide.decide command state) state = state ∧
     (Decide.committedState (Decide.decide command state) state).revision = state.revision
 
-axiom close_work_preserves_valid (target : WorkId) (state : State)
+axiom close_work_preserves_valid (expectedRevision : Revision) (target : WorkId) (state : State)
     {transaction : Decide.CompletionTransaction}
-    (_accepted : Decide.closeWork target state = .ok transaction) :
+    (_accepted : Decide.closeWork expectedRevision target state = .ok transaction) :
     ValidState transaction.result.state
 
-axiom close_work_emits_atomic_event (target : WorkId) (state : State)
+axiom close_work_emits_atomic_event (expectedRevision : Revision) (target : WorkId) (state : State)
     {transaction : Decide.CompletionTransaction}
-    (accepted : Decide.closeWork target state = .ok transaction) :
+    (accepted : Decide.closeWork expectedRevision target state = .ok transaction) :
     transaction.events = [.workCompleted transaction.target transaction.activation]
 
 axiom decide_complete_requires_closeable (target : WorkId) (state : State)
