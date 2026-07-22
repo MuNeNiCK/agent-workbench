@@ -1,7 +1,16 @@
 # Release history
 
+## v0.1.25 — 2026-07-23
+
+- Let an ordinary structurally ready Decomposition Plan publish a reviewed
+  replacement revision without treating its incomplete predecessor as an
+  applied reconciliation source.
+
 ## v0.1.24 — 2026-07-23
 
+- v0.1.24 is withdrawn. Its Decomposition Plan fix distinguished ordinary
+  ready revisions from reconciliation successors but did not permit the
+  ordinary ready revision to publish its corrected successor. Use v0.1.25.
 - Keep ordinary incomplete-to-ready Decomposition Plan revisions distinct from
   reconciliation successors, so their accepted ready plan can be applied.
 - Require Phase-targeted review plans to derive clean state from exact Phase
