@@ -28,6 +28,7 @@ lean_exe «agent-workbench» where
 lean_exe «kernel-laws» where
   root := `AgentWorkbench.Tests.KernelLaws
 
+@[default_target]
 lean_exe «storage-laws» where
   root := `AgentWorkbench.Tests.StorageLaws
 

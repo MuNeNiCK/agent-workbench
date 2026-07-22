@@ -40,13 +40,16 @@ private def point (path : System.FilePath) : IO StoragePoint := do
     schemaVersion := ← parseVersion (← statement.columnText 0)
     digest := ← DurableFilesystem.digest bytes }
 
-def inspect (path : System.FilePath) : IO Inspection := do
+private def inspectUnlocked (path : System.FilePath) : IO Inspection := do
   let observed ← point path
   if observed.schemaVersion = SQLite.schemaVersion then
     return .current observed
   if observed.schemaVersion = 0 then
     return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
   return .unsupported observed
+
+def inspect (path : System.FilePath) : IO Inspection :=
+  SQLite.withWriterLock path (inspectUnlocked path)
 
 private def stagedPath (path : System.FilePath) (digest : String) : System.FilePath :=
   path.parent.getD "." /
@@ -84,25 +87,35 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan) : IO
 def apply (path backupRoot : System.FilePath) (plan : Plan) : IO Receipt :=
   SQLite.withWriterLock path (applyUnlocked path backupRoot plan)
 
-private def restoreUnlocked (path backupRoot : System.FilePath) (expectedCurrent : StoragePoint)
-    (backup : DurableFilesystem.ArtifactRef) : IO StoragePoint := do
+private def restoreUnlocked (path backupRoot : System.FilePath)
+    (receipt : Receipt) : IO StoragePoint := do
   let observed ← point path
-  unless observed = expectedCurrent do
+  unless observed = receipt.target do
     throw <| IO.userError "restore target changed after inspection"
-  match ← DurableFilesystem.verify backupRoot backup with
+  match ← DurableFilesystem.verify backupRoot receipt.backup with
   | .valid => pure ()
   | other => throw <| IO.userError s!"backup is not restorable: {repr other}"
-  let bytes ← IO.FS.readBinFile (DurableFilesystem.objectPath backupRoot backup)
-  let staged := stagedPath path backup.digest
+  let bytes ← IO.FS.readBinFile (DurableFilesystem.objectPath backupRoot receipt.backup)
+  let staged := stagedPath path receipt.backup.digest
   IO.FS.writeBinFile staged bytes
-  DurableFilesystem.replace staged path
-  let restored ← point path
-  unless restored.digest = backup.digest do
-    throw <| IO.userError "restored storage does not match the selected backup"
-  return restored
+  try
+    let stagedPoint ← point staged
+    unless stagedPoint = receipt.source do
+      throw <| IO.userError "staged backup is not the update receipt source"
+    match ← SQLite.inspectAtSchema staged receipt.source.schemaVersion with
+    | .ok _ => pure ()
+    | .error error =>
+        throw <| IO.userError s!"staged backup failed integrity: {repr error}"
+    DurableFilesystem.replace staged path
+    let restored ← point path
+    unless restored = receipt.source do
+      throw <| IO.userError "restored storage does not match the update receipt source"
+    return restored
+  catch error =>
+    if ← staged.pathExists then IO.FS.removeFile staged
+    throw error
 
-def restore (path backupRoot : System.FilePath) (expectedCurrent : StoragePoint)
-    (backup : DurableFilesystem.ArtifactRef) : IO StoragePoint :=
-  SQLite.withWriterLock path (restoreUnlocked path backupRoot expectedCurrent backup)
+def restore (path backupRoot : System.FilePath) (receipt : Receipt) : IO StoragePoint :=
+  SQLite.withWriterLock path (restoreUnlocked path backupRoot receipt)
 
 end AgentWorkbench.Adapter.Update

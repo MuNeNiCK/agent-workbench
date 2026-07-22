@@ -54,6 +54,7 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.Compl
 
 deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Replay.State
 deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Replay.Event
+deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Decide.Command
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.DecodeFault
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.ProjectionFingerprint
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.ProjectionRef

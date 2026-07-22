@@ -516,10 +516,15 @@ def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := desi
 def traceProjectFiles (designRules : Array ModuleRule) : Array String :=
   designRules.map (fun rule => (rule.module.replace "." "/") ++ ".lean") ++ #[
   "AgentWorkbench.lean",
+  "AgentWorkbench/Adapter/Codec.lean",
+  "AgentWorkbench/Adapter/DurableFilesystem.lean",
+  "AgentWorkbench/Adapter/SQLite.lean",
+  "AgentWorkbench/Adapter/Update.lean",
   "AgentWorkbench/Audit/Expected.lean",
   "AgentWorkbench/Audit/Main.lean",
   "AgentWorkbench/Cli/Program.lean",
   "AgentWorkbench/Tests/KernelLaws.lean",
+  "AgentWorkbench/Tests/StorageLaws.lean",
   "bindings/durable_filesystem.c",
   "Main.lean",
   "lake-manifest.json",

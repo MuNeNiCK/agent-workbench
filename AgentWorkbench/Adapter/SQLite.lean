@@ -43,6 +43,13 @@ structure MutationOutcome where
   exactRetry : Bool
 deriving Repr
 
+private structure CanonicalRequest where
+  command : Decide.Command
+  artifacts : List (String × Nat)
+deriving DecidableEq, Repr
+
+deriving instance ToBinary, FromBinary for CanonicalRequest
+
 private def parseNat (field value : String) : Except OpenError Nat :=
   match value.toNat? with
   | some n => .ok n
@@ -67,7 +74,8 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
     );
     CREATE TABLE events (
       revision INTEGER PRIMARY KEY CHECK (revision > 0),
-      payload BLOB NOT NULL
+      payload BLOB NOT NULL,
+      operation_id TEXT NOT NULL
     );
     CREATE TABLE projection (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -78,8 +86,12 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
     );
     CREATE TABLE operations (
       operation_id TEXT PRIMARY KEY,
+      request_payload BLOB NOT NULL,
       payload_digest TEXT NOT NULL,
       result_digest TEXT NOT NULL,
+      start_revision TEXT NOT NULL,
+      end_revision TEXT NOT NULL,
+      history_digest TEXT NOT NULL,
       receipt BLOB NOT NULL
     );
     CREATE TABLE artifacts (
@@ -123,8 +135,10 @@ def initializeStore (path : System.FilePath) : IO Unit := do
   db.transaction (mode := .immediate) do
     createSchema db
     writeInitialRows db
+  withWriterLock path (pure ())
 
-private def readMetadata (db : _root_.SQLite) : IO (Except OpenError (LedgerId × Revision × Digest)) := do
+private def readMetadataAt (db : _root_.SQLite) (expectedSchema : Nat) :
+    IO (Except OpenError (LedgerId × Revision × Digest)) := do
   let statement ← db.prepare
     "SELECT schema_version, ledger_id, head_revision, history_digest FROM metadata WHERE singleton = 1"
   unless ← statement.step do return .error .uninitialized
@@ -135,11 +149,14 @@ private def readMetadata (db : _root_.SQLite) : IO (Except OpenError (LedgerId �
   let version ← match parseNat "schema version" versionText with
     | .ok value => pure value
     | .error error => return .error error
-  if version != schemaVersion then return .error (.unsupportedSchema version schemaVersion)
+  if version != expectedSchema then return .error (.unsupportedSchema version expectedSchema)
   let revision ← match parseNat "head revision" revisionText with
     | .ok value => pure value
     | .error error => return .error error
   return .ok (⟨ledgerId⟩, ⟨revision⟩, ⟨digest⟩)
+
+private def readMetadata (db : _root_.SQLite) : IO (Except OpenError (LedgerId × Revision × Digest)) :=
+  readMetadataAt db schemaVersion
 
 private def readEvents (db : _root_.SQLite) : IO (Except OpenError (List Replay.Event)) := do
   let statement ← db.prepare "SELECT revision, payload FROM events ORDER BY revision"
@@ -177,14 +194,109 @@ private def readProjection (db : _root_.SQLite) :
     return .error (.corrupt "projection columns disagree with payload")
   return .ok projection
 
-private def loadFrom (db : _root_.SQLite) : IO (Except OpenError Projection.Store) := do
-  let metadata ← readMetadata db
+private def verifySQLiteIntegrity (db : _root_.SQLite) : IO (Except OpenError Unit) := do
+  let statement ← db.prepare "PRAGMA quick_check"
+  unless ← statement.step do return .error (.corrupt "SQLite integrity check returned no result")
+  let result ← statement.columnText 0
+  if result = "ok" then return .ok ()
+  return .error (.corrupt s!"SQLite integrity check failed: {result}")
+
+private def validateOperationJournal (db : _root_.SQLite)
+    (ledger : Replay.VerifiedLedger) : IO (Except OpenError Unit) := do
+  let eventRows ← db.prepare "SELECT revision, operation_id FROM events ORDER BY revision"
+  let mut eventOperations : Array String := #[]
+  while ← eventRows.step do
+    eventOperations := eventOperations.push (← eventRows.columnText 1)
+  let statement ← db.prepare "
+    SELECT operation_id, request_payload, payload_digest, result_digest, start_revision,
+           end_revision, history_digest, receipt
+    FROM operations ORDER BY CAST(start_revision AS INTEGER), operation_id"
+  let mut expectedStart := 0
+  while ← statement.step do
+    let operationId ← statement.columnText 0
+    let requestPayload ← statement.columnBlob 1
+    let payloadDigest ← statement.columnText 2
+    let resultDigest ← statement.columnText 3
+    let startRevision ← match parseNat "operation start revision" (← statement.columnText 4) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let endRevision ← match parseNat "operation end revision" (← statement.columnText 5) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let historyDigest ← statement.columnText 6
+    let receipt ← match decode (α := Policy.Update.Receipt)
+        "operation receipt" (← statement.columnBlob 7) with
+      | .ok value => pure value
+      | .error error => return .error error
+    unless startRevision = expectedStart && startRevision < endRevision &&
+        endRevision ≤ ledger.image.events.length do
+      return .error (.corrupt s!"operation journal range is not contiguous at {operationId}")
+    unless receipt.operation.value = operationId && receipt.payloadDigest = payloadDigest &&
+        receipt.resultDigest = resultDigest do
+      return .error (.corrupt s!"operation journal columns disagree with receipt at {operationId}")
+    unless (← DurableFilesystem.digest requestPayload) = payloadDigest do
+      return .error (.corrupt s!"operation request digest is invalid at {operationId}")
+    let request ← match decode (α := CanonicalRequest)
+        "canonical operation request" requestPayload with
+      | .ok value => pure value
+      | .error error => return .error error
+    for index in [startRevision:endRevision] do
+      unless eventOperations[index]? = some operationId do
+        return .error (.corrupt s!"event is not bound to operation {operationId}")
+    let prefixEvents := ledger.image.events.take endRevision
+    unless (Replay.eventDigest prefixEvents).value = historyDigest do
+      return .error (.corrupt s!"operation history binding is invalid at {operationId}")
+    let replayed ← match Replay.replayAt ledger ⟨endRevision⟩ with
+      | .ok value => pure value
+      | .error fault => return .error (.corrupt s!"operation result replay failed: {repr fault}")
+    unless (Replay.stateDigest replayed.state).value = resultDigest do
+      return .error (.corrupt s!"operation result binding is invalid at {operationId}")
+    let prior ← match Replay.replayAt ledger ⟨startRevision⟩ with
+      | .ok value => pure value
+      | .error fault => return .error (.corrupt s!"operation source replay failed: {repr fault}")
+    let decided ← match Decide.decide request.command prior.state with
+      | .ok value => pure value
+      | .error error =>
+          return .error (.corrupt s!"stored operation request is not replayable: {repr error}")
+    let storedEvents := ledger.image.events.drop startRevision |>.take (endRevision - startRevision)
+    unless decided.events = storedEvents && decided.result.state = replayed.state do
+      return .error (.corrupt s!"operation request does not derive its event range at {operationId}")
+    let requiredDigests := (decided.events.filterMap fun
+      | .validationPassed _ _ digest => some digest
+      | .evidenceRecorded evidence => some evidence.artifactDigest
+      | .externalOperationRecorded attempt => some attempt.artifactDigest
+      | _ => none).filter (·.startsWith "sha3-256:") |>.eraseDups
+    let requestDigests := request.artifacts.map (·.1)
+    unless requiredDigests.all requestDigests.contains &&
+        requestDigests.all requiredDigests.contains &&
+        request.artifacts.eraseDups.length = request.artifacts.length do
+      return .error (.corrupt s!"operation request artifact binding is invalid at {operationId}")
+    expectedStart := endRevision
+  unless expectedStart = ledger.image.events.length &&
+      eventOperations.size = ledger.image.events.length do
+    return .error (.corrupt "operation journal does not cover the complete event history")
+  return .ok ()
+
+private def loadFromAt (db : _root_.SQLite) (expectedSchema : Nat) :
+    IO (Except OpenError Projection.Store) := do
+  match ← verifySQLiteIntegrity db with
+  | .ok () => pure ()
+  | .error error => return .error error
+  let metadata ← readMetadataAt db expectedSchema
   let (ledgerId, headRevision, historyDigest) ← match metadata with
     | .ok value => pure value
     | .error error => return .error error
   let events ← match ← readEvents db with
     | .ok value => pure value
     | .error error => return .error error
+  let image : Replay.LedgerImage := {
+    id := ledgerId, events, storedHead := headRevision, storedHistoryDigest := historyDigest }
+  let ledger ← match Replay.verifyLedger image with
+    | .ok value => pure value
+    | .error fault => return .error (.corrupt s!"ledger integrity failed: {repr fault}")
+  match ← validateOperationJournal db ledger with
+  | .ok () => pure ()
+  | .error error => return .error error
   let projection ← match ← readProjection db with
     | .ok value => pure value
     | .error error => return .error error
@@ -198,11 +310,21 @@ private def loadFrom (db : _root_.SQLite) : IO (Except OpenError Projection.Stor
   | .fresh _ _ => return .ok store
   | inspection => return .error (.corrupt s!"integrity inspection failed: {inspection.describe}")
 
+private def loadFrom (db : _root_.SQLite) : IO (Except OpenError Projection.Store) :=
+  loadFromAt db schemaVersion
+
 def inspect (path : System.FilePath) : IO (Except OpenError Projection.Store) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  loadFrom db
+  db.transaction (loadFrom db)
+
+def inspectAtSchema (path : System.FilePath) (expectedSchema : Nat) :
+    IO (Except OpenError Projection.Store) := do
+  if !(← path.pathExists) then return .error .uninitialized
+  let db ← _root_.SQLite.openWith path
+    { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
+  db.transaction (loadFromAt db expectedSchema)
 
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do
@@ -216,21 +338,35 @@ private def readArtifactRefs (db : _root_.SQLite) :
     references := { digest, size } :: references
   return .ok references.reverse
 
+private def eventArtifactDigest? : Replay.Event → Option String
+  | .validationPassed _ _ digest => some digest
+  | .evidenceRecorded evidence => some evidence.artifactDigest
+  | .externalOperationRecorded attempt => some attempt.artifactDigest
+  | _ => none
+
+private def requiredFileArtifacts (events : List Replay.Event) : List String :=
+  (events.filterMap eventArtifactDigest?).filter (·.startsWith "sha3-256:") |>.eraseDups
+
 def inspectWithArtifacts (path artifactRoot : System.FilePath) :
     IO (Except OpenError Projection.Store) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  let store ← match ← loadFrom db with
-    | .ok value => pure value
-    | .error error => return .error error
-  let references ← match ← readArtifactRefs db with
-    | .ok value => pure value
-    | .error error => return .error error
-  let reconciliation ← DurableFilesystem.reconcile artifactRoot references
-  unless reconciliation.missing.isEmpty && reconciliation.mismatched.isEmpty do
-    return .error (.corrupt s!"artifact reconciliation failed: {repr reconciliation}")
-  return .ok store
+  db.transaction do
+    let store ← match ← loadFrom db with
+      | .ok value => pure value
+      | .error error => return .error error
+    let references ← match ← readArtifactRefs db with
+      | .ok value => pure value
+      | .error error => return .error error
+    let required := requiredFileArtifacts store.ledger.events
+    unless required.all (fun digest => references.any (·.digest = digest)) &&
+        references.all (fun reference => required.contains reference.digest) do
+      return .error (.corrupt "artifact table does not exactly match authoritative events")
+    let reconciliation ← DurableFilesystem.reconcile artifactRoot references
+    unless reconciliation.missing.isEmpty && reconciliation.mismatched.isEmpty do
+      return .error (.corrupt s!"artifact reconciliation failed: {repr reconciliation}")
+    return .ok store
 
 structure ProjectionRepairPlan where
   head : Domain.Projection.LedgerPoint
@@ -296,7 +432,7 @@ def diagnose (path : System.FilePath) : IO (Except OpenError Diagnosis) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  diagnoseFrom db
+  db.transaction (diagnoseFrom db)
 
 def repairProjection (path : System.FilePath) (plan : ProjectionRepairPlan) :
     IO (Except OpenError ProjectionRepairReceipt) := do
@@ -352,12 +488,14 @@ private def lookupReceipt (db : _root_.SQLite) (operation : OperationId) :
   | .ok receipt => return some (payload, receipt)
   | .error reason => throw <| IO.userError s!"cannot decode operation receipt: {reason}"
 
-private def appendEvents (db : _root_.SQLite) (start : Nat)
+private def appendEvents (db : _root_.SQLite) (operation : OperationId) (start : Nat)
     (events : List Replay.Event) : IO Unit := do
-  let statement ← db.prepare "INSERT INTO events (revision, payload) VALUES (?, ?)"
+  let statement ← db.prepare
+    "INSERT INTO events (revision, payload, operation_id) VALUES (?, ?, ?)"
   for (event, offset) in events.zipIdx do
     statement.bindInt64 1 (Int.ofNat (start + offset + 1)).toInt64
     statement.bindBlob 2 (toBinary event)
+    statement.bindText 3 operation.value
     statement.exec
     statement.reset
     statement.clearBindings
@@ -380,14 +518,22 @@ private def writeHead (db : _root_.SQLite) (store : Projection.Store) : IO Unit 
   projection.bindBlob 4 (toBinary active)
   projection.exec
 
-private def writeReceipt (db : _root_.SQLite) (receipt : Policy.Update.Receipt) : IO Unit := do
+private def writeReceipt (db : _root_.SQLite) (receipt : Policy.Update.Receipt)
+    (requestPayload : ByteArray)
+    (startRevision endRevision : Nat) (historyDigest : String) : IO Unit := do
   let statement ← db.prepare "
-    INSERT INTO operations (operation_id, payload_digest, result_digest, receipt)
-    VALUES (?, ?, ?, ?)"
+    INSERT INTO operations
+      (operation_id, request_payload, payload_digest, result_digest, start_revision,
+       end_revision, history_digest, receipt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
   statement.bindText 1 receipt.operation.value
-  statement.bindText 2 receipt.payloadDigest
-  statement.bindText 3 receipt.resultDigest
-  statement.bindBlob 4 (toBinary receipt)
+  statement.bindBlob 2 requestPayload
+  statement.bindText 3 receipt.payloadDigest
+  statement.bindText 4 receipt.resultDigest
+  statement.bindText 5 (toString startRevision)
+  statement.bindText 6 (toString endRevision)
+  statement.bindText 7 historyDigest
+  statement.bindBlob 8 (toBinary receipt)
   statement.exec
 
 private def writeArtifactRefs (db : _root_.SQLite)
@@ -401,44 +547,36 @@ private def writeArtifactRefs (db : _root_.SQLite)
     statement.reset
     statement.clearBindings
 
-private def eventArtifactDigest? : Replay.Event → Option String
-  | .validationPassed _ _ digest => some digest
-  | .evidenceRecorded evidence => some evidence.artifactDigest
-  | .externalOperationRecorded attempt => some attempt.artifactDigest
-  | _ => none
+private def canonicalPayload (command : Decide.Command)
+    (artifacts : List DurableFilesystem.ArtifactRef) : ByteArray :=
+  toBinary ({
+    command
+    artifacts := artifacts.map fun reference => (reference.digest, reference.size)
+  } : CanonicalRequest)
 
-private def requiredFileArtifacts (events : List Replay.Event) : List String :=
-  (events.filterMap eventArtifactDigest?).filter (·.startsWith "sha3-256:") |>.eraseDups
-
-def mutate (path : System.FilePath) (operation : OperationId) (payloadDigest : String)
+def mutateWithHook (path : System.FilePath) (operation : OperationId)
     (expectedRevision : Revision) (command : Decide.Command)
     (artifacts : List DurableFilesystem.ArtifactRef := [])
-    (artifactRoot : Option System.FilePath := none) :
+    (artifactRoot : Option System.FilePath := none)
+    (beforeArtifactCommit : IO Unit := pure ())
+    (afterJournalWrite : IO Unit := pure ()) :
     IO (Except MutationError MutationOutcome) := do
   if !(← path.pathExists) then return .error (.openError .uninitialized)
-  if !artifacts.isEmpty then
-    let root ← match artifactRoot with
-      | some value => pure value
-      | none => return .error (.artifactInvalid "artifact root is required")
-    for reference in artifacts do
-      match ← DurableFilesystem.verify root reference with
-      | .valid => pure ()
-      | _ => return .error (.artifactInvalid reference.digest)
+  let requestPayload := canonicalPayload command artifacts
+  let payloadDigest ← DurableFilesystem.digest requestPayload
   let db ← _root_.SQLite.openWith path
     { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
   withWriterLock path <| db.transaction (mode := .immediate) do
+    let store ← match ← loadFrom db with
+      | .ok value => pure value
+      | .error error => return .error (.openError error)
     match ← lookupReceipt db operation with
     | some (storedPayload, receipt) =>
         if storedPayload = payloadDigest then
-          match ← loadFrom db with
-          | .ok store => return .ok { receipt, store, exactRetry := true }
-          | .error error => return .error (.openError error)
+          return .ok { receipt, store, exactRetry := true }
         else
           return .error .operationConflict
     | none =>
-        let store ← match ← loadFrom db with
-          | .ok value => pure value
-          | .error error => return .error (.openError error)
         if store.ledger.storedHead != expectedRevision then
           return .error .staleRevision
         let transaction ← match Application.Service.execute command store with
@@ -446,16 +584,37 @@ def mutate (path : System.FilePath) (operation : OperationId) (payloadDigest : S
           | .error error => return .error (.rejected error)
         let requiredArtifacts := requiredFileArtifacts transaction.accepted.events
         unless requiredArtifacts.all (fun digest => artifacts.any (·.digest = digest)) &&
-            artifacts.all (fun reference => requiredArtifacts.contains reference.digest) do
+            artifacts.all (fun reference => requiredArtifacts.contains reference.digest) &&
+            artifacts.eraseDups.length = artifacts.length do
           return .error (.artifactInvalid "event/artifact binding mismatch")
-        appendEvents db store.ledger.events.length transaction.accepted.events
-        writeHead db transaction.result
-        writeArtifactRefs db artifacts
+        beforeArtifactCommit
+        if !artifacts.isEmpty then
+          let root ← match artifactRoot with
+            | some value => pure value
+            | none => return .error (.artifactInvalid "artifact root is required")
+          for reference in artifacts do
+            match ← DurableFilesystem.verify root reference with
+            | .valid => pure ()
+            | _ => return .error (.artifactInvalid reference.digest)
+        let startRevision := store.ledger.events.length
+        let endRevision := transaction.result.ledger.events.length
+        let historyDigest := transaction.result.ledger.storedHistoryDigest.value
         let receipt : Policy.Update.Receipt := {
           operation
           payloadDigest
           resultDigest := Replay.stateDigest transaction.accepted.result.state |>.value }
-        writeReceipt db receipt
+        writeReceipt db receipt requestPayload startRevision endRevision historyDigest
+        appendEvents db operation startRevision transaction.accepted.events
+        afterJournalWrite
+        writeHead db transaction.result
+        writeArtifactRefs db artifacts
         return .ok { receipt, store := transaction.result, exactRetry := false }
+
+def mutate (path : System.FilePath) (operation : OperationId)
+    (expectedRevision : Revision) (command : Decide.Command)
+    (artifacts : List DurableFilesystem.ArtifactRef := [])
+    (artifactRoot : Option System.FilePath := none) :
+    IO (Except MutationError MutationOutcome) :=
+  mutateWithHook path operation expectedRevision command artifacts artifactRoot
 
 end AgentWorkbench.Adapter.SQLite

@@ -57,10 +57,13 @@ static int aw_fsync_parent(const char *path) {
   char *separator = strrchr(copy, '/');
   if (separator == NULL) {
     free(copy);
-    errno = EINVAL;
-    return -1;
+    copy = strdup(".");
+    if (copy == NULL) return -1;
+  } else if (separator == copy) {
+    separator[1] = '\0';
+  } else {
+    *separator = '\0';
   }
-  *separator = '\0';
   int directory = open(copy, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   free(copy);
   if (directory < 0) return -1;
@@ -102,6 +105,12 @@ LEAN_EXPORT lean_obj_res aw_stage_durable_file(
     close(fd);
     errno = saved;
     return aw_io_error("flush staged artifact");
+  }
+  if (fchmod(fd, 0444) != 0) {
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    return aw_io_error("seal staged artifact");
   }
   if (close(fd) != 0) return aw_io_error("close staged artifact");
 
