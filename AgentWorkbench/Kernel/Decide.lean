@@ -18,7 +18,7 @@ inductive Command
   | resumeWork (expectedRevision : Revision) (work : WorkId)
       (activation : ActivationId)
   | planCompletion (expectedRevision : Revision) (plan : Lifecycle.CompletionPlan)
-  | terminateRelatedWork (expectedRevision : Revision) (owner related : WorkId)
+  | acknowledgeRelatedWorkTerminal (expectedRevision : Revision) (owner related : WorkId)
   | completePhase (expectedRevision : Revision) (work : WorkId) (key : String)
   | completeTask (expectedRevision : Revision) (work : WorkId) (key : String)
   | completeChecklist (expectedRevision : Revision) (work : WorkId) (key : String)
@@ -46,7 +46,7 @@ def Command.expectedRevision : Command → Revision
   | .registerSuspendedActivation revision _
   | .resumeWork revision _ _
   | .planCompletion revision _
-  | .terminateRelatedWork revision _ _
+  | .acknowledgeRelatedWorkTerminal revision _ _
   | .completePhase revision _ _
   | .completeTask revision _ _
   | .completeChecklist revision _ _
@@ -102,16 +102,16 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.completionPlanned plan], by simp⟩
       else
         .error (.invalidTransition "completion plan is not authoritative or well formed")
-  | .terminateRelatedWork _ owner related =>
+  | .acknowledgeRelatedWorkTerminal _ owner related =>
       match Lifecycle.forWork state.lifecycle owner with
       | none => .error (.invalidTransition "completion plan is missing")
       | some completion =>
           if completion.plan.relatedWork.any (·.work == related) &&
-              state.work.any (fun work => work.id == related && work.status == .open) &&
-              (Work.activeFor state.activations related).isNone then
-            .ok ⟨[.relatedWorkTerminated owner related], by simp⟩
+              state.work.any (fun work => work.id == related &&
+                (work.status == .closed || work.status == .abandoned)) then
+            .ok ⟨[.relatedWorkTerminalAcknowledged owner related], by simp⟩
           else
-            .error (.invalidTransition "related work is not an open inactive requirement")
+            .error (.invalidTransition "related work has not reached its own terminal state")
   | .completePhase _ work key =>
       match Lifecycle.forWork state.lifecycle work with
       | some completion =>

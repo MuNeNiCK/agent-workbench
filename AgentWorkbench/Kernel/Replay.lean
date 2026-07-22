@@ -129,7 +129,7 @@ inductive Event
   | suspendedActivationRegistered (activation : Work.Activation)
   | workResumed (work : WorkId) (activation : ActivationId)
   | completionPlanned (plan : Lifecycle.CompletionPlan)
-  | relatedWorkTerminated (owner related : WorkId)
+  | relatedWorkTerminalAcknowledged (owner related : WorkId)
   | phaseCompleted (work : WorkId) (key : String)
   | taskCompleted (work : WorkId) (key : String)
   | checklistCompleted (work : WorkId) (key : String)
@@ -167,9 +167,8 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       | none => invalidated
   | .completionPlanned plan =>
       { invalidated with lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan] }
-  | .relatedWorkTerminated owner related =>
+  | .relatedWorkTerminalAcknowledged owner _ =>
       { invalidated with
-        work := Work.closeWork state.work related
         lifecycle := state.lifecycle.map fun completion =>
           if completion.plan.work == owner then Lifecycle.advance completion else completion }
   | .phaseCompleted work key =>
@@ -291,13 +290,13 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   | .completionPlanned plan =>
       !state.lifecycle.any (fun completion => completion.plan.work == plan.work) &&
       decide (Lifecycle.ValidPlan (state.work.map (·.id)) plan)
-  | .relatedWorkTerminated owner related =>
+  | .relatedWorkTerminalAcknowledged owner related =>
       match Lifecycle.forWork state.lifecycle owner with
       | none => false
       | some completion =>
           completion.plan.relatedWork.any (·.work == related) &&
-          state.work.any (fun work => work.id == related && work.status == .open) &&
-          (Work.activeFor state.activations related).isNone
+          state.work.any (fun work => work.id == related &&
+            (work.status == .closed || work.status == .abandoned))
   | .phaseCompleted work key =>
       match Lifecycle.forWork state.lifecycle work with
       | some completion => completion.phases.any (fun record =>

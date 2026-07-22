@@ -11,6 +11,9 @@ def firstActivation : Domain.Work.Activation :=
 def secondActivation : Domain.Work.Activation :=
   { id := ⟨2⟩, work := ⟨2⟩, status := .active, readyToResume := false }
 
+def thirdActivation : Domain.Work.Activation :=
+  { id := ⟨3⟩, work := ⟨3⟩, status := .active, readyToResume := false }
+
 def firstWork : Domain.Work.WorkUnit :=
   { id := ⟨1⟩, status := .open }
 
@@ -22,6 +25,9 @@ def thirdWork : Domain.Work.WorkUnit :=
 
 def parentWork : Domain.Work.WorkUnit :=
   { id := ⟨4⟩, status := .open }
+
+def blockedRelatedWork : Domain.Work.WorkUnit :=
+  { id := ⟨5⟩, status := .open }
 
 def completionPlan : Domain.Lifecycle.CompletionPlan :=
   { work := firstWork.id
@@ -100,14 +106,72 @@ def expectResolverActionRejected (action : Kernel.Resolver.Action)
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError s!"{message}: stale action unexpectedly executed"
 
-def buildCompletionStore (missing : Option MissingCompletionCondition) :
+def minimalCompletionPlan (work : WorkId) : Domain.Lifecycle.CompletionPlan :=
+  { work
+    relatedWork := []
+    phases := []
+    tasks := []
+    checklists := []
+    reviews := []
+    findings := []
+    validations := []
+    repositories := []
+    corrections := []
+    workRecords := [] }
+
+def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
     IO Kernel.Projection.Store := do
-  let store ← executeStore Application.Service.bootstrapCommand
-    Application.Service.initialStore "bootstrap rejected"
-  let store ← executeStore (.registerWork store.ledger.storedHead secondWork) store
-    "child registration rejected"
+  let store ← executeStore
+    (.planCompletion store.ledger.storedHead (minimalCompletionPlan work)) store
+    s!"minimal completion plan rejected for {work.value}"
+  let key := s!"proof-{work.value}"
+  let obligation : Domain.Evidence.Obligation :=
+    { work, key, revision := store.ledger.storedHead, current := true }
+  let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
+    s!"minimal obligation rejected for {work.value}"
+  let evidence : Domain.Evidence.Evidence :=
+    { id := ⟨work.value⟩
+      work
+      obligation := key
+      revision := store.ledger.storedHead
+      artifactDigest := s!"sha256:minimal-{work.value}"
+      current := true }
+  let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
+    s!"minimal evidence rejected for {work.value}"
+  match Application.Service.complete work store with
+  | .ok transaction => pure transaction.result
+  | .error error => throw <| IO.userError s!"minimal authoritative completion rejected for {work.value}: {repr error}"
+
+def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
+    IO Kernel.Projection.Store := do
+  let store ← executeStore
+    (.initializeWork Application.Service.initialStore.ledger.storedHead
+      secondWork secondActivation)
+    Application.Service.initialStore "child initialization rejected"
+  let store ← completeMinimalActiveWork secondWork.id store
   let store ← executeStore (.registerWork store.ledger.storedHead thirdWork) store
     "dependency registration rejected"
+  let suspendedThird := { thirdActivation with status := .suspended, readyToResume := true }
+  let store ← executeStore
+    (.registerSuspendedActivation store.ledger.storedHead suspendedThird) store
+    "dependency activation registration rejected"
+  let store ← executeStore
+    (.resumeWork store.ledger.storedHead thirdWork.id thirdActivation.id) store
+    "dependency resume rejected"
+  let store ← completeMinimalActiveWork thirdWork.id store
+  let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
+    "owner registration rejected"
+  let suspendedFirst := { firstActivation with status := .suspended, readyToResume := true }
+  let store ← executeStore
+    (.registerSuspendedActivation store.ledger.storedHead suspendedFirst) store
+    "owner activation registration rejected"
+  let store ← executeStore
+    (.resumeWork store.ledger.storedHead firstWork.id firstActivation.id) store
+    "owner resume rejected"
+  let store ← if missing == some .child || missing == some .dependency then
+      executeStore (.registerWork store.ledger.storedHead blockedRelatedWork) store
+        "blocking related-work registration rejected"
+    else pure store
   let store ← executeStore (.registerWork store.ledger.storedHead parentWork) store
     "parent registration rejected"
   let parentActivation : Domain.Work.Activation :=
@@ -115,14 +179,28 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead parentActivation) store
     "parent activation registration rejected"
-  let store ← executeStore (.planCompletion store.ledger.storedHead completionPlan) store
-    "completion plan rejected"
+  let plan :=
+    if missing == some .child then
+      { completionPlan with relatedWork := [
+          { work := blockedRelatedWork.id, kind := .child },
+          { work := thirdWork.id, kind := .dependency }] }
+    else if missing == some .dependency then
+      { completionPlan with relatedWork := [
+          { work := secondWork.id, kind := .child },
+          { work := blockedRelatedWork.id, kind := .dependency }] }
+    else completionPlan
+  executeStore (.planCompletion store.ledger.storedHead plan) store
+    "owner completion planning rejected"
+
+def buildCompletionStore (missing : Option MissingCompletionCondition) :
+    IO Kernel.Projection.Store := do
+  let store ← buildPlannedCompletionStore missing
   let store ← if missing != some .child then
-      executeStore (.terminateRelatedWork store.ledger.storedHead
+      executeStore (.acknowledgeRelatedWorkTerminal store.ledger.storedHead
         firstWork.id secondWork.id) store "child completion rejected"
     else pure store
   let store ← if missing != some .dependency then
-      executeStore (.terminateRelatedWork store.ledger.storedHead
+      executeStore (.acknowledgeRelatedWorkTerminal store.ledger.storedHead
         firstWork.id thirdWork.id) store "dependency completion rejected"
     else pure store
   let store ← if missing != some .phase then
@@ -306,21 +384,21 @@ def main : IO Unit := do
   let orphanObligation := { currentObligation with work := ⟨99⟩ }
   expectRejectedNoEffect (.recordObligation first.revision orphanObligation) first
     "obligation owned by missing work"
-  let registeredChild ← executeState (.registerWork first.revision secondWork) first
-    "child registration rejected"
-  let registeredDependency ← executeState
-    (.registerWork registeredChild.revision thirdWork) registeredChild
-    "dependency registration rejected"
-  let registeredParent ← executeState
-    (.registerWork registeredDependency.revision parentWork) registeredDependency
-    "parent registration rejected"
+  let openRelated ← executeState (.registerWork first.revision secondWork) first
+    "open related-work registration rejected"
+  let openRelatedPlan : Domain.Lifecycle.CompletionPlan :=
+    { minimalCompletionPlan firstWork.id with
+      relatedWork := [{ work := secondWork.id, kind := .child }] }
+  let openRelated ← executeState
+    (.planCompletion openRelated.revision openRelatedPlan) openRelated
+    "open related-work completion plan rejected"
+  expectRejectedNoEffect
+    (.acknowledgeRelatedWorkTerminal openRelated.revision firstWork.id secondWork.id) openRelated
+    "owner attempted to close open related work"
+  let plannedStore ← buildPlannedCompletionStore none
+  let planned ← currentState plannedStore
   let parentActivation : Domain.Work.Activation :=
     { id := ⟨4⟩, work := parentWork.id, status := .suspended, readyToResume := true }
-  let withParent ← executeState
-    (.registerSuspendedActivation registeredParent.revision parentActivation) registeredParent
-    "suspended parent registration rejected"
-  let planned ← executeState (.planCompletion withParent.revision completionPlan) withParent
-    "completion planning rejected"
   expect (!(Policy.Completion.closeable firstWork.id planned.work planned.activations
     planned.claims planned.adjudications planned.lifecycle
     planned.evidence planned.obligations))
@@ -335,10 +413,10 @@ def main : IO Unit := do
   | .error (.invalidTransition _) => pure ()
   | _ => throw <| IO.userError "a raw completion event bypassed authoritative lifecycle derivation"
   let childDone ← executeState
-    (.terminateRelatedWork planned.revision firstWork.id secondWork.id) planned
+    (.acknowledgeRelatedWorkTerminal planned.revision firstWork.id secondWork.id) planned
     "child completion rejected"
   let dependencyDone ← executeState
-    (.terminateRelatedWork childDone.revision firstWork.id thirdWork.id) childDone
+    (.acknowledgeRelatedWorkTerminal childDone.revision firstWork.id thirdWork.id) childDone
     "dependency completion rejected"
   let phaseDone ← executeState
     (.completePhase dependencyDone.revision firstWork.id "phase-1") dependencyDone
