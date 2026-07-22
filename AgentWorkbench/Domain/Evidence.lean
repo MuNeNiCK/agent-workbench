@@ -46,6 +46,11 @@ def ObligationsWellFormed (obligations : List Obligation) : Prop :=
 def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => work.contains obligation.work) = true
 
+def CurrentObligationsReferenceOpenWork (openWork : List WorkId)
+    (obligations : List Obligation) : Prop :=
+  (obligations.all fun obligation =>
+    !obligation.current || openWork.contains obligation.work) = true
+
 def EvidenceReferencesObligations (evidence : List Evidence)
     (obligations : List Obligation) : Prop :=
   (evidence.all fun item => obligations.any fun obligation =>

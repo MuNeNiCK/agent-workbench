@@ -194,6 +194,11 @@ def main : IO Unit := do
     "completion must atomically close the owning activation"
   expect (completed.revision == completable.revision.next)
     "atomic completion must advance exactly one revision"
+  expectRejectedNoEffect
+    (.recordCompletionEvidence completed.revision completeFacts [currentObligation]) completed
+    "current completion evidence for closed work"
+  expectRejectedNoEffect (.recordObligation completed.revision currentObligation) completed
+    "current obligation for closed work"
   let contradictory := { completable with completionFacts :=
     [completeFacts, { completeFacts with revision := ⟨3⟩, tasksComplete := false }] }
   match Kernel.Replay.verifyState contradictory with

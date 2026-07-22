@@ -71,6 +71,11 @@ def CompletionFactsReferenceWork (work : List WorkUnit)
     (facts : List CompletionFacts) : Prop :=
   (facts.all fun fact => work.any (·.id == fact.work)) = true
 
+def CurrentCompletionFactsReferenceOpenWork (work : List WorkUnit)
+    (facts : List CompletionFacts) : Prop :=
+  (facts.all fun fact => !fact.current ||
+    work.any fun unit => unit.id == fact.work && unit.status == .open) = true
+
 def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop :=
   UniqueWorkIds work ∧
   UniqueActivationIds activations ∧
