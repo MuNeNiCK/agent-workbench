@@ -63,6 +63,127 @@ def executeState (command : Kernel.Decide.Command) (state : Kernel.Replay.State)
   | .ok transaction => pure transaction.result.state
   | .error error => throw <| IO.userError s!"{message}: {repr error}"
 
+inductive MissingCompletionCondition
+  | child
+  | dependency
+  | phase
+  | task
+  | checklist
+  | review
+  | finding
+  | validation
+  | repository
+  | correction
+  | workRecord
+deriving DecidableEq, Repr, BEq
+
+def currentState (store : Kernel.Projection.Store) : IO Kernel.Replay.State :=
+  match (Kernel.Projection.inspect store).currentState? with
+  | some state => pure state
+  | none => throw <| IO.userError "public command fixture lost its fresh projection"
+
+def executeStore (command : Kernel.Decide.Command) (store : Kernel.Projection.Store)
+    (message : String) : IO Kernel.Projection.Store :=
+  match Application.Service.execute command store with
+  | .ok transaction => pure transaction.result
+  | .error error => throw <| IO.userError s!"{message}: {repr error}"
+
+def buildCompletionStore (missing : Option MissingCompletionCondition) :
+    IO Kernel.Projection.Store := do
+  let store ← executeStore Application.Service.bootstrapCommand
+    Application.Service.initialStore "bootstrap rejected"
+  let store ← executeStore (.registerWork store.ledger.storedHead secondWork) store
+    "child registration rejected"
+  let store ← executeStore (.registerWork store.ledger.storedHead thirdWork) store
+    "dependency registration rejected"
+  let store ← executeStore (.registerWork store.ledger.storedHead parentWork) store
+    "parent registration rejected"
+  let parentActivation : Domain.Work.Activation :=
+    { id := ⟨4⟩, work := parentWork.id, status := .suspended, readyToResume := true }
+  let store ← executeStore
+    (.registerSuspendedActivation store.ledger.storedHead parentActivation) store
+    "parent activation registration rejected"
+  let store ← executeStore (.planCompletion store.ledger.storedHead completionPlan) store
+    "completion plan rejected"
+  let store ← if missing != some .child then
+      executeStore (.terminateRelatedWork store.ledger.storedHead
+        firstWork.id secondWork.id) store "child completion rejected"
+    else pure store
+  let store ← if missing != some .dependency then
+      executeStore (.terminateRelatedWork store.ledger.storedHead
+        firstWork.id thirdWork.id) store "dependency completion rejected"
+    else pure store
+  let store ← if missing != some .phase then
+      executeStore (.completePhase store.ledger.storedHead firstWork.id "phase-1")
+        store "phase completion rejected"
+    else pure store
+  let store ← if missing != some .task then
+      executeStore (.completeTask store.ledger.storedHead firstWork.id "task-1")
+        store "task completion rejected"
+    else pure store
+  let store ← executeStore
+    (.completeTask store.ledger.storedHead firstWork.id "task-after-validation")
+    store "second task completion rejected"
+  let store ← if missing != some .checklist then
+      executeStore (.completeChecklist store.ledger.storedHead
+        firstWork.id "checklist-1") store "checklist completion rejected"
+    else pure store
+  let store ← if missing != some .finding then
+      executeStore (.resolveFinding store.ledger.storedHead firstWork.id "finding-1")
+        store "finding resolution rejected"
+    else pure store
+  let store ← if missing != some .correction then
+      executeStore (.resolveCorrection store.ledger.storedHead
+        firstWork.id "correction-1") store "correction resolution rejected"
+    else pure store
+  let store ← if missing != some .workRecord then
+      executeStore (.linkWorkRecord store.ledger.storedHead firstWork.id
+        "record-1" "work-record:matrix") store "work-record link rejected"
+    else pure store
+  let store ← if missing != some .repository then
+      executeStore (.classifyRepository store.ledger.storedHead firstWork.id
+        "repository-1" "snapshot:matrix") store "repository classification rejected"
+    else pure store
+  let state ← currentState store
+  let epoch ← match Domain.Lifecycle.forWork state.lifecycle firstWork.id with
+    | some completion => pure completion.epoch
+    | none => throw <| IO.userError "completion lifecycle disappeared"
+  let store ← if missing != some .review then
+      let claim : Domain.Review.Claim :=
+        { id := ⟨10⟩, plan := ⟨1⟩, work := firstWork.id, epoch, claim := .clean }
+      let claimed ← executeStore
+        (.recordReviewClaim store.ledger.storedHead claim) store "review claim rejected"
+      executeStore (.recordReviewAdjudication claimed.ledger.storedHead
+        { review := claim.id, decision := .accepted }) claimed
+        "review adjudication rejected"
+    else pure store
+  let store ← if missing != some .validation then
+      executeStore (.passValidation store.ledger.storedHead firstWork.id
+        "validation-1" "artifact:matrix") store "validation observation rejected"
+    else pure store
+  pure store
+
+def expectPublicCompletionRejected (missing : MissingCompletionCondition)
+    (label : String) : IO Unit := do
+  let store ← buildCompletionStore (some missing)
+  let state ← currentState store
+  match Application.Service.complete firstWork.id store with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError s!"{label}: public completion unexpectedly accepted"
+  let kernelResult := Kernel.Decide.decide
+    (.completeWork state.revision firstWork.id) state
+  expect (Kernel.Decide.committedEvents kernelResult).isEmpty
+    s!"{label}: rejection exposed an accepted event"
+  expect (Kernel.Decide.committedState kernelResult state == state)
+    s!"{label}: rejection changed state or revision"
+  expect ((Application.Service.status store).store == store)
+    s!"{label}: rejected public attempt changed the complete store"
+  expect (state.work.any fun work => work.id == firstWork.id && work.status == .open)
+    s!"{label}: rejected completion did not retain the active target"
+  expect (state.activations.any fun activation =>
+    activation.work == firstWork.id && activation.status == .active)
+    s!"{label}: rejected completion did not retain the owning activation"
+
 def main : IO Unit := do
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
@@ -440,6 +561,56 @@ def main : IO Unit := do
   match Kernel.Projection.inspect corruptRepaired with
   | .fresh _ _ => pure ()
   | _ => throw <| IO.userError "corrupt projection repair did not adopt replayed state"
+
+  let rejectionCases : List (MissingCompletionCondition × String) := [
+    (.child, "child work"),
+    (.dependency, "dependency work"),
+    (.phase, "phase"),
+    (.task, "task"),
+    (.checklist, "checklist"),
+    (.review, "review"),
+    (.finding, "finding"),
+    (.validation, "validation"),
+    (.repository, "repository classification"),
+    (.correction, "correction"),
+    (.workRecord, "work-record linkage")]
+  for (condition, label) in rejectionCases do
+    expectPublicCompletionRejected condition label
+  let allReadyStore ← buildCompletionStore none
+  let beforeCompletion ← currentState allReadyStore
+  let completedTransaction ← match Application.Service.complete firstWork.id allReadyStore with
+    | .ok transaction => pure transaction
+    | .error error => throw <| IO.userError s!"public all-ready completion rejected: {repr error}"
+  expect (completedTransaction.accepted.events ==
+      [.workCompleted firstWork.id firstActivation.id])
+    "all-ready completion must emit exactly the target close event"
+  let afterCompletion := completedTransaction.accepted.result.state
+  expect (afterCompletion.revision == beforeCompletion.revision.next)
+    "all-ready completion must advance exactly one revision"
+  expect (afterCompletion.work.filter (·.id != firstWork.id) ==
+      beforeCompletion.work.filter (·.id != firstWork.id))
+    "completion changed work other than the exact target"
+  expect (afterCompletion.activations.filter (·.id != firstActivation.id) ==
+      beforeCompletion.activations.filter (·.id != firstActivation.id))
+    "completion changed an activation other than the exact target"
+  expect (afterCompletion.work.any fun work =>
+      work.id == firstWork.id && work.status == .closed)
+    "all-ready completion did not close the target"
+  expect (afterCompletion.activations.any fun activation =>
+      activation.id == firstActivation.id && activation.status == .closed)
+    "all-ready completion did not close the target activation"
+  expect (afterCompletion.activations.any fun activation =>
+      activation.work == parentWork.id && activation.status == .suspended &&
+        activation.readyToResume)
+    "completion resumed or lost the suspended parent"
+  let completedStore := completedTransaction.result
+  match (Application.Service.resolve completedStore).value with
+  | .action action@(.resumeSuspendedWork _ work activation) =>
+      expect (work == parentWork.id && activation == ⟨4⟩)
+        "completion exposed the wrong suspended parent"
+      expect (action.executable (Kernel.Projection.inspect completedStore))
+        "exposed parent resume action is not executable"
+  | _ => throw <| IO.userError "completion did not expose the suspended parent"
   IO.println "kernel laws: pass"
 
 end AgentWorkbench.Tests.KernelLaws
