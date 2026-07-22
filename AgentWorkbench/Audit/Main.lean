@@ -449,7 +449,8 @@ def builtModules (output : String) : List String :=
         match built.trimAscii.toString.splitOn " " with
         | token :: _ =>
             let module := (token.splitOn ":").head?.getD token
-            if module = "Main" || module.startsWith "AgentWorkbench." then some module else none
+            if module = "Main" || module = "AgentWorkbench" ||
+                module.startsWith "AgentWorkbench." then some module else none
         | _ => none
     | _ => none).eraseDups
 
@@ -468,7 +469,30 @@ def allowedTraceModules (case : RebuildTraceCase) : List String :=
   if case.privateProof then [case.module]
   else case.module :: dependentClosure traceModuleRules case.module
 
-def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase) : IO Unit := do
+def requiredTraceModules (actualRules : Array ModuleRule)
+    (case : RebuildTraceCase) : List String :=
+  if case.privateProof then [case.module]
+  else case.module :: dependentClosure actualRules case.module
+
+def traceSatisfiesBounds (actualRules : Array ModuleRule)
+    (case : RebuildTraceCase) (trace : List String) : Bool :=
+  let allowed := allowedTraceModules case
+  let required := requiredTraceModules actualRules case
+  required.all trace.contains && trace.all allowed.contains
+
+def auditIncompleteTraceFixture (actualRules : Array ModuleRule)
+    (case : RebuildTraceCase) : IO Unit := do
+  if !case.privateProof then
+    let required := requiredTraceModules actualRules case
+    match required.reverse with
+    | [] => fail s!"public trace {case.key} has no required modules"
+    | missing :: _ =>
+        let incomplete := required.filter (· != missing)
+        if traceSatisfiesBounds actualRules case incomplete then
+          fail s!"incomplete public trace fixture was accepted for {case.key}; missing {missing}"
+
+def auditRebuildTrace (lake project : System.FilePath) (actualRules : Array ModuleRule)
+    (case : RebuildTraceCase) : IO Unit := do
   unless traceModuleRules.any (fun rule => rule.module = case.module) do
     fail s!"trace owner {case.module} is outside the normative module map"
   if case.privateProof && (dependentClosure traceModuleRules case.module).isEmpty then
@@ -484,7 +508,9 @@ def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase)
   IO.FS.writeFile path changed
   -- `--old` is sound only for this manifest-locked theorem proof body: its
   -- exported type is immutable and Lean proof irrelevance hides its value.
-  let trace := builtModules (← runLakeBuild lake project (oldMode := case.privateProof))
+  let targets := if case.privateProof then #[] else
+    #["AgentWorkbench", "agent-workbench", "kernel-laws", "verified-core-audit"]
+  let trace := builtModules (← runLakeBuild lake project targets (oldMode := case.privateProof))
   if trace.isEmpty then fail s!"Lake emitted no rebuild trace for {case.key}"
   unless trace.contains case.module do
     fail s!"Lake did not rebuild changed module {case.module} for {case.key}"
@@ -492,17 +518,32 @@ def auditRebuildTrace (lake project : System.FilePath) (case : RebuildTraceCase)
   for rebuilt in trace do
     unless allowed.contains rebuilt do
       fail s!"{case.key} rebuilt {rebuilt} outside its normative reverse closure"
-  IO.println s!"verified-core trace {case.key}: {String.intercalate "," trace}"
+  let required := requiredTraceModules actualRules case
+  for dependent in required do
+    unless trace.contains dependent do
+      fail s!"{case.key} omitted required reverse-dependent module {dependent}"
+  unless traceSatisfiesBounds actualRules case trace do
+    fail s!"{case.key} rebuild trace does not equal its required bounded closure"
+  auditIncompleteTraceFixture actualRules case
+  IO.println s!"verified-core trace {case.key}: required={String.intercalate "," required}; rebuilt={String.intercalate "," trace}"
   IO.FS.writeFile path original
   discard <| runLakeBuild lake project
 
 def auditRepresentativeRebuilds : IO Unit := do
   let lake := (← findSysroot) / "bin" / "lake"
   unless ← lake.pathExists do fail s!"Lake executable is absent: {lake}"
+  let mut actualRules : Array ModuleRule := #[]
+  for expected in traceModuleRules do
+    let imports := (← sourceImports expected.module).filter fun imported =>
+      traceModuleRules.any (·.module = imported)
+    for imported in imports do
+      unless expected.imports.contains imported do
+        fail s!"trace module {expected.module} imports {imported} outside its normative bound"
+    actualRules := actualRules.push ⟨expected.module, imports⟩
   IO.FS.withTempDir fun project => do
     copyTraceProject project
     discard <| runLakeBuild lake project
-    for case in rebuildTraceCases do auditRebuildTrace lake project case
+    for case in rebuildTraceCases do auditRebuildTrace lake project actualRules case
 
 def main : IO Unit := do
   let manifest ← IO.FS.readFile "proof-manifest.toml"
