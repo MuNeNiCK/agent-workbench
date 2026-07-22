@@ -142,9 +142,19 @@ def eventDigest (events : List Event) : Digest :=
 def stateDigest (state : State) : Digest :=
   ⟨s!"{repr state}"⟩
 
+def emptyState : State :=
+  { revision := ⟨0⟩
+    work := []
+    activations := []
+    claims := []
+    adjudications := []
+    evidence := []
+    externalOperations := []
+    obligations := []
+    completionFacts := [] }
+
 structure LedgerImage where
   id : LedgerId
-  initial : State
   events : List Event
   storedHead : Revision
   storedHistoryDigest : Digest
@@ -153,12 +163,12 @@ deriving DecidableEq, Repr
 structure VerifiedLedger where
   image : LedgerImage
   head : VerifiedState
-  replayed : replay image.events image.initial = .ok head
+  replayed : replay image.events emptyState = .ok head
   revisionExact : head.state.revision = image.storedHead
   digestExact : eventDigest image.events = image.storedHistoryDigest
 
 def verifyLedger (image : LedgerImage) : Except Projection.LedgerFault VerifiedLedger :=
-  match replayed : replay image.events image.initial with
+  match replayed : replay image.events emptyState with
   | .error error => .error (.replayRejected error)
   | .ok head =>
       if revisionExact : head.state.revision = image.storedHead then
@@ -176,14 +186,14 @@ def VerifiedLedger.point (ledger : VerifiedLedger) : Projection.LedgerPoint :=
 
 def replayAt (ledger : VerifiedLedger) (revision : Revision) :
     Except Projection.LedgerFault VerifiedState :=
-  match replay (ledger.image.events.take revision.value) ledger.image.initial with
+  match replay (ledger.image.events.take revision.value) emptyState with
   | .error error => .error (.replayRejected error)
   | .ok state =>
       if state.state.revision = revision then .ok state
       else .error (.headRevisionMismatch state.state.revision revision)
 
 theorem verified_ledger_head_is_replay (ledger : VerifiedLedger) :
-    replay ledger.image.events ledger.image.initial = .ok ledger.head :=
+    replay ledger.image.events emptyState = .ok ledger.head :=
   ledger.replayed
 
 theorem replay_deterministic (events : List Event) (initial : State)
@@ -206,17 +216,6 @@ theorem work_completed_event_exact (state : State) (work : WorkId) (activation :
     completed.activations = Work.closeActivation state.activations activation ∧
     completed.revision = state.revision.next := by
   simp [applyUnchecked]
-
-def emptyState : State :=
-  { revision := ⟨0⟩
-    work := []
-    activations := []
-    claims := []
-    adjudications := []
-    evidence := []
-    externalOperations := []
-    obligations := []
-    completionFacts := [] }
 
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,

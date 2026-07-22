@@ -283,7 +283,6 @@ theorem adoption_is_atomic (transaction : AdoptionTransaction) :
 
 def initialLedger : LedgerImage :=
   { id := ⟨"agent-workbench"⟩
-    initial := emptyState
     events := []
     storedHead := emptyState.revision
     storedHistoryDigest := eventDigest [] }

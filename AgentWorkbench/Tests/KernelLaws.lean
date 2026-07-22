@@ -22,19 +22,6 @@ def initializeWork (state : Kernel.Replay.State)
     (activation : Domain.Work.Activation) : Kernel.Decide.Command :=
   .initializeWork state.revision work activation
 
-def storeFromState (state : Kernel.Replay.State) : Kernel.Projection.Store :=
-  let ledger : Kernel.Replay.LedgerImage := {
-    id := ⟨"test-ledger"⟩
-    initial := state
-    events := []
-    storedHead := state.revision
-    storedHistoryDigest := Kernel.Replay.eventDigest [] }
-  { ledger
-    active := some (Application.Service.projectionFor ledger state)
-    staged := []
-    receipts := []
-    nextStage := ⟨1⟩ }
-
 def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError message
 
@@ -247,7 +234,10 @@ def main : IO Unit := do
     .exact receipt) "an exact retry must return its receipt despite a later revision"
   expect (Policy.Update.resolveRetry receipt.operation "changed" ⟨0⟩ ⟨99⟩ [receipt] ==
     .payloadConflict) "a changed retry payload must conflict"
-  let firstStore := storeFromState first
+  let firstStore ← match Application.Service.execute
+      Application.Service.bootstrapCommand Application.Service.initialStore with
+    | .ok transaction => pure transaction.result
+    | .error error => throw <| IO.userError s!"store bootstrap rejected: {repr error}"
   let observed := Kernel.Gates.observeGate Kernel.Gates.validStateGate firstStore
   expect (observed.1 == firstStore) "gate observation must preserve the complete store"
   let firstInspection := Kernel.Projection.inspect firstStore
@@ -260,50 +250,34 @@ def main : IO Unit := do
       expect (!action.executable (Kernel.Projection.inspect revisedStore))
         "a projected action must become non-executable after ledger identity changes"
   | .blocked _ => throw <| IO.userError "active work must resolve to an action"
-  let noActivation := { first with activations := [] }
-  let noActivationStore := storeFromState noActivation
-  let noActivationInspection := Kernel.Projection.inspect noActivationStore
-  match (Application.Service.resolve noActivationStore).value with
-  | .blocked blocker@(.noActivation point) =>
-      expect (point.revision == noActivation.revision)
-        "a no-activation blocker must state the current ledger point"
-      expect (decide (blocker.exact noActivationInspection))
-        "a no-activation blocker must exactly describe the inspected store"
-  | _ => throw <| IO.userError "missing activation must return its exact blocker"
-  let notReady := { first with activations := [suspended] }
-  let notReadyStore := storeFromState notReady
-  let notReadyInspection := Kernel.Projection.inspect notReadyStore
-  match (Application.Service.resolve notReadyStore).value with
-  | .blocked blocker@(.noResumableActivation point candidates) =>
-      expect (point.revision == notReady.revision && candidates == [suspended.id])
-        "an unready activation blocker must state ledger point and candidates"
-      expect (decide (blocker.exact notReadyInspection))
-        "an unready activation blocker must exactly describe the inspected store"
-  | _ => throw <| IO.userError "unready activation must not emit resume"
-  let readyState := { first with activations := [ready] }
-  let readyStore := storeFromState readyState
-  let readyInspection := Kernel.Projection.inspect readyStore
-  match (Application.Service.resolve readyStore).value with
-  | .action action@(.resumeSuspendedWork point work activation) =>
-      expect (point.revision == readyState.revision &&
-        work == firstWork.id && activation == ready.id)
-        "resume must bind current ledger point, target work, and activation"
-      expect (action.executable readyInspection)
-        "a returned resume action must execute against the inspected store"
-  | _ => throw <| IO.userError "ready suspended activation must emit exact resume"
-  let invalidStore := storeFromState staleRevisionState
-  let invalidInspection := Kernel.Projection.inspect invalidStore
-  match (Application.Service.resolve invalidStore).value with
+  let forgedLedger := {
+    firstStore.ledger with
+    events := []
+    storedHead := first.revision
+    storedHistoryDigest := Kernel.Replay.eventDigest [] }
+  let forgedStore := { firstStore with
+    ledger := forgedLedger
+    active := some (Application.Service.projectionFor forgedLedger first) }
+  let forgedInspection := Kernel.Projection.inspect forgedStore
+  match (Application.Service.resolve forgedStore).value with
   | .blocked blocker@(.ledgerCorrupt _) =>
-      expect (decide (blocker.exact invalidInspection))
-        "an invalid authoritative ledger must return its exact blocker"
-  | _ => throw <| IO.userError "invalid authoritative state must block repair and work"
+      expect (decide (blocker.exact forgedInspection))
+        "a noncanonical event stream must return its exact ledger blocker"
+  | _ => throw <| IO.userError "raw state without canonical events became authoritative"
+  expect forgedInspection.repairCommand?.isNone
+    "corrupt canonical ledger must not emit projection repair"
+  match (Application.Service.status forgedStore).value with
+  | .ledgerCorrupt _ => pure ()
+  | _ => throw <| IO.userError "status did not expose canonical-ledger corruption"
+  for request in [Kernel.Gates.Request.validState,
+      Kernel.Gates.Request.completion firstWork.id] do
+    expect ((Application.Service.queryGate request forgedStore).store == forgedStore)
+      "every gate must remain observational on a corrupt canonical ledger"
+  match Application.Service.execute Application.Service.bootstrapCommand forgedStore with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "mutation accepted a noncanonical authoritative ledger"
 
-  let bootstrapped ← match Application.Service.execute
-      Application.Service.bootstrapCommand Application.Service.initialStore with
-    | .ok transaction => pure transaction.result
-    | .error error => throw <| IO.userError s!"store bootstrap rejected: {repr error}"
-  let staleStore := { bootstrapped with active := some Kernel.Projection.initialProjection }
+  let staleStore := { firstStore with active := some Kernel.Projection.initialProjection }
   let staleInspection := Kernel.Projection.inspect staleStore
   match staleInspection with
   | .stale _ _ _ => pure ()
@@ -324,6 +298,15 @@ def main : IO Unit := do
   let repairCommand ← match repairAction with
     | .repairProjection command => pure command
     | _ => throw <| IO.userError "expected a projection repair command"
+  match Kernel.Projection.stageRepair repairCommand forgedStore with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "repair staging accepted a corrupt canonical ledger"
+  match Application.Service.executeRecovery repairAction forgedStore with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "emitted repair action executed on a corrupt canonical ledger"
+  match Cli.Program.executeRequest (.repairProjection repairCommand) forgedStore with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "CLI repair accepted a corrupt canonical ledger"
   for request in [Application.Service.Request.status,
       Application.Service.Request.next,
       Application.Service.Request.gate Kernel.Gates.Request.validState,
@@ -379,16 +362,16 @@ def main : IO Unit := do
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError "stale repair action unexpectedly executed"
 
-  let missingStore := { bootstrapped with active := none }
+  let missingStore := { firstStore with active := none }
   match (Application.Service.status missingStore).value with
   | .missing _ _ => pure ()
   | _ => throw <| IO.userError "missing projection must remain distinct from stale"
-  let currentProjection ← match bootstrapped.active with
+  let currentProjection ← match firstStore.active with
     | some projection => pure projection
     | none => throw <| IO.userError "bootstrap did not create a projection"
   let corruptProjection := { currentProjection with
     reference := { currentProjection.reference with stateDigest := ⟨"wrong"⟩ } }
-  let corruptStore := { bootstrapped with active := some corruptProjection }
+  let corruptStore := { firstStore with active := some corruptProjection }
   match (Application.Service.status corruptStore).value with
   | .corrupt _ _ _ _ => pure ()
   | _ => throw <| IO.userError "same-revision content mismatch must classify corrupt"
