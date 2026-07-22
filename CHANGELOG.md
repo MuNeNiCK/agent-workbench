@@ -1,5 +1,13 @@
 # Release history
 
+## v0.1.24 — 2026-07-23
+
+- Keep ordinary incomplete-to-ready Decomposition Plan revisions distinct from
+  reconciliation successors, so their accepted ready plan can be applied.
+- Require Phase-targeted review plans to derive clean state from exact Phase
+  review contexts, and recover existing projects that recorded only an
+  aggregate clean run before Phase closure.
+
 ## v0.1.23 — 2026-07-22
 
 - Make recovery selection preflight the complete staged transition so it never
