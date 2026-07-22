@@ -61,10 +61,10 @@ def ActiveReferencesOpenWork (work : List WorkUnit) (activations : List Activati
 def ActivationsReferenceWork (work : List WorkUnit) (activations : List Activation) : Prop :=
   (activations.all fun activation => work.any (·.id == activation.work)) = true
 
-def ReadySuspendedReferencesOpenWork (work : List WorkUnit)
+def NonterminalActivationsReferenceOpenWork (work : List WorkUnit)
     (activations : List Activation) : Prop :=
   (activations.all fun activation =>
-    activation.status != .suspended || !activation.readyToResume ||
+    activation.status == .closed ||
       work.any fun unit => unit.id == activation.work && unit.status == .open) = true
 
 def CompletionFactsReferenceWork (work : List WorkUnit)
@@ -77,7 +77,7 @@ def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop
   AtMostOneActive activations ∧
   ActiveReferencesOpenWork work activations ∧
   ActivationsReferenceWork work activations ∧
-  ReadySuspendedReferencesOpenWork work activations
+  NonterminalActivationsReferenceOpenWork work activations
 
 theorem single_active_activation {activations : List Activation}
     (valid : AtMostOneActive activations) :

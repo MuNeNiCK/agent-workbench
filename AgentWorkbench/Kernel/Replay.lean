@@ -40,7 +40,7 @@ def ValidState (state : State) : Prop :=
 instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
-    Work.ActivationsReferenceWork Work.ReadySuspendedReferencesOpenWork
+    Work.ActivationsReferenceWork Work.NonterminalActivationsReferenceOpenWork
     Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
     Review.AdjudicationsReferenceClaims
     Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
@@ -168,7 +168,7 @@ theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,
     Work.UniqueActivationIds, Work.AtMostOneActive,
     Work.ActiveReferencesOpenWork, Work.ActivationsReferenceWork,
-    Work.ReadySuspendedReferencesOpenWork,
+    Work.NonterminalActivationsReferenceOpenWork,
     Review.ValidReviewState,
     Review.UniqueClaimIds, Review.UniqueAdjudications,
     Review.AdjudicationsReferenceClaims, Evidence.UniqueEvidenceIds,

@@ -153,6 +153,9 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.replaceWorkState initial.revision [closedWork] [ready]) initial
     "ready suspended activation referencing closed work"
+  expectRejectedNoEffect
+    (.replaceWorkState initial.revision [closedWork] [suspended]) initial
+    "unready suspended activation referencing closed work"
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
