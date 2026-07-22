@@ -83,6 +83,42 @@ slices: []
     assert!(revised.contains("status: ready"));
     assert!(revised.contains(&format!("predecessor: {incomplete_id}")));
     assert_eq!(field(&revised, "revision"), "3");
+    let ready_id = field(&revised, "plan").to_string();
+    let ready_current = field(&revised, "current_identity").to_string();
+
+    let invalid_revalidation = aw(
+        temp.path(),
+        &[
+            "decomposition",
+            "validate",
+            &ready_id,
+            "--expected-current",
+            &ready_current,
+            "--idempotency-key",
+            "ready-revalidation",
+        ],
+    );
+    assert!(!invalid_revalidation.status.success());
+    let stderr = String::from_utf8_lossy(&invalid_revalidation.stderr);
+    assert!(
+        stderr
+            .contains("only a draft or incomplete Decomposition Plan can be validated or revised")
+    );
+    assert!(!stderr.contains("applied predecessor"));
+
+    accept_exact_plan_review(
+        temp.path(),
+        &design,
+        &work,
+        field(&revised, "review_context"),
+    );
+    let applied = ok(
+        temp.path(),
+        &["decomposition", "apply", &design, "--work", &work],
+    );
+    assert_eq!(field(&applied, "plan"), ready_id);
+    assert!(applied.contains("tasks: 1"));
+    assert!(applied.contains("status: applied"));
 
     let historical_retry = ok(
         temp.path(),

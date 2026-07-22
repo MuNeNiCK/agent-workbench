@@ -293,16 +293,26 @@ pub(in crate::decomposition) fn transition_decomposition_plan(
         tx.commit()?;
         return Ok(outcome);
     }
-    if predecessor.status == "ready" && predecessor.predecessor_id.is_some() {
+    let reconciliation_predecessor = if predecessor.status == "ready" {
+        let metadata = fenced_metadata(&predecessor.document_content)?
+            .context("ready Decomposition Plan has no stored metadata")?;
+        let document: PlanDocument = yaml_serde::from_str(metadata)
+            .context("ready Decomposition Plan metadata is invalid")?;
+        document
+            .reconciliation
+            .as_ref()
+            .map(|reconciliation| reconciliation.predecessor)
+    } else {
+        None
+    };
+    if let Some(applied_predecessor_id) = reconciliation_predecessor {
         if replacement.is_none() || draft {
             bail!("a ready reconciliation successor requires a non-draft replacement document");
         }
-        let applied = load_decomposition_plan(
-            &tx,
-            predecessor
-                .predecessor_id
-                .context("ready reconciliation successor has no applied predecessor")?,
-        )?;
+        if predecessor.predecessor_id != Some(applied_predecessor_id) {
+            bail!("ready reconciliation successor does not select its recorded predecessor");
+        }
+        let applied = load_decomposition_plan(&tx, applied_predecessor_id)?;
         if applied.status != "applied" {
             bail!("ready reconciliation successor no longer has an applied predecessor");
         }
