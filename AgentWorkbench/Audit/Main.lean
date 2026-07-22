@@ -1,5 +1,6 @@
 import Lean
 import AgentWorkbench.Audit.Expected
+import AgentWorkbench.Cli.Program
 
 open Lean
 
@@ -69,6 +70,9 @@ def expectedUnsafeFfiModules : Array String := #[
   "AgentWorkbench.Adapter.Process",
   "AgentWorkbench.Adapter.Git"
 ]
+
+def expectedCliEntrypoint : String :=
+  "import AgentWorkbench.Cli.Program\n\ndef main : IO Unit :=\n  AgentWorkbench.Cli.Program.run\n"
 
 def fail (message : String) : IO α :=
   throw <| IO.userError s!"verified-core audit failed: {message}"
@@ -198,15 +202,22 @@ def auditArchitecture : IO Unit := do
         fail s!"{rule.module} imports forbidden dependency {imported}"
   auditReverificationBounds actualRules
   let cliImports ← sourceImports "Main"
-  unless cliImports = #["AgentWorkbench.Application.Service"] do
-    fail "CLI must import only AgentWorkbench.Application.Service"
+  unless cliImports = #["AgentWorkbench.Cli.Program"] do
+    fail "executable entrypoint must import only AgentWorkbench.Cli.Program"
   let cli ← IO.FS.readFile "Main.lean"
+  unless cli = expectedCliEntrypoint do
+    fail "executable entrypoint differs from the immutable compiled CLI wrapper"
+  let programImports ← sourceImports "AgentWorkbench.Cli.Program"
+  unless programImports = #["AgentWorkbench.Application.Service"] do
+    fail "CLI program must import only AgentWorkbench.Application.Service"
+  let program ← IO.FS.readFile (modulePath "AgentWorkbench.Cli.Program")
   for forbidden in #["AgentWorkbench.Domain", "AgentWorkbench.Policy", "AgentWorkbench.Kernel",
       "Domain.", "Policy.", "Kernel."] do
-    if cli.contains forbidden then fail s!"CLI bypasses Application.Service through {forbidden}"
-  unless cli.contains
-      "Application.Service.execute Application.Service.bootstrapCommand state" do
-    fail "CLI does not execute its mutation through Application.Service.execute"
+    if program.contains forbidden then
+      fail s!"CLI program bypasses Application.Service through {forbidden}"
+  let spoofed :=
+    "import AgentWorkbench.Cli.Program\n\n-- Application.Service.execute Application.Service.bootstrapCommand\ndef main : IO Unit := pure ()\n"
+  if spoofed = expectedCliEntrypoint then fail "negative CLI source fixture was accepted"
 
 def declarationDependencies (info : ConstantInfo) : List Name :=
   let used (expr : Expr) := expr.getUsedConstants.toList
@@ -232,6 +243,18 @@ partial def auditUnsafeReachability (env : Environment) : List Name → List Nam
             if info.isUnsafe then fail s!"unsafe declaration reachable from verified roots: {name}"
             auditUnsafeReachability env (declarationDependencies info ++ rest) (name :: visited)
 
+partial def declarationReaches (env : Environment) (target : Name) :
+    List Name → List Name → Bool
+  | [], _ => false
+  | name :: rest, visited =>
+      if name = target then true
+      else if visited.contains name then declarationReaches env target rest visited
+      else
+        match env.find? name with
+        | none => declarationReaches env target rest (name :: visited)
+        | some info =>
+            declarationReaches env target (declarationDependencies info ++ rest) (name :: visited)
+
 def auditDeclarations (env : Environment) : IO Unit := do
   for (name, info) in env.constants.toList do
     let rendered := name.toString
@@ -241,8 +264,18 @@ def auditDeclarations (env : Environment) : IO Unit := do
       fail s!"unsafe declaration entered normative implementation: {rendered}"
   let roots := theoremRules.toList.map (·.declaration.toName) ++
     [`AgentWorkbench.Application.Service.execute,
-     `AgentWorkbench.Application.Service.bootstrapCommand]
+     `AgentWorkbench.Application.Service.bootstrapCommand,
+     `AgentWorkbench.Cli.Program.executeBootstrap,
+     `AgentWorkbench.Cli.Program.run]
   auditUnsafeReachability env roots []
+  unless declarationReaches env `AgentWorkbench.Application.Service.execute
+      [`AgentWorkbench.Cli.Program.run] [] do
+    let runDeps := (env.find? `AgentWorkbench.Cli.Program.run).map declarationDependencies
+    let bootstrapDeps := (env.find? `AgentWorkbench.Cli.Program.executeBootstrap).map declarationDependencies
+    fail s!"compiled CLI program does not reach Application.Service.execute; run={repr runDeps}; bootstrap={repr bootstrapDeps}"
+  if declarationReaches env `AgentWorkbench.Application.Service.execute
+      [`AgentWorkbench.Audit.Expected.cliWithoutMutationFixture] [] then
+    fail "negative compiled CLI dependency fixture unexpectedly reaches Service.execute"
 
 def auditTheorems (env : Environment) : IO Unit := do
   let context : Core.Context := { fileName := "<verified-core-audit>", fileMap := FileMap.ofString "" }
@@ -271,7 +304,7 @@ def auditTheorems (env : Environment) : IO Unit := do
 
 def auditCliMutation : IO Unit := do
   let initial := Application.Service.initialState
-  match Application.Service.execute Application.Service.bootstrapCommand initial with
+  match Cli.Program.executeBootstrap with
   | .error error => fail s!"CLI mutation fixture was rejected: {repr error}"
   | .ok transaction =>
       unless transaction.events.length = 1 do fail "CLI mutation did not emit exactly one event"
@@ -288,7 +321,9 @@ def main : IO Unit := do
   auditNegativeFixtures manifest
   auditArchitecture
   initSearchPath (← findSysroot) [".lake/build/lib/lean"]
-  let env ← importModules #[{ module := `AgentWorkbench.Audit.Expected }] {}
+  let env ← importModules #[
+    { module := `AgentWorkbench.Audit.Expected },
+    { module := `AgentWorkbench.Cli.Program }] {}
   auditTheorems env
   auditDeclarations env
   auditCliMutation

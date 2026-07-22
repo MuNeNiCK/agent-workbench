@@ -6,6 +6,9 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open AgentWorkbench.Kernel.Replay
 
+def cliWithoutMutationFixture : IO Unit :=
+  pure ()
+
 axiom replay_deterministic (events : List Event) (initial : State)
     {left right : VerifiedState}
     (leftResult : replay events initial = .ok left)
