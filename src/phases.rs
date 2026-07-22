@@ -3,8 +3,10 @@ mod operations;
 mod rescope;
 pub(crate) mod schema;
 
-pub(crate) use completion::phase_review_lifecycle_action;
 use completion::*;
+pub(crate) use completion::{
+    phase_review_lifecycle_action, review_plan_phase_targets_are_complete,
+};
 pub use operations::*;
 use rescope::*;
 pub(crate) use schema::install_phase_epochs;

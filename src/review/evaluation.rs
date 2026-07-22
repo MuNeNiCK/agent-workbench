@@ -128,10 +128,14 @@ pub(super) fn evaluate_plan_status(
     let plan = load_review_plan(conn, project_id, review_plan_id)?;
     let clean_fresh = consecutive_clean_runs(conn, &plan, "fresh")?;
     let clean_resume = consecutive_clean_runs(conn, &plan, "resume")?;
+    let phase_targets_complete =
+        crate::phases::review_plan_phase_targets_are_complete(conn, review_plan_id)?
+            .unwrap_or(true);
     let status = if open_blocking_findings > 0 {
         "blocked"
     } else if clean_fresh >= policy.required_consecutive_clean_fresh_runs
         && clean_resume >= policy.required_consecutive_clean_resume_runs
+        && phase_targets_complete
     {
         "clean"
     } else {
@@ -452,14 +456,22 @@ pub(super) fn validate_gate_context_target(
     let Some(kind) = review_context_kind_for_plan(&plan.stage, &plan.review_type) else {
         return Ok(());
     };
-    let Some(design_version_id) = plan.design_version_id else {
+    let phase_target_count: i64 = conn.query_row(
+        "select count(*) from work_phase_review_targets where review_plan_id=?1",
+        params![plan.id],
+        |row| row.get(0),
+    )?;
+    if input.clean_run && phase_target_count > 0 && target.phase_id.is_none() {
+        bail!("phase-targeted clean gate review run requires an exact phase review-context target");
+    }
+    if plan.design_version_id.is_none() && phase_target_count == 0 {
         return Ok(());
-    };
+    }
     let expected = current_review_context_ref(
         conn,
         crate::db::project_id(conn)?,
         kind,
-        Some(design_version_id),
+        plan.design_version_id,
         Some(plan.work_unit_id),
         target.phase_id,
     )?;

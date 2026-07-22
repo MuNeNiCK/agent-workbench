@@ -391,6 +391,50 @@ pub(super) fn count_incomplete_phase_reviews(
     Ok(incomplete)
 }
 
+pub(crate) fn review_plan_phase_targets_are_complete(
+    conn: &rusqlite::Connection,
+    review_plan_id: i64,
+) -> Result<Option<bool>> {
+    let plan = conn
+        .query_row(
+            r#"
+            select rp.id, rp.review_type, rp.stage, rp.design_version_id, rp.work_unit_id,
+                   coalesce(pol.required_consecutive_clean_fresh_runs, 1)
+            from review_plans rp
+            left join review_policies pol on pol.id=rp.review_policy_id
+            where rp.id=?1
+            "#,
+            params![review_plan_id],
+            |row| {
+                Ok(PhaseReviewPlan {
+                    id: row.get(0)?,
+                    review_type: row.get(1)?,
+                    stage: row.get(2)?,
+                    design_version_id: row.get(3)?,
+                    work_unit_id: row.get(4)?,
+                    required_clean_fresh_runs: row.get(5)?,
+                })
+            },
+        )
+        .optional()?
+        .context("review plan not found")?;
+    let mut stmt = conn.prepare(
+        "select phase_id from work_phase_review_targets where review_plan_id=?1 order by phase_id",
+    )?;
+    let phase_ids = stmt
+        .query_map(params![review_plan_id], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if phase_ids.is_empty() {
+        return Ok(None);
+    }
+    for phase_id in phase_ids {
+        if !phase_review_plan_is_complete(conn, phase_id, &plan)? {
+            return Ok(Some(false));
+        }
+    }
+    Ok(Some(true))
+}
+
 pub(crate) fn phase_review_lifecycle_action(
     conn: &rusqlite::Connection,
     work_unit_id: i64,

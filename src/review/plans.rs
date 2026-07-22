@@ -275,7 +275,7 @@ pub fn supersede_review_plan(
           where predecessor.id=?1 and successor.id=?2
             and predecessor.project_id=?3
             and predecessor.required=1
-            and predecessor.status in ('open','blocked','exhausted','needs_user_decision')
+            and predecessor.status in ('open','blocked','exhausted','needs_user_decision','clean')
             and successor.status in ('open','clean')
             and (
               successor.design_version_id is predecessor.design_version_id
@@ -348,6 +348,22 @@ pub fn supersede_review_plan(
     )?;
     if unmapped_targets != 0 {
         bail!("review plan successor does not map every predecessor target");
+    }
+    let predecessor_status: String = tx.query_row(
+        "select status from review_plans where id=?1 and project_id=?2",
+        params![input.predecessor_plan_id, project_id],
+        |row| row.get(0),
+    )?;
+    if predecessor_status == "clean" {
+        let predecessor_phase_state =
+            crate::phases::review_plan_phase_targets_are_complete(&tx, input.predecessor_plan_id)?;
+        let successor_phase_state =
+            crate::phases::review_plan_phase_targets_are_complete(&tx, input.successor_plan_id)?;
+        if predecessor_phase_state != Some(false) || successor_phase_state != Some(true) {
+            bail!(
+                "clean review plan supersession is only allowed to recover an incomplete phase review with a phase-complete successor"
+            );
+        }
     }
     tx.execute(
         r#"
@@ -531,6 +547,10 @@ pub fn add_review_plan_target(
             values (?1, ?2, ?3, current_timestamp)
             "#,
             params![project_id, input.review_plan_id, phase_id],
+        )?;
+        conn.execute(
+            "update review_plans set status='open' where id=?1 and project_id=?2 and status='clean'",
+            params![input.review_plan_id, project_id],
         )?;
         return Ok(ReviewPlanTargetOutcome {
             review_plan_target_id: conn.last_insert_rowid(),

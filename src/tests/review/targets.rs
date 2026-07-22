@@ -205,6 +205,31 @@ fn phase_targeted_plan_uses_its_phase_review_context() {
         },
     )
     .unwrap();
+    let wrong_context = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("review-context:implementation-review:design=-:work=1"),
+            prompt_deviations: None,
+            result_summary: Some("work-unit context must not satisfy a phase target"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("wrong-scope-reviewer"),
+            external_agent_id: Some("wrong-scope-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("wrong-scope-output"),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        wrong_context
+            .to_string()
+            .contains("requires an exact phase review-context target")
+    );
     add_review_run(
         temp.path(),
         NewReviewRun {

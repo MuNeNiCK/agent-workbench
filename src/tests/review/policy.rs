@@ -1,6 +1,137 @@
 use super::*;
 
 #[test]
+fn legacy_clean_phase_plan_can_be_superseded_by_exact_phase_review() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "legacy phase review recovery", None).unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "review",
+            title: "Review",
+            kind: "implementation",
+            order: 1,
+            reason: Some("v0.1.23 recovery fixture"),
+        },
+    )
+    .unwrap();
+    let add_plan = || {
+        let plan = add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type: "implementation_review",
+                required: true,
+                stage: "close-ready",
+                scope: Some("phase recovery"),
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap();
+        add_review_plan_target(
+            temp.path(),
+            NewReviewPlanTarget {
+                review_plan_id: plan.review_plan_id,
+                target_type: "phase",
+                design_version_id: None,
+                design_requirement_id: None,
+                task_id: None,
+                work_unit_id: None,
+                phase_id: Some(phase.phase_id),
+                repository_snapshot_id: None,
+                file_path: None,
+                symbol: None,
+            },
+        )
+        .unwrap();
+        plan
+    };
+    let predecessor = add_plan();
+    let successor = add_plan();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update review_plans set status='clean' where id=?1",
+        params![predecessor.review_plan_id],
+    )
+    .unwrap();
+    drop(conn);
+    let authority_event_id = approval_authority_event(temp.path());
+    let premature = supersede_review_plan(
+        temp.path(),
+        ReviewPlanSupersession {
+            predecessor_plan_id: predecessor.review_plan_id,
+            successor_plan_id: successor.review_plan_id,
+            authority_event_id,
+            reason: "replacement has not completed its exact phase review",
+        },
+    )
+    .unwrap_err();
+    assert!(premature.to_string().contains("phase-complete successor"));
+
+    let context = crate::review_context::review_context_ref_with_phase(
+        "implementation-review",
+        None,
+        Some(work.work_unit_id),
+        Some(phase.phase_id),
+    );
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: successor.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&context),
+            prompt_deviations: None,
+            result_summary: Some("exact phase review"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("replacement-reviewer"),
+            external_agent_id: Some("replacement-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("replacement-review-output"),
+        },
+    )
+    .unwrap();
+    supersede_review_plan(
+        temp.path(),
+        ReviewPlanSupersession {
+            predecessor_plan_id: predecessor.review_plan_id,
+            successor_plan_id: successor.review_plan_id,
+            authority_event_id,
+            reason: "replace the legacy plan-level clean claim with an exact phase review",
+        },
+    )
+    .unwrap();
+
+    let plans = list_review_plans(temp.path()).unwrap();
+    assert_eq!(
+        plans
+            .iter()
+            .find(|plan| plan.id == predecessor.review_plan_id)
+            .unwrap()
+            .status,
+        "superseded"
+    );
+    assert_eq!(
+        plans
+            .iter()
+            .find(|plan| plan.id == successor.review_plan_id)
+            .unwrap()
+            .status,
+        "clean"
+    );
+}
+
+#[test]
 fn review_plan_waiver_skips_non_current_design_plan() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -301,7 +432,12 @@ fn phase_review_waiver_does_not_depend_on_the_global_resolver_selection() {
             review_plan_id: replacement.review_plan_id,
             run_type: "fresh",
             run_purpose: "new_unbiased_review",
-            target_ref: Some(&format!("phase:{}", phase.phase_id)),
+            target_ref: Some(&crate::review_context::review_context_ref_with_phase(
+                "implementation-review",
+                None,
+                Some(work.work_unit_id),
+                Some(phase.phase_id),
+            )),
             prompt_deviations: None,
             result_summary: Some("clean replacement"),
             new_findings_count: 0,
