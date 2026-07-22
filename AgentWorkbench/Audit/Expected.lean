@@ -9,6 +9,30 @@ open AgentWorkbench.Kernel.Replay
 def cliWithoutMutationFixture : IO Unit :=
   pure ()
 
+def expectedExecuteBootstrap :=
+  Application.Service.execute Application.Service.bootstrapCommand
+    Application.Service.initialState
+
+def expectedCliRun : IO Unit := do
+  match expectedExecuteBootstrap with
+  | .error error => throw <| IO.userError s!"verified mutation rejected: {repr error}"
+  | .ok transaction =>
+      match Application.Service.queryValidity transaction.result.state,
+          Application.Service.resolve transaction.result.state with
+      | .pass, .action action => IO.println s!"agent-workbench verified core: {repr action}"
+      | .blocked reason, _ => throw <| IO.userError reason
+      | _, .blocked blocker => throw <| IO.userError s!"resolver blocked: {repr blocker}"
+
+def cliConditionalBypassFixture : IO Unit := do
+  let takeMutation ← pure false
+  if takeMutation then
+    match Application.Service.execute Application.Service.bootstrapCommand
+        Application.Service.initialState with
+    | .ok _ => pure ()
+    | .error _ => pure ()
+  else
+    pure ()
+
 axiom replay_deterministic (events : List Event) (initial : State)
     {left right : VerifiedState}
     (leftResult : replay events initial = .ok left)

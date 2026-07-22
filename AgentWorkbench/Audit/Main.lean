@@ -231,6 +231,12 @@ def declarationDependencies (info : ConstantInfo) : List Name :=
   | .ctorInfo value => used value.type
   | .recInfo value => used value.type
 
+def declarationValue? : ConstantInfo → Option Expr
+  | .defnInfo value => some value.value
+  | .thmInfo value => some value.value
+  | .opaqueInfo value => some value.value
+  | _ => none
+
 partial def auditUnsafeReachability (env : Environment) : List Name → List Name → IO Unit
   | [], _ => pure ()
   | name :: rest, visited => do
@@ -276,6 +282,33 @@ def auditDeclarations (env : Environment) : IO Unit := do
   if declarationReaches env `AgentWorkbench.Application.Service.execute
       [`AgentWorkbench.Audit.Expected.cliWithoutMutationFixture] [] then
     fail "negative compiled CLI dependency fixture unexpectedly reaches Service.execute"
+  unless declarationReaches env `AgentWorkbench.Application.Service.execute
+      [`AgentWorkbench.Audit.Expected.cliConditionalBypassFixture] [] do
+    fail "conditional CLI bypass fixture did not retain its dead Service.execute dependency"
+  let context : Core.Context := {
+    fileName := "<verified-core-cli-audit>", fileMap := FileMap.ofString "" }
+  let state : Core.State := { env := env }
+  let compareCompiled (actualName expectedName : Name) : IO Bool := do
+    let some actual := env.find? actualName | fail s!"compiled declaration missing: {actualName}"
+    let some expected := env.find? expectedName | fail s!"expected declaration missing: {expectedName}"
+    let some actualValue := declarationValue? actual |
+      fail s!"compiled declaration has no inspectable value: {actualName}"
+    let some expectedValue := declarationValue? expected |
+      fail s!"expected declaration has no inspectable value: {expectedName}"
+    let (sameType, _, _) ← (Meta.withTransparency .all <|
+      Meta.isDefEq actual.type expected.type).toIO context state
+    let (sameValue, _, _) ← (Meta.withTransparency .all <|
+      Meta.isDefEq actualValue expectedValue).toIO context state
+    return sameType && sameValue
+  unless ← compareCompiled `AgentWorkbench.Cli.Program.executeBootstrap
+      `AgentWorkbench.Audit.Expected.expectedExecuteBootstrap do
+    fail "compiled CLI bootstrap differs from immutable expected implementation"
+  unless ← compareCompiled `AgentWorkbench.Cli.Program.run
+      `AgentWorkbench.Audit.Expected.expectedCliRun do
+    fail "compiled CLI control flow differs from immutable expected implementation"
+  if ← compareCompiled `AgentWorkbench.Audit.Expected.cliConditionalBypassFixture
+      `AgentWorkbench.Audit.Expected.expectedCliRun then
+    fail "conditional no-mutation CLI fixture matched expected CLI behavior"
 
 def auditTheorems (env : Environment) : IO Unit := do
   let context : Core.Context := { fileName := "<verified-core-audit>", fileMap := FileMap.ofString "" }
