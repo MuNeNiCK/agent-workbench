@@ -635,6 +635,62 @@ def main : IO Unit := do
   for (condition, label) in rejectionCases do
     expectPublicCompletionRejected condition label
   let allReadyStore ← buildCompletionStore none
+  let allReadyState ← currentState allReadyStore
+  let allReadyEpoch ← match Domain.Lifecycle.forWork
+      allReadyState.lifecycle firstWork.id with
+    | some completion => pure completion.epoch
+    | none => throw <| IO.userError "all-ready lifecycle disappeared"
+  let findingsClaim : Domain.Review.Claim :=
+    { id := ⟨11⟩, plan := ⟨1⟩, work := firstWork.id,
+      epoch := allReadyEpoch, claim := .findings }
+  let findingsClaimed ← executeStore
+    (.recordReviewClaim allReadyStore.ledger.storedHead findingsClaim) allReadyStore
+    "current findings claim rejected"
+  let findingsAdjudicated ← executeStore
+    (.recordReviewAdjudication findingsClaimed.ledger.storedHead
+      { review := findingsClaim.id, decision := .accepted }) findingsClaimed
+    "current findings adjudication rejected"
+  let findingsEvidence : Domain.Evidence.Evidence :=
+    { id := ⟨101⟩, work := firstWork.id, obligation := "completion-proof",
+      revision := findingsAdjudicated.ledger.storedHead,
+      artifactDigest := "proof:after-findings", current := true }
+  let findingsRefreshed ← executeStore
+    (.recordEvidence findingsAdjudicated.ledger.storedHead findingsEvidence)
+    findingsAdjudicated "findings evidence refresh rejected"
+  let findingsState ← currentState findingsRefreshed
+  expect (!Policy.Completion.closeable firstWork.id findingsState.work
+    findingsState.activations findingsState.claims findingsState.adjudications
+    findingsState.lifecycle findingsState.evidence findingsState.obligations)
+    "later accepted findings claim did not dominate an earlier clean claim"
+  match Application.Service.complete firstWork.id findingsRefreshed with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError <|
+      "completion accepted refreshed evidence with a current findings review"
+  let recoveryClaim : Domain.Review.Claim :=
+    { id := ⟨12⟩, plan := ⟨1⟩, work := firstWork.id,
+      epoch := allReadyEpoch, claim := .clean }
+  let recoveryClaimed ← executeStore
+    (.recordReviewClaim findingsRefreshed.ledger.storedHead recoveryClaim)
+    findingsRefreshed "recovery clean claim rejected"
+  let recoveryAdjudicated ← executeStore
+    (.recordReviewAdjudication recoveryClaimed.ledger.storedHead
+      { review := recoveryClaim.id, decision := .accepted }) recoveryClaimed
+    "recovery clean adjudication rejected"
+  let recoveryEvidence : Domain.Evidence.Evidence :=
+    { id := ⟨102⟩, work := firstWork.id, obligation := "completion-proof",
+      revision := recoveryAdjudicated.ledger.storedHead,
+      artifactDigest := "proof:after-clean-recovery", current := true }
+  let recoveredStore ← executeStore
+    (.recordEvidence recoveryAdjudicated.ledger.storedHead recoveryEvidence)
+    recoveryAdjudicated "recovery evidence refresh rejected"
+  let recoveredState ← currentState recoveredStore
+  expect (Policy.Completion.closeable firstWork.id recoveredState.work
+    recoveredState.activations recoveredState.claims recoveredState.adjudications
+    recoveredState.lifecycle recoveredState.evidence recoveredState.obligations)
+    "later accepted clean claim did not restore review readiness"
+  match Application.Service.complete firstWork.id recoveredStore with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"clean review recovery did not complete: {repr error}"
   let unmetObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "unmet-proof",
       revision := allReadyStore.ledger.storedHead, current := true }

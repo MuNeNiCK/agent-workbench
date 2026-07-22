@@ -219,14 +219,24 @@ def relatedWorkTerminal (work : List Work.WorkUnit)
     work.any fun unit => unit.id == requirement.work &&
       (unit.status == .closed || unit.status == .abandoned)
 
+def latestAcceptedReviewClaim (plan : ReviewPlanId) (work : WorkId)
+    (epoch : CompletionEpoch) (claims : List Review.Claim)
+    (adjudications : List Review.Adjudication) : Option Review.Claim :=
+  claims.foldl (init := none) fun latest claim =>
+    if claim.plan == plan && claim.work == work && claim.epoch == epoch &&
+        adjudications.any (fun decision =>
+          decision.review == claim.id && decision.decision == .accepted) then
+      some claim
+    else
+      latest
+
 def reviewsReady (state : CompletionState) (claims : List Review.Claim)
     (adjudications : List Review.Adjudication) : Bool :=
   state.plan.reviews.all fun plan =>
-    claims.any fun claim =>
-      claim.plan == plan && claim.work == state.plan.work &&
-      claim.epoch == state.epoch && claim.claim == .clean &&
-      adjudications.any (fun decision =>
-        decision.review == claim.id && decision.decision == .accepted)
+    match latestAcceptedReviewClaim plan state.plan.work state.epoch
+        claims adjudications with
+    | some claim => claim.claim == .clean
+    | none => false
 
 def phasesReady (state : CompletionState) : Bool :=
   state.phases.all fun record => itemTerminal record.status
