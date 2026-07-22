@@ -87,7 +87,7 @@ inductive Event
   | workCompleted (work : WorkId) (activation : ActivationId)
 deriving DecidableEq, Repr
 
-def applyUnchecked (event : Event) (state : State) : State :=
+private def applyUnchecked (event : Event) (state : State) : State :=
   let revised := state.revision.next
   let invalidated : State := {
     state with
@@ -351,12 +351,20 @@ theorem replay_preserves_valid (events : List Event) (initial : State)
     ValidState result.state :=
   result.valid
 
-theorem work_completed_event_exact (state : State) (work : WorkId) (activation : ActivationId) :
-    let completed := applyUnchecked (.workCompleted work activation) state
-    completed.work = Work.closeWork state.work work ∧
-    completed.activations = Work.closeActivation state.activations activation ∧
-    completed.revision = state.revision.next := by
-  simp [applyUnchecked]
+theorem work_completed_event_exact (verified : VerifiedState)
+    (work : WorkId) (activation : ActivationId) {completed : VerifiedState}
+    (accepted : applyEvent (.workCompleted work activation) verified = .ok completed) :
+    completed.state.work = Work.closeWork verified.state.work work ∧
+    completed.state.activations = Work.closeActivation verified.state.activations activation ∧
+    completed.state.revision = verified.state.revision.next := by
+  unfold applyEvent at accepted
+  split at accepted
+  · unfold verifyState at accepted
+    split at accepted
+    · cases accepted
+      simp [applyUnchecked]
+    · contradiction
+  · contradiction
 
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,

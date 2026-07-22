@@ -41,7 +41,7 @@ def projectionFor (ledger : Replay.LedgerImage) (state : Replay.State) :
       stateDigest := Replay.stateDigest state }
     payload := .decoded state }
 
-def commitAccepted (store : Projection.Store) (accepted : Decide.AcceptedTransaction) :
+private def commitAccepted (store : Projection.Store) (accepted : Decide.AcceptedTransaction) :
     Projection.Store :=
   let events := store.ledger.events ++ accepted.events
   let ledger := {

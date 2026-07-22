@@ -46,11 +46,12 @@ axiom replay_preserves_valid (events : List Event) (initial : State)
     {result : VerifiedState} (_accepted : replay events initial = .ok result) :
     ValidState result.state
 
-axiom work_completed_event_exact (state : State) (work : WorkId) (activation : ActivationId) :
-    let completed := applyUnchecked (.workCompleted work activation) state
-    completed.work = Work.closeWork state.work work ∧
-    completed.activations = Work.closeActivation state.activations activation ∧
-    completed.revision = state.revision.next
+axiom work_completed_event_exact (verified : VerifiedState)
+    (work : WorkId) (activation : ActivationId) {completed : VerifiedState}
+    (accepted : applyEvent (.workCompleted work activation) verified = .ok completed) :
+    completed.state.work = Work.closeWork verified.state.work work ∧
+    completed.state.activations = Work.closeActivation verified.state.activations activation ∧
+    completed.state.revision = verified.state.revision.next
 
 axiom decide_preserves_valid (command : Decide.Command) (state : State)
     {transaction : Decide.AcceptedTransaction}
