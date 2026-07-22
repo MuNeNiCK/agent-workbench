@@ -136,10 +136,44 @@ def main : IO Unit := do
   let observed := Kernel.Gates.observeGate Kernel.Gates.validStateGate first
   expect (observed.1 == first) "gate observation must preserve state"
   match Application.Service.resolve first with
-  | some action =>
-    expect ((Kernel.Resolver.allowedActions first).contains action)
-      "next must belong to the allowed action set"
-  | none => throw <| IO.userError "resolver must return an allowed action"
+  | .action action =>
+      expect (action.executable first)
+        "next action must be executable at its stated revision and target"
+      let revised := { first with revision := first.revision.next }
+      expect (!action.executable revised)
+        "a projected action must become non-executable after revision change"
+  | .blocked _ => throw <| IO.userError "active work must resolve to an action"
+  let noActivation := { first with activations := [] }
+  match Application.Service.resolve noActivation with
+  | .blocked blocker@(.noActivation revision) =>
+      expect (revision == noActivation.revision)
+        "a no-activation blocker must state the current revision"
+      expect (decide (blocker.exact noActivation))
+        "a no-activation blocker must exactly describe the inspected state"
+  | _ => throw <| IO.userError "missing activation must return its exact blocker"
+  let notReady := { first with activations := [suspended] }
+  match Application.Service.resolve notReady with
+  | .blocked blocker@(.noResumableActivation revision candidates) =>
+      expect (revision == notReady.revision && candidates == [suspended.id])
+        "an unready activation blocker must state revision and candidates"
+      expect (decide (blocker.exact notReady))
+        "an unready activation blocker must exactly describe the inspected state"
+  | _ => throw <| IO.userError "unready activation must not emit resume"
+  let readyState := { first with activations := [ready] }
+  match Application.Service.resolve readyState with
+  | .action action@(.resumeSuspendedWork revision work activation) =>
+      expect (revision == readyState.revision && work == firstWork.id && activation == ready.id)
+        "resume must bind current revision, target work, and activation"
+      expect (action.executable readyState)
+        "a returned resume action must execute against the inspected state"
+  | _ => throw <| IO.userError "ready suspended activation must emit exact resume"
+  match Application.Service.resolve staleRevisionState with
+  | .blocked blocker@(.invalidState revision) =>
+      expect (revision == staleRevisionState.revision)
+        "invalid-state blocker must state the inspected revision"
+      expect (decide (blocker.exact staleRevisionState))
+        "an invalid-state blocker must exactly describe the inspected state"
+  | _ => throw <| IO.userError "invalid state must return an exact blocker"
   IO.println "kernel laws: pass"
 
 end AgentWorkbench.Tests.KernelLaws

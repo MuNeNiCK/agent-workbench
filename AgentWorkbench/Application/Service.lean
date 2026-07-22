@@ -21,7 +21,7 @@ def complete (target : WorkId) (state : Replay.State) :
 def queryValidity (state : Replay.State) : GateResult :=
   Gates.validStateGate state
 
-def resolve (state : Replay.State) : Option Resolver.Action :=
+def resolve (state : Replay.State) : Resolver.Resolution :=
   Resolver.next state
 
 end AgentWorkbench.Application.Service
