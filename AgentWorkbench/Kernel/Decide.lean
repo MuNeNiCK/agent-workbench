@@ -188,7 +188,8 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       | none => .error (.invalidTransition "target work is not active")
       | some activation =>
           if Policy.Completion.closeable target state.work state.activations
-              state.claims state.adjudications state.lifecycle then
+              state.claims state.adjudications state.lifecycle
+              state.evidence state.obligations then
             .ok ⟨[.workCompleted target activation.id], by simp⟩
           else
             .error (.invalidTransition "completion obligations remain")
@@ -287,16 +288,16 @@ theorem decide_complete_emits (target : WorkId) (state : State)
   simp only [Command.expectedRevision] at accepted
   simp only [if_true] at accepted
   by_cases ready : Policy.Completion.closeable target state.work state.activations
-      state.claims state.adjudications state.lifecycle = true
+      state.claims state.adjudications state.lifecycle state.evidence state.obligations = true
   · simp only [deriveEvents, active, ready, if_true] at accepted
     split at accepted
     · cases accepted
       rfl
     · contradiction
   · have notReady : Policy.Completion.closeable target state.work state.activations
-        state.claims state.adjudications state.lifecycle = false := by
+        state.claims state.adjudications state.lifecycle state.evidence state.obligations = false := by
       cases result : Policy.Completion.closeable target state.work state.activations
-          state.claims state.adjudications state.lifecycle with
+          state.claims state.adjudications state.lifecycle state.evidence state.obligations with
       | false => rfl
       | true => exact (ready result).elim
     simp [deriveEvents, active, notReady] at accepted
@@ -305,7 +306,7 @@ theorem decide_complete_requires_closeable (target : WorkId) (state : State)
     {transaction : AcceptedTransaction}
     (accepted : decide (.completeWork state.revision target) state = .ok transaction) :
     Policy.Completion.closeable target state.work state.activations
-      state.claims state.adjudications state.lifecycle = true := by
+      state.claims state.adjudications state.lifecycle state.evidence state.obligations = true := by
   obtain ⟨derived, derivedBy, _⟩ :=
     decide_emits_only_derived_events (.completeWork state.revision target) state accepted
   simp only [deriveEvents] at derivedBy

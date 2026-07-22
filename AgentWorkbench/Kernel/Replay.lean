@@ -88,11 +88,12 @@ deriving DecidableEq, Repr
 
 def applyUnchecked (event : Event) (state : State) : State :=
   let revised := state.revision.next
-  let invalidated := {
+  let invalidated : State := {
     state with
     revision := revised
     evidence := Evidence.invalidateEvidence state.evidence
-    obligations := Evidence.invalidate state.obligations }
+    obligations := state.obligations.map fun obligation =>
+      if obligation.current then { obligation with revision := revised } else obligation }
   match event with
   | .workInitialized work activation =>
       { invalidated with work := [work], activations := [activation] }
@@ -138,24 +139,26 @@ def applyUnchecked (event : Event) (state : State) : State :=
   | .reviewAdjudicated decision =>
       { invalidated with adjudications := state.adjudications ++ [decision] }
   | .evidenceRecorded item =>
-      let obligations := (Evidence.invalidate state.obligations).map fun obligation =>
-        if obligation.work == item.work && obligation.key == item.obligation then
-          { obligation with revision := revised, current := true }
-        else obligation
+      let obligations := state.obligations.map fun obligation =>
+        if obligation.current then { obligation with revision := revised } else obligation
+      let evidence := state.evidence.map fun existing =>
+        if existing.current then { existing with revision := revised } else existing
       { invalidated with
-        evidence := Evidence.invalidateEvidence state.evidence ++
+        evidence := evidence ++
           [{ item with revision := revised, current := true }]
         obligations }
   | .externalOperationRecorded attempt =>
       { invalidated with externalOperations := state.externalOperations ++ [attempt] }
   | .obligationRecorded obligation =>
-      let retained := (Evidence.invalidate state.obligations).filter fun existing =>
+      let retained := invalidated.obligations.filter fun existing =>
         existing.work != obligation.work || existing.key != obligation.key
       { invalidated with obligations := retained ++ [{ obligation with revision := revised, current := true }] }
   | .workCompleted work activation =>
       { invalidated with
         work := Work.closeWork state.work work
-        activations := Work.closeActivation state.activations activation }
+        activations := Work.closeActivation state.activations activation
+        evidence := Evidence.invalidateEvidence state.evidence
+        obligations := Evidence.invalidate state.obligations }
 
 def eventApplicable (event : Event) (state : State) : Bool :=
   match event with
@@ -241,7 +244,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       match Work.activeFor state.activations work with
       | some current => current.id == activation &&
           Policy.Completion.closeable work state.work state.activations
-            state.claims state.adjudications state.lifecycle
+            state.claims state.adjudications state.lifecycle state.evidence state.obligations
       | none => false
 
 def verifyState (state : State) : Except DomainError VerifiedState :=

@@ -33,7 +33,7 @@ def moduleRules : Array ModuleRule := #[
   ⟨"AgentWorkbench.Domain.ExternalOperation", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Policy.Traceability", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Evidence"]⟩,
   ⟨"AgentWorkbench.Policy.Authority", #["AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Facts"]⟩,
-  ⟨"AgentWorkbench.Policy.Completion", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Lifecycle"]⟩,
+  ⟨"AgentWorkbench.Policy.Completion", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Lifecycle", "AgentWorkbench.Domain.Evidence"]⟩,
   ⟨"AgentWorkbench.Policy.Update", #["AgentWorkbench.Domain.Identity", "AgentWorkbench.Domain.Facts"]⟩,
   ⟨"AgentWorkbench.Kernel.Replay", #["AgentWorkbench.Domain.Work", "AgentWorkbench.Domain.Design", "AgentWorkbench.Domain.Review", "AgentWorkbench.Domain.Evidence", "AgentWorkbench.Domain.ExternalOperation", "AgentWorkbench.Domain.Projection", "AgentWorkbench.Domain.Lifecycle", "AgentWorkbench.Policy.Completion"]⟩,
   ⟨"AgentWorkbench.Kernel.Projection", #["AgentWorkbench.Kernel.Replay"]⟩,
@@ -64,6 +64,7 @@ def theoremRules : Array TheoremRule := #[
   ⟨"AgentWorkbench.Application.Service.every_gate_is_read_only", "AgentWorkbench.Audit.Expected.every_gate_is_read_only"⟩,
   ⟨"AgentWorkbench.Kernel.Projection.verified_stage_matches_replay", "AgentWorkbench.Audit.Expected.verified_stage_matches_replay"⟩,
   ⟨"AgentWorkbench.Kernel.Projection.adoption_is_atomic", "AgentWorkbench.Audit.Expected.adoption_is_atomic"⟩,
+  ⟨"AgentWorkbench.Policy.Completion.completion_requires_current_obligations", "AgentWorkbench.Audit.Expected.completion_requires_current_obligations"⟩,
   ⟨"AgentWorkbench.Policy.Completion.completion_requires_authoritative_lifecycle", "AgentWorkbench.Audit.Expected.completion_requires_authoritative_lifecycle"⟩,
   ⟨"AgentWorkbench.Policy.Completion.completion_requires_active_target", "AgentWorkbench.Audit.Expected.completion_requires_active_target"⟩,
   ⟨"AgentWorkbench.Policy.Update.exact_retry_returns_same_receipt", "AgentWorkbench.Audit.Expected.exact_retry_returns_same_receipt"⟩

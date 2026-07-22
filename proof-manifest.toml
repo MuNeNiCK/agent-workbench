@@ -21,6 +21,7 @@ theorems = [
   "AgentWorkbench.Application.Service.every_gate_is_read_only",
   "AgentWorkbench.Kernel.Projection.verified_stage_matches_replay",
   "AgentWorkbench.Kernel.Projection.adoption_is_atomic",
+  "AgentWorkbench.Policy.Completion.completion_requires_current_obligations",
   "AgentWorkbench.Policy.Completion.completion_requires_authoritative_lifecycle",
   "AgentWorkbench.Policy.Completion.completion_requires_active_target",
   "AgentWorkbench.Policy.Update.exact_retry_returns_same_receipt",

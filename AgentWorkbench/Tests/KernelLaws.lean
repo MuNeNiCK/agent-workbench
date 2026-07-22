@@ -161,6 +161,16 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
       executeStore (.passValidation store.ledger.storedHead firstWork.id
         "validation-1" "artifact:matrix") store "validation observation rejected"
     else pure store
+  let obligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "completion-proof",
+      revision := store.ledger.storedHead, current := true }
+  let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
+    "completion obligation rejected"
+  let evidence : Domain.Evidence.Evidence :=
+    { id := ⟨100⟩, work := firstWork.id, obligation := obligation.key,
+      revision := store.ledger.storedHead, artifactDigest := "proof:matrix", current := true }
+  let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
+    "completion evidence rejected"
   pure store
 
 def expectPublicCompletionRejected (missing : MissingCompletionCondition)
@@ -184,6 +194,7 @@ def expectPublicCompletionRejected (missing : MissingCompletionCondition)
     activation.work == firstWork.id && activation.status == .active)
     s!"{label}: rejected completion did not retain the owning activation"
 
+set_option maxRecDepth 2048 in
 def main : IO Unit := do
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
@@ -299,7 +310,8 @@ def main : IO Unit := do
   let planned ← executeState (.planCompletion withParent.revision completionPlan) withParent
     "completion planning rejected"
   expect (!(Policy.Completion.closeable firstWork.id planned.work planned.activations
-    planned.claims planned.adjudications planned.lifecycle))
+    planned.claims planned.adjudications planned.lifecycle
+    planned.evidence planned.obligations))
     "an authoritative plan must begin unready instead of self-attested complete"
   match Kernel.Replay.replay
       [.workCompleted firstWork.id firstActivation.id] planned with
@@ -378,12 +390,26 @@ def main : IO Unit := do
   let freshlyAdjudicated ← executeState
     (.recordReviewAdjudication freshlyClaimed.revision freshAdjudication) freshlyClaimed
     "fresh review adjudication rejected"
-  let completable ← executeState
+  let validated ← executeState
     (.passValidation freshlyAdjudicated.revision firstWork.id
       "validation-1" "artifact:2") freshlyAdjudicated
     "current validation observation rejected"
+  let completionObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "completion-proof",
+      revision := validated.revision, current := true }
+  let obligatedCompletion ← executeState
+    (.recordObligation validated.revision completionObligation) validated
+    "completion obligation rejected"
+  let completionEvidence : Domain.Evidence.Evidence :=
+    { id := ⟨100⟩, work := firstWork.id, obligation := completionObligation.key,
+      revision := obligatedCompletion.revision, artifactDigest := "proof:complete",
+      current := true }
+  let completable ← executeState
+    (.recordEvidence obligatedCompletion.revision completionEvidence) obligatedCompletion
+    "completion evidence rejected"
   expect (Policy.Completion.closeable firstWork.id completable.work completable.activations
-    completable.claims completable.adjudications completable.lifecycle)
+    completable.claims completable.adjudications completable.lifecycle
+    completable.evidence completable.obligations)
     "authoritative current lifecycle records must allow completion"
   let completed ← match Kernel.Decide.closeWork firstWork.id completable with
     | .ok transaction => pure transaction.result.state
@@ -577,6 +603,22 @@ def main : IO Unit := do
   for (condition, label) in rejectionCases do
     expectPublicCompletionRejected condition label
   let allReadyStore ← buildCompletionStore none
+  let unmetObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "unmet-proof",
+      revision := allReadyStore.ledger.storedHead, current := true }
+  let withUnmetObligation ← executeStore
+    (.recordObligation allReadyStore.ledger.storedHead unmetObligation) allReadyStore
+    "unmet obligation setup rejected"
+  let unmetState ← currentState withUnmetObligation
+  match Application.Service.complete firstWork.id withUnmetObligation with
+  | .error _ => pure ()
+  | .ok _ => throw <| IO.userError "completion erased an unmet current obligation"
+  let unmetResult := Kernel.Decide.decide
+    (.completeWork unmetState.revision firstWork.id) unmetState
+  expect (Kernel.Decide.committedEvents unmetResult).isEmpty
+    "unmet obligation rejection exposed an accepted event"
+  expect (Kernel.Decide.committedState unmetResult unmetState == unmetState)
+    "unmet obligation rejection changed authoritative state"
   let beforeCompletion ← currentState allReadyStore
   let completedTransaction ← match Application.Service.complete firstWork.id allReadyStore with
     | .ok transaction => pure transaction
