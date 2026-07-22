@@ -63,8 +63,7 @@ structure VerifiedState where
   valid : ValidState state
 
 inductive Event
-  | replaceWork (work : List Work.WorkUnit)
-  | replaceActivations (activations : List Work.Activation)
+  | workInitialized (work : Work.WorkUnit) (activation : Work.Activation)
   | reviewClaimed (claim : Review.Claim)
   | reviewAdjudicated (decision : Review.Adjudication)
   | evidenceRecorded (item : Evidence.Evidence)
@@ -84,8 +83,8 @@ def applyUnchecked (event : Event) (state : State) : State :=
     completionFacts := Work.invalidateCompletionFacts state.completionFacts
     obligations := Evidence.invalidate state.obligations }
   match event with
-  | .replaceWork work => { invalidated with work }
-  | .replaceActivations activations => { invalidated with activations }
+  | .workInitialized work activation =>
+      { invalidated with work := [work], activations := [activation] }
   | .reviewClaimed claim => { invalidated with claims := state.claims ++ [claim] }
   | .reviewAdjudicated decision =>
       { invalidated with adjudications := state.adjudications ++ [decision] }

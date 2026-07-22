@@ -10,8 +10,8 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel.Replay
 
 inductive Command
-  | replaceWorkState (expectedRevision : Revision)
-      (work : List Work.WorkUnit) (activations : List Work.Activation)
+  | initializeWork (expectedRevision : Revision)
+      (work : Work.WorkUnit) (activation : Work.Activation)
   | recordReviewClaim (expectedRevision : Revision) (claim : Review.Claim)
   | recordReviewAdjudication (expectedRevision : Revision)
       (adjudication : Review.Adjudication)
@@ -25,7 +25,7 @@ inductive Command
 deriving DecidableEq, Repr
 
 def Command.expectedRevision : Command → Revision
-  | .replaceWorkState revision _ _
+  | .initializeWork revision _ _
   | .recordReviewClaim revision _
   | .recordReviewAdjudication revision _
   | .recordEvidence revision _
@@ -40,8 +40,13 @@ structure DerivedEvents where
 
 def deriveEvents (command : Command) (state : State) : Except DomainError DerivedEvents :=
   match command with
-  | .replaceWorkState _ work activations =>
-      .ok ⟨[.replaceWork work, .replaceActivations activations], by simp⟩
+  | .initializeWork _ work activation =>
+      if state.work.isEmpty && state.activations.isEmpty &&
+          work.status == .open && activation.status == .active &&
+          !activation.readyToResume && activation.work == work.id then
+        .ok ⟨[.workInitialized work activation], by simp⟩
+      else
+        .error (.invalidTransition "work initialization requires an empty state and one matching open active frame")
   | .recordReviewClaim _ claim =>
       .ok ⟨[.reviewClaimed claim], by simp⟩
   | .recordReviewAdjudication _ adjudication =>

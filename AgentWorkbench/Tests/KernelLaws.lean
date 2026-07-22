@@ -17,10 +17,10 @@ def firstWork : Domain.Work.WorkUnit :=
 def secondWork : Domain.Work.WorkUnit :=
   { id := ⟨2⟩, status := .open }
 
-def replaceWorkAndActivations (state : Kernel.Replay.State)
-    (work : List Domain.Work.WorkUnit)
-    (activations : List Domain.Work.Activation) : Kernel.Decide.Command :=
-  .replaceWorkState state.revision work activations
+def initializeWork (state : Kernel.Replay.State)
+    (work : Domain.Work.WorkUnit)
+    (activation : Domain.Work.Activation) : Kernel.Decide.Command :=
+  .initializeWork state.revision work activation
 
 def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError message
@@ -38,7 +38,7 @@ def expectRejectedNoEffect (command : Kernel.Decide.Command)
 
 def completeFacts : Domain.Work.CompletionFacts :=
   { work := firstWork.id
-    revision := ⟨2⟩
+    revision := ⟨1⟩
     current := true
     dependentWorkTerminal := true
     phasesTerminal := true
@@ -54,16 +54,15 @@ def main : IO Unit := do
   let initial := Kernel.Replay.emptyState
   expect (Application.Service.queryValidity initial == .pass) "empty state must be valid"
   let first ← match Application.Service.execute
-      (replaceWorkAndActivations initial [firstWork] [firstActivation]) initial with
+      (initializeWork initial firstWork firstActivation) initial with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"first activation rejected: {repr error}"
-  expect (first.revision == ⟨2⟩) "each accepted event must advance the revision"
-  let invalid := replaceWorkAndActivations first [firstWork, secondWork]
-    [firstActivation, secondActivation]
+  expect (first.revision == ⟨1⟩) "atomic initialization must advance one revision"
+  let invalid := initializeWork first secondWork secondActivation
   match Application.Service.execute invalid first with
-  | .error (.invariantViolation _) => pure ()
+  | .error (.invalidTransition _) => pure ()
   | .error error => throw <| IO.userError s!"wrong rejection: {repr error}"
-  | .ok _ => throw <| IO.userError "two active activations must be rejected"
+  | .ok _ => throw <| IO.userError "reinitializing work must be rejected"
   expect (Kernel.Decide.committedState
     (Application.Service.execute invalid first)
     first == first) "rejection must leave the state unchanged"
@@ -71,7 +70,7 @@ def main : IO Unit := do
     (Application.Service.execute invalid first)).isEmpty
     "rejection must expose no accepted events"
   let stale : Kernel.Decide.Command :=
-    .replaceWorkState ⟨0⟩ [firstWork, secondWork] [firstActivation, secondActivation]
+    .initializeWork ⟨0⟩ secondWork secondActivation
   match Application.Service.execute stale first with
   | .error .staleRevision => pure ()
   | _ => throw <| IO.userError "stale command must be rejected"
@@ -94,7 +93,7 @@ def main : IO Unit := do
   | .ok _ => pure ()
   | .error error => throw <| IO.userError s!"valid adjudication rejected: {repr error}"
   let currentObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := true }
+    { work := firstWork.id, key := "proof", revision := ⟨1⟩, current := true }
   let obligated ← match Application.Service.execute
       (.recordObligation first.revision currentObligation) first with
     | .ok transaction => pure transaction.result.state
@@ -147,20 +146,20 @@ def main : IO Unit := do
     "resume must accept a ready activation when no activation is active"
   let orphanActivation := { ready with work := ⟨99⟩ }
   expectRejectedNoEffect
-    (.replaceWorkState initial.revision [] [orphanActivation]) initial
+    (.initializeWork initial.revision firstWork orphanActivation) initial
     "activation referencing missing work"
   let closedWork := { firstWork with status := .closed }
   expectRejectedNoEffect
-    (.replaceWorkState initial.revision [closedWork] [ready]) initial
+    (.initializeWork initial.revision closedWork ready) initial
     "ready suspended activation referencing closed work"
   expectRejectedNoEffect
-    (.replaceWorkState initial.revision [closedWork] [suspended]) initial
+    (.initializeWork initial.revision closedWork suspended) initial
     "unready suspended activation referencing closed work"
   let reviewState : Policy.Authority.ReviewState := { claims := [], adjudications := [] }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
   let staleObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨2⟩, current := false }
+    { work := firstWork.id, key := "proof", revision := ⟨1⟩, current := false }
   let malformedObligation := { currentObligation with key := "" }
   expectRejectedNoEffect (.recordObligation first.revision malformedObligation) first
     "malformed obligation"
