@@ -18,7 +18,12 @@ private opaque stageDurableFile (temporary final : @& String)
     (bytes : @& ByteArray) : IO UInt32
 
 @[extern "aw_replace_durable_file"]
-private opaque replaceDurableFile (staged current : @& String) : IO Unit
+private opaque replaceDurableFile (staged current : @& String) : IO UInt32
+
+inductive ReplacementDurability
+  | confirmed
+  | uncertain
+deriving DecidableEq, Repr
 
 def digest (bytes : ByteArray) : IO String := do
   let db ← _root_.SQLite.open ":memory:"
@@ -56,8 +61,10 @@ def stage (root : System.FilePath) (bytes : ByteArray) : IO ArtifactRef := do
   | .mismatch observed =>
       throw <| IO.userError s!"durable artifact digest mismatch: {observed}"
 
-def replace (staged current : System.FilePath) : IO Unit :=
-  replaceDurableFile staged.toString current.toString
+def replace (staged current : System.FilePath) : IO ReplacementDurability := do
+  if (← replaceDurableFile staged.toString current.toString) = 0 then
+    return .confirmed
+  return .uncertain
 
 structure Reconciliation where
   missing : List ArtifactRef

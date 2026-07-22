@@ -24,6 +24,12 @@ structure Receipt where
   source : StoragePoint
   backup : DurableFilesystem.ArtifactRef
   target : StoragePoint
+  targetDurability : DurableFilesystem.ReplacementDurability
+deriving DecidableEq, Repr
+
+structure RestoreReceipt where
+  restored : StoragePoint
+  durability : DurableFilesystem.ReplacementDurability
 deriving DecidableEq, Repr
 
 private def parseVersion (value : String) : IO Nat :=
@@ -75,20 +81,20 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan) : IO
     match ← SQLite.inspect staged with
     | .error error => throw <| IO.userError s!"staged update failed integrity: {repr error}"
     | .ok _ => pure ()
-    DurableFilesystem.replace staged path
+    let target ← point staged
+    unless target.schemaVersion = plan.targetVersion do
+      throw <| IO.userError "staged update has the wrong schema version"
+    let targetDurability ← DurableFilesystem.replace staged path
+    return { source := plan.source, backup, target, targetDurability }
   catch error =>
     if ← staged.pathExists then IO.FS.removeFile staged
     throw error
-  let target ← point path
-  unless target.schemaVersion = plan.targetVersion do
-    throw <| IO.userError "published update has the wrong schema version"
-  return { source := plan.source, backup, target }
 
 def apply (path backupRoot : System.FilePath) (plan : Plan) : IO Receipt :=
   SQLite.withWriterLock path (applyUnlocked path backupRoot plan)
 
 private def restoreUnlocked (path backupRoot : System.FilePath)
-    (receipt : Receipt) : IO StoragePoint := do
+    (receipt : Receipt) : IO RestoreReceipt := do
   let observed ← point path
   unless observed = receipt.target do
     throw <| IO.userError "restore target changed after inspection"
@@ -106,16 +112,13 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
     | .ok _ => pure ()
     | .error error =>
         throw <| IO.userError s!"staged backup failed integrity: {repr error}"
-    DurableFilesystem.replace staged path
-    let restored ← point path
-    unless restored = receipt.source do
-      throw <| IO.userError "restored storage does not match the update receipt source"
-    return restored
+    let durability ← DurableFilesystem.replace staged path
+    return { restored := receipt.source, durability }
   catch error =>
     if ← staged.pathExists then IO.FS.removeFile staged
     throw error
 
-def restore (path backupRoot : System.FilePath) (receipt : Receipt) : IO StoragePoint :=
+def restore (path backupRoot : System.FilePath) (receipt : Receipt) : IO RestoreReceipt :=
   SQLite.withWriterLock path (restoreUnlocked path backupRoot receipt)
 
 end AgentWorkbench.Adapter.Update

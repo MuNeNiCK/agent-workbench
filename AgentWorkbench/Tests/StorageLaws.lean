@@ -158,7 +158,7 @@ def testRelativeReplacement (root : System.FilePath) : IO Unit := do
     if ← staged.pathExists then IO.FS.removeFile staged
     if ← current.pathExists then IO.FS.removeFile current
     IO.FS.writeBinFile staged payload.toUTF8
-    Adapter.DurableFilesystem.replace staged current
+    let _ ← Adapter.DurableFilesystem.replace staged current
     expect ((← IO.FS.readBinFile current) == payload.toUTF8)
       s!"replacement outcome disagreed with adopted bytes for {current}"
     IO.FS.removeFile current
@@ -341,6 +341,8 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   let afterInspectDigest ← Adapter.DurableFilesystem.digest (← IO.FS.readBinFile ledger)
   expect (beforeDigest == afterInspectDigest) "update inspection mutated storage"
   let receipt ← Adapter.Update.apply ledger backups plan
+  expect (receipt.targetDurability == .confirmed)
+    "update adoption durability was not confirmed"
   match ← Adapter.Update.inspect ledger with
   | .current point => expect (point == receipt.target) "published update point drifted"
   | other => throw <| IO.userError s!"update did not publish current storage: {repr other}"
@@ -362,7 +364,8 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   expect ((← IO.FS.readBinFile ledger) == targetBytes)
     "stale restore changed live storage"
   let restored ← Adapter.Update.restore ledger backups receipt
-  expect (restored == receipt.source) "restore did not recover the exact source image"
+  expect (restored.restored == receipt.source && restored.durability == .confirmed)
+    "restore did not recover the exact confirmed source image"
   match ← Adapter.Update.inspect ledger with
   | .updateRequired restoredPlan =>
       expect (restoredPlan.source == receipt.source) "restored update plan changed source identity"
@@ -386,9 +389,37 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   expect ((← IO.FS.readBinFile corruptLedger) == corruptTarget)
     "corrupted backup changed live storage"
 
+def postRenameSyncFailureChild (root : System.FilePath) : IO Unit := do
+  let ledger := root / "post-rename-uncertain.sqlite3"
+  let backups := root / "post-rename-uncertain-backups"
+  Adapter.SQLite.initializeStore ledger
+  let _ ← bootstrap ledger
+  setSchemaZero ledger
+  let plan ← match ← Adapter.Update.inspect ledger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"uncertain update fixture failed: {repr other}"
+  let receipt ← Adapter.Update.apply ledger backups plan
+  expect (receipt.targetDurability == .uncertain)
+    "post-rename sync failure was not reported as adopted-but-uncertain"
+  match ← Adapter.Update.inspect ledger with
+  | .current point => expect (point == receipt.target) "uncertain update was not adopted"
+  | other => throw <| IO.userError s!"uncertain update became a rejection: {repr other}"
+  let restored ← Adapter.Update.restore ledger backups receipt
+  expect (restored.restored == receipt.source && restored.durability == .uncertain)
+    "uncertain restore did not report its adopted source"
+
+def testPostRenameSyncFailure (root : System.FilePath) : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := ".lake/build/bin/storage-laws"
+    args := #["--post-rename-sync-failure-child", root.toString]
+    env := #[("AW_TEST_FAIL_REPLACEMENT_PARENT_FSYNC", some "1")] }
+  unless result.exitCode = 0 do
+    throw <| IO.userError s!"post-rename sync failure child failed: {result.stderr}"
+
 def main (args : List String) : IO Unit :=
   match args with
   | ["--crash-child", ledger] => crashChild ledger
+  | ["--post-rename-sync-failure-child", root] => postRenameSyncFailureChild root
   | [] => IO.FS.withTempDir fun root => do
     testRecoveryAndRetry root
     testOperationJournalCorruption root
@@ -401,6 +432,7 @@ def main (args : List String) : IO Unit :=
     testArtifactsAndEvidence root
     testArtifactBindingsAndRace root
     testExplicitUpdateAndRestore root
+    testPostRenameSyncFailure root
     IO.println "storage laws: pass"
   | _ => throw <| IO.userError "unsupported storage-laws arguments"
 

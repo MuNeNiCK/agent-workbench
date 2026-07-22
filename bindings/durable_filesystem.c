@@ -138,6 +138,9 @@ LEAN_EXPORT lean_obj_res aw_replace_durable_file(
   }
   if (close(fd) != 0) return aw_io_error("close replacement");
   if (rename(staged, current) != 0) return aw_io_error("publish replacement");
-  if (aw_fsync_parent(current) != 0) return aw_io_error("flush replacement directory");
-  return lean_io_result_mk_ok(lean_box(0));
+  const char *force_sync_failure = getenv("AW_TEST_FAIL_REPLACEMENT_PARENT_FSYNC");
+  if ((force_sync_failure != NULL && strcmp(force_sync_failure, "1") == 0) ||
+      aw_fsync_parent(current) != 0)
+    return lean_io_result_mk_ok(lean_box_uint32(1));
+  return lean_io_result_mk_ok(lean_box_uint32(0));
 }
