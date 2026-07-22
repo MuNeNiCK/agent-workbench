@@ -27,9 +27,8 @@ def replaceWorkAndActivations (state : Kernel.Replay.State)
 def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError message
 
-def completeContext (targetActive : Bool)
-    (obligations : List Domain.Evidence.Obligation) : Policy.Completion.CompletionContext :=
-  { targetActive
+def completeFacts : Domain.Work.CompletionFacts :=
+  { work := firstWork.id
     dependentWorkTerminal := true
     phasesTerminal := true
     tasksComplete := true
@@ -38,8 +37,7 @@ def completeContext (targetActive : Bool)
     findingsResolved := true
     repositoryClassified := true
     workRecordsLinked := true
-    correctionsResolved := true
-    obligations }
+    correctionsResolved := true }
 
 def main : IO Unit := do
   let initial := Kernel.Replay.emptyState
@@ -74,14 +72,29 @@ def main : IO Unit := do
   let claim : Domain.Review.Claim := { id := ⟨1⟩, claim := .clean }
   expect (Policy.Authority.authority (Policy.Authority.recordClaim reviewState claim) ==
     Policy.Authority.authority reviewState) "a review claim must not create authority"
-  let currentObligation : Domain.Evidence.Obligation := { key := "proof", current := true }
-  let staleObligation : Domain.Evidence.Obligation := { key := "proof", current := false }
-  expect (Policy.Completion.closeable (completeContext true [currentObligation]))
+  let currentObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "proof", current := true }
+  let staleObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "proof", current := false }
+  expect (Policy.Completion.closeable firstWork.id first.work first.activations
+    [completeFacts] [currentObligation])
     "complete current obligations must allow completion"
-  expect (!(Policy.Completion.closeable (completeContext false [currentObligation])))
-    "completion must reject an inactive target"
-  expect (!(Policy.Completion.closeable (completeContext true [staleObligation])))
+  expect (!(Policy.Completion.closeable firstWork.id first.work first.activations
+    [completeFacts] [])) "completion must reject missing obligations"
+  expect (!(Policy.Completion.closeable firstWork.id first.work first.activations
+    [completeFacts] [staleObligation]))
     "completion must reject stale obligations"
+  let completable := { first with completionFacts := [completeFacts], obligations := [currentObligation] }
+  let completed ← match Application.Service.complete firstWork.id completable with
+    | .ok transaction => pure transaction.result.state
+    | .error error => throw <| IO.userError s!"valid completion rejected: {repr error}"
+  expect (completed.work.any fun unit =>
+    unit.id == firstWork.id && unit.status == .closed) "completion must close the target work"
+  expect (completed.activations.any fun activation =>
+    activation.id == firstActivation.id && activation.status == .closed)
+    "completion must atomically close the owning activation"
+  expect (completed.revision == completable.revision.next)
+    "atomic completion must advance exactly one revision"
   let receipt : Policy.Update.Receipt :=
     { operation := ⟨"operation-1"⟩, payloadDigest := "payload", resultDigest := "result" }
   expect (Policy.Update.resolveRetry receipt.operation "payload" ⟨0⟩ ⟨99⟩ [receipt] ==

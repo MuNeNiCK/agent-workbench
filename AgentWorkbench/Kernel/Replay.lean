@@ -17,6 +17,7 @@ structure State where
   evidence : List Evidence.Evidence
   externalOperations : List ExternalOperation.Attempt
   obligations : List Evidence.Obligation
+  completionFacts : List Work.CompletionFacts
 deriving DecidableEq, Repr
 
 def ValidState (state : State) : Prop :=
@@ -39,6 +40,7 @@ inductive Event
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
+  | workCompleted (work : WorkId) (activation : ActivationId)
 deriving DecidableEq, Repr
 
 def applyUnchecked (event : Event) (state : State) : State :=
@@ -54,6 +56,11 @@ def applyUnchecked (event : Event) (state : State) : State :=
       { state with revision := revised, externalOperations := state.externalOperations ++ [attempt] }
   | .obligationRecorded obligation =>
       { state with revision := revised, obligations := state.obligations ++ [obligation] }
+  | .workCompleted work activation =>
+      { state with
+        revision := revised
+        work := Work.closeWork state.work work
+        activations := Work.closeActivation state.activations activation }
 
 def verifyState (state : State) : Except DomainError VerifiedState :=
   if valid : ValidState state then
@@ -94,7 +101,8 @@ def emptyState : State :=
     adjudications := []
     evidence := []
     externalOperations := []
-    obligations := [] }
+    obligations := []
+    completionFacts := [] }
 
 theorem emptyState_valid : ValidState emptyState := by
   simp [ValidState, Work.ValidWorkState, Work.UniqueWorkIds,

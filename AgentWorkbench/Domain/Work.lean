@@ -17,6 +17,19 @@ structure Activation where
   readyToResume : Bool
 deriving DecidableEq, Repr
 
+structure CompletionFacts where
+  work : WorkId
+  dependentWorkTerminal : Bool
+  phasesTerminal : Bool
+  tasksComplete : Bool
+  checklistsComplete : Bool
+  reviewsClean : Bool
+  findingsResolved : Bool
+  repositoryClassified : Bool
+  workRecordsLinked : Bool
+  correctionsResolved : Bool
+deriving DecidableEq, Repr
+
 def activeActivations (activations : List Activation) : List Activation :=
   activations.filter (fun activation => activation.status == .active)
 
@@ -47,6 +60,21 @@ theorem single_active_activation {activations : List Activation}
 
 def noActive (activations : List Activation) : Bool :=
   (activeActivations activations).isEmpty
+
+def activeFor (activations : List Activation) (work : WorkId) : Option Activation :=
+  activations.find? fun activation =>
+    activation.work == work && activation.status == .active
+
+def workIsOpen (work : List WorkUnit) (target : WorkId) : Bool :=
+  work.any fun unit => unit.id == target && unit.status == .open
+
+def closeWork (work : List WorkUnit) (target : WorkId) : List WorkUnit :=
+  work.map fun unit =>
+    if unit.id == target then { unit with status := .closed } else unit
+
+def closeActivation (activations : List Activation) (target : ActivationId) : List Activation :=
+  activations.map fun activation =>
+    if activation.id == target then { activation with status := .closed } else activation
 
 def resumable (activations : List Activation) (id : ActivationId) : Bool :=
   noActive activations && activations.any fun activation =>

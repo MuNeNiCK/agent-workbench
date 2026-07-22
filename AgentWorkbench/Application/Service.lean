@@ -14,6 +14,10 @@ def execute (command : Decide.Command) (state : Replay.State) :
     Except DomainError Decide.AcceptedTransaction :=
   Decide.decide command state
 
+def complete (target : WorkId) (state : Replay.State) :
+    Except DomainError Decide.CompletionTransaction :=
+  Decide.closeWork target state
+
 def queryValidity (state : Replay.State) : GateResult :=
   Gates.validStateGate state
 

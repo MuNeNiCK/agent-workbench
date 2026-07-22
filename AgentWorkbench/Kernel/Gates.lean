@@ -9,8 +9,12 @@ open AgentWorkbench.Kernel.Replay
 def validStateGate (state : State) : GateResult :=
   if ValidState state then .pass else .blocked "state invariant violation"
 
-def completionGate (context : Policy.Completion.CompletionContext) : GateResult :=
-  if Policy.Completion.closeable context then .pass else .blocked "completion obligations remain"
+def completionGate (target : WorkId) (state : State) : GateResult :=
+  if Policy.Completion.closeable target state.work state.activations
+      state.completionFacts state.obligations then
+    .pass
+  else
+    .blocked "completion obligations remain"
 
 def observeGate (gate : State → GateResult) (state : State) : State × GateResult :=
   (state, gate state)
