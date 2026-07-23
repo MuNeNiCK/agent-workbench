@@ -8,7 +8,8 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open SQLite.Blob
 
-def schemaVersion : Nat := 1
+def schemaVersion : Nat := 2
+def legacySchemaVersion : Nat := 1
 
 private def writerPath (path : System.FilePath) : System.FilePath :=
   System.FilePath.mk s!"{path}.writer.sqlite3"
@@ -105,6 +106,13 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
       history_digest TEXT NOT NULL,
       adopted_digest TEXT NOT NULL,
       PRIMARY KEY (observed_digest, head_revision, history_digest)
+    );
+    CREATE TABLE update_provenance (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      source_schema TEXT NOT NULL,
+      source_digest TEXT NOT NULL,
+      backup_digest TEXT NOT NULL,
+      backup_size TEXT NOT NULL
     );"
 
 private def writeInitialRows (db : _root_.SQLite) : IO Unit := do
@@ -326,6 +334,49 @@ def inspectAtSchema (path : System.FilePath) (expectedSchema : Nat) :
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
   db.transaction (loadFromAt db expectedSchema)
+
+private def tableColumns (db : _root_.SQLite) (table : String) : IO (List String) := do
+  let statement ← db.prepare s!"PRAGMA table_info({table})"
+  let mut columns := []
+  while ← statement.step do
+    columns := (← statement.columnText 1) :: columns
+  return columns.reverse
+
+def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
+  try
+    unless (← tableColumns db "events") = ["revision", "payload"] &&
+        (← tableColumns db "operations") =
+          ["operation_id", "payload_digest", "result_digest", "receipt"] &&
+        (← tableColumns db "artifacts") = ["digest", "size"] do
+      return false
+    for table in ["events", "operations", "artifacts"] do
+      let count ← db.prepare s!"SELECT count(*) FROM {table}"
+      unless ← count.step do return false
+      unless (← count.columnInt64 0).toInt = 0 do return false
+    let metadata ← readMetadataAt db legacySchemaVersion
+    let (ledgerId, headRevision, historyDigest) ← match metadata with
+      | .ok value => pure value
+      | .error _ => return false
+    let events ← match ← readEvents db with
+      | .ok value => pure value
+      | .error _ => return false
+    let projection ← match ← readProjection db with
+      | .ok value => pure value
+      | .error _ => return false
+    let store : Projection.Store := {
+      ledger := {
+        id := ledgerId
+        events := events
+        storedHead := headRevision
+        storedHistoryDigest := historyDigest }
+      active := some projection
+      staged := []
+      receipts := []
+      nextStage := ⟨1⟩ }
+    match Projection.inspect store with
+    | .fresh _ _ => return true
+    | _ => return false
+  catch _ => return false
 
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do

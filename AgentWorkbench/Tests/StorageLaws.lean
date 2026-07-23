@@ -323,16 +323,54 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   expect ((← load raceLedger).ledger.storedHead == initialized.store.ledger.storedHead)
     "artifact race advanced the authoritative ledger"
 
-def setSchemaZero (ledger : System.FilePath) : IO Unit := do
+def makeLegacyV1 (ledger : System.FilePath) : IO Unit := do
   let db ← _root_.SQLite.openWith ledger { mode := .readWrite }
-  db.exec "UPDATE metadata SET schema_version = '0' WHERE singleton = 1"
+  db.transaction (mode := .immediate) do
+    db.exec "
+      DROP TABLE update_provenance;
+      ALTER TABLE events DROP COLUMN operation_id;
+      ALTER TABLE operations DROP COLUMN request_payload;
+      ALTER TABLE operations DROP COLUMN start_revision;
+      ALTER TABLE operations DROP COLUMN end_revision;
+      ALTER TABLE operations DROP COLUMN history_digest;
+      ALTER TABLE artifacts DROP COLUMN payload;
+      UPDATE metadata SET schema_version = '1' WHERE singleton = 1;"
+
+def removeCoordinator (ledger : System.FilePath) : IO System.FilePath := do
+  let coordinator := System.FilePath.mk s!"{ledger}.writer.sqlite3"
+  if ← coordinator.pathExists then IO.FS.removeFile coordinator
+  return coordinator
+
+def testUpdateInspectionReadOnly (root : System.FilePath) : IO Unit := do
+  let check (ledger : System.FilePath) : IO Unit := do
+    let coordinator ← removeCoordinator ledger
+    let beforeBytes ← IO.FS.readBinFile ledger
+    let beforeEntries := (← root.readDir).size
+    let _ ← Adapter.Update.inspect ledger
+    expect (!(← coordinator.pathExists)) "update inspection created a writer coordinator"
+    expect ((← IO.FS.readBinFile ledger) == beforeBytes)
+      "update inspection changed ledger bytes"
+    expect ((← root.readDir).size == beforeEntries)
+      "update inspection changed the directory entry set"
+
+  let current := root / "inspect-current.sqlite3"
+  Adapter.SQLite.initializeStore current
+  check current
+  let legacy := root / "inspect-legacy.sqlite3"
+  Adapter.SQLite.initializeStore legacy
+  makeLegacyV1 legacy
+  check legacy
+  let unsupported := root / "inspect-unsupported.sqlite3"
+  Adapter.SQLite.initializeStore unsupported
+  let _ ← bootstrap unsupported
+  makeLegacyV1 unsupported
+  check unsupported
 
 def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   let ledger := root / "update.sqlite3"
   let backups := root / "backups"
   Adapter.SQLite.initializeStore ledger
-  let _ ← bootstrap ledger
-  setSchemaZero ledger
+  makeLegacyV1 ledger
   let beforeBytes ← IO.FS.readBinFile ledger
   let beforeDigest ← Adapter.DurableFilesystem.digest beforeBytes
   let plan ← match ← Adapter.Update.inspect ledger with
@@ -363,6 +401,21 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
     "stale restore target was accepted"
   expect ((← IO.FS.readBinFile ledger) == targetBytes)
     "stale restore changed live storage"
+  let forgedLedger := root / "forged-unrelated.sqlite3"
+  let unrelatedBackups := root / "forged-unrelated-backups"
+  Adapter.SQLite.initializeStore forgedLedger
+  makeLegacyV1 forgedLedger
+  execSql forgedLedger "INSERT INTO projection_repairs VALUES ('marker','0','marker','marker')"
+  let unrelatedPlan ← match ← Adapter.Update.inspect forgedLedger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"unrelated update fixture failed: {repr other}"
+  let unrelatedReceipt ← Adapter.Update.apply forgedLedger unrelatedBackups unrelatedPlan
+  let forged : Adapter.Update.Receipt := {
+    unrelatedReceipt with target := receipt.target }
+  expectFailure (Adapter.Update.restore ledger unrelatedBackups forged)
+    "coherently forged restore receipt was accepted"
+  expect ((← IO.FS.readBinFile ledger) == targetBytes)
+    "forged restore receipt changed live storage"
   let restored ← Adapter.Update.restore ledger backups receipt
   expect (restored.restored == receipt.source && restored.durability == .confirmed)
     "restore did not recover the exact confirmed source image"
@@ -374,8 +427,7 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   let corruptLedger := root / "corrupt-backup.sqlite3"
   let corruptBackups := root / "corrupt-backups"
   Adapter.SQLite.initializeStore corruptLedger
-  let _ ← bootstrap corruptLedger
-  setSchemaZero corruptLedger
+  makeLegacyV1 corruptLedger
   let corruptPlan ← match ← Adapter.Update.inspect corruptLedger with
     | .updateRequired plan => pure plan
     | other => throw <| IO.userError s!"corrupt backup fixture failed: {repr other}"
@@ -389,12 +441,22 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   expect ((← IO.FS.readBinFile corruptLedger) == corruptTarget)
     "corrupted backup changed live storage"
 
+  let unsupportedLedger := root / "legacy-v1-nonempty.sqlite3"
+  Adapter.SQLite.initializeStore unsupportedLedger
+  let _ ← bootstrap unsupportedLedger
+  makeLegacyV1 unsupportedLedger
+  let unsupportedBefore ← IO.FS.readBinFile unsupportedLedger
+  match ← Adapter.Update.inspect unsupportedLedger with
+  | .unsupported point => expect (point.schemaVersion == 1) "legacy schema identity drifted"
+  | other => throw <| IO.userError s!"nonempty legacy v1 was not explicit unsupported: {repr other}"
+  expect ((← IO.FS.readBinFile unsupportedLedger) == unsupportedBefore)
+    "unsupported legacy inspection mutated storage"
+
 def postRenameSyncFailureChild (root : System.FilePath) : IO Unit := do
   let ledger := root / "post-rename-uncertain.sqlite3"
   let backups := root / "post-rename-uncertain-backups"
   Adapter.SQLite.initializeStore ledger
-  let _ ← bootstrap ledger
-  setSchemaZero ledger
+  makeLegacyV1 ledger
   let plan ← match ← Adapter.Update.inspect ledger with
     | .updateRequired plan => pure plan
     | other => throw <| IO.userError s!"uncertain update fixture failed: {repr other}"
@@ -431,6 +493,7 @@ def main (args : List String) : IO Unit :=
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
     testArtifactBindingsAndRace root
+    testUpdateInspectionReadOnly root
     testExplicitUpdateAndRestore root
     testPostRenameSyncFailure root
     IO.println "storage laws: pass"
