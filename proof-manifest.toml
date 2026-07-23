@@ -48,7 +48,7 @@ modules = [
 ]
 
 source_authorities = [
-  "AgentWorkbench/Audit/Expected.lean=f378b63f041cb63bf8f32daef333b8907faf7e86ba4f41a35f4b73c4bbff77ac",
+  "AgentWorkbench/Audit/Expected.lean=80aac46b93cdddce5d646bae28b163db88344056908be8deddb127317f78fac2",
   "AgentWorkbench/Application/Service.lean=9e584b0d74f16412410dba91ff6f32d6cfe841f35028126727c47956ebfb55ee",
   "AgentWorkbench/Audit/Main.lean=c30a50209fcc6f31b58ad89a4eedceb2d5b9223f33258c8f25551dd3d8e83069",
 ]

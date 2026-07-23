@@ -139,7 +139,8 @@ axiom completion_requires_current_obligations (target : WorkId)
     (accepted : Policy.Completion.closeable target work activations claims adjudications
       reviewPlans findings verifications lifecycle evidence obligations designs approvals
       decompositions corrections = true) :
-    Policy.Completion.obligationsReady target evidence obligations = true
+    Policy.Completion.obligationsReady target evidence obligations
+      designs decompositions = true
 
 axiom completion_requires_authoritative_lifecycle (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)

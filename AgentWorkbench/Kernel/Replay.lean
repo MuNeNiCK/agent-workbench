@@ -366,9 +366,27 @@ def completionObligationSatisfied (evidence : List Evidence.Evidence)
   obligation.current && evidence.any (Evidence.exactFor · obligation)
 
 def completionObligationsReady (target : WorkId)
-    (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation) : Bool :=
+    (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion)
+    (decompositions : List Design.Decomposition) : Bool :=
   let owned := Evidence.forWork obligations target
-  !owned.isEmpty && owned.all (completionObligationSatisfied evidence)
+  match decompositions.reverse.find? (·.work == target) with
+  | none => false
+  | some decomposition =>
+      match designs.find? fun design =>
+          design.id == decomposition.design &&
+          design.revision == decomposition.designRevision with
+      | none => false
+      | some design =>
+          let active := (design.requirements.filter (·.active)).map (·.key)
+          !owned.isEmpty &&
+          owned.all (fun obligation =>
+            obligation.design == design.id &&
+            obligation.designRevision == design.revision &&
+            completionObligationSatisfied evidence obligation) &&
+          active.all fun requirement =>
+            owned.any (fun obligation =>
+              obligation.requirements.contains requirement)
 
 def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
   state.reviewPlans.any fun plan =>
@@ -444,7 +462,8 @@ def resumeCurrent (work : WorkId) (activation : ActivationId) (state : State) : 
         readinessCurrent work activation basis state
 
 def completionApplicable (target : WorkId) (state : State) : Bool :=
-  completionObligationsReady target state.evidence state.obligations &&
+  completionObligationsReady target state.evidence state.obligations
+    state.designs state.decompositions &&
   (Work.activeFor state.activations target).isSome &&
   Work.workIsOpen state.work target &&
   (match Lifecycle.forWork state.lifecycle target with

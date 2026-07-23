@@ -47,9 +47,27 @@ def obligationSatisfied (evidence : List Evidence.Evidence)
   obligation.current && evidence.any (Evidence.exactFor · obligation)
 
 def obligationsReady (target : WorkId) (evidence : List Evidence.Evidence)
-    (obligations : List Evidence.Obligation) : Bool :=
+    (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion)
+    (decompositions : List Design.Decomposition) : Bool :=
   let owned := Evidence.forWork obligations target
-  !owned.isEmpty && owned.all (obligationSatisfied evidence)
+  match decompositions.reverse.find? (·.work == target) with
+  | none => false
+  | some decomposition =>
+      match designs.find? fun design =>
+          design.id == decomposition.design &&
+          design.revision == decomposition.designRevision with
+      | none => false
+      | some design =>
+          let active := (design.requirements.filter (·.active)).map (·.key)
+          !owned.isEmpty &&
+          owned.all (fun obligation =>
+            obligation.design == design.id &&
+            obligation.designRevision == design.revision &&
+            obligationSatisfied evidence obligation) &&
+          active.all fun requirement =>
+            owned.any (fun obligation =>
+              obligation.requirements.contains requirement)
 
 def traceReady (target : WorkId) (designs : List Design.DesignVersion)
     (approvals : List Design.Approval)
@@ -95,7 +113,7 @@ def closeable (target : WorkId) (work : List Work.WorkUnit)
     (designs : List Design.DesignVersion) (approvals : List Design.Approval)
     (decompositions : List Design.Decomposition)
     (corrections : List Design.Correction) : Bool :=
-  obligationsReady target evidence obligations &&
+  obligationsReady target evidence obligations designs decompositions &&
   (Work.activeFor activations target).isSome &&
   Work.workIsOpen work target &&
   authoritativeReady target work claims adjudications lifecycle &&
@@ -116,7 +134,7 @@ theorem completion_requires_current_obligations (target : WorkId)
     (accepted : closeable target work activations claims adjudications reviewPlans
       findings verifications lifecycle evidence obligations designs approvals
       decompositions corrections = true) :
-    obligationsReady target evidence obligations = true := by
+    obligationsReady target evidence obligations designs decompositions = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
   exact accepted.1.1.1.1.1.1
 

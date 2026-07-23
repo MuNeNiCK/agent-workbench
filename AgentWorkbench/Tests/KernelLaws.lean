@@ -847,6 +847,60 @@ def main : IO Unit := do
     completable.evidence completable.obligations completable.designs
     completable.designApprovals completable.decompositions completable.corrections)
     "authoritative current lifecycle records must allow completion"
+  let otherDesign :=
+    { evidenceDesign with id := ⟨2⟩, contentDigest := "sha256:other-design" }
+  let otherDesignObligation :=
+    { completionObligation with
+      design := otherDesign.id
+      designRevision := otherDesign.revision }
+  let otherDesignEvidence :=
+    { completionEvidence with
+      design := otherDesign.id
+      designRevision := otherDesign.revision }
+  let wrongDesignEvidenceState :=
+    { completable with
+      designs := completable.designs ++ [otherDesign]
+      obligations := completable.obligations.map fun
+          (obligation : Domain.Evidence.Obligation) =>
+        if obligation.work == completionObligation.work &&
+            obligation.key == completionObligation.key then
+          otherDesignObligation
+        else obligation
+      evidence := completable.evidence.map fun
+          (item : Domain.Evidence.Evidence) =>
+        if item.id == completionEvidence.id then otherDesignEvidence else item }
+  expect (!(Policy.Completion.closeable firstWork.id
+    wrongDesignEvidenceState.work wrongDesignEvidenceState.activations
+    wrongDesignEvidenceState.claims wrongDesignEvidenceState.adjudications
+    wrongDesignEvidenceState.reviewPlans wrongDesignEvidenceState.reviewFindings
+    wrongDesignEvidenceState.findingVerifications wrongDesignEvidenceState.lifecycle
+    wrongDesignEvidenceState.evidence wrongDesignEvidenceState.obligations
+    wrongDesignEvidenceState.designs wrongDesignEvidenceState.designApprovals
+    wrongDesignEvidenceState.decompositions wrongDesignEvidenceState.corrections))
+    "completion accepted evidence for a different existing design"
+  let uncoveredRequirementState :=
+    { completable with
+      obligations := completable.obligations.map fun
+          (obligation : Domain.Evidence.Obligation) =>
+        if obligation.work == firstWork.id then
+          { obligation with requirements := ["different-requirement"] }
+        else
+          obligation
+      evidence := completable.evidence.map fun
+          (item : Domain.Evidence.Evidence) =>
+        if item.work == firstWork.id then
+          { item with requirements := ["different-requirement"] }
+        else
+          item }
+  expect (!(Policy.Completion.closeable firstWork.id
+    uncoveredRequirementState.work uncoveredRequirementState.activations
+    uncoveredRequirementState.claims uncoveredRequirementState.adjudications
+    uncoveredRequirementState.reviewPlans uncoveredRequirementState.reviewFindings
+    uncoveredRequirementState.findingVerifications uncoveredRequirementState.lifecycle
+    uncoveredRequirementState.evidence uncoveredRequirementState.obligations
+    uncoveredRequirementState.designs uncoveredRequirementState.designApprovals
+    uncoveredRequirementState.decompositions uncoveredRequirementState.corrections))
+    "completion evidence omitted an active design requirement"
   let supersedingImplementationPlan : Domain.Review.Plan :=
     { id := ⟨3999⟩
       owner := "owner"
