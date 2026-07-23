@@ -417,7 +417,12 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
   let malformedCases := [
     ("extra", "ALTER TABLE events ADD COLUMN unexpected TEXT"),
     ("missing", "DROP TABLE update_provenance"),
-    ("forged", "DROP TABLE update_provenance; ALTER TABLE artifacts DROP COLUMN payload")]
+    ("forged", "DROP TABLE update_provenance; ALTER TABLE artifacts DROP COLUMN payload"),
+    ("constraints", "
+      ALTER TABLE events RENAME TO old_events;
+      CREATE TABLE events (revision INTEGER, payload BLOB, operation_id TEXT);
+      INSERT INTO events SELECT revision, payload, operation_id FROM old_events;
+      DROP TABLE old_events;")]
   for (name, sql) in malformedCases do
     let ledger := root / s!"malformed-v2-{name}.sqlite3"
     Adapter.SQLite.initializeStore ledger
@@ -428,6 +433,22 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
     | other => throw <| IO.userError s!"malformed current schema {name} was accepted: {repr other}"
     expect ((← IO.FS.readBinFile ledger) == before)
       s!"malformed current inspection mutated storage: {name}"
+
+  let malformedPredecessor := root / "malformed-predecessor-constraints.sqlite3"
+  Adapter.SQLite.initializeStore malformedPredecessor
+  makePredecessorV1 malformedPredecessor
+  execSql malformedPredecessor "
+    ALTER TABLE events RENAME TO old_events;
+    CREATE TABLE events (revision INTEGER, payload BLOB, operation_id TEXT);
+    INSERT INTO events SELECT revision, payload, operation_id FROM old_events;
+    DROP TABLE old_events;"
+  let predecessorBefore ← IO.FS.readBinFile malformedPredecessor
+  match ← Adapter.Update.inspect malformedPredecessor with
+  | .unsupported point =>
+      expect (point.schemaVersion == 1) "same-name malformed predecessor identity drifted"
+  | other => throw <| IO.userError s!"same-name malformed predecessor was accepted: {repr other}"
+  expect ((← IO.FS.readBinFile malformedPredecessor) == predecessorBefore)
+    "malformed predecessor inspection mutated storage"
 
 def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   let ledger := root / "update.sqlite3"

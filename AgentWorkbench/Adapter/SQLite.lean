@@ -376,6 +376,99 @@ private def applicationTables (db : _root_.SQLite) : IO (List String) := do
     tables := (← statement.columnText 0) :: tables
   return tables.reverse
 
+private def normalizeSchemaSql (value : String) : String :=
+  String.ofList <| value.toList.filter fun character => !character.isWhitespace
+
+private def tableDefinitionMatches (db : _root_.SQLite) (table expected : String) : IO Bool := do
+  let statement ← db.prepare "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?"
+  statement.bindText 1 table
+  unless ← statement.step do return false
+  return normalizeSchemaSql (← statement.columnText 0) = normalizeSchemaSql expected
+
+private def metadataDefinition := "CREATE TABLE metadata (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  schema_version TEXT NOT NULL,
+  ledger_id TEXT NOT NULL,
+  head_revision TEXT NOT NULL,
+  history_digest TEXT NOT NULL
+)"
+
+private def projectionDefinition := "CREATE TABLE projection (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  revision TEXT NOT NULL,
+  history_digest TEXT NOT NULL,
+  state_digest TEXT NOT NULL,
+  payload BLOB NOT NULL
+)"
+
+private def projectionRepairsDefinition := "CREATE TABLE projection_repairs (
+  observed_digest TEXT NOT NULL,
+  head_revision TEXT NOT NULL,
+  history_digest TEXT NOT NULL,
+  adopted_digest TEXT NOT NULL,
+  PRIMARY KEY (observed_digest, head_revision, history_digest)
+)"
+
+private def currentEventsDefinition := "CREATE TABLE events (
+  revision INTEGER PRIMARY KEY CHECK (revision > 0),
+  payload BLOB NOT NULL,
+  operation_id TEXT NOT NULL
+)"
+
+private def currentOperationsDefinition := "CREATE TABLE operations (
+  operation_id TEXT PRIMARY KEY,
+  request_payload BLOB NOT NULL,
+  payload_digest TEXT NOT NULL,
+  result_digest TEXT NOT NULL,
+  start_revision TEXT NOT NULL,
+  end_revision TEXT NOT NULL,
+  history_digest TEXT NOT NULL,
+  receipt BLOB NOT NULL
+)"
+
+private def currentArtifactsDefinition := "CREATE TABLE artifacts (
+  digest TEXT PRIMARY KEY,
+  size TEXT NOT NULL,
+  payload BLOB NOT NULL
+)"
+
+private def updateProvenanceDefinition := "CREATE TABLE update_provenance (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  source_schema TEXT NOT NULL,
+  source_digest TEXT NOT NULL,
+  backup_digest TEXT NOT NULL,
+  backup_size TEXT NOT NULL
+)"
+
+private def originalEventsDefinition := "CREATE TABLE events (
+  revision INTEGER PRIMARY KEY CHECK (revision > 0),
+  payload BLOB NOT NULL
+)"
+
+private def originalOperationsDefinition := "CREATE TABLE operations (
+  operation_id TEXT PRIMARY KEY,
+  payload_digest TEXT NOT NULL,
+  result_digest TEXT NOT NULL,
+  receipt BLOB NOT NULL
+)"
+
+private def originalArtifactsDefinition := "CREATE TABLE artifacts (
+  digest TEXT PRIMARY KEY,
+  size TEXT NOT NULL
+)"
+
+private def definitionsMatch (db : _root_.SQLite)
+    (definitions : List (String × String)) : IO Bool := do
+  for (table, expected) in definitions do
+    unless ← tableDefinitionMatches db table expected do return false
+  return true
+
+private def commonDefinitionsMatch (db : _root_.SQLite) : IO Bool :=
+  definitionsMatch db [
+    ("metadata", metadataDefinition),
+    ("projection", projectionDefinition),
+    ("projection_repairs", projectionRepairsDefinition)]
+
 private def commonSchemaMatches (db : _root_.SQLite) : IO Bool := do
   return (← tableColumns db "metadata") =
       ["singleton", "schema_version", "ledger_id", "head_revision", "history_digest"] &&
@@ -396,7 +489,13 @@ def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
          "start_revision", "end_revision", "history_digest", "receipt"] &&
       (← tableColumns db "artifacts") = ["digest", "size", "payload"] &&
       (← tableColumns db "update_provenance") =
-        ["singleton", "source_schema", "source_digest", "backup_digest", "backup_size"]
+        ["singleton", "source_schema", "source_digest", "backup_digest", "backup_size"] &&
+      (← commonDefinitionsMatch db) &&
+      (← definitionsMatch db [
+        ("events", currentEventsDefinition),
+        ("operations", currentOperationsDefinition),
+        ("artifacts", currentArtifactsDefinition),
+        ("update_provenance", updateProvenanceDefinition)])
   catch _ => return false
 
 inductive LegacyV1Layout
@@ -439,19 +538,27 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
   try
     unless (← applicationTables db) =
         ["artifacts", "events", "metadata", "operations", "projection", "projection_repairs"] &&
-        (← commonSchemaMatches db) do
+        (← commonSchemaMatches db) && (← commonDefinitionsMatch db) do
       return none
     if (← tableColumns db "events") = ["revision", "payload"] &&
         (← tableColumns db "operations") =
           ["operation_id", "payload_digest", "result_digest", "receipt"] &&
         (← tableColumns db "artifacts") = ["digest", "size"] &&
+        (← definitionsMatch db [
+          ("events", originalEventsDefinition),
+          ("operations", originalOperationsDefinition),
+          ("artifacts", originalArtifactsDefinition)]) &&
         (← originalV1EmptyValid db) then
       return some .originalEmpty
     if (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
         (← tableColumns db "operations") =
           ["operation_id", "request_payload", "payload_digest", "result_digest",
            "start_revision", "end_revision", "history_digest", "receipt"] &&
-        (← tableColumns db "artifacts") = ["digest", "size", "payload"] then
+        (← tableColumns db "artifacts") = ["digest", "size", "payload"] &&
+        (← definitionsMatch db [
+          ("events", currentEventsDefinition),
+          ("operations", currentOperationsDefinition),
+          ("artifacts", currentArtifactsDefinition)]) then
       match ← loadFromAt db legacySchemaVersion with
       | .ok _ => return some .predecessor
       | .error _ => return none
