@@ -16,7 +16,7 @@ def executeBootstrap :=
 
 def run : IO Unit := do
   match executeBootstrap with
-  | .error error => throw <| IO.userError s!"verified mutation rejected: {repr error}"
+  | .error _ => throw <| IO.userError "verified mutation rejected"
   | .ok transaction =>
       match (Application.Service.queryValidity transaction.result).value,
           (Application.Service.resolve transaction.result).value with
@@ -24,7 +24,7 @@ def run : IO Unit := do
           match executeRequest (.action action) transaction.result with
           | .ok response => IO.println s!"agent-workbench verified core: {response.output}"
           | .error error => throw <| IO.userError s!"resolver action rejected: {error}"
-      | .blocked reason, _ => throw <| IO.userError reason
-      | _, .blocked blocker => throw <| IO.userError s!"resolver blocked: {repr blocker}"
+      | .blocked _, _ => throw <| IO.userError "verified state blocked"
+      | _, .blocked _ => throw <| IO.userError "resolver blocked"
 
 end AgentWorkbench.Cli.Program

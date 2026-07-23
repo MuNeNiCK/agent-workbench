@@ -110,29 +110,49 @@ structure Response where
   store : Projection.Store
   output : String
 
+def inspectionOutput : Projection.Inspection → String
+  | .fresh _ _ => "state current"
+  | .missing _ _ | .stale _ _ _ | .corrupt _ _ _ _ =>
+      "projection repair required"
+  | .ledgerCorrupt _ => "state unavailable"
+
+def gateOutput : GateResult → String
+  | .pass => "gate ready"
+  | .blocked _ => "gate blocked"
+
+def actionOutput : Resolver.Action → String
+  | .repairProjection _ => "projection repaired"
+  | .initializeWork _ => "work initialized"
+  | .continueActiveWork _ _ _ => "work ready"
+  | .resumeSuspendedWork _ _ _ => "work resumed"
+
+def resolutionOutput : Resolver.Resolution → String
+  | .action action => s!"next action: {actionOutput action}"
+  | .blocked _ => "no executable action"
+
 def executeAction (action : Resolver.Action) (store : Projection.Store) :
     Except String Response :=
   if action.executable (Projection.inspect store) then
     match action with
     | .repairProjection command =>
         match repairProjection command store with
-        | .error error => .error s!"{repr error}"
+        | .error _ => .error "projection repair rejected"
         | .ok transaction =>
             .ok {
               store := transaction.adopted.result
-              output := s!"{repr transaction.adopted.receipt}" }
+              output := actionOutput action }
     | .initializeWork point =>
         match execute (bootstrapCommandAt point.revision) store with
-        | .error error => .error s!"{repr error}"
+        | .error _ => .error "work initialization rejected"
         | .ok transaction =>
-            .ok { store := transaction.result, output := s!"{repr action}" }
+            .ok { store := transaction.result, output := actionOutput action }
     | .continueActiveWork _ _ _ =>
-        .ok { store, output := s!"{repr action}" }
+        .ok { store, output := actionOutput action }
     | .resumeSuspendedWork point work activation =>
         match execute (.resumeWork point.revision work activation) store with
-        | .error error => .error s!"{repr error}"
+        | .error _ => .error "work resume rejected"
         | .ok transaction =>
-            .ok { store := transaction.result, output := s!"{repr action}" }
+            .ok { store := transaction.result, output := actionOutput action }
   else
     .error "resolver action is stale or does not match the authoritative store"
 
@@ -148,20 +168,20 @@ def executeRequest (request : Request) (store : Projection.Store) :
   match request with
   | .status =>
       let result := status store
-      .ok { store := result.store, output := result.value.describe }
+      .ok { store := result.store, output := inspectionOutput result.value }
   | .next =>
       let result := resolve store
-      .ok { store := result.store, output := s!"{repr result.value}" }
+      .ok { store := result.store, output := resolutionOutput result.value }
   | .gate request =>
       let result := queryGate request store
-      .ok { store := result.store, output := s!"{repr result.value}" }
+      .ok { store := result.store, output := gateOutput result.value }
   | .repairProjection command =>
       match repairProjection command store with
-      | .error error => .error s!"{repr error}"
+      | .error _ => .error "projection repair rejected"
       | .ok transaction =>
           .ok {
             store := transaction.adopted.result
-            output := s!"{repr transaction.adopted.receipt}" }
+            output := "projection repaired" }
   | .action action => executeAction action store
 
 theorem status_is_read_only (store : Projection.Store) :

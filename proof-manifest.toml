@@ -48,9 +48,9 @@ modules = [
 ]
 
 source_authorities = [
-  "AgentWorkbench/Audit/Expected.lean=2b22778ba6e5ba1f733960043b33324d40b57072b3b928c40a467c5bbe6dc38a",
-  "AgentWorkbench/Application/Service.lean=27895a482fecfba1ee77b83ba0436c17f3bc070b3421fe5588f83e8ed1c5eeda",
-  "AgentWorkbench/Audit/Main.lean=ca561e51e646ae0d1d95d474c748fcf14b2d580795066c53bd1b855b56fb8638",
+  "AgentWorkbench/Audit/Expected.lean=e96c60c924b35b7c2b896a31439f6047c0b929781d9bcffdb53ac0a19737d247",
+  "AgentWorkbench/Application/Service.lean=09f4c112bd3bd7bf296c58da0e38d9394f9b6614b0eb5ddad8789b77723c1a93",
+  "AgentWorkbench/Audit/Main.lean=4a3ad97953ee4c4c7d5acb65cf2da6bca8d960d7c6c777c3d83a2e2b781cfafb",
 ]
 
 permitted_axioms = [

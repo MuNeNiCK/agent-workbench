@@ -198,6 +198,7 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
     "instReprRestoreReceipt", "instReprStoragePoint",
     "restoreWithLockHook", "restoreWithHook", "restore"]⟩,
   ⟨"AgentWorkbench/Application/Service.lean", #[
+    "actionOutput", "gateOutput", "inspectionOutput", "resolutionOutput",
     "initialStore", "bootstrapCommandAt", "bootstrapCommand", "projectionFor",
     "execute", "complete", "status", "queryValidity", "queryGate", "resolve",
     "repairProjection", "executeRecovery", "executeAction", "executeRequest"]⟩,
@@ -747,17 +748,92 @@ def auditCliMutation : IO Unit := do
 
 def auditResponseOutput : IO Unit := do
   let initial := Application.Service.initialStore
+  let dynamicMarkers := forbiddenPublicMarkers ++ #[
+    "AgentWorkbench.", "ledger-main", "owner-private-value",
+    "outcome-private-value", "completion-private-value",
+    "work-private-value", "activation-private-value",
+    "/private/project/state", "sha3-256:", "991", "992"
+  ]
+  let checkOutput (label value : String) : IO Unit := do
+    if contentHasMarker value dynamicMarkers then
+      fail s!"{label} exposes an internal or dynamic value: {value}"
+  let requireResponse (label : String)
+      (result : Except String Application.Service.Response) :
+      IO Application.Service.Response := do
+    match result with
+    | .error error =>
+        checkOutput s!"{label} error" error
+        fail s!"{label} was unexpectedly rejected: {error}"
+    | .ok response =>
+        checkOutput label response.output
+        pure response
+  let hostilePoint : Domain.Projection.LedgerPoint := {
+    ledger := ⟨"ledger-main"⟩
+    revision := ⟨991⟩
+    historyDigest := ⟨"sha3-256:history-private-value"⟩
+  }
   let requests : Array Application.Service.Request := #[
     .status,
     .next,
-    .gate .validState
+    .gate .validState,
+    .gate (.completion ⟨991⟩),
+    .gate (.designReady ⟨991⟩),
+    .gate (.traceReady ⟨991⟩ ⟨991⟩),
+    .gate (.resumeReady ⟨991⟩ ⟨992⟩),
+    .gate (.reviewReady ⟨991⟩),
+    .gate (.evidenceExact ⟨991⟩ "outcome-private-value"),
+    .gate (.correctionsReady "owner-private-value")
   ]
+  let formatterActions : Array Kernel.Resolver.Action := #[
+    .initializeWork hostilePoint,
+    .continueActiveWork hostilePoint ⟨991⟩ ⟨992⟩,
+    .resumeSuspendedWork hostilePoint ⟨991⟩ ⟨992⟩
+  ]
+  for action in formatterActions do
+    checkOutput "action formatter" (Application.Service.actionOutput action)
+    checkOutput "resolution formatter"
+      (Application.Service.resolutionOutput (.action action))
+    match Application.Service.executeRequest (.action action) initial with
+    | .ok _ => fail "adversarial stale action unexpectedly succeeded"
+    | .error error => checkOutput "stale action rejection" error
+  checkOutput "blocked resolution formatter" <|
+    Application.Service.resolutionOutput <|
+      .blocked (.noResumableActivation hostilePoint [⟨992⟩])
   for request in requests do
-    match Application.Service.executeRequest request initial with
-    | .error error => fail s!"public response fixture was rejected: {error}"
-    | .ok response =>
-        if contentHasMarker response.output forbiddenPublicMarkers then
-          fail s!"public response exposes a private planning marker: {response.output}"
+    discard <| requireResponse "initial public response"
+      (Application.Service.executeRequest request initial)
+  let hostileCommand : Kernel.Decide.Command :=
+    .initializeWork initial.ledger.storedHead
+      { id := ⟨991⟩, status := .open, owner := "owner-private-value"
+        outcome := "outcome-private-value /private/project/state"
+        completionBoundary := "completion-private-value sha3-256:" }
+      { id := ⟨992⟩, work := ⟨991⟩, status := .active
+        readyToResume := false }
+  let hostileStore ← match Application.Service.execute hostileCommand initial with
+    | .error error => fail s!"hostile output fixture setup failed: {repr error}"
+    | .ok transaction => pure transaction.result
+  for request in requests do
+    discard <| requireResponse "hostile public response"
+      (Application.Service.executeRequest request hostileStore)
+  let hostileAction ← match (Application.Service.resolve hostileStore).value with
+    | .blocked blocker => fail s!"hostile action fixture was blocked: {repr blocker}"
+    | .action action => pure action
+  discard <| requireResponse "hostile action response"
+    (Application.Service.executeRequest (.action hostileAction) hostileStore)
+  let missingStore := { hostileStore with active := none }
+  let repairCommand ← match (Application.Service.status missingStore).value.repairCommand? with
+    | none => fail "repair output fixture did not produce a repair command"
+    | some command => pure command
+  discard <| requireResponse "repair request response"
+    (Application.Service.executeRequest (.repairProjection repairCommand) missingStore)
+  let repairAction ← match (Application.Service.resolve missingStore).value with
+    | .action action@(.repairProjection _) => pure action
+    | _ => fail "repair output fixture did not produce a repair action"
+  discard <| requireResponse "repair action response"
+    (Application.Service.executeRequest (.action repairAction) missingStore)
+  match Application.Service.executeRequest (.repairProjection repairCommand) hostileStore with
+  | .ok _ => fail "mismatched repair output fixture unexpectedly succeeded"
+  | .error error => checkOutput "repair rejection" error
   match Cli.Program.executeBootstrap with
   | .error error => fail s!"public action fixture bootstrap was rejected: {repr error}"
   | .ok transaction =>
@@ -767,8 +843,7 @@ def auditResponseOutput : IO Unit := do
           match Application.Service.executeRequest (.action action) transaction.result with
           | .error error => fail s!"public action fixture was rejected: {error}"
           | .ok response =>
-              if contentHasMarker response.output forbiddenPublicMarkers then
-                fail s!"public action response exposes a private planning marker: {response.output}"
+              checkOutput "bootstrap action response" response.output
 
 structure ManagedProjectFixture where
   name : String
