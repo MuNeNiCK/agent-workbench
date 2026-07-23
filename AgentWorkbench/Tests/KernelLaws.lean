@@ -946,17 +946,102 @@ def main : IO Unit := do
             Domain.Review.Purpose.implementationQuality then
           { plan with scope :=
               { plan.scope with artifactDigest := "sha256:different-artifact" } }
-        else plan }
+        else plan
+      claims := completable.claims.map fun claim =>
+        if claim.id == ⟨4000 + firstWork.id.value⟩ then
+          { claim with scope := claim.scope.map fun scope =>
+              { scope with artifactDigest := "sha256:different-artifact" } }
+        else claim }
+  expect (Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .designConformance
+    mismatchedQualityScope.reviewPlans mismatchedQualityScope.claims
+    mismatchedQualityScope.adjudications mismatchedQualityScope.reviewFindings
+    mismatchedQualityScope.findingVerifications)
+    "artifact mismatch invalidated the design-conformance review itself"
+  expect (Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .implementationQuality
+    mismatchedQualityScope.reviewPlans mismatchedQualityScope.claims
+    mismatchedQualityScope.adjudications mismatchedQualityScope.reviewFindings
+    mismatchedQualityScope.findingVerifications)
+    "artifact mismatch invalidated the implementation-quality review itself"
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
     mismatchedQualityScope.reviewPlans mismatchedQualityScope.decompositions
     mismatchedQualityScope.claims mismatchedQualityScope.adjudications
     mismatchedQualityScope.reviewFindings mismatchedQualityScope.findingVerifications))
     "completion combined required reviews from different frozen artifact scopes"
+  let mismatchedRepositoryScope :=
+    { completable with
+      reviewPlans := completable.reviewPlans.map fun
+          (plan : Domain.Review.Plan) =>
+        if plan.scope.purpose ==
+            Domain.Review.Purpose.implementationQuality then
+          { plan with scope :=
+              { plan.scope with repositorySnapshot := "snapshot:different" } }
+        else plan
+      claims := completable.claims.map fun claim =>
+        if claim.id == ⟨4000 + firstWork.id.value⟩ then
+          { claim with scope := claim.scope.map fun scope =>
+              { scope with repositorySnapshot := "snapshot:different" } }
+        else claim }
+  expect (Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .designConformance
+    mismatchedRepositoryScope.reviewPlans mismatchedRepositoryScope.claims
+    mismatchedRepositoryScope.adjudications
+    mismatchedRepositoryScope.reviewFindings
+    mismatchedRepositoryScope.findingVerifications)
+    "repository mismatch invalidated the design-conformance review itself"
+  expect (Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .implementationQuality
+    mismatchedRepositoryScope.reviewPlans mismatchedRepositoryScope.claims
+    mismatchedRepositoryScope.adjudications
+    mismatchedRepositoryScope.reviewFindings
+    mismatchedRepositoryScope.findingVerifications)
+    "repository mismatch invalidated the implementation-quality review itself"
+  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+    mismatchedRepositoryScope.reviewPlans mismatchedRepositoryScope.decompositions
+    mismatchedRepositoryScope.claims mismatchedRepositoryScope.adjudications
+    mismatchedRepositoryScope.reviewFindings
+    mismatchedRepositoryScope.findingVerifications))
+    "completion combined required reviews from different repository snapshots"
+  let missingQualityAdjudication :=
+    { completable with
+      adjudications := completable.adjudications.filter fun decision =>
+        decision.review != ⟨4000 + firstWork.id.value⟩ }
+  expect (Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .designConformance
+    missingQualityAdjudication.reviewPlans missingQualityAdjudication.claims
+    missingQualityAdjudication.adjudications
+    missingQualityAdjudication.reviewFindings
+    missingQualityAdjudication.findingVerifications)
+    "missing quality adjudication invalidated the design-conformance review"
+  expect (!(Policy.Completion.purposeReviewReady firstWork.id
+    (some evidenceDesign.id) .implementationQuality
+    missingQualityAdjudication.reviewPlans missingQualityAdjudication.claims
+    missingQualityAdjudication.adjudications
+    missingQualityAdjudication.reviewFindings
+    missingQualityAdjudication.findingVerifications))
+    "implementation-quality review was ready without adjudication"
+  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+    missingQualityAdjudication.reviewPlans
+    missingQualityAdjudication.decompositions
+    missingQualityAdjudication.claims missingQualityAdjudication.adjudications
+    missingQualityAdjudication.reviewFindings
+    missingQualityAdjudication.findingVerifications))
+    "completion accepted an unadjudicated implementation-quality review"
   expect (Kernel.Replay.completionRequiredReviewsReady firstWork.id completable)
     "replay did not recognize both exact required review purposes"
   expect (!Kernel.Replay.completionRequiredReviewsReady
     firstWork.id withoutQualityReview)
     "replay accepted a missing required review purpose"
+  expect (!Kernel.Replay.completionRequiredReviewsReady
+    firstWork.id mismatchedQualityScope)
+    "replay combined reviews from different frozen artifacts"
+  expect (!Kernel.Replay.completionRequiredReviewsReady
+    firstWork.id mismatchedRepositoryScope)
+    "replay combined reviews from different repository snapshots"
+  expect (!Kernel.Replay.completionRequiredReviewsReady
+    firstWork.id missingQualityAdjudication)
+    "replay accepted an unadjudicated implementation-quality review"
   let otherDesign :=
     { evidenceDesign with id := ⟨2⟩, contentDigest := "sha256:other-design" }
   let otherDesignObligation :=

@@ -429,29 +429,31 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
     "fresh SQLite session lost promoted correction provenance"
 
 def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
-  let run (name : String) (includeQuality : Bool) : IO Unit := do
+  let run (name : String) (qualityArtifact? qualitySnapshot? : Option String)
+      (adjudicateQuality expectedReady : Bool) : IO Unit := do
     let ledger := root / s!"review-purpose-{name}.sqlite3"
     Adapter.SQLite.initializeStore ledger
     let initialized ← bootstrap ledger
     let imported ← mutate ledger s!"{name}-design"
       initialized.store.ledger.storedHead.value
       (.importDesign initialized.store.ledger.storedHead reviewPurposeDesign)
-    let scope (purpose : Domain.Review.Purpose) (artifact : String) :
+    let scope (purpose : Domain.Review.Purpose) (snapshot artifact : String) :
         Domain.Review.FrozenScope :=
       { design := some reviewPurposeDesign.id
         work := ⟨1⟩
-        repositorySnapshot := "snapshot:review-purpose"
+        repositorySnapshot := snapshot
         artifactDigest := artifact
         purpose }
     let recordReview (operation : String) (id : Nat)
-        (purpose : Domain.Review.Purpose) (artifact reviewer : String)
+        (purpose : Domain.Review.Purpose) (snapshot artifact reviewer : String)
+        (adjudicate : Bool)
         (store : Kernel.Projection.Store) : IO Kernel.Projection.Store := do
       let plan : Domain.Review.Plan :=
         { id := ⟨id⟩
           owner := reviewPurposeDesign.owner
           reviewer
           adjudicator := reviewPurposeDesign.owner
-          scope := scope purpose artifact }
+          scope := scope purpose snapshot artifact }
       let planned ← mutate ledger s!"{operation}-plan"
         store.ledger.storedHead.value
         (.recordReviewPlan store.ledger.storedHead plan)
@@ -466,20 +468,26 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       let claimed ← mutate ledger s!"{operation}-claim"
         planned.store.ledger.storedHead.value
         (.recordReviewClaim planned.store.ledger.storedHead claim)
-      let adjudicated ← mutate ledger s!"{operation}-adjudication"
-        claimed.store.ledger.storedHead.value
-        (.recordReviewAdjudication claimed.store.ledger.storedHead
-          { review := claim.id, decision := .accepted
-            adjudicator := reviewPurposeDesign.owner })
-      pure adjudicated.store
+      if adjudicate then
+        let adjudicated ← mutate ledger s!"{operation}-adjudication"
+          claimed.store.ledger.storedHead.value
+          (.recordReviewAdjudication claimed.store.ledger.storedHead
+            { review := claim.id, decision := .accepted
+              adjudicator := reviewPurposeDesign.owner })
+        pure adjudicated.store
+      else
+        pure claimed.store
+    let defaultSnapshot := "snapshot:review-purpose"
     let store ← recordReview "design-review" 1 .design
-      reviewPurposeDesign.contentDigest "design-reviewer" imported.store
+      defaultSnapshot reviewPurposeDesign.contentDigest "design-reviewer" true
+      imported.store
     let approved ← mutate ledger s!"{name}-approval"
       store.ledger.storedHead.value
       (.approveDesign store.ledger.storedHead reviewPurposeDesign.id)
     let decompositionDigest := "sha256:review-purpose-decomposition"
     let store ← recordReview "decomposition-review" 2 .decomposition
-      decompositionDigest "decomposition-reviewer" approved.store
+      defaultSnapshot decompositionDigest "decomposition-reviewer" true
+      approved.store
     let decomposition : Domain.Design.Decomposition :=
       { key := "review-purpose-decomposition"
         design := reviewPurposeDesign.id
@@ -502,12 +510,15 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       (.recordDecomposition store.ledger.storedHead decomposition)
     let implementationArtifact := "sha256:reviewed-implementation"
     let store ← recordReview "conformance-review" 3 .designConformance
-      implementationArtifact "conformance-reviewer" decomposed.store
+      defaultSnapshot implementationArtifact "conformance-reviewer" true
+      decomposed.store
     let _ ←
-      if includeQuality then
+      match qualityArtifact?, qualitySnapshot? with
+      | some qualityArtifact, some qualitySnapshot =>
         recordReview "quality-review" 4 .implementationQuality
-          implementationArtifact "quality-reviewer" store
-      else
+          qualitySnapshot qualityArtifact "quality-reviewer" adjudicateQuality
+          store
+      | _, _ =>
         pure store
     let recovered ← load ledger
     let state ←
@@ -516,10 +527,30 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       | none => throw <| IO.userError "review-purpose projection is not recoverable"
     expect (Policy.Completion.requiredReviewsReady ⟨1⟩
       state.reviewPlans state.decompositions state.claims state.adjudications
-      state.reviewFindings state.findingVerifications == includeQuality)
+      state.reviewFindings state.findingVerifications == expectedReady)
       s!"fresh SQLite reconstruction changed required review readiness: {name}"
-  run "complete" true
-  run "missing-quality" false
+    if qualityArtifact?.isSome && qualitySnapshot?.isSome &&
+        adjudicateQuality then
+      expect (Policy.Completion.purposeReviewReady ⟨1⟩
+        (some reviewPurposeDesign.id) .designConformance
+        state.reviewPlans state.claims state.adjudications
+        state.reviewFindings state.findingVerifications)
+        s!"fresh SQLite reconstruction invalidated conformance review: {name}"
+      expect (Policy.Completion.purposeReviewReady ⟨1⟩
+        (some reviewPurposeDesign.id) .implementationQuality
+        state.reviewPlans state.claims state.adjudications
+        state.reviewFindings state.findingVerifications)
+        s!"fresh SQLite reconstruction invalidated quality review: {name}"
+  let implementationArtifact := "sha256:reviewed-implementation"
+  let defaultSnapshot := "snapshot:review-purpose"
+  run "complete" (some implementationArtifact) (some defaultSnapshot) true true
+  run "missing-quality" none none false false
+  run "mismatched-artifact" (some "sha256:different-artifact")
+    (some defaultSnapshot) true false
+  run "mismatched-snapshot" (some implementationArtifact)
+    (some "snapshot:different") true false
+  run "missing-quality-adjudication" (some implementationArtifact)
+    (some defaultSnapshot) false false
 
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
