@@ -119,7 +119,9 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
           (finding.adjudicated &&
             (!finding.accepted ||
               (finding.closed && verifications.any fun verification =>
-                verificationExact finding claim verification)))
+                verificationExact finding claim verification &&
+                  verification.scope.repositorySnapshot ==
+                    scope.repositorySnapshot)))
 
 def scopeReady (plan : Plan) (claims : List Claim)
     (adjudications : List Adjudication) (findings : List Finding)

@@ -195,6 +195,9 @@ def run : IO Unit := do
     reviewPlan 3 "implementation" "sha256:implementation-v1" workTwo.id
   let state ← execute (.recordReviewPlan state.revision implementationPlan) state
     "implementation review plan failed"
+  let initialFindingsClaim := claimFor 98 implementationPlan .findings
+  let state ← execute (.recordReviewClaim state.revision initialFindingsClaim) state
+    "initial implementation findings claim failed"
   let implementationClaim := claimFor 3 implementationPlan .clean
   let state ← execute (.recordReviewClaim state.revision implementationClaim) state
     "implementation review claim failed"
@@ -312,6 +315,46 @@ def run : IO Unit := do
     state "resume readiness confirmation failed"
   expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
     "confirmed activation did not pass resume readiness"
+  let laterSnapshotFinding : Domain.Review.Finding :=
+    { key := "later-snapshot-resume-finding"
+      review := initialFindingsClaim.id
+      blocking := true
+      invariant := "finding verification remains snapshot exact"
+      remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
+      accepted := false
+      adjudicated := false
+      closed := false }
+  let laterSnapshotState ← execute
+    (.recordReviewFinding state.revision laterSnapshotFinding) state
+    "later-snapshot finding recording failed"
+  let laterSnapshotState ← execute
+    (.adjudicateReviewFinding laterSnapshotState.revision
+      laterSnapshotFinding.key "owner" true)
+    laterSnapshotState "later-snapshot finding adjudication failed"
+  let laterSnapshotState ← execute
+    (.closeReviewFinding laterSnapshotState.revision laterSnapshotFinding.key
+      "sha256:later-fix" "commit:later-snapshot")
+    laterSnapshotState "later-snapshot finding closure failed"
+  let laterSnapshotScope :=
+    { implementationPlan.scope with
+      repositorySnapshot := "commit:later-snapshot" }
+  let laterSnapshotVerification : Domain.Review.Verification :=
+    { finding := laterSnapshotFinding.key
+      verifier := "later-snapshot-verifier"
+      scope := laterSnapshotScope
+      evidenceDigest := "sha256:later-fix"
+      claimFixed := true
+      accepted := false }
+  let laterSnapshotState ← execute
+    (.verifyReviewFinding laterSnapshotState.revision laterSnapshotVerification)
+    laterSnapshotState "later-snapshot finding verification failed"
+  let laterSnapshotState ← execute
+    (.adjudicateFindingVerification laterSnapshotState.revision
+      laterSnapshotFinding.key "owner")
+    laterSnapshotState "later-snapshot verification adjudication failed"
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id laterSnapshotState)
+    "verification at a later snapshot reactivated an older readiness basis"
   let unadjudicatedBlockingFinding : Domain.Review.Finding :=
     { key := "unadjudicated-resume-finding"
       review := implementationClaim.id
