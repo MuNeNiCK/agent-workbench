@@ -123,7 +123,8 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
               (finding.closed && verifications.any fun verification =>
                 verificationExact finding claim verification &&
                   verification.scope.repositorySnapshot ==
-                    scope.repositorySnapshot)))
+                    scope.repositorySnapshot &&
+                  verification.scope.artifactDigest == scope.artifactDigest)))
 
 def latestClaimFor (plan : Plan) (claims : List Claim) : Option Claim :=
   claims.reverse.find? (scopeExact plan)

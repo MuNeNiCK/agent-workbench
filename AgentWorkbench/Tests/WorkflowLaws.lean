@@ -377,6 +377,26 @@ def run : IO Unit := do
   expect (!Kernel.Replay.resumeCurrent
     workTwo.id activationTwo.id crossSnapshotState)
     "verification at a later snapshot reactivated an older readiness basis"
+  let wrongArtifactScope :=
+    { implementationPlan.scope with artifactDigest := "sha256:other-artifact" }
+  let wrongArtifactVerification :=
+    { laterSnapshotVerification with
+      scope := wrongArtifactScope }
+  let wrongArtifactFinding :=
+    { laterSnapshotFinding with
+      accepted := true
+      adjudicated := true
+      closed := true
+      closureEvidence := wrongArtifactVerification.evidenceDigest
+      closureSnapshot := wrongArtifactScope.repositorySnapshot }
+  let wrongArtifactState :=
+    { state with
+      reviewFindings := state.reviewFindings ++ [wrongArtifactFinding]
+      findingVerifications :=
+        state.findingVerifications ++ [wrongArtifactVerification] }
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id wrongArtifactState)
+    "verification of another artifact reactivated readiness"
   let unadjudicatedBlockingFinding : Domain.Review.Finding :=
     { key := "unadjudicated-resume-finding"
       review := implementationClaim.id
