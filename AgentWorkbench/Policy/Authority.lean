@@ -24,12 +24,18 @@ def mayAdjudicate (plan : Plan) (claim : Claim) (principal : String) : Bool :=
   scopeExact plan claim && principal == plan.adjudicator &&
   principal != claim.reviewer
 
-def blockingFindingsClosed (review : ReviewId) (findings : List Finding)
-    (verifications : List Verification) : Bool :=
+def blockingFindingsClosed (review : ReviewId) (claims : List Claim)
+    (findings : List Finding) (verifications : List Verification) : Bool :=
   findings.all fun finding =>
-    finding.review != review || !finding.blocking || !finding.accepted ||
-      (finding.closed && verifications.any fun verification =>
-        verification.finding == finding.key && verification.accepted)
+    finding.review != review || !finding.blocking ||
+      (finding.adjudicated &&
+        (!finding.accepted ||
+          (finding.closed &&
+            match claims.find? (·.id == finding.review) with
+            | none => false
+            | some claim =>
+                verifications.any fun verification =>
+                  Review.verificationExact finding claim verification)))
 
 def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
     (findings : List Finding) (verifications : List Verification) : Bool :=

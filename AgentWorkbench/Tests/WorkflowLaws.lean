@@ -570,7 +570,7 @@ def run : IO Unit := do
     (.adjudicateFindingVerification state.revision finding.key "owner")
     state "verification adjudication failed"
   expect (Policy.Authority.blockingFindingsClosed findingClaim.id
-    state.reviewFindings state.findingVerifications)
+    state.claims state.reviewFindings state.findingVerifications)
     "verified accepted blocking finding remained open"
   expect (!Kernel.Gates.reviewReadyState findingPlan.id state)
     "a findings review incorrectly replaced the required fresh clean review"
