@@ -188,13 +188,13 @@ def testReadOnlyFaultDetection (root : System.FilePath) : IO Unit := do
   let repairPlan ← match ← Adapter.SQLite.diagnose projectionLedger with
     | .ok (.projectionRepairRequired plan) => pure plan
     | other => throw <| IO.userError s!"projection repair plan was not exposed: {repr other}"
-  match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
-  | .ok _ => pure ()
+  let repairReceipt ← match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
+  | .ok receipt => pure receipt
   | .error error => throw <| IO.userError s!"explicit projection repair failed: {repr error}"
   let _ ← load projectionLedger
   match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
-  | .error (.corrupt _) => pure ()
-  | other => throw <| IO.userError s!"stale projection repair replayed: {repr other}"
+  | .ok retry => expect (retry == repairReceipt) "projection repair retry changed receipt"
+  | .error error => throw <| IO.userError s!"exact projection repair retry failed: {repr error}"
 
   let historyLedger := root / "history-fault.sqlite3"
   Adapter.SQLite.initializeStore historyLedger
@@ -212,7 +212,7 @@ def testReadOnlyFaultDetection (root : System.FilePath) : IO Unit := do
 
 def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
   let ledger := root / "artifacts.sqlite3"
-  let artifactRoot := root / "artifacts"
+  let artifactRoot := Adapter.SQLite.artifactRoot ledger
   Adapter.SQLite.initializeStore ledger
   let initialized ← bootstrap ledger
   let bytes := "exact evidence artifact".toUTF8
@@ -249,7 +249,11 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
   Adapter.SQLite.initializeStore evidenceLedger
   let evidenceInitialized ← bootstrap evidenceLedger
   let obligation : Domain.Evidence.Obligation := {
-    work := ⟨1⟩, key := "GATE-006", revision := ⟨1⟩, current := true }
+    work := ⟨1⟩, key := "GATE-006", revision := ⟨1⟩
+    commandProfile := "storage-laws"
+    invocation := ".lake/build/bin/storage-laws --fault-matrix"
+    repository := "main", snapshot := "commit:test"
+    artifactDigest := "proof:test", current := true }
   let obligated ← mutate evidenceLedger "obligation" 1
     (.recordObligation ⟨1⟩ obligation)
   let item : Domain.Evidence.Evidence := {
@@ -287,7 +291,7 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
     ("extra", "INSERT INTO artifacts (digest,size,payload) VALUES ('sha3-256:extra','1',x'00')")]
   for (name, sql) in corruptions do
     let ledger := root / s!"artifact-table-{name}.sqlite3"
-    let artifactRoot := root / s!"artifact-table-{name}"
+    let artifactRoot := Adapter.SQLite.artifactRoot ledger
     Adapter.SQLite.initializeStore ledger
     let initialized ← bootstrap ledger
     let reference ← Adapter.DurableFilesystem.stage artifactRoot s!"artifact-{name}".toUTF8
@@ -320,7 +324,7 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
       s!"rejected artifact corruption mutation changed ledger bytes: {name}"
 
   let raceLedger := root / "artifact-race.sqlite3"
-  let raceRoot := root / "artifact-race"
+  let raceRoot := Adapter.SQLite.artifactRoot raceLedger
   Adapter.SQLite.initializeStore raceLedger
   let initialized ← bootstrap raceLedger
   let reference ← Adapter.DurableFilesystem.stage raceRoot "race artifact".toUTF8
@@ -335,6 +339,55 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
     "artifact deletion after verification committed"
   expect ((← load raceLedger).ledger.storedHead == initialized.store.ledger.storedHead)
     "artifact race advanced the authoritative ledger"
+
+def testFilesystemArtifactFaults (root : System.FilePath) : IO Unit := do
+  for name in ["deleted", "truncated", "replaced"] do
+    let ledger := root / s!"artifact-file-{name}.sqlite3"
+    let artifactRoot := Adapter.SQLite.artifactRoot ledger
+    Adapter.SQLite.initializeStore ledger
+    let initialized ← bootstrap ledger
+    let reference ← Adapter.DurableFilesystem.stage artifactRoot
+      s!"committed artifact {name}".toUTF8
+    let attempt : Domain.ExternalOperation.Attempt := {
+      operation := ⟨s!"artifact-file-{name}"⟩
+      artifactDigest := reference.digest
+      state := .prepared }
+    let recorded ← match ← Adapter.SQLite.mutate ledger ⟨s!"record-file-{name}"⟩
+        initialized.store.ledger.storedHead
+        (.recordExternalOperation initialized.store.ledger.storedHead attempt)
+        [reference] (some artifactRoot) with
+      | .ok outcome => pure outcome
+      | .error error => throw <| IO.userError s!"file artifact fixture failed: {repr error}"
+    let object := Adapter.DurableFilesystem.objectPath artifactRoot reference
+    IO.FS.removeFile object
+    if name = "truncated" then IO.FS.writeBinFile object ByteArray.empty
+    else if name = "replaced" then IO.FS.writeBinFile object "replacement".toUTF8
+    let before ← IO.FS.readBinFile ledger
+    match ← Adapter.SQLite.inspect ledger with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"normal inspect accepted {name} artifact: {repr other}"
+    let unrelated : Domain.ExternalOperation.Attempt := {
+      operation := ⟨s!"unrelated-{name}"⟩, artifactDigest := "proof:unrelated", state := .prepared }
+    match ← Adapter.SQLite.mutate ledger ⟨s!"unrelated-{name}"⟩
+        recorded.store.ledger.storedHead
+        (.recordExternalOperation recorded.store.ledger.storedHead unrelated) with
+    | .error (.openError (.corrupt _)) => pure ()
+    | other => throw <| IO.userError s!"unrelated mutation accepted {name} artifact: {repr other}"
+    match ← Adapter.SQLite.mutate ledger ⟨s!"record-file-{name}"⟩
+        recorded.store.ledger.storedHead
+        (.recordExternalOperation initialized.store.ledger.storedHead attempt)
+        [reference] (some artifactRoot) with
+    | .error (.openError (.corrupt _)) => pure ()
+    | other => throw <| IO.userError s!"exact retry accepted {name} artifact: {repr other}"
+    expect ((← IO.FS.readBinFile ledger) == before)
+      s!"artifact file fault changed ledger bytes: {name}"
+
+  let orphanLedger := root / "artifact-orphan.sqlite3"
+  Adapter.SQLite.initializeStore orphanLedger
+  let _ ← bootstrap orphanLedger
+  let _ ← Adapter.DurableFilesystem.stage (Adapter.SQLite.artifactRoot orphanLedger)
+    "unreferenced durable object".toUTF8
+  let _ ← load orphanLedger
 
 def makeLegacyV1 (ledger : System.FilePath) : IO Unit := do
   let db ← _root_.SQLite.openWith ledger { mode := .readWrite }
@@ -389,7 +442,7 @@ def testUpdateInspectionReadOnly (root : System.FilePath) : IO Unit := do
 def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO Unit := do
   let predecessor := root / "predecessor-v1.sqlite3"
   let backups := root / "predecessor-v1-backups"
-  let artifactRoot := root / "predecessor-v1-artifacts"
+  let artifactRoot := Adapter.SQLite.artifactRoot predecessor
   Adapter.SQLite.initializeStore predecessor
   let initialized ← bootstrap predecessor
   let reference ← Adapter.DurableFilesystem.stage artifactRoot "predecessor artifact".toUTF8
@@ -430,11 +483,34 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
   for (name, sql) in malformedCases do
     let ledger := root / s!"malformed-v2-{name}.sqlite3"
     Adapter.SQLite.initializeStore ledger
+    let healthy ← load ledger
+    let repairPlan : Adapter.SQLite.ProjectionRepairPlan := {
+      head := {
+        ledger := healthy.ledger.id
+        revision := healthy.ledger.storedHead
+        historyDigest := healthy.ledger.storedHistoryDigest }
+      observedDigest := "malformed-schema" }
     execSql ledger sql
     let before ← IO.FS.readBinFile ledger
     match ← Adapter.Update.inspect ledger with
     | .unsupported point => expect (point.schemaVersion == 2) s!"{name} v2 identity drifted"
     | other => throw <| IO.userError s!"malformed current schema {name} was accepted: {repr other}"
+    match ← Adapter.SQLite.inspect ledger with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"normal inspect accepted malformed schema {name}: {repr other}"
+    match ← Adapter.SQLite.inspectWithArtifacts ledger (Adapter.SQLite.artifactRoot ledger) with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"artifact inspect accepted malformed schema {name}: {repr other}"
+    match ← Adapter.SQLite.diagnose ledger with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"diagnosis accepted malformed schema {name}: {repr other}"
+    match ← Adapter.SQLite.repairProjection ledger repairPlan with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"repair accepted malformed schema {name}: {repr other}"
+    match ← Adapter.SQLite.mutate ledger ⟨s!"malformed-{name}"⟩ ⟨0⟩
+        Application.Service.bootstrapCommand with
+    | .error (.openError (.corrupt _)) => pure ()
+    | other => throw <| IO.userError s!"mutation accepted malformed schema {name}: {repr other}"
     expect ((← IO.FS.readBinFile ledger) == before)
       s!"malformed current inspection mutated storage: {name}"
 
@@ -622,6 +698,45 @@ def testReplacementCrashReconciliation (root : System.FilePath) : IO Unit := do
   expect ((← Adapter.DurableFilesystem.digest (← IO.FS.readBinFile ledger)) =
       receipt.source.digest) "reconciled restore bytes drifted"
 
+def repairCrashChild (ledger : System.FilePath) (ledgerId : String) (revision : Nat)
+    (historyDigest observedDigest : String) : IO Unit := do
+  let plan : Adapter.SQLite.ProjectionRepairPlan := {
+    head := {
+      ledger := ⟨ledgerId⟩
+      revision := ⟨revision⟩
+      historyDigest := ⟨historyDigest⟩ }
+    observedDigest }
+  let _ ← Adapter.SQLite.repairProjectionWithHook ledger plan (IO.Process.forceExit 86)
+  throw <| IO.userError "projection repair crash failpoint returned"
+
+def testProjectionRepairCrashRetry (root : System.FilePath) : IO Unit := do
+  let ledger := root / "projection-repair-crash.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let _ ← bootstrap ledger
+  corruptProjection ledger
+  let plan ← match ← Adapter.SQLite.diagnose ledger with
+    | .ok (.projectionRepairRequired plan) => pure plan
+    | other => throw <| IO.userError s!"repair crash plan unavailable: {repr other}"
+  let result ← IO.Process.output {
+    cmd := ".lake/build/bin/storage-laws"
+    args := #["--repair-crash-child", ledger.toString, plan.head.ledger.value,
+      toString plan.head.revision.value, plan.head.historyDigest.value, plan.observedDigest] }
+  expect (result.exitCode == 86) "projection repair crash did not reach failpoint"
+  let recovered ← match ← Adapter.SQLite.repairProjection ledger plan with
+    | .ok receipt => pure receipt
+    | .error error => throw <| IO.userError s!"projection repair retry failed: {repr error}"
+  match ← Adapter.SQLite.repairProjection ledger plan with
+  | .ok receipt => expect (receipt == recovered) "projection repair canonical receipt drifted"
+  | .error error => throw <| IO.userError s!"second projection repair retry failed: {repr error}"
+  let changed := { plan with observedDigest := plan.observedDigest ++ "-changed" }
+  match ← Adapter.SQLite.repairProjection ledger changed with
+  | .error (.corrupt _) => pure ()
+  | other => throw <| IO.userError s!"changed projection repair plan was accepted: {repr other}"
+  let unseen := { plan with head := { plan.head with revision := plan.head.revision.next } }
+  match ← Adapter.SQLite.repairProjection ledger unseen with
+  | .error (.corrupt _) => pure ()
+  | other => throw <| IO.userError s!"unseen stale projection repair was accepted: {repr other}"
+
 def main (args : List String) : IO Unit :=
   match args with
   | ["--crash-child", ledger] => crashChild ledger
@@ -633,6 +748,10 @@ def main (args : List String) : IO Unit :=
       match backupSize.toNat? with
       | some size => restoreCrashChild ledger backups sourceDigest backupDigest size targetDigest
       | none => throw <| IO.userError "invalid restore crash backup size"
+  | ["--repair-crash-child", ledger, ledgerId, revision, historyDigest, observedDigest] =>
+      match revision.toNat? with
+      | some value => repairCrashChild ledger ledgerId value historyDigest observedDigest
+      | none => throw <| IO.userError "invalid repair crash revision"
   | [] => IO.FS.withTempDir fun root => do
     testRecoveryAndRetry root
     testOperationJournalCorruption root
@@ -644,11 +763,13 @@ def main (args : List String) : IO Unit :=
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
     testArtifactBindingsAndRace root
+    testFilesystemArtifactFaults root
     testUpdateInspectionReadOnly root
     testSchemaFingerprintsAndPredecessorMigration root
     testExplicitUpdateAndRestore root
     testPostRenameSyncFailure root
     testReplacementCrashReconciliation root
+    testProjectionRepairCrashRetry root
     IO.println "storage laws: pass"
   | _ => throw <| IO.userError "unsupported storage-laws arguments"
 

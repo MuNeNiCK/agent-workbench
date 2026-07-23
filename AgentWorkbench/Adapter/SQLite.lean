@@ -346,19 +346,6 @@ def inspectFromAt (db : _root_.SQLite) (expectedSchema : Nat) :
     IO (Except OpenError Projection.Store) :=
   loadFromAt db expectedSchema
 
-def inspect (path : System.FilePath) : IO (Except OpenError Projection.Store) := do
-  if !(← path.pathExists) then return .error .uninitialized
-  let db ← _root_.SQLite.openWith path
-    { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  db.transaction (loadFrom db)
-
-def inspectAtSchema (path : System.FilePath) (expectedSchema : Nat) :
-    IO (Except OpenError Projection.Store) := do
-  if !(← path.pathExists) then return .error .uninitialized
-  let db ← _root_.SQLite.openWith path
-    { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  db.transaction (loadFromAt db expectedSchema)
-
 private def tableColumns (db : _root_.SQLite) (table : String) : IO (List String) := do
   let statement ← db.prepare s!"PRAGMA table_info({table})"
   let mut columns := []
@@ -621,13 +608,49 @@ private def eventArtifactDigest? : Replay.Event → Option String
 private def requiredFileArtifacts (events : List Replay.Event) : List String :=
   (events.filterMap eventArtifactDigest?).filter (·.startsWith "sha3-256:") |>.eraseDups
 
-def inspectWithArtifacts (path artifactRoot : System.FilePath) :
+def artifactRoot (path : System.FilePath) : System.FilePath :=
+  path.parent.getD "." / s!"{path.fileName.getD "ledger"}.artifacts"
+
+private def loadAuthoritativeFrom (path : System.FilePath) (db : _root_.SQLite) :
+    IO (Except OpenError Projection.Store) := do
+  unless ← currentSchemaSupported db do
+    return .error (.corrupt "storage schema fingerprint is not canonical")
+  let store ← match ← loadFrom db with
+    | .ok value => pure value
+    | .error error => return .error error
+  let references ← match ← readArtifactRefs db with
+    | .ok value => pure value
+    | .error error => return .error error
+  let reconciliation ← DurableFilesystem.reconcile (artifactRoot path) references
+  unless reconciliation.missing.isEmpty && reconciliation.mismatched.isEmpty do
+    return .error (.corrupt s!"artifact reconciliation failed: {repr reconciliation}")
+  return .ok store
+
+def inspect (path : System.FilePath) : IO (Except OpenError Projection.Store) := do
+  if !(← path.pathExists) then return .error .uninitialized
+  let db ← _root_.SQLite.openWith path
+    { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
+  db.transaction (loadAuthoritativeFrom path db)
+
+def inspectAtSchema (path : System.FilePath) (expectedSchema : Nat) :
     IO (Except OpenError Projection.Store) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
+  if expectedSchema = schemaVersion then
+    db.transaction (loadAuthoritativeFrom path db)
+  else
+    db.transaction (loadFromAt db expectedSchema)
+
+def inspectWithArtifacts (path artifactRoot : System.FilePath) :
+    IO (Except OpenError Projection.Store) := do
+  if !(← path.pathExists) then return .error .uninitialized
+  unless artifactRoot = SQLite.artifactRoot path do
+    return .error (.corrupt "artifact root does not match the store binding")
+  let db ← _root_.SQLite.openWith path
+    { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
   db.transaction do
-    let store ← match ← loadFrom db with
+    let store ← match ← loadAuthoritativeFrom path db with
       | .ok value => pure value
       | .error error => return .error error
     let references ← match ← readArtifactRefs db with
@@ -706,50 +729,79 @@ def diagnose (path : System.FilePath) : IO (Except OpenError Diagnosis) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  db.transaction (diagnoseFrom db)
+  db.transaction do
+    unless ← currentSchemaSupported db do
+      return .error (.corrupt "storage schema fingerprint is not canonical")
+    diagnoseFrom db
 
-def repairProjection (path : System.FilePath) (plan : ProjectionRepairPlan) :
-    IO (Except OpenError ProjectionRepairReceipt) := do
+private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepairPlan) :
+    IO (Option ProjectionRepairReceipt) := do
+  let statement ← db.prepare "
+    SELECT adopted_digest FROM projection_repairs
+    WHERE observed_digest=? AND head_revision=? AND history_digest=?"
+  statement.bindText 1 plan.observedDigest
+  statement.bindText 2 (toString plan.head.revision.value)
+  statement.bindText 3 plan.head.historyDigest.value
+  unless ← statement.step do return none
+  return some { plan, adoptedDigest := ← statement.columnText 0 }
+
+def repairProjectionWithHook (path : System.FilePath) (plan : ProjectionRepairPlan)
+    (afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
   if !(← path.pathExists) then return .error .uninitialized
   let db ← _root_.SQLite.openWith path
     { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  withWriterLock path <| db.transaction (mode := .immediate) do
-    let diagnosis ← match ← diagnoseFrom db with
-      | .ok value => pure value
-      | .error error => return .error error
-    let current ← match diagnosis with
-      | .projectionRepairRequired value => pure value
-      | .healthy _ => return .error (.corrupt "projection repair is no longer required")
-    unless current = plan do
-      return .error (.corrupt "projection repair plan is stale")
-    let ledger ← match ← readLedger db with
-      | .ok value => pure value
-      | .error error => return .error error
-    let projection := Application.Service.projectionFor ledger.image ledger.head.state
-    let statement ← db.prepare "
-      INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
-      VALUES (1, ?, ?, ?, ?)
-      ON CONFLICT(singleton) DO UPDATE SET
-        revision=excluded.revision,
-        history_digest=excluded.history_digest,
-        state_digest=excluded.state_digest,
-        payload=excluded.payload"
-    statement.bindText 1 (toString projection.reference.revision.value)
-    statement.bindText 2 projection.reference.historyDigest.value
-    statement.bindText 3 projection.reference.stateDigest.value
-    statement.bindBlob 4 (toBinary projection)
-    statement.exec
-    let adoptedDigest ← DurableFilesystem.digest (toBinary projection)
-    let receiptStatement ← db.prepare "
-      INSERT INTO projection_repairs
-        (observed_digest, head_revision, history_digest, adopted_digest)
-      VALUES (?, ?, ?, ?)"
-    receiptStatement.bindText 1 plan.observedDigest
-    receiptStatement.bindText 2 (toString plan.head.revision.value)
-    receiptStatement.bindText 3 plan.head.historyDigest.value
-    receiptStatement.bindText 4 adoptedDigest
-    receiptStatement.exec
-    return .ok { plan, adoptedDigest }
+  withWriterLock path do
+    let outcome : Except OpenError ProjectionRepairReceipt ←
+      db.transaction (mode := .immediate) do
+      unless ← currentSchemaSupported db do
+        return .error (.corrupt "storage schema fingerprint is not canonical")
+      match ← lookupProjectionRepair db plan with
+      | some receipt => return .ok receipt
+      | none => pure ()
+      let diagnosis ← match ← diagnoseFrom db with
+        | .ok value => pure value
+        | .error error => return .error error
+      let current ← match diagnosis with
+        | .projectionRepairRequired value => pure value
+        | .healthy _ => return .error (.corrupt "projection repair is no longer required")
+      unless current = plan do
+        return .error (.corrupt "projection repair plan is stale")
+      let ledger ← match ← readLedger db with
+        | .ok value => pure value
+        | .error error => return .error error
+      let projection := Application.Service.projectionFor ledger.image ledger.head.state
+      let statement ← db.prepare "
+        INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          revision=excluded.revision,
+          history_digest=excluded.history_digest,
+          state_digest=excluded.state_digest,
+          payload=excluded.payload"
+      statement.bindText 1 (toString projection.reference.revision.value)
+      statement.bindText 2 projection.reference.historyDigest.value
+      statement.bindText 3 projection.reference.stateDigest.value
+      statement.bindBlob 4 (toBinary projection)
+      statement.exec
+      let adoptedDigest ← DurableFilesystem.digest (toBinary projection)
+      let receiptStatement ← db.prepare "
+        INSERT INTO projection_repairs
+          (observed_digest, head_revision, history_digest, adopted_digest)
+        VALUES (?, ?, ?, ?)"
+      receiptStatement.bindText 1 plan.observedDigest
+      receiptStatement.bindText 2 (toString plan.head.revision.value)
+      receiptStatement.bindText 3 plan.head.historyDigest.value
+      receiptStatement.bindText 4 adoptedDigest
+      receiptStatement.exec
+      return .ok { plan, adoptedDigest }
+    match outcome with
+    | .ok _ => afterCommit
+    | .error _ => pure ()
+    return outcome
+
+def repairProjection (path : System.FilePath) (plan : ProjectionRepairPlan) :
+    IO (Except OpenError ProjectionRepairReceipt) :=
+  repairProjectionWithHook path plan (pure ())
 
 private def lookupReceipt (db : _root_.SQLite) (operation : OperationId) :
     IO (Option (String × Policy.Update.Receipt)) := do
@@ -852,7 +904,7 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
   let db ← _root_.SQLite.openWith path
     { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
   withWriterLock path <| db.transaction (mode := .immediate) do
-    let store ← match ← loadFrom db with
+    let store ← match ← loadAuthoritativeFrom path db with
       | .ok value => pure value
       | .error error => return .error (.openError error)
     match ← lookupReceipt db operation with
@@ -877,6 +929,8 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
           let root ← match artifactRoot with
             | some value => pure value
             | none => return .error (.artifactInvalid "artifact root is required")
+          unless root = SQLite.artifactRoot path do
+            return .error (.artifactInvalid "artifact root does not match the store binding")
           for reference in artifacts do
             match ← DurableFilesystem.verify root reference with
             | .valid => pure ()

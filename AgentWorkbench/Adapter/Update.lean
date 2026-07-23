@@ -259,9 +259,14 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
       version.bindText 1 (toString plan.targetVersion)
       version.bindText 2 (toString plan.source.schemaVersion)
       version.exec
-    match ← SQLite.inspect staged with
-    | .error error => throw <| IO.userError s!"staged update failed integrity: {repr error}"
-    | .ok _ => pure ()
+    let stagedDb ← _root_.SQLite.openWith staged
+      { mode := .readonly, threading := some .fullmutex }
+    stagedDb.transaction do
+      unless ← SQLite.currentSchemaSupported stagedDb do
+        throw <| IO.userError "staged update schema fingerprint is invalid"
+      match ← SQLite.inspectFromAt stagedDb SQLite.schemaVersion with
+      | .error error => throw <| IO.userError s!"staged update failed integrity: {repr error}"
+      | .ok _ => pure ()
     let target ← point staged
     unless target.schemaVersion = plan.targetVersion do
       throw <| IO.userError "staged update has the wrong schema version"
@@ -318,10 +323,11 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
       unless (← db.transaction (SQLite.legacyV1Layout? db)).isSome do
         throw <| IO.userError "staged legacy backup failed integrity"
     else
-      match ← SQLite.inspectAtSchema staged receipt.source.schemaVersion with
+      let db ← _root_.SQLite.openWith staged
+        { mode := .readonly, threading := some .fullmutex }
+      match ← db.transaction (SQLite.inspectFromAt db receipt.source.schemaVersion) with
       | .ok _ => pure ()
-      | .error error =>
-          throw <| IO.userError s!"staged backup failed integrity: {repr error}"
+      | .error error => throw <| IO.userError s!"staged backup failed integrity: {repr error}"
     recordReplacement backupRoot "restore" receipt.target receipt.source receipt.backup .uncertain
     let durability ← DurableFilesystem.replace staged path
     afterReplacement

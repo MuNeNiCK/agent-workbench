@@ -252,7 +252,11 @@ def completionObligationSatisfied (evidence : List Evidence.Evidence)
     (obligation : Evidence.Obligation) : Bool :=
   obligation.current && evidence.any fun item =>
     item.work == obligation.work && item.obligation == obligation.key &&
-      item.current && item.revision == obligation.revision
+      item.current && item.revision == obligation.revision && item.exitCode == 0 &&
+      item.commandProfile == obligation.commandProfile &&
+      item.invocation == obligation.invocation &&
+      item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
+      item.artifactDigest == obligation.artifactDigest
 
 def completionObligationsReady (target : WorkId)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation) : Bool :=
@@ -353,7 +357,9 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !attempt.artifactDigest.isEmpty &&
       !state.externalOperations.any (·.operation == attempt.operation)
   | .obligationRecorded obligation =>
-      !obligation.key.isEmpty &&
+      !obligation.key.isEmpty && !obligation.commandProfile.isEmpty &&
+      !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&
+      !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
       state.work.any (fun work => work.id == obligation.work && work.status == .open)
   | .workCompleted work activation =>
       match Work.activeFor state.activations work with

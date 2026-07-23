@@ -52,6 +52,34 @@ def initializeWork (state : Kernel.Replay.State)
 def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError message
 
+def testEvidenceScopeSatisfaction : IO Unit := do
+  let obligation : Domain.Evidence.Obligation := {
+    work := ⟨1⟩, key := "GATE-006", revision := ⟨7⟩
+    commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
+    repository := "main", snapshot := "commit:exact"
+    artifactDigest := "sha256:exact", current := true }
+  let good : Domain.Evidence.Evidence := {
+    id := ⟨1⟩, work := ⟨1⟩, obligation := "GATE-006", revision := ⟨7⟩
+    commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
+    exitCode := 0, repository := "main", snapshot := "commit:exact"
+    artifactDigest := "sha256:exact", current := true }
+  expect (Policy.Completion.obligationSatisfied [good] obligation)
+    "exact successful evidence did not satisfy its obligation"
+  let bad := [
+    { good with id := ⟨2⟩, exitCode := 1 },
+    { good with id := ⟨3⟩, commandProfile := "wrong-profile" },
+    { good with id := ⟨4⟩, invocation := "wrong invocation" },
+    { good with id := ⟨5⟩, repository := "wrong-repository" },
+    { good with id := ⟨6⟩, snapshot := "commit:wrong" },
+    { good with id := ⟨7⟩, artifactDigest := "sha256:wrong" },
+    { good with id := ⟨8⟩, revision := ⟨8⟩ },
+    { good with id := ⟨9⟩, work := ⟨2⟩ },
+    { good with id := ⟨10⟩, obligation := "wrong-gate" },
+    { good with id := ⟨11⟩, current := false }]
+  for item in bad do
+    expect (!Policy.Completion.obligationSatisfied [item] obligation)
+      s!"mismatched evidence satisfied obligation: {repr item}"
+
 def expectRejectedNoEffect (command : Kernel.Decide.Command)
     (state : Kernel.Replay.State) (message : String) : IO Unit := do
   let result := Kernel.Decide.decide command state
@@ -126,7 +154,10 @@ def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) 
     s!"minimal completion plan rejected for {work.value}"
   let key := s!"proof-{work.value}"
   let obligation : Domain.Evidence.Obligation :=
-    { work, key, revision := store.ledger.storedHead, current := true }
+    { work, key, revision := store.ledger.storedHead
+      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
+      repository := "main", snapshot := "fixture"
+      artifactDigest := s!"sha256:minimal-{work.value}", current := true }
   let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
     s!"minimal obligation rejected for {work.value}"
   let evidence : Domain.Evidence.Evidence :=
@@ -258,7 +289,9 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     else pure store
   let obligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "completion-proof",
-      revision := store.ledger.storedHead, current := true }
+      revision := store.ledger.storedHead, commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws", repository := "main"
+      snapshot := "fixture", artifactDigest := "proof:matrix", current := true }
   let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
     "completion obligation rejected"
   let evidence : Domain.Evidence.Evidence :=
@@ -294,6 +327,7 @@ def expectPublicCompletionRejected (missing : MissingCompletionCondition)
 
 set_option maxRecDepth 2048 in
 def main : IO Unit := do
+  testEvidenceScopeSatisfaction
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
   let first ← match Kernel.Decide.decide
@@ -319,7 +353,10 @@ def main : IO Unit := do
   | _ => throw <| IO.userError "stale command must be rejected"
   expectRejectedNoEffect stale first "stale revision rejection"
   let currentObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨1⟩, current := true }
+    { work := firstWork.id, key := "proof", revision := ⟨1⟩
+      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
+      repository := "main", snapshot := "fixture"
+      artifactDigest := "sha256:evidence", current := true }
   let obligated ← match Kernel.Decide.decide
       (.recordObligation first.revision currentObligation) first with
     | .ok transaction => pure transaction.result.state
@@ -501,7 +538,9 @@ def main : IO Unit := do
     "current validation observation rejected"
   let completionObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "completion-proof",
-      revision := validated.revision, current := true }
+      revision := validated.revision, commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws", repository := "main"
+      snapshot := "fixture", artifactDigest := "proof:complete", current := true }
   let obligatedCompletion ← executeState
     (.recordObligation validated.revision completionObligation) validated
     "completion obligation rejected"
@@ -783,7 +822,7 @@ def main : IO Unit := do
       revision := findingsAdjudicated.ledger.storedHead,
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
       exitCode := 0, repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:after-findings", current := true }
+      artifactDigest := "proof:matrix", current := true }
   let findingsRefreshed ← executeStore
     (.recordEvidence findingsAdjudicated.ledger.storedHead findingsEvidence)
     findingsAdjudicated "findings evidence refresh rejected"
@@ -811,7 +850,7 @@ def main : IO Unit := do
       revision := recoveryAdjudicated.ledger.storedHead,
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
       exitCode := 0, repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:after-clean-recovery", current := true }
+      artifactDigest := "proof:matrix", current := true }
   let recoveredStore ← executeStore
     (.recordEvidence recoveryAdjudicated.ledger.storedHead recoveryEvidence)
     recoveryAdjudicated "recovery evidence refresh rejected"
@@ -825,7 +864,9 @@ def main : IO Unit := do
   | .error error => throw <| IO.userError s!"clean review recovery did not complete: {repr error}"
   let unmetObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "unmet-proof",
-      revision := allReadyStore.ledger.storedHead, current := true }
+      revision := allReadyStore.ledger.storedHead, commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws", repository := "main"
+      snapshot := "fixture", artifactDigest := "proof:unmet", current := true }
   let withUnmetObligation ← executeStore
     (.recordObligation allReadyStore.ledger.storedHead unmetObligation) allReadyStore
     "unmet obligation setup rejected"
@@ -850,7 +891,7 @@ def main : IO Unit := do
       exitCode := 0
       repository := "main"
       snapshot := "fixture"
-      artifactDigest := "proof:stale-completion-refresh"
+      artifactDigest := "proof:matrix"
       current := true }
   let advancedReadyStore ← executeStore
     (.recordEvidence staleCompletionRevision refreshEvidence) allReadyStore

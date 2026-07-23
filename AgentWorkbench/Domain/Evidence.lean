@@ -9,6 +9,11 @@ structure Obligation where
   work : WorkId
   key : String
   revision : Revision
+  commandProfile : String
+  invocation : String
+  repository : String
+  snapshot : String
+  artifactDigest : String
   current : Bool
 deriving DecidableEq, Repr
 
@@ -48,7 +53,10 @@ def EvidenceCurrentAt (revision : Revision) (evidence : List Evidence) : Prop :=
   (evidence.all fun item => !item.current || item.revision == revision) = true
 
 def ObligationsWellFormed (obligations : List Obligation) : Prop :=
-  (obligations.all fun obligation => !obligation.key.isEmpty) = true
+  (obligations.all fun obligation =>
+    !obligation.key.isEmpty && !obligation.commandProfile.isEmpty &&
+      !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&
+      !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty) = true
 
 def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => work.contains obligation.work) = true
