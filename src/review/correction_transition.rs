@@ -94,7 +94,13 @@ pub fn apply_correction_transition(
         if another_active {
             bail!("another source correction session is selected");
         }
-        if finding_is_remediation_eligible(&tx, project_id, finding_id)? {
+        let implementation_only = finding_is_remediation_eligible(&tx, project_id, finding_id)?
+            && !tx.query_row(
+                "select exists(select 1 from correction_tokens where closure_id=?1)",
+                [closure_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if implementation_only {
             bail!("implementation findings cannot bootstrap source correction");
         }
         let design_root = correction_design_root(&tx, finding_id)?;
@@ -216,10 +222,11 @@ pub fn apply_correction_transition(
             let parts = target.split('/').collect::<Vec<_>>();
             let design = parts[0].parse::<i64>()?;
             let work = parts[1].parse::<i64>()?;
-            let checklist = parts[2].parse::<i64>()?;
             if work != work_unit_id || !correction_design_accepts(&tx, design_version_id, design)? {
                 bail!("design-reconcile target is outside the correction owner or design")
             }
+            let checklist =
+                resolve_checklist_ref(&tx, session_id, token_ordinal, work, design, parts[2])?;
             let outcome = crate::traceability::reconcile_design_in(
                 &tx, project_id, design, work, checklist, &reason,
             )?;

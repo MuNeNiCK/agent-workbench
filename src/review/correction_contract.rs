@@ -225,6 +225,15 @@ pub(crate) fn parse_correction_tokens(surfaces: &str) -> Result<Vec<CorrectionTo
     Ok(parsed)
 }
 
+pub(super) fn declares_typed_correction(surfaces: &str) -> bool {
+    surfaces.split(',').all(|raw| {
+        let token = raw.trim();
+        ["transition:", "design:", "plan:", "docs:", "workflow:"]
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+    })
+}
+
 pub(super) fn validate_correction_transition_target(
     verb: &str,
     target: &str,
@@ -255,7 +264,15 @@ pub(super) fn validate_correction_transition_target(
             }
             positive(parts[0])?;
             positive(parts[1])?;
-            positive(parts[2])?;
+            if parts[2] == "@checklist" {
+                if !has_decomposition {
+                    bail!(
+                        "@checklist requires an earlier design decomposition or reconciliation token"
+                    )
+                }
+            } else {
+                positive(parts[2])?;
+            }
         }
         "task-accept-out-of-scope" => {
             if decode_opaque_task_ref(target)?.is_some() {
@@ -460,14 +477,18 @@ pub(super) fn validate_correction_transition_preflight(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let mut stmt = conn.prepare(
-        "select operation, target from correction_tokens where closure_id=?1 and token_kind='transition' order by token_ordinal",
+        "select token_ordinal, operation, target from correction_tokens where closure_id=?1 and token_kind='transition' order by token_ordinal",
     )?;
     let rows = stmt.query_map(params![closure_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
     let transitions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
-    for (operation, target) in transitions {
+    for (token_ordinal, operation, target) in transitions {
         match operation.as_str() {
             "design-decompose" => {
                 let (design, work) = parse_pair(&target)?;
@@ -494,7 +515,6 @@ pub(super) fn validate_correction_transition_preflight(
                 let parts = target.split('/').collect::<Vec<_>>();
                 let design = parts[0].parse::<i64>()?;
                 let work = parts[1].parse::<i64>()?;
-                let checklist = parts[2].parse::<i64>()?;
                 if work != work_unit_id
                     || !correction_design_accepts(conn, design_version_id, design)?
                 {
@@ -503,6 +523,31 @@ pub(super) fn validate_correction_transition_preflight(
                 crate::traceability::validate_design_decomposition_scope_in(
                     conn, project_id, design, work,
                 )?;
+                if parts[2] == "@checklist" {
+                    let preceding_owner: bool = conn.query_row(
+                        r#"
+                        select exists(
+                          select 1 from correction_tokens prior
+                          where prior.closure_id=?1 and prior.token_kind='transition'
+                            and prior.token_ordinal<?2
+                            and prior.operation in ('design-decompose','design-reconcile')
+                            and (
+                              prior.target=?3
+                              or prior.target like ?3||'/%'
+                            )
+                        )
+                        "#,
+                        params![closure_id, token_ordinal, format!("{design}/{work}")],
+                        |row| row.get(0),
+                    )?;
+                    if !preceding_owner {
+                        bail!(
+                            "@checklist is not produced by an earlier decomposition transition for this design and work"
+                        );
+                    }
+                    continue;
+                }
+                let checklist = parts[2].parse::<i64>()?;
                 conn.query_row(
                     "select 1 from checklists where id=?1 and project_id=?2 and design_version_id=?3 and work_unit_id=?4 and status='active'",
                     params![checklist, project_id, design, work],

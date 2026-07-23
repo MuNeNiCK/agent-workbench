@@ -5,6 +5,7 @@ use super::*;
 mod application;
 mod atomicity;
 mod candidates;
+mod cross_design;
 mod legacy;
 mod lifecycle;
 mod lineage;

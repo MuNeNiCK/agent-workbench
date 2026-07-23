@@ -384,7 +384,29 @@ pub(super) fn record_correction_transition_aliases(
         }
         _ => {}
     }
+    let mut inserted_aliases = Vec::new();
     for (alias, record_type, record_id) in &aliases {
+        let existing = conn
+            .query_row(
+                r#"
+                select record_type,record_id from correction_transition_aliases
+                where correction_session_id=?1 and alias=?2
+                "#,
+                params![session_id, alias],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        if existing
+            .as_ref()
+            .is_some_and(|(existing_type, existing_id)| {
+                existing_type == record_type && existing_id == record_id
+            })
+        {
+            continue;
+        }
+        if existing.is_some() {
+            bail!("correction alias cannot be rebound to a different record");
+        }
         conn.execute(
             r#"
             insert into correction_transition_aliases(
@@ -401,6 +423,7 @@ pub(super) fn record_correction_transition_aliases(
                 record_id
             ],
         )?;
+        inserted_aliases.push((alias.clone(), record_type.clone(), *record_id));
     }
     record_correction_application_identity_links(
         conn,
@@ -408,7 +431,7 @@ pub(super) fn record_correction_transition_aliases(
         session_id,
         application_id,
         operation,
-        &aliases,
+        &inserted_aliases,
     )?;
     Ok(())
 }
@@ -762,6 +785,50 @@ pub(super) fn resolve_phase_ref(
     )
     .optional()?
     .context("phase reference was not created by an earlier correction token")
+}
+
+pub(super) fn resolve_checklist_ref(
+    conn: &rusqlite::Connection,
+    session_id: i64,
+    token_ordinal: i64,
+    work_unit_id: i64,
+    design_version_id: i64,
+    value: &str,
+) -> Result<i64> {
+    if let Ok(checklist_id) = value.parse::<i64>() {
+        return conn
+            .query_row(
+                r#"
+                select id from checklists
+                where id=?1 and work_unit_id=?2 and design_version_id=?3 and status='active'
+                "#,
+                params![checklist_id, work_unit_id, design_version_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("numeric checklist reference is outside the active correction owner");
+    }
+    if value != "@checklist" {
+        bail!("invalid checklist reference");
+    }
+    conn.query_row(
+        r#"
+        select alias.record_id
+        from correction_transition_aliases alias
+        join correction_transition_applications app on app.id=alias.correction_application_id
+        join correction_tokens token on token.id=app.correction_token_id
+        join checklists checklist on checklist.id=alias.record_id
+        where app.correction_session_id=?1 and token.token_ordinal<?2
+          and alias.record_type='checklist' and alias.alias='@checklist'
+          and checklist.work_unit_id=?3 and checklist.design_version_id=?4
+          and checklist.status='active'
+        order by alias.id desc limit 1
+        "#,
+        params![session_id, token_ordinal, work_unit_id, design_version_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .context("@checklist was not created by an earlier correction transition")
 }
 
 pub(super) fn ensure_phase_dependency_owner(

@@ -188,7 +188,10 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
             "finding already has a current closure; use closure supersede when the contract must change"
         );
     }
-    let eligible = finding_is_remediation_eligible(&tx, project_id, finding.id)?;
+    let surfaces = input.affected_surfaces.unwrap_or_default();
+    let source_correction = declares_typed_correction(surfaces);
+    let eligible =
+        finding_is_remediation_eligible(&tx, project_id, finding.id)? && !source_correction;
     if let Some(blocker) = blocker {
         let expected = format!("agent-workbench closure add --finding {}", finding.id);
         let stale_source_recovery = !eligible && blocker.kind == "stale_design";
@@ -224,7 +227,7 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
             input.verification_plan,
             "source correction closure requires --verification",
         )?;
-        parse_correction_tokens(input.affected_surfaces.unwrap())?;
+        parse_correction_tokens(surfaces)?;
     }
     tx.execute(
         r#"
@@ -252,14 +255,14 @@ pub fn add_closure(root: &Path, input: NewClosure<'_>) -> Result<ClosureOutcome>
         ],
     )?;
     let closure_id = tx.last_insert_rowid();
-    if !eligible {
+    if source_correction || !eligible {
         let design_root = correction_design_root(&tx, finding.id)?;
         record_correction_tokens(
             &tx,
             root,
             project_id,
             closure_id,
-            input.affected_surfaces.unwrap(),
+            surfaces,
             design_root.as_deref(),
         )?;
     }
@@ -290,7 +293,10 @@ pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginO
             r#"
             select c.finding_id, c.affected_surfaces,
                    p.required = 1 and p.stage = 'close-ready'
-                     and p.review_type in ('implementation_review', 'design_implementation_diff'),
+                     and p.review_type in ('implementation_review', 'design_implementation_diff')
+                     and not exists(
+                       select 1 from correction_tokens token where token.closure_id=c.id
+                     ),
                    dp.root_path
             from closures c
             join findings f on f.id = c.finding_id

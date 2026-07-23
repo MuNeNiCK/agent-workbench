@@ -1,6 +1,113 @@
 use super::*;
 
 #[test]
+fn typed_close_ready_contract_routes_to_source_correction() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "typed close-ready correction", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("managed correction required"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "correct a typed managed surface",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "typed contracts select source correction",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("docs:create:docs/fix.md"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("create the declared Markdown file"),
+            tests_or_gates: Some("source correction routing"),
+            verification_plan: Some("inspect the exact correction"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let token_count: i64 = conn
+        .query_row(
+            "select count(*) from correction_tokens where closure_id=?1",
+            [closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let status = project_status(temp.path()).unwrap();
+    assert!(
+        status.owner_actions.iter().any(|action| {
+            action.next_action
+                == format!(
+                    "agent-workbench closure correction-begin {}",
+                    closure.closure_id
+                )
+        }),
+        "tokens={token_count} actions={:?}",
+        status
+            .owner_actions
+            .iter()
+            .map(|action| action.next_action.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        remediate_work(temp.path(), finding.finding_id)
+            .unwrap_err()
+            .to_string()
+            .contains("closure correction-begin")
+    );
+    let correction = begin_correction(temp.path(), closure.closure_id).unwrap();
+    assert_eq!(correction.token_count, 1);
+}
+
+#[test]
 fn source_correction_rejects_repository_authority_without_publishing_a_closure() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

@@ -74,3 +74,20 @@ fn decomposition_reconciliation_target_names_the_exact_opaque_project_path() {
         assert!(parse_correction_tokens(invalid).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn generated_checklist_reference_requires_an_earlier_owned_decomposition() {
+    let missing = parse_correction_tokens("transition:design-reconcile:7/11/@checklist")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(missing.contains("requires an earlier design decomposition"));
+
+    let parsed = parse_correction_tokens(
+        "transition:design-decompose:7/11,transition:design-reconcile:7/11/@checklist",
+    )
+    .unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[1].operation, "design-reconcile");
+    assert_eq!(parsed[1].target, "7/11/@checklist");
+}

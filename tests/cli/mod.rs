@@ -58,5 +58,6 @@ mod registry;
 mod release;
 mod review;
 mod smoke;
+mod trace;
 mod update;
 mod work;

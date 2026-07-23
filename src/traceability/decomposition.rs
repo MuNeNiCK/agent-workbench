@@ -127,6 +127,154 @@ pub fn derive_task_from_requirement(
     })
 }
 
+pub fn rebind_task_derivation(
+    root: &Path,
+    input: TaskDerivationRebind<'_>,
+) -> Result<TaskDerivationRebindOutcome> {
+    if input.reason.trim().is_empty() {
+        bail!("task derivation rebind requires --reason");
+    }
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let (derivation_id, previous_item_id, work_unit_id): (i64, i64, i64) = tx
+        .query_row(
+            r#"
+            select derivation.id,derivation.checklist_item_id,task.work_unit_id
+            from finding_remediation_bindings binding
+            join closures closure on closure.id=binding.closure_id
+              and closure.finding_id=binding.finding_id and closure.status='registered'
+            join findings finding on finding.id=binding.finding_id
+              and finding.status='open' and finding.classification='valid'
+              and finding.lifecycle_state in ('open','remediating')
+            join review_runs source_run on source_run.id=finding.review_run_id
+            join review_plans source_plan on source_plan.id=source_run.review_plan_id
+            join work_unit_activations activation on activation.id=binding.work_unit_activation_id
+              and activation.status='active'
+            join tasks task on task.id=?3 and task.work_unit_id=binding.work_unit_id
+            join task_derivations derivation on derivation.task_id=task.id
+              and derivation.status='active'
+            join design_requirements requirement on requirement.id=derivation.design_requirement_id
+            where binding.project_id=?1 and binding.closure_id=?2
+              and source_plan.work_unit_id=binding.work_unit_id
+              and source_plan.design_version_id=?4
+              and source_plan.required=1 and source_plan.stage='close-ready'
+              and source_plan.review_type in ('implementation_review','design_implementation_diff')
+              and (finding.task_id is null or finding.task_id=task.id)
+              and (
+                finding.design_requirement_id is null
+                or finding.design_requirement_id=requirement.id
+              )
+              and requirement.design_version_id=?4 and requirement.requirement_key=?5
+            "#,
+            params![
+                project_id,
+                input.closure_id,
+                input.task_id,
+                input.design_version_id,
+                input.requirement_key
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .context("active remediation does not authorize this task derivation rebind")?;
+    tx.query_row(
+        r#"
+        select 1
+        from checklist_items item
+        join checklists checklist on checklist.id=item.checklist_id
+        where item.id=?1 and item.project_id=?2 and item.task_id=?3
+          and checklist.project_id=?2 and checklist.work_unit_id=?4
+          and checklist.design_version_id=?5 and checklist.status='active'
+          and (
+            (item.status in ('open','blocked')
+              and exists(select 1 from tasks where id=?3 and status in ('open','blocked')))
+            or
+            (item.status='closed'
+              and exists(select 1 from tasks where id=?3 and status='closed'))
+          )
+        "#,
+        params![
+            input.checklist_item_id,
+            project_id,
+            input.task_id,
+            work_unit_id,
+            input.design_version_id
+        ],
+        |_| Ok(()),
+    )
+    .optional()?
+    .context(
+        "target checklist item is outside the remediation owner, design, task, or lifecycle",
+    )?;
+    let audit_prefix = format!(
+        "closure {} rebinds task derivation {} from checklist item ",
+        input.closure_id, derivation_id
+    );
+    let audit_suffix = format!(
+        " to checklist item {}: {}",
+        input.checklist_item_id,
+        input.reason.trim()
+    );
+    let audit_summary = format!("{audit_prefix}{previous_item_id}{audit_suffix}");
+    let existing_audit: bool = tx.query_row(
+        r#"
+        select exists(
+          select 1 from authority_events
+          where project_id=?1 and event_type='user_instruction'
+            and source='trace derivation rebind'
+            and substr(text_or_summary,1,length(?2))=?2
+            and substr(text_or_summary,length(text_or_summary)-length(?3)+1)=?3
+            and scope=?4 and status='active'
+        )
+        "#,
+        params![
+            project_id,
+            audit_prefix,
+            audit_suffix,
+            format!("work-unit:{work_unit_id}")
+        ],
+        |row| row.get(0),
+    )?;
+    if existing_audit {
+        if previous_item_id != input.checklist_item_id {
+            bail!("recorded task derivation rebind no longer matches current state");
+        }
+        tx.commit()?;
+        return Ok(TaskDerivationRebindOutcome {
+            task_derivation_id: derivation_id,
+            previous_checklist_item_id: previous_item_id,
+            checklist_item_id: input.checklist_item_id,
+            idempotent: true,
+        });
+    }
+    if previous_item_id != input.checklist_item_id {
+        tx.execute(
+            "update task_derivations set checklist_item_id=?1 where id=?2",
+            params![input.checklist_item_id, derivation_id],
+        )?;
+    }
+    tx.execute(
+        r#"
+        insert into authority_events(
+          project_id,event_type,source,text_or_summary,scope,precedence,status,created_at
+        ) values(?1,'user_instruction','trace derivation rebind',?2,?3,100,'active',current_timestamp)
+        "#,
+        params![
+            project_id,
+            audit_summary,
+            format!("work-unit:{work_unit_id}")
+        ],
+    )?;
+    tx.commit()?;
+    Ok(TaskDerivationRebindOutcome {
+        task_derivation_id: derivation_id,
+        previous_checklist_item_id: previous_item_id,
+        checklist_item_id: input.checklist_item_id,
+        idempotent: previous_item_id == input.checklist_item_id,
+    })
+}
+
 pub fn decompose_design(
     root: &Path,
     input: DesignDecomposition<'_>,

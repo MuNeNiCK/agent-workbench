@@ -28,13 +28,63 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
     let mut actions = owners
         .into_iter()
         .map(|(owner_id, title, work_status)| {
-            if let Some(blocker) = owner_stale_blocker(conn, owner_id)? {
+            let review_blocker = owner_review_blocker(conn, owner_id)?;
+            if let Some(correction) = corrections
+                .iter()
+                .find(|correction| correction.work_unit_id == owner_id)
+            {
+                if review_blocker
+                    .as_ref()
+                    .is_some_and(|blocker| review_action_is_urgent(&blocker.next_action))
+                {
+                    return Ok(owner_action_from_blocker(
+                        owner_id,
+                        title,
+                        review_blocker.expect("urgent review blocker"),
+                    ));
+                }
+                return Ok(OwnerAction {
+                    owner_type: "work_unit".to_string(),
+                    owner_id,
+                    owner_handle: None,
+                    title,
+                    state: "source_correction".to_string(),
+                    schedulable: true,
+                    blocker_kind: Some("required_review_finding".to_string()),
+                    description: correction.description.clone(),
+                    next_action: correction.next_action.clone(),
+                    next_actions: vec![correction.next_action.clone()],
+                });
+            }
+            let stale_blocker = owner_stale_blocker(conn, owner_id)?;
+            if stale_blocker.as_ref().is_some_and(|blocker| {
+                blocker
+                    .next_action
+                    .starts_with("agent-workbench closure transition apply")
+            }) {
+                return Ok(owner_action_from_blocker(
+                    owner_id,
+                    title,
+                    stale_blocker.expect("owned stale transition blocker"),
+                ));
+            }
+            if review_blocker.as_ref().is_some_and(|blocker| {
+                blocker
+                    .next_action
+                    .starts_with("agent-workbench closure correction-begin")
+            }) {
+                return Ok(owner_action_from_blocker(
+                    owner_id,
+                    title,
+                    review_blocker.expect("source correction review blocker"),
+                ));
+            }
+            if let Some(blocker) = stale_blocker {
                 return Ok(owner_action_from_blocker(owner_id, title, blocker));
             }
             if let Some(blocker) = owner_dependency_blocker(conn, owner_id)? {
                 return Ok(owner_action_from_blocker(owner_id, title, blocker));
             }
-            let review_blocker = owner_review_blocker(conn, owner_id)?;
             if review_blocker
                 .as_ref()
                 .is_some_and(|blocker| review_action_is_urgent(&blocker.next_action))
@@ -84,23 +134,6 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                     description: remediation.description.clone(),
                     next_action: remediation.next_action.clone(),
                     next_actions: vec![remediation.next_action.clone()],
-                });
-            }
-            if let Some(correction) = corrections
-                .iter()
-                .find(|correction| correction.work_unit_id == owner_id)
-            {
-                return Ok(OwnerAction {
-                    owner_type: "work_unit".to_string(),
-                    owner_id,
-                    owner_handle: None,
-                    title,
-                    state: "source_correction".to_string(),
-                    schedulable: true,
-                    blocker_kind: Some("required_review_finding".to_string()),
-                    description: correction.description.clone(),
-                    next_action: correction.next_action.clone(),
-                    next_actions: vec![correction.next_action.clone()],
                 });
             }
             if let Some(blocker) = review_blocker {
@@ -488,7 +521,14 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
                   where rr.review_plan_id=p.id and rr.run_type='resume'
                     and rr.run_purpose='finding_fix_verification'
                     and a.result is null
-                    and rr.id>a.review_run_high_watermark order by rr.id desc limit 1)
+                    and rr.id>a.review_run_high_watermark order by rr.id desc limit 1),
+               not exists(
+                 select 1 from closures correction_closure
+                 join correction_tokens correction_token
+                   on correction_token.closure_id=correction_closure.id
+                 where correction_closure.finding_id=f.id
+                   and correction_closure.status='registered'
+               )
         from review_plans p
         join review_runs r on r.review_plan_id=p.id
         join findings f on f.review_run_id=r.id and f.status='open'
@@ -518,11 +558,13 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
             let attempt_id = row.get(14)?;
             let verification_run_id: Option<i64> = row.get(15)?;
             let verification_result = row.get::<_, Option<String>>(16)?;
+            let implementation_surface = row.get::<_, bool>(17)?;
             let implementation_eligible = stage == "close-ready"
                 && matches!(
                     review_type.as_str(),
                     "implementation_review" | "design_implementation_diff"
-                );
+                )
+                && implementation_surface;
             Ok(PhaseBlocker {
                 kind: "required_review_finding".to_string(),
                 review_plan_id: Some(review_plan_id),

@@ -97,8 +97,11 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             where f.id = ?1 and p.project_id = ?2 and p.required = 1
               and p.stage = 'close-ready'
               and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=?3
+              )
             "#,
-            params![finding_id, project_id],
+            params![finding_id, project_id, input.closure_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -446,8 +449,11 @@ pub fn supersede_closure(
             );
         }
     }
-    let eligible = finding_is_remediation_eligible(&tx, project_id, finding_id)?;
-    if !eligible {
+    let surfaces = input.new_closure.affected_surfaces.unwrap();
+    let source_correction = declares_typed_correction(surfaces);
+    let eligible =
+        finding_is_remediation_eligible(&tx, project_id, finding_id)? && !source_correction;
+    if source_correction || !eligible {
         parse_correction_tokens(input.new_closure.affected_surfaces.unwrap())?;
     }
     tx.execute(
@@ -469,7 +475,7 @@ pub fn supersede_closure(
         ],
     )?;
     let new_closure_id = tx.last_insert_rowid();
-    if !eligible {
+    if source_correction || !eligible {
         let design_root = correction_design_root(&tx, finding_id)?;
         record_correction_tokens(
             &tx,

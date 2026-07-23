@@ -141,6 +141,7 @@ additional operands, but must resolve to one of these leaves:
 - `agent-workbench decomposition reconcile`
 - `agent-workbench trace derive-task`
 - `agent-workbench trace derivation list`
+- `agent-workbench trace derivation rebind`
 - `agent-workbench checklist list`
 - `agent-workbench checklist item list`
 - `agent-workbench checklist item close`
@@ -372,6 +373,17 @@ from current managed project state.
   conversion. Use `decompose design` only as the installed compatibility entry,
   and `trace derive-task` for explicit manual links or corrections; neither
   bypasses approval, exact-Plan review, owner adjudication, or implementation readiness.
+- When a valid close-ready finding identifies only an incorrect checklist
+  boundary on an existing completed task derivation, enter the printed
+  implementation remediation and use `trace derivation rebind --design
+  <design> --requirement <key> --task <task> --checklist-item <item> --closure
+  <closure> --reason "<reason>"`. Do not reopen the task, create a duplicate
+  derivation, or use the completion-text revision option for this case.
+- A source-correction closure may carry a generated checklist across an
+  approved successor design with an earlier `design-decompose:<design>/<work>`
+  transition followed by
+  `design-reconcile:<design>/<work>/@checklist`. The alias is resolved only
+  from the same correction session and only after the producing transition.
 - When an aggregate work unit needs internal scheduling or smaller reviewable
   chunks, use work phases instead of inventing task order from intuition. Create
   ordered phases with `phase create`, assign tasks with `phase assign`, inspect

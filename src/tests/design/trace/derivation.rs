@@ -1,6 +1,279 @@
 use super::super::*;
 
 #[test]
+fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "repair completed trace", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "implement aggregate behavior",
+            priority: "high",
+            source: "design",
+            work_unit_id: None,
+            details: Some("one aggregate task"),
+            completion_condition: Some("all completion boundaries hold"),
+        },
+    )
+    .unwrap();
+    let package = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "completed-trace-rebind",
+            title: "Completed Trace Rebind",
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements/README.md"),
+        format!(
+            "{}\n{}",
+            requirement_doc("REQ-001", "First completion boundary", "high"),
+            requirement_doc("REQ-002", "Second completion boundary", "high")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("validation/gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    approve_design_version(
+        temp.path(),
+        DesignVersionApproval {
+            design_version_id: design.design_version_id,
+            summary: None,
+        },
+    )
+    .unwrap();
+    let first = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("initial decomposition"),
+            checklist_title: Some("aggregate"),
+            item_title: Some("first-boundary"),
+            completion_condition: Some("first boundary holds"),
+        },
+    )
+    .unwrap();
+    let second = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-002",
+            task_id: task.task_id,
+            derivation_reason: Some("initial decomposition"),
+            checklist_title: Some("aggregate"),
+            item_title: Some("second-boundary"),
+            completion_condition: Some("second boundary holds"),
+        },
+    )
+    .unwrap();
+    let other_task = add_task(
+        temp.path(),
+        NewTask {
+            title: "unrelated completed behavior",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("unrelated boundary holds"),
+        },
+    )
+    .unwrap();
+    let other = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: other_task.task_id,
+            derivation_reason: Some("unrelated decomposition"),
+            checklist_title: Some("unrelated"),
+            item_title: Some("unrelated-boundary"),
+            completion_condition: Some("unrelated boundary holds"),
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update checklist_items set status='closed' where task_id=?1",
+        [task.task_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update tasks set status='closed' where id=?1",
+        [task.task_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update checklist_items set status='closed' where task_id=?1",
+        [other_task.task_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update tasks set status='closed' where id=?1",
+        [other_task.task_id],
+    )
+    .unwrap();
+    drop(conn);
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: Some(design.design_version_id),
+            review_type: "design_implementation_diff",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("review-context:design-implementation-diff:design=1:work=1"),
+            prompt_deviations: None,
+            result_summary: Some("completed derivation targets the wrong boundary"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_implementation_drift",
+            severity: "high",
+            description: "rebind the completed derivation",
+            design_requirement_id: Some(second.design_requirement_id),
+            task_id: Some(task.task_id),
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "each requirement names its establishing boundary",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("managed trace derivation"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("rebind only the selected derivation"),
+            tests_or_gates: Some("exact derivation list"),
+            verification_plan: Some("independent trace review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    remediate_work(temp.path(), finding.finding_id).unwrap();
+
+    let wrong_requirement = rebind_task_derivation(
+        temp.path(),
+        TaskDerivationRebind {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            checklist_item_id: first.checklist_item_id,
+            closure_id: closure.closure_id,
+            reason: "must not cross the finding requirement boundary",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        wrong_requirement
+            .to_string()
+            .contains("does not authorize this task derivation rebind")
+    );
+    let wrong_task = rebind_task_derivation(
+        temp.path(),
+        TaskDerivationRebind {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: other_task.task_id,
+            checklist_item_id: other.checklist_item_id,
+            closure_id: closure.closure_id,
+            reason: "must not cross the finding task boundary",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        wrong_task
+            .to_string()
+            .contains("does not authorize this task derivation rebind")
+    );
+
+    let input = || TaskDerivationRebind {
+        design_version_id: design.design_version_id,
+        requirement_key: "REQ-002",
+        task_id: task.task_id,
+        checklist_item_id: first.checklist_item_id,
+        closure_id: closure.closure_id,
+        reason: "bind the second requirement to its establishing shared boundary",
+    };
+    let rebound = rebind_task_derivation(temp.path(), input()).unwrap();
+    assert_eq!(rebound.task_derivation_id, second.task_derivation_id);
+    assert_eq!(rebound.previous_checklist_item_id, second.checklist_item_id);
+    assert_eq!(rebound.checklist_item_id, first.checklist_item_id);
+    assert!(!rebound.idempotent);
+    assert!(
+        rebind_task_derivation(temp.path(), input())
+            .unwrap()
+            .idempotent
+    );
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let stored: (i64, i64, String) = conn
+        .query_row(
+            r#"
+            select derivation.checklist_item_id,count(event.id),max(event.text_or_summary)
+            from task_derivations derivation
+            join authority_events event
+              on event.source='trace derivation rebind'
+             and event.scope='work-unit:1'
+            where derivation.id=?1
+            "#,
+            [second.task_derivation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, first.checklist_item_id);
+    assert_eq!(stored.1, 1);
+    assert!(stored.2.contains(&format!(
+        "from checklist item {} to checklist item {}",
+        second.checklist_item_id, first.checklist_item_id
+    )));
+}
+
+#[test]
 fn task_derivation_creates_checklist_trace_and_unblocks_implementation_ready() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

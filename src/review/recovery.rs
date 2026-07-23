@@ -188,13 +188,14 @@ pub fn recover_finding_design(
         params![request.evidence, project, source.source_closure_id],
     )?;
     let successor_closure_id = tx.last_insert_rowid();
+
+    copy_applied_tokens(&tx, project, source.source_closure_id, successor_closure_id)?;
     tx.execute(
         "insert into correction_sessions(project_id,finding_id,closure_id,status,created_at) values(?1,?2,?3,'active',current_timestamp)",
         params![project, request.finding_id, successor_closure_id],
     )?;
     let successor_session_id = tx.last_insert_rowid();
 
-    copy_applied_tokens(&tx, project, source.source_closure_id, successor_closure_id)?;
     let high_watermark: i64 =
         tx.query_row("select coalesce(max(id),0) from review_runs", [], |row| {
             row.get(0)

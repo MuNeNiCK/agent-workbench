@@ -377,6 +377,27 @@ pub(crate) fn handle_trace(root: &Path, command: TraceCommand) -> Result<()> {
                     );
                 }
             }
+            TraceDerivationCommand::Rebind(args) => {
+                let outcome = rebind_task_derivation(
+                    root,
+                    TaskDerivationRebind {
+                        design_version_id: args.design,
+                        requirement_key: &args.requirement,
+                        task_id: args.task,
+                        checklist_item_id: args.checklist_item,
+                        closure_id: args.closure,
+                        reason: &args.reason,
+                    },
+                )?;
+                println!("rebound task derivation");
+                println!("task_derivation_id: {}", outcome.task_derivation_id);
+                println!(
+                    "previous_checklist_item_id: {}",
+                    outcome.previous_checklist_item_id
+                );
+                println!("checklist_item_id: {}", outcome.checklist_item_id);
+                println!("idempotent: {}", outcome.idempotent);
+            }
         },
     }
     Ok(())

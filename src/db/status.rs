@@ -386,6 +386,9 @@ pub(super) fn current_finding_remediations(conn: &Connection) -> Result<Vec<Find
          and b.work_unit_id = p.work_unit_id and b.work_unit_activation_id = a.id
         where p.project_id = ?1 and p.required = 1 and p.stage = 'close-ready'
           and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and not exists(
+            select 1 from correction_tokens token where token.closure_id=c.id
+          )
           and f.status = 'open' and f.classification = 'valid'
           and not exists (
               select 1 from work_unit_dependencies d
@@ -442,8 +445,6 @@ pub(super) fn current_source_corrections(conn: &Connection) -> Result<Vec<Source
         join review_runs r on r.id = f.review_run_id
         join review_plans p on p.id = r.review_plan_id
         where s.project_id = ?1 and s.status = 'active'
-          and not (p.required = 1 and p.stage = 'close-ready'
-                   and p.review_type in ('implementation_review', 'design_implementation_diff'))
         order by f.id
         "#,
     )?;
@@ -698,6 +699,14 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                     where plan_acceptance.target_type = 'review_plan'
                       and plan_acceptance.review_plan_id = p.id
                       and plan_acceptance.status = 'approved'
+                ),
+                not exists(
+                    select 1
+                    from closures correction_closure
+                    join correction_tokens correction_token
+                      on correction_token.closure_id=correction_closure.id
+                    where correction_closure.finding_id=f.id
+                      and correction_closure.status='registered'
                 )
             from review_plans p
             join review_runs r on r.review_plan_id = p.id
@@ -880,13 +889,15 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                 let plan_status = row.get::<_, String>(15)?;
                 let plan_required = row.get::<_, bool>(16)?;
                 let plan_accepted = row.get::<_, bool>(17)?;
+                let implementation_surface = row.get::<_, bool>(18)?;
                 let review_type = row.get::<_, String>(2)?;
                 let stage = row.get::<_, String>(3)?;
                 let implementation_eligible = stage == "close-ready"
                     && matches!(
                         review_type.as_str(),
                         "implementation_review" | "design_implementation_diff"
-                    );
+                    )
+                    && implementation_surface;
                 Ok(PhaseBlocker {
                     kind: "required_review_finding".to_string(),
                     review_plan_id: Some(review_plan_id),

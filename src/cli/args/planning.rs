@@ -419,6 +419,7 @@ pub(crate) struct TraceDeriveTaskArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum TraceDerivationCommand {
     List(TraceDerivationListArgs),
+    Rebind(TraceDerivationRebindArgs),
 }
 
 #[derive(Debug, Args)]
@@ -429,6 +430,22 @@ pub(crate) struct TraceDerivationListArgs {
     pub(crate) design_version: Option<i64>,
     #[arg(long)]
     pub(crate) task: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TraceDerivationRebindArgs {
+    #[arg(long)]
+    pub(crate) design: i64,
+    #[arg(long)]
+    pub(crate) requirement: String,
+    #[arg(long)]
+    pub(crate) task: i64,
+    #[arg(long)]
+    pub(crate) checklist_item: i64,
+    #[arg(long)]
+    pub(crate) closure: i64,
+    #[arg(long)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Subcommand)]

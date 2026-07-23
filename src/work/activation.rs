@@ -60,6 +60,9 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
               and f.status = 'open' and f.classification = 'valid'
               and p.required = 1 and p.stage = 'close-ready'
               and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=c.id
+              )
               and not exists (
                 select 1 from acceptance_records ar
                 where ar.finding_id = f.id and ar.target_type = 'finding'

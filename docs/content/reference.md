@@ -134,6 +134,16 @@ lineage are persistent project state. `decompose design` remains the automatic
 compatibility path; it creates the generated graph and matching applied Plan
 atomically, but does not bypass review or readiness.
 
+When a correction decomposes an approved successor and must immediately
+reconcile the checklist produced by that same correction session, declare the
+later target as `design-reconcile:<design>/<work>/@checklist`. The alias cannot
+refer to another session or to a future transition.
+
+For a close-ready finding that identifies an incorrect checklist boundary on
+an existing completed derivation, use `trace derivation rebind` under the
+finding's active remediation closure. This changes only the selected derivation
+edge and preserves the completed task and checklist lifecycle.
+
 If a required review plan was created for the wrong scope or is intentionally
 not required, record a user, policy, or design authority event and run
 `agent-workbench review plan waive <review-plan-id> --reason "<reason>"`.

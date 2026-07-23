@@ -334,6 +334,9 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                   and c.status = 'registered'
                   and p.required = 1 and p.stage = 'close-ready'
                   and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and not exists(
+                      select 1 from correction_tokens token where token.closure_id=c.id
+                  )
                   and p.status not in ('exhausted', 'needs_user_decision')
                   and w.id = new.work_unit_id and w.status = 'open'
                   and a.work_unit_id = new.work_unit_id and a.status = 'active'
@@ -420,8 +423,9 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                 join review_plans p on p.id=r.review_plan_id
                 where c.id=new.closure_id and c.status='registered'
                   and f.id=new.finding_id and f.status='open' and f.classification='valid'
-                  and not (p.required=1 and p.stage='close-ready'
-                           and p.review_type in ('implementation_review','design_implementation_diff'))
+                  and exists(
+                      select 1 from correction_tokens token where token.closure_id=c.id
+                  )
                   and trim(coalesce(c.affected_surfaces,''))!=''
                   and trim(coalesce(c.fix_plan,''))!=''
                   and trim(coalesce(c.tests_or_gates,''))!=''
@@ -499,10 +503,15 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                     and length(substr(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'),5))%4!=1)
                 or (new.operation='design-reconcile'
                     and length(new.target)-length(replace(new.target,'/',''))=2
-                    and new.target not glob '*[^0-9/]*'
                     and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer)>0
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[0]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[0]')
                     and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer)>0
-                    and cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') as integer)>0)
+                    and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[1]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[1]')
+                    and (
+                      (cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') as integer)>0
+                       and cast(cast(json_extract('["'||replace(new.target,'/','","')||'"]','$[2]') as integer) as text)=json_extract('["'||replace(new.target,'/','","')||'"]','$[2]'))
+                      or json_extract('["'||replace(new.target,'/','","')||'"]','$[2]')='@checklist'
+                    ))
                 or (new.operation='task-accept-out-of-scope' and (
                     (new.target not glob '*[^0-9]*' and cast(new.target as integer)>0)
                     or (new.target like '@task/b64:%' and length(new.target)>10
@@ -575,8 +584,6 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                 join review_plans p on p.id=r.review_plan_id
                 where c.id=new.closure_id and c.status='registered'
                   and f.status='open' and f.classification='valid'
-                  and not (p.required=1 and p.stage='close-ready'
-                           and p.review_type in ('implementation_review','design_implementation_diff'))
             )
         begin select raise(abort, 'invalid correction token links'); end;
 
@@ -714,7 +721,26 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
               or ((select operation from correction_tokens where id=new.correction_token_id)='design-reconcile'
                and exists(select 1 from checklists c join correction_tokens token on token.id=new.correction_token_id
                  where new.result_ref='checklist:'||c.id and c.project_id=new.project_id
-                   and token.target=cast(c.design_version_id as text)||'/'||cast(c.work_unit_id as text)||'/'||cast(c.id as text)))
+                   and cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[0]') as integer)=c.design_version_id
+                   and cast(json_extract('["'||replace(token.target,'/','","')||'"]','$[1]') as integer)=c.work_unit_id
+                   and (
+                     json_extract('["'||replace(token.target,'/','","')||'"]','$[2]')=cast(c.id as text)
+                     or (
+                       json_extract('["'||replace(token.target,'/','","')||'"]','$[2]')='@checklist'
+                       and exists(
+                         select 1 from correction_transition_aliases alias
+                         join correction_transition_applications earlier
+                           on earlier.id=alias.correction_application_id
+                         join correction_tokens earlier_token
+                           on earlier_token.id=earlier.correction_token_id
+                         where alias.correction_session_id=new.correction_session_id
+                           and alias.alias='@checklist'
+                           and alias.record_type='checklist'
+                           and alias.record_id=c.id
+                           and earlier_token.token_ordinal<token.token_ordinal
+                       )
+                     )
+                   )))
               or ((select operation from correction_tokens where id=new.correction_token_id)='decomposition-plan-reconcile'
                and new.result_ref glob 'decomposition-plan:[1-9]*'
                and substr(new.result_ref,20) not glob '*[^0-9]*')

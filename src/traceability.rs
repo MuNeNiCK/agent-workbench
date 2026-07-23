@@ -70,6 +70,15 @@ pub struct NewTaskDerivation<'a> {
     pub completion_condition: Option<&'a str>,
 }
 
+pub struct TaskDerivationRebind<'a> {
+    pub design_version_id: i64,
+    pub requirement_key: &'a str,
+    pub task_id: i64,
+    pub checklist_item_id: i64,
+    pub closure_id: i64,
+    pub reason: &'a str,
+}
+
 pub struct DesignDecomposition<'a> {
     pub design_version_id: i64,
     pub work_unit_id: i64,
@@ -198,6 +207,14 @@ pub struct TaskDerivationOutcome {
     pub checklist_item_id: i64,
     pub design_requirement_id: i64,
     pub task_id: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TaskDerivationRebindOutcome {
+    pub task_derivation_id: i64,
+    pub previous_checklist_item_id: i64,
+    pub checklist_item_id: i64,
+    pub idempotent: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
