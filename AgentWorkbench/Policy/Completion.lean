@@ -44,13 +44,7 @@ def authoritativeReady (target : WorkId) (work : List Work.WorkUnit)
 
 def obligationSatisfied (evidence : List Evidence.Evidence)
     (obligation : Evidence.Obligation) : Bool :=
-  obligation.current && evidence.any fun item =>
-    item.work == obligation.work && item.obligation == obligation.key &&
-      item.current && item.revision == obligation.revision && item.exitCode == 0 &&
-      item.commandProfile == obligation.commandProfile &&
-      item.invocation == obligation.invocation &&
-      item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
-      item.artifactDigest == obligation.artifactDigest
+  obligation.current && evidence.any (Evidence.exactFor · obligation)
 
 def obligationsReady (target : WorkId) (evidence : List Evidence.Evidence)
     (obligations : List Evidence.Obligation) : Bool :=

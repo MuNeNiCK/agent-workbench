@@ -23,6 +23,12 @@ def secondWork : Domain.Work.WorkUnit :=
 def thirdWork : Domain.Work.WorkUnit :=
   { id := ⟨3⟩, status := .open }
 
+def suspensionContext : Domain.Work.SuspensionContext :=
+  { reason := "interrupted"
+    returnPoint := "next transition"
+    assumptions := ["design and repository remain current"]
+    resumeConditions := ["resume readiness confirmed"] }
+
 def parentWork : Domain.Work.WorkUnit :=
   { id := ⟨4⟩, status := .open }
 
@@ -187,7 +193,9 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
   let store ← completeMinimalActiveWork secondWork.id store
   let store ← executeStore (.registerWork store.ledger.storedHead thirdWork) store
     "dependency registration rejected"
-  let suspendedThird := { thirdActivation with status := .suspended, readyToResume := true }
+  let suspendedThird : Domain.Work.Activation :=
+    { id := thirdActivation.id, work := thirdActivation.work, status := .suspended
+      readyToResume := true, suspension := some suspensionContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead suspendedThird) store
     "dependency activation registration rejected"
@@ -197,7 +205,9 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
   let store ← completeMinimalActiveWork thirdWork.id store
   let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
     "owner registration rejected"
-  let suspendedFirst := { firstActivation with status := .suspended, readyToResume := true }
+  let suspendedFirst : Domain.Work.Activation :=
+    { id := firstActivation.id, work := firstActivation.work, status := .suspended
+      readyToResume := true, suspension := some suspensionContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead suspendedFirst) store
     "owner activation registration rejected"
@@ -211,7 +221,8 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
   let store ← executeStore (.registerWork store.ledger.storedHead parentWork) store
     "parent registration rejected"
   let parentActivation : Domain.Work.Activation :=
-    { id := ⟨4⟩, work := parentWork.id, status := .suspended, readyToResume := true }
+    { id := ⟨4⟩, work := parentWork.id, status := .suspended
+      readyToResume := true, suspension := some suspensionContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead parentActivation) store
     "parent activation registration rejected"
@@ -403,7 +414,9 @@ def main : IO Unit := do
     "external operation lifecycle bypass"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
-  let suspended := { firstActivation with status := .suspended, readyToResume := false }
+  let suspended : Domain.Work.Activation :=
+    { id := firstActivation.id, work := firstActivation.work, status := .suspended
+      readyToResume := false, suspension := some suspensionContext }
   expect (Domain.Work.resume [suspended] suspended.id).isNone
     "resume must reject an unready activation"
   let ready := { suspended with readyToResume := true }
@@ -445,7 +458,8 @@ def main : IO Unit := do
   let plannedStore ← buildPlannedCompletionStore none
   let planned ← currentState plannedStore
   let parentActivation : Domain.Work.Activation :=
-    { id := ⟨4⟩, work := parentWork.id, status := .suspended, readyToResume := true }
+    { id := ⟨4⟩, work := parentWork.id, status := .suspended
+      readyToResume := true, suspension := some suspensionContext }
   expect (!(Policy.Completion.closeable firstWork.id planned.work planned.activations
     planned.claims planned.adjudications planned.lifecycle
     planned.evidence planned.obligations))

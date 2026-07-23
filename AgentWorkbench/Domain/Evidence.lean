@@ -15,6 +15,7 @@ structure Obligation where
   snapshot : String
   artifactDigest : String
   current : Bool
+  requirements : List String := []
 deriving DecidableEq, Repr
 
 structure Evidence where
@@ -29,7 +30,24 @@ structure Evidence where
   snapshot : String
   artifactDigest : String
   current : Bool
+  requirements : List String := []
+  producer : String := ""
+  observedAt : String := ""
 deriving DecidableEq, Repr
+
+def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
+  item.work == obligation.work && item.obligation == obligation.key &&
+  item.current && obligation.current && item.revision == obligation.revision &&
+  item.exitCode == 0 && item.commandProfile == obligation.commandProfile &&
+  item.invocation == obligation.invocation &&
+  item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
+  item.artifactDigest == obligation.artifactDigest &&
+  item.requirements == obligation.requirements
+
+def traceable (item : Evidence) : Bool :=
+  !item.requirements.isEmpty &&
+  item.requirements.all (fun requirement => !requirement.isEmpty) &&
+  !item.producer.isEmpty && !item.observedAt.isEmpty
 
 def obligationsCurrent (obligations : List Obligation) : Bool :=
   obligations.all (·.current)

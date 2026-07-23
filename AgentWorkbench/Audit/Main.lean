@@ -509,6 +509,7 @@ def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := desi
   ⟨"AgentWorkbench.Cli.Program", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"Main", #["AgentWorkbench.Cli.Program"]⟩,
   ⟨"AgentWorkbench.Tests.KernelLaws", #["AgentWorkbench.Cli.Program"]⟩,
+  ⟨"AgentWorkbench.Tests.WorkflowLaws", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Audit.Expected", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Audit.Main", #["AgentWorkbench.Audit.Expected", "AgentWorkbench.Cli.Program"]⟩
 ]
@@ -525,6 +526,7 @@ def traceProjectFiles (designRules : Array ModuleRule) : Array String :=
   "AgentWorkbench/Cli/Program.lean",
   "AgentWorkbench/Tests/KernelLaws.lean",
   "AgentWorkbench/Tests/StorageLaws.lean",
+  "AgentWorkbench/Tests/WorkflowLaws.lean",
   "bindings/durable_filesystem.c",
   "Main.lean",
   "lake-manifest.json",
@@ -634,7 +636,8 @@ def auditRebuildTrace (lake project : System.FilePath) (actualRules : Array Modu
   -- `--old` is sound only for this manifest-locked theorem proof body: its
   -- exported type is immutable and Lean proof irrelevance hides its value.
   let targets := if case.privateProof then #[] else
-    #["AgentWorkbench", "agent-workbench", "kernel-laws", "verified-core-audit"]
+    #["AgentWorkbench", "agent-workbench", "kernel-laws", "workflow-laws",
+      "verified-core-audit"]
   let trace := builtModules (← runLakeBuild lake project targets (oldMode := case.privateProof))
   if trace.isEmpty then fail s!"Lake emitted no rebuild trace for {case.key}"
   unless trace.contains case.module do

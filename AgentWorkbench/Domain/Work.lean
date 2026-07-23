@@ -10,11 +10,25 @@ structure WorkUnit where
   status : WorkStatus
 deriving DecidableEq, Repr
 
+structure SuspensionContext where
+  reason : String
+  returnPoint : String
+  assumptions : List String
+  resumeConditions : List String
+deriving DecidableEq, Repr
+
+def SuspensionContext.wellFormed (context : SuspensionContext) : Bool :=
+  !context.reason.isEmpty && !context.returnPoint.isEmpty &&
+  !context.assumptions.isEmpty && !context.resumeConditions.isEmpty &&
+  context.assumptions.all (fun assumption => !assumption.isEmpty) &&
+  context.resumeConditions.all (fun condition => !condition.isEmpty)
+
 structure Activation where
   id : ActivationId
   work : WorkId
   status : ActivationStatus
   readyToResume : Bool
+  suspension : Option SuspensionContext := none
 deriving DecidableEq, Repr
 
 def activeActivations (activations : List Activation) : List Activation :=
@@ -78,12 +92,40 @@ def resumable (activations : List Activation) (id : ActivationId) : Bool :=
   noActive activations && activations.any fun activation =>
     activation.id == id &&
     activation.status == .suspended &&
-    activation.readyToResume
+    activation.readyToResume &&
+    activation.suspension.any SuspensionContext.wellFormed
+
+def suspend (activations : List Activation) (id : ActivationId)
+    (context : SuspensionContext) : Option (List Activation) :=
+  if context.wellFormed && activations.any (fun activation =>
+      activation.id == id && activation.status == .active) then
+    some <| activations.map fun activation =>
+      if activation.id == id then
+        { activation with
+          status := .suspended
+          readyToResume := false
+          suspension := some context }
+      else activation
+  else
+    none
+
+def markResumeReady (activations : List Activation) (id : ActivationId) :
+    Option (List Activation) :=
+  if noActive activations && activations.any (fun activation =>
+      activation.id == id && activation.status == .suspended &&
+        activation.suspension.any SuspensionContext.wellFormed) then
+    some <| activations.map fun activation =>
+      if activation.id == id then { activation with readyToResume := true }
+      else activation
+  else
+    none
 
 def resume (activations : List Activation) (id : ActivationId) : Option (List Activation) :=
   if resumable activations id then
     some <| activations.map fun activation =>
-      if activation.id == id then { activation with status := .active } else activation
+      if activation.id == id then
+        { activation with status := .active, readyToResume := false }
+      else activation
   else
     none
 

@@ -5,16 +5,90 @@ namespace AgentWorkbench.Domain.Design
 
 open AgentWorkbench.Domain
 
-structure DesignVersion where
-  id : DesignId
-  revision : Revision
-  approved : Bool
-deriving DecidableEq, Repr
-
 structure Requirement where
   key : String
   active : Bool
 deriving DecidableEq, Repr
+
+structure DesignVersion where
+  id : DesignId
+  revision : Revision
+  owner : String
+  contentDigest : String
+  requirements : List Requirement
+  approved : Bool
+deriving DecidableEq, Repr
+
+structure TraceItem where
+  key : String
+  requirements : List String
+  implementationWork : List String
+  completionChecks : List String
+  validationGates : List String
+deriving DecidableEq, Repr
+
+structure Decomposition where
+  key : String
+  design : DesignId
+  work : WorkId
+  designRevision : Revision
+  items : List TraceItem
+  reviewer : String
+  adjudicator : String
+  accepted : Bool
+deriving DecidableEq, Repr
+
+structure Correction where
+  key : String
+  scope : String
+  statement : String
+  resolved : Bool
+deriving DecidableEq, Repr
+
+structure LearnedRule where
+  key : String
+  correction : String
+  scope : String
+  statement : String
+deriving DecidableEq, Repr
+
+def versionWellFormed (version : DesignVersion) : Bool :=
+  !version.owner.isEmpty && !version.contentDigest.isEmpty &&
+  !version.requirements.isEmpty &&
+  version.requirements.all (fun requirement => !requirement.key.isEmpty) &&
+  (version.requirements.map (·.key)).Nodup
+
+def decompositionWellFormed (decomposition : Decomposition) : Bool :=
+  !decomposition.key.isEmpty && !decomposition.items.isEmpty &&
+  !decomposition.reviewer.isEmpty && !decomposition.adjudicator.isEmpty &&
+  decomposition.items.all fun item =>
+    !item.key.isEmpty && !item.requirements.isEmpty &&
+    !item.implementationWork.isEmpty && !item.completionChecks.isEmpty &&
+    !item.validationGates.isEmpty
+
+def traceItemCovers (item : TraceItem) (requirement : String) : Bool :=
+  item.requirements.contains requirement &&
+  !item.implementationWork.isEmpty && !item.completionChecks.isEmpty &&
+  !item.validationGates.isEmpty
+
+def decompositionCovers (version : DesignVersion)
+    (decomposition : Decomposition) : Bool :=
+  let active := (version.requirements.filter (·.active)).map (·.key)
+  version.approved && decomposition.design == version.id &&
+  decomposition.designRevision == version.revision &&
+  decomposition.accepted && decompositionWellFormed decomposition &&
+  decomposition.reviewer != version.owner &&
+  decomposition.reviewer != decomposition.adjudicator &&
+  active.all fun requirement =>
+    decomposition.items.any (traceItemCovers · requirement)
+
+def correctionWellFormed (correction : Correction) : Bool :=
+  !correction.key.isEmpty && !correction.scope.isEmpty &&
+  !correction.statement.isEmpty
+
+def ruleWellFormed (rule : LearnedRule) : Bool :=
+  !rule.key.isEmpty && !rule.correction.isEmpty && !rule.scope.isEmpty &&
+  !rule.statement.isEmpty
 
 end AgentWorkbench.Domain.Design
 

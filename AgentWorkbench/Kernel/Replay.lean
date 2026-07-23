@@ -68,8 +68,15 @@ structure State where
   revision : Revision
   work : List Work.WorkUnit
   activations : List Work.Activation
+  designs : List Design.DesignVersion
+  decompositions : List Design.Decomposition
+  reviewPlans : List Review.Plan
   claims : List Review.Claim
   adjudications : List Review.Adjudication
+  reviewFindings : List Review.Finding
+  findingVerifications : List Review.Verification
+  corrections : List Design.Correction
+  learnedRules : List Design.LearnedRule
   evidence : List Evidence.Evidence
   externalOperations : List ExternalOperation.Attempt
   obligations : List Evidence.Obligation
@@ -77,15 +84,29 @@ structure State where
 deriving DecidableEq, Repr
 
 def ReviewClaimsReferencePlans (states : List Lifecycle.CompletionState)
-    (claims : List Review.Claim) : Prop :=
-  (claims.all fun claim => states.any fun state =>
-    state.plan.work == claim.work && state.plan.reviews.contains claim.plan &&
-      decide (claim.epoch.value ≤ state.epoch.value)) = true
+    (plans : List Review.Plan) (claims : List Review.Claim) : Prop :=
+  (claims.all fun claim =>
+    plans.any (fun plan => Review.scopeExact plan claim) ||
+    states.any (fun state =>
+      state.plan.work == claim.work && state.plan.reviews.contains claim.plan &&
+        decide (claim.epoch.value ≤ state.epoch.value))) = true
 
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
+  (state.designs.map (·.id)).Nodup ∧
+  (state.designs.all Design.versionWellFormed) = true ∧
+  (state.decompositions.map (·.key)).Nodup ∧
+  (state.decompositions.all Design.decompositionWellFormed) = true ∧
+  (state.reviewPlans.map (·.id)).Nodup ∧
+  (state.reviewPlans.all Review.planWellFormed) = true ∧
   Review.ValidReviewState state.claims state.adjudications ∧
-  ReviewClaimsReferencePlans state.lifecycle state.claims ∧
+  (state.reviewFindings.map (·.key)).Nodup ∧
+  (state.reviewFindings.all Review.findingWellFormed) = true ∧
+  (state.corrections.map (·.key)).Nodup ∧
+  (state.corrections.all Design.correctionWellFormed) = true ∧
+  (state.learnedRules.map (·.key)).Nodup ∧
+  (state.learnedRules.all Design.ruleWellFormed) = true ∧
+  ReviewClaimsReferencePlans state.lifecycle state.reviewPlans state.claims ∧
   Evidence.UniqueEvidenceIds state.evidence ∧
   Evidence.EvidenceWellFormed state.evidence ∧
   Evidence.EvidenceCurrentAt state.revision state.evidence ∧
@@ -104,6 +125,9 @@ instance (state : State) : Decidable (ValidState state) := by
   unfold ValidState Work.ValidWorkState Work.UniqueWorkIds
     Work.UniqueActivationIds Work.AtMostOneActive Work.ActiveReferencesOpenWork
     Work.ActivationsReferenceWork Work.NonterminalActivationsReferenceOpenWork
+    Design.versionWellFormed Design.decompositionWellFormed
+    Design.correctionWellFormed Design.ruleWellFormed
+    Review.planWellFormed Review.independent Review.findingWellFormed
     Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
     Review.AdjudicationsReferenceClaims
     Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
@@ -127,7 +151,14 @@ inductive Event
   | workInitialized (work : Work.WorkUnit) (activation : Work.Activation)
   | workRegistered (work : Work.WorkUnit)
   | suspendedActivationRegistered (activation : Work.Activation)
+  | workSuspended (work : WorkId) (activation : ActivationId)
+      (context : Work.SuspensionContext)
+  | resumeReadinessConfirmed (work : WorkId) (activation : ActivationId)
   | workResumed (work : WorkId) (activation : ActivationId)
+  | designImported (version : Design.DesignVersion)
+  | designApproved (design : DesignId)
+  | decompositionRecorded (decomposition : Design.Decomposition)
+  | reviewPlanRecorded (plan : Review.Plan)
   | completionPlanned (plan : Lifecycle.CompletionPlan)
   | relatedWorkTerminalAcknowledged (owner related : WorkId)
   | phaseCompleted (work : WorkId) (key : String)
@@ -140,6 +171,13 @@ inductive Event
   | workRecordLinked (work : WorkId) (key reference : String)
   | reviewClaimed (claim : Review.Claim)
   | reviewAdjudicated (decision : Review.Adjudication)
+  | reviewFindingRecorded (finding : Review.Finding)
+  | reviewFindingAdjudicated (key principal : String) (accepted : Bool)
+  | reviewFindingClosed (key : String)
+  | findingVerified (verification : Review.Verification)
+  | correctionRecorded (correction : Design.Correction)
+  | userCorrectionResolved (key : String)
+  | correctionPromoted (rule : Design.LearnedRule)
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
@@ -161,10 +199,27 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       { invalidated with work := state.work ++ [work] }
   | .suspendedActivationRegistered activation =>
       { invalidated with activations := state.activations ++ [activation] }
+  | .workSuspended _ activation context =>
+      match Work.suspend state.activations activation context with
+      | some activations => { invalidated with activations }
+      | none => invalidated
+  | .resumeReadinessConfirmed _ activation =>
+      match Work.markResumeReady state.activations activation with
+      | some activations => { invalidated with activations }
+      | none => invalidated
   | .workResumed _ activation =>
       match Work.resume state.activations activation with
       | some activations => { invalidated with activations }
       | none => invalidated
+  | .designImported version =>
+      { invalidated with designs := state.designs ++ [version] }
+  | .designApproved design =>
+      { invalidated with designs := state.designs.map fun version =>
+          if version.id == design then { version with approved := true } else version }
+  | .decompositionRecorded decomposition =>
+      { invalidated with decompositions := state.decompositions ++ [decomposition] }
+  | .reviewPlanRecorded plan =>
+      { invalidated with reviewPlans := state.reviewPlans ++ [plan] }
   | .completionPlanned plan =>
       { invalidated with lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan] }
   | .relatedWorkTerminalAcknowledged owner _ =>
@@ -201,6 +256,26 @@ private def applyUnchecked (event : Event) (state : State) : State :=
   | .reviewClaimed claim => { invalidated with claims := state.claims ++ [claim] }
   | .reviewAdjudicated decision =>
       { invalidated with adjudications := state.adjudications ++ [decision] }
+  | .reviewFindingRecorded finding =>
+      { invalidated with reviewFindings := state.reviewFindings ++ [finding] }
+  | .reviewFindingAdjudicated key _ accepted =>
+      { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
+          if finding.key == key then { finding with accepted, adjudicated := true }
+          else finding }
+  | .reviewFindingClosed key =>
+      { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
+          if finding.key == key then { finding with closed := true } else finding }
+  | .findingVerified verification =>
+      { invalidated with
+        findingVerifications := state.findingVerifications ++ [verification] }
+  | .correctionRecorded correction =>
+      { invalidated with corrections := state.corrections ++ [correction] }
+  | .userCorrectionResolved key =>
+      { invalidated with corrections := state.corrections.map fun correction =>
+          if correction.key == key then { correction with resolved := true }
+          else correction }
+  | .correctionPromoted rule =>
+      { invalidated with learnedRules := state.learnedRules ++ [rule] }
   | .evidenceRecorded item =>
       let obligations := state.obligations.map fun obligation =>
         if obligation.current then { obligation with revision := revised } else obligation
@@ -250,13 +325,7 @@ def completionReviewsReady (state : Lifecycle.CompletionState)
 
 def completionObligationSatisfied (evidence : List Evidence.Evidence)
     (obligation : Evidence.Obligation) : Bool :=
-  obligation.current && evidence.any fun item =>
-    item.work == obligation.work && item.obligation == obligation.key &&
-      item.current && item.revision == obligation.revision && item.exitCode == 0 &&
-      item.commandProfile == obligation.commandProfile &&
-      item.invocation == obligation.invocation &&
-      item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
-      item.artifactDigest == obligation.artifactDigest
+  obligation.current && evidence.any (Evidence.exactFor · obligation)
 
 def completionObligationsReady (target : WorkId)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation) : Bool :=
@@ -283,14 +352,70 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   | .workRegistered work =>
       work.status == .open && !state.work.any (·.id == work.id)
   | .suspendedActivationRegistered activation =>
-      activation.status == .suspended && activation.readyToResume &&
+      activation.status == .suspended &&
+      activation.suspension.any Work.SuspensionContext.wellFormed &&
       state.work.any (fun work => work.id == activation.work && work.status == .open) &&
-      !state.activations.any (·.id == activation.id)
+      !state.activations.any (·.id == activation.id) &&
+      (state.designs.isEmpty || state.designs.any (fun version =>
+        state.decompositions.any (fun decomposition =>
+          decomposition.work == activation.work &&
+          Design.decompositionCovers version decomposition))) &&
+      !state.corrections.any (fun correction => !correction.resolved)
+  | .workSuspended work activation context =>
+      context.wellFormed && state.activations.any (fun current =>
+        current.id == activation && current.work == work &&
+          current.status == .active)
+  | .resumeReadinessConfirmed work activation =>
+      state.activations.any (fun current =>
+        current.id == activation && current.work == work &&
+          current.status == .suspended &&
+          current.suspension.any Work.SuspensionContext.wellFormed) &&
+      Work.noActive state.activations &&
+      !state.corrections.any (fun correction => !correction.resolved)
   | .workResumed work activation =>
       Work.workIsOpen state.work work &&
       state.activations.any (fun candidate =>
         candidate.id == activation && candidate.work == work) &&
       Work.resumable state.activations activation
+  | .designImported version =>
+      !version.approved && Design.versionWellFormed version &&
+      !state.designs.any (·.id == version.id)
+  | .designApproved design =>
+      state.designs.any (fun version => version.id == design && !version.approved) &&
+      state.reviewPlans.any (fun plan =>
+        plan.scope.design == some design &&
+        state.claims.any (fun claim =>
+          Review.scopeExact plan claim && claim.claim == .clean &&
+          state.adjudications.any (fun decision =>
+            decision.review == claim.id && decision.decision == .accepted) &&
+          state.reviewFindings.all (fun finding =>
+            finding.review != claim.id || !finding.blocking || !finding.accepted ||
+              (finding.closed && state.findingVerifications.any fun verification =>
+                Review.verificationExact finding claim verification)))) &&
+      !state.corrections.any (fun correction => !correction.resolved)
+  | .decompositionRecorded decomposition =>
+      Design.decompositionWellFormed decomposition &&
+      !state.decompositions.any (·.key == decomposition.key) &&
+      state.designs.any (fun version =>
+        version.id == decomposition.design &&
+        version.revision == decomposition.designRevision && version.approved) &&
+      state.reviewPlans.any (fun plan =>
+        plan.scope.design == some decomposition.design &&
+        plan.scope.work == decomposition.work &&
+        plan.scope.stage == "decomposition" &&
+        plan.scope.artifactDigest == decomposition.key &&
+        plan.reviewer == decomposition.reviewer &&
+        plan.adjudicator == decomposition.adjudicator &&
+        state.claims.any (fun claim =>
+          Review.scopeExact plan claim && claim.claim == .clean &&
+          state.adjudications.any (fun decision =>
+            decision.review == claim.id && decision.decision == .accepted)))
+  | .reviewPlanRecorded plan =>
+      Review.planWellFormed plan && !state.reviewPlans.any (·.id == plan.id) &&
+      state.work.any (·.id == plan.scope.work) &&
+      match plan.scope.design with
+      | some design => state.designs.any (·.id == design)
+      | none => true
   | .completionPlanned plan =>
       !state.lifecycle.any (fun completion => completion.plan.work == plan.work) &&
       decide (Lifecycle.ValidPlan (state.work.map (·.id)) plan)
@@ -340,15 +465,61 @@ def eventApplicable (event : Event) (state : State) : Bool :=
           record.key == key && record.status == .unlinked)
       | none => false
   | .reviewClaimed claim =>
-      match Lifecycle.forWork state.lifecycle claim.work with
-      | some completion => completion.plan.reviews.contains claim.plan &&
-          claim.epoch == completion.epoch && !state.claims.any (·.id == claim.id)
-      | none => false
+      !state.claims.any (·.id == claim.id) &&
+      (state.reviewPlans.any (fun plan => Review.scopeExact plan claim) ||
+        match Lifecycle.forWork state.lifecycle claim.work with
+        | some completion => completion.plan.reviews.contains claim.plan &&
+            claim.epoch == completion.epoch
+        | none => false)
   | .reviewAdjudicated decision =>
-      state.claims.any (·.id == decision.review) &&
+      state.claims.any (fun claim =>
+        claim.id == decision.review &&
+        (state.reviewPlans.any (fun plan =>
+          plan.id == claim.plan &&
+          Review.scopeExact plan claim &&
+          decision.adjudicator == plan.adjudicator &&
+          decision.adjudicator != claim.reviewer) ||
+          !state.reviewPlans.any (fun plan => plan.id == claim.plan))) &&
       !state.adjudications.any (·.review == decision.review)
+  | .reviewFindingRecorded finding =>
+      Review.findingWellFormed finding &&
+      !finding.adjudicated && !finding.closed &&
+      state.claims.any (fun claim => claim.id == finding.review &&
+        claim.claim == .findings) &&
+      !state.reviewFindings.any (·.key == finding.key)
+  | .reviewFindingAdjudicated key principal _ =>
+      state.reviewFindings.any (fun finding =>
+        finding.key == key && !finding.adjudicated && !finding.closed &&
+        state.claims.any (fun claim =>
+          claim.id == finding.review &&
+          state.reviewPlans.any (fun plan =>
+            plan.id == claim.plan && plan.adjudicator == principal &&
+            principal != claim.reviewer)))
+  | .reviewFindingClosed key =>
+      state.reviewFindings.any (fun finding =>
+        finding.key == key && finding.accepted && !finding.closed)
+  | .findingVerified verification =>
+      state.reviewFindings.any (fun finding =>
+        finding.key == verification.finding && finding.closed &&
+        state.claims.any (fun claim =>
+          claim.id == finding.review &&
+          Review.verificationExact finding claim verification)) &&
+      !state.findingVerifications.any (·.finding == verification.finding)
+  | .correctionRecorded correction =>
+      Design.correctionWellFormed correction && !correction.resolved &&
+      !state.corrections.any (·.key == correction.key)
+  | .userCorrectionResolved key =>
+      state.corrections.any (fun correction =>
+        correction.key == key && !correction.resolved)
+  | .correctionPromoted rule =>
+      Design.ruleWellFormed rule &&
+      state.corrections.any (fun correction =>
+        correction.key == rule.correction && correction.resolved &&
+        correction.scope == rule.scope) &&
+      !state.learnedRules.any (·.key == rule.key)
   | .evidenceRecorded item =>
       !item.obligation.isEmpty && !item.artifactDigest.isEmpty &&
+      (state.designs.isEmpty || Evidence.traceable item) &&
       !state.evidence.any (·.id == item.id) &&
       state.obligations.any fun obligation =>
         obligation.work == item.work && obligation.key == item.obligation
@@ -360,6 +531,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !obligation.key.isEmpty && !obligation.commandProfile.isEmpty &&
       !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&
       !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
+      (state.designs.isEmpty || !obligation.requirements.isEmpty) &&
       state.work.any (fun work => work.id == obligation.work && work.status == .open)
   | .workCompleted work activation =>
       match Work.activeFor state.activations work with
@@ -397,8 +569,15 @@ def emptyState : State :=
   { revision := ⟨0⟩
     work := []
     activations := []
+    designs := []
+    decompositions := []
+    reviewPlans := []
     claims := []
     adjudications := []
+    reviewFindings := []
+    findingVerifications := []
+    corrections := []
+    learnedRules := []
     evidence := []
     externalOperations := []
     obligations := []
