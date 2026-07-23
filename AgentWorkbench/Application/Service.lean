@@ -12,7 +12,9 @@ def initialStore : Projection.Store :=
 
 def bootstrapCommandAt (revision : Revision) : Decide.Command :=
   .initializeWork revision
-    { id := ⟨1⟩, status := .open, owner := "bootstrap-owner" }
+    { id := ⟨1⟩, status := .open, owner := "bootstrap-owner"
+      outcome := "complete the requested work"
+      completionBoundary := "all accepted work is complete and reviewed" }
     { id := ⟨1⟩, work := ⟨1⟩, status := .active, readyToResume := false }
 
 def bootstrapCommand : Decide.Command :=

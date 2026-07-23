@@ -15,13 +15,16 @@ def thirdActivation : Domain.Work.Activation :=
   { id := ⟨3⟩, work := ⟨3⟩, status := .active, readyToResume := false }
 
 def firstWork : Domain.Work.WorkUnit :=
-  { id := ⟨1⟩, status := .open, owner := "owner" }
+  { id := ⟨1⟩, status := .open, owner := "owner"
+    outcome := "complete primary work", completionBoundary := "all gates pass" }
 
 def secondWork : Domain.Work.WorkUnit :=
-  { id := ⟨2⟩, status := .open, owner := "owner" }
+  { id := ⟨2⟩, status := .open, owner := "owner"
+    outcome := "complete dependency", completionBoundary := "dependency is terminal" }
 
 def thirdWork : Domain.Work.WorkUnit :=
-  { id := ⟨3⟩, status := .open, owner := "owner" }
+  { id := ⟨3⟩, status := .open, owner := "owner"
+    outcome := "complete secondary work", completionBoundary := "secondary checks pass" }
 
 def evidenceDesign : Domain.Design.DesignVersion :=
   { id := ⟨1⟩
@@ -39,10 +42,12 @@ def suspensionContext : Domain.Work.SuspensionContext :=
     resumeConditions := ["resume readiness confirmed"] }
 
 def parentWork : Domain.Work.WorkUnit :=
-  { id := ⟨4⟩, status := .open, owner := "owner" }
+  { id := ⟨4⟩, status := .open, owner := "owner"
+    outcome := "coordinate child work", completionBoundary := "child returns" }
 
 def blockedRelatedWork : Domain.Work.WorkUnit :=
-  { id := ⟨5⟩, status := .open, owner := "owner" }
+  { id := ⟨5⟩, status := .open, owner := "owner"
+    outcome := "resolve related work", completionBoundary := "related work is terminal" }
 
 def completionPlan : Domain.Lifecycle.CompletionPlan :=
   { work := firstWork.id
@@ -634,11 +639,24 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.initializeWork initial.revision { firstWork with owner := "" } firstActivation)
     initial "work without an authoritative owner"
+  expectRejectedNoEffect
+    (.initializeWork initial.revision { firstWork with outcome := "" } firstActivation)
+    initial "work without a coherent outcome"
+  expectRejectedNoEffect
+    (.initializeWork initial.revision
+      { firstWork with completionBoundary := "" } firstActivation)
+    initial "work without a completion boundary"
   let first ← match Kernel.Decide.decide
       (initializeWork initial firstWork firstActivation) initial with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"first activation rejected: {repr error}"
   expect (first.revision == ⟨1⟩) "atomic initialization must advance one revision"
+  expectRejectedNoEffect
+    (.registerWork first.revision { secondWork with outcome := "" }) first
+    "registered work without a coherent outcome"
+  expectRejectedNoEffect
+    (.registerWork first.revision { secondWork with completionBoundary := "" }) first
+    "registered work without a completion boundary"
   let invalid := initializeWork first secondWork secondActivation
   match Kernel.Decide.decide invalid first with
   | .error (.invalidTransition _) => pure ()

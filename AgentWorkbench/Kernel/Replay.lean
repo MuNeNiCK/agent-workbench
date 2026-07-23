@@ -559,11 +559,11 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   match event with
   | .workInitialized work activation =>
       state.work.isEmpty && state.activations.isEmpty &&
-      work.status == .open && !work.owner.isEmpty &&
+      work.status == .open && work.wellFormed &&
       activation.status == .active &&
       !activation.readyToResume && activation.work == work.id
   | .workRegistered work =>
-      work.status == .open && !work.owner.isEmpty &&
+      work.status == .open && work.wellFormed &&
       !state.work.any (·.id == work.id)
   | .suspendedActivationRegistered activation =>
       activation.status == .suspended &&

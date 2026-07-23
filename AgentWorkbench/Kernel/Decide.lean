@@ -119,14 +119,14 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
   match command with
   | .initializeWork _ work activation =>
       if state.work.isEmpty && state.activations.isEmpty &&
-          work.status == .open && !work.owner.isEmpty &&
+          work.status == .open && work.wellFormed &&
           activation.status == .active &&
           !activation.readyToResume && activation.work == work.id then
         .ok ⟨[.workInitialized work activation], by simp⟩
       else
         .error (.invalidTransition "work initialization requires an empty state and one matching open active frame")
   | .registerWork _ work =>
-      if work.status == .open && !work.owner.isEmpty &&
+      if work.status == .open && work.wellFormed &&
           !state.work.any (·.id == work.id) then
         .ok ⟨[.workRegistered work], by simp⟩
       else

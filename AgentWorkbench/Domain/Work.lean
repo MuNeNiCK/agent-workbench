@@ -9,7 +9,13 @@ structure WorkUnit where
   id : WorkId
   status : WorkStatus
   owner : String := ""
+  outcome : String
+  completionBoundary : String
 deriving DecidableEq, Repr
+
+def WorkUnit.wellFormed (work : WorkUnit) : Bool :=
+  !work.owner.isEmpty && !work.outcome.isEmpty &&
+  !work.completionBoundary.isEmpty
 
 structure ReadinessBasis where
   design : DesignId
@@ -66,7 +72,7 @@ def UniqueActivationIds (activations : List Activation) : Prop :=
   (activations.map (·.id)).Nodup
 
 def OwnersPresent (work : List WorkUnit) : Prop :=
-  (work.all fun unit => !unit.owner.isEmpty) = true
+  (work.all WorkUnit.wellFormed) = true
 
 def ActiveReferencesOpenWork (work : List WorkUnit) (activations : List Activation) : Prop :=
   (activations.all fun activation =>

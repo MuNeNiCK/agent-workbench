@@ -21,10 +21,14 @@ def reject (command : Kernel.Decide.Command) (state : Kernel.Replay.State)
   | .ok _ => throw <| IO.userError s!"{message}: command unexpectedly accepted"
 
 def workOne : Domain.Work.WorkUnit :=
-  { id := ⟨1⟩, status := .open, owner := "owner" }
+  { id := ⟨1⟩, status := .open, owner := "owner"
+    outcome := "establish the workflow"
+    completionBoundary := "workflow laws pass" }
 
 def workTwo : Domain.Work.WorkUnit :=
-  { id := ⟨2⟩, status := .open, owner := "owner" }
+  { id := ⟨2⟩, status := .open, owner := "owner"
+    outcome := "implement the reviewed design"
+    completionBoundary := "implementation evidence is accepted" }
 
 def activationOne : Domain.Work.Activation :=
   { id := ⟨1⟩, work := workOne.id, status := .active, readyToResume := false }
@@ -175,6 +179,10 @@ def run : IO Unit := do
 
   let state ← execute (.registerWork state.revision workTwo) state
     "implementation work registration failed"
+  expect (state.work.any fun work =>
+    work == workTwo && work.outcome == workTwo.outcome &&
+      work.completionBoundary == workTwo.completionBoundary)
+    "aggregate work contract was split or rewritten during registration"
   let untracedActivation : Domain.Work.Activation :=
     { id := ⟨2⟩, work := workTwo.id, status := .suspended
       readyToResume := false

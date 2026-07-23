@@ -33,6 +33,39 @@ def mutate (ledger : System.FilePath) (operation : String)
 def bootstrap (ledger : System.FilePath) : IO Adapter.SQLite.MutationOutcome :=
   mutate ledger "bootstrap" 0 Application.Service.bootstrapCommand
 
+def testWorkContractPersistence (root : System.FilePath) : IO Unit := do
+  let ledger := root / "work-contract.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let initialized ← bootstrap ledger
+  let aggregate : Domain.Work.WorkUnit :=
+    { id := ⟨2⟩
+      status := .open
+      owner := "aggregate-owner"
+      outcome := "deliver one coherent aggregate result"
+      completionBoundary := "all aggregate acceptance checks pass" }
+  let registered ← mutate ledger "register-aggregate"
+    initialized.store.ledger.storedHead.value
+    (.registerWork initialized.store.ledger.storedHead aggregate)
+  let recovered ← load ledger
+  let state ←
+    match (Application.Service.status recovered).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "work contract is not recoverable"
+  expect (state.work.contains aggregate)
+    "fresh SQLite reconstruction split or rewrote aggregate work"
+  expectFailure (mutate ledger "register-empty-outcome"
+    registered.store.ledger.storedHead.value
+    (.registerWork registered.store.ledger.storedHead
+      { aggregate with id := ⟨3⟩, outcome := "" }))
+    "SQLite mutation accepted work without an outcome"
+  expectFailure (mutate ledger "register-empty-boundary"
+    registered.store.ledger.storedHead.value
+    (.registerWork registered.store.ledger.storedHead
+      { aggregate with id := ⟨3⟩, completionBoundary := "" }))
+    "SQLite mutation accepted work without a completion boundary"
+  expect ((← load ledger) == recovered)
+    "rejected work contract mutation changed durable state"
+
 def storageDesign : Domain.Design.DesignVersion :=
   { id := ⟨1⟩
     revision := ⟨1⟩
@@ -1426,6 +1459,7 @@ def main (args : List String) : IO Unit :=
       | none => throw <| IO.userError "invalid repair crash revision"
   | [] => IO.FS.withTempDir fun root => do
     testRecoveryAndRetry root
+    testWorkContractPersistence root
     testOperationJournalCorruption root
     testCrashRollback root
     testProcessCrashRecovery root
