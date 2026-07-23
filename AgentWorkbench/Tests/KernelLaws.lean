@@ -135,6 +135,12 @@ inductive MissingCompletionCondition
   | repository
   | correction
   | workRecord
+  | repositorySnapshotMismatch
+  | validationArtifactMismatch
+  | evidenceSnapshotMismatch
+  | evidenceArtifactMismatch
+  | reviewSnapshotMismatch
+  | reviewArtifactMismatch
 deriving DecidableEq, Repr, BEq
 
 def currentState (store : Kernel.Projection.Store) : IO Kernel.Replay.State :=
@@ -187,7 +193,8 @@ def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
     "completion design approval rejected"
 
 def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
-    (includeQuality : Bool := true) :
+    (includeQuality : Bool := true)
+    (qualitySnapshot? qualityArtifact? : Option String := none) :
     IO Kernel.Projection.Store := do
   let decompositionDigest := s!"decomposition-{work.value}"
   let decompositionPlan : Domain.Review.Plan :=
@@ -269,7 +276,11 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
       reviewer := s!"quality-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
       scope :=
-        contractScope work .implementationQuality s!"implementation-{work.value}" }
+        let base :=
+          contractScope work .implementationQuality s!"implementation-{work.value}"
+        { base with
+          repositorySnapshot := qualitySnapshot?.getD base.repositorySnapshot
+          artifactDigest := qualityArtifact?.getD base.artifactDigest } }
   let store ← executeStore
     (.recordReviewPlan store.ledger.storedHead qualityPlan) store
     "implementation quality review plan rejected"
@@ -300,7 +311,7 @@ def recordReadinessEvidence (work : WorkId) (store : Kernel.Projection.Store) :
       invocation := ".lake/build/bin/kernel-laws"
       repository := "main"
       snapshot := s!"snapshot-{work.value}"
-      artifactDigest := s!"sha256:readiness-{work.value}"
+      artifactDigest := s!"implementation-{work.value}"
       current := true
       requirements := ["evidence-integrity"]
       expectedProducer := "kernel-law-runner"
@@ -373,8 +384,8 @@ def prepareMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
   let obligation : Domain.Evidence.Obligation :=
     { work, key, revision := store.ledger.storedHead
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
-      repository := "main", snapshot := "fixture"
-      artifactDigest := s!"sha256:minimal-{work.value}", current := true
+      repository := "main", snapshot := s!"snapshot-{work.value}"
+      artifactDigest := s!"implementation-{work.value}", current := true
       requirements := ["evidence-integrity"]
       expectedProducer := "kernel-law-runner"
       expectedObservation := s!"completion-observation-{work.value}"
@@ -391,8 +402,8 @@ def prepareMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
       invocation := ".lake/build/bin/kernel-laws"
       exitCode := 0
       repository := "main"
-      snapshot := "fixture"
-      artifactDigest := s!"sha256:minimal-{work.value}"
+      snapshot := s!"snapshot-{work.value}"
+      artifactDigest := s!"implementation-{work.value}"
       current := true
       requirements := obligation.requirements
       producer := obligation.expectedProducer
@@ -460,7 +471,11 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
     "parent resume rejected"
   let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
     "owner registration rejected"
-  let store ← bindWorkContract firstWork.id store
+  let store ← bindWorkContract firstWork.id store true
+    (if missing == some .reviewSnapshotMismatch then
+      some "snapshot:different" else none)
+    (if missing == some .reviewArtifactMismatch then
+      some "artifact:different" else none)
   let (store, firstBasis) ← recordReadinessEvidence firstWork.id store
   let firstContext : Domain.Work.SuspensionContext :=
     { suspensionContext with basis := some firstBasis }
@@ -540,7 +555,10 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     else pure store
   let store ← if missing != some .repository then
       executeStore (.classifyRepository store.ledger.storedHead firstWork.id
-        "repository-1" "snapshot:matrix") store "repository classification rejected"
+        "repository-1"
+        (if missing == some .repositorySnapshotMismatch then
+          "snapshot:different" else "snapshot-1"))
+        store "repository classification rejected"
     else pure store
   let state ← currentState store
   let epoch ← match Domain.Lifecycle.forWork state.lifecycle firstWork.id with
@@ -560,13 +578,20 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     else pure store
   let store ← if missing != some .validation then
       executeStore (.passValidation store.ledger.storedHead firstWork.id
-        "validation-1" "artifact:matrix") store "validation observation rejected"
+        "validation-1"
+        (if missing == some .validationArtifactMismatch then
+          "artifact:different" else "implementation-1"))
+        store "validation observation rejected"
     else pure store
   let obligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "completion-proof",
       revision := store.ledger.storedHead, commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws", repository := "main"
-      snapshot := "fixture", artifactDigest := "proof:matrix", current := true
+      snapshot := if missing == some .evidenceSnapshotMismatch then
+        "snapshot:different" else "snapshot-1"
+      artifactDigest := if missing == some .evidenceArtifactMismatch then
+        "artifact:different" else "implementation-1"
+      current := true
       requirements := ["evidence-integrity"]
       expectedProducer := "kernel-law-runner"
       expectedObservation := "completion-matrix-observation"
@@ -578,8 +603,8 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     { id := ⟨100⟩, work := firstWork.id, obligation := obligation.key,
       revision := obligation.revision, commandProfile := "kernel-laws",
       invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
-      repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:matrix", current := true
+      repository := "main", snapshot := obligation.snapshot
+      artifactDigest := obligation.artifactDigest, current := true
       requirements := obligation.requirements
       producer := obligation.expectedProducer
       observedAt := "completion-matrix-observation"
@@ -874,7 +899,7 @@ def main : IO Unit := do
   expectRejectedNoEffect (.completeWork staled.revision firstWork.id) staled
     "stale completion-context observations"
   let repositoryRefreshed ← executeState
-    (.classifyRepository staled.revision firstWork.id "repository-1" "snapshot:2") staled
+    (.classifyRepository staled.revision firstWork.id "repository-1" "snapshot-1") staled
     "current repository reclassification rejected"
   let refreshedEpoch ← match Domain.Lifecycle.forWork
       repositoryRefreshed.lifecycle firstWork.id with
@@ -896,13 +921,13 @@ def main : IO Unit := do
     "fresh review adjudication rejected"
   let validated ← executeState
     (.passValidation freshlyAdjudicated.revision firstWork.id
-      "validation-1" "artifact:2") freshlyAdjudicated
+      "validation-1" "implementation-1") freshlyAdjudicated
     "current validation observation rejected"
   let completionObligation : Domain.Evidence.Obligation :=
     { work := firstWork.id, key := "completion-proof",
       revision := validated.revision, commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws", repository := "main"
-      snapshot := "fixture", artifactDigest := "proof:complete", current := true
+      snapshot := "snapshot-1", artifactDigest := "implementation-1", current := true
       requirements := ["evidence-integrity"]
       expectedProducer := "kernel-law-runner"
       expectedObservation := "completion-observation"
@@ -915,7 +940,8 @@ def main : IO Unit := do
     { id := ⟨100⟩, work := firstWork.id, obligation := completionObligation.key,
       revision := completionObligation.revision, commandProfile := "kernel-laws",
       invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
-      repository := "main", snapshot := "fixture", artifactDigest := "proof:complete",
+      repository := "main", snapshot := "snapshot-1",
+      artifactDigest := "implementation-1",
       current := true
       requirements := completionObligation.requirements
       producer := completionObligation.expectedProducer
@@ -1440,7 +1466,13 @@ def main : IO Unit := do
     (.validation, "validation"),
     (.repository, "repository classification"),
     (.correction, "correction"),
-    (.workRecord, "work-record linkage")]
+    (.workRecord, "work-record linkage"),
+    (.repositorySnapshotMismatch, "repository snapshot mismatch"),
+    (.validationArtifactMismatch, "validation artifact mismatch"),
+    (.evidenceSnapshotMismatch, "evidence snapshot mismatch"),
+    (.evidenceArtifactMismatch, "evidence artifact mismatch"),
+    (.reviewSnapshotMismatch, "review snapshot mismatch"),
+    (.reviewArtifactMismatch, "review artifact mismatch")]
   for (condition, label) in rejectionCases do
     expectPublicCompletionRejected condition label
   let allReadyStore ← buildCompletionStore none

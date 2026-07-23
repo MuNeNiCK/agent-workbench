@@ -113,6 +113,45 @@ def requiredReviewsReady (target : WorkId) (plans : List Review.Plan)
             purposeReviewReady target design purpose plans claims adjudications
               findings verifications
 
+abbrev CompletionBinding := String × String
+
+def completionBinding? (target : WorkId) (plans : List Review.Plan)
+    (decompositions : List Design.Decomposition) : Option CompletionBinding :=
+  let design :=
+    (decompositions.reverse.find? (·.work == target)).map (·.design)
+  match Review.latestPlanFor? design target .designConformance plans,
+      Review.latestPlanFor? design target .implementationQuality plans with
+  | some conformance, some quality =>
+      if Review.sameArtifactScope conformance.scope quality.scope then
+        some (conformance.scope.repositorySnapshot,
+          conformance.scope.artifactDigest)
+      else none
+  | _, _ => none
+
+def completionBindingReady (target : WorkId) (binding : CompletionBinding)
+    (lifecycle : List Lifecycle.CompletionState)
+    (evidence : List Evidence.Evidence)
+    (obligations : List Evidence.Obligation) : Bool :=
+  match Lifecycle.forWork lifecycle target with
+  | none => false
+  | some state =>
+      (state.repositories.all fun record =>
+        record.status == .classified &&
+        record.snapshotDigest == binding.1) &&
+      (state.validations.all fun record =>
+        record.status == .passed &&
+        record.artifactDigest == binding.2) &&
+      let current := obligations.filter fun obligation =>
+        obligation.work == target && obligation.current
+      !current.isEmpty &&
+      current.all fun obligation =>
+        obligation.snapshot == binding.1 &&
+        obligation.artifactDigest == binding.2 &&
+        evidence.any fun item =>
+          Evidence.exactFor item obligation &&
+          item.snapshot == binding.1 &&
+          item.artifactDigest == binding.2
+
 def correctionsReady (target : WorkId)
     (decompositions : List Design.Decomposition)
     (corrections : List Design.Correction) : Bool :=
@@ -137,7 +176,9 @@ def closeable (target : WorkId) (work : List Work.WorkUnit)
   traceReady target designs approvals decompositions &&
   requiredReviewsReady target reviewPlans decompositions claims
     adjudications findings verifications &&
-  correctionsReady target decompositions corrections
+  correctionsReady target decompositions corrections &&
+  (completionBinding? target reviewPlans decompositions).any fun binding =>
+    completionBindingReady target binding lifecycle evidence obligations
 
 theorem completion_requires_current_obligations (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
@@ -153,7 +194,7 @@ theorem completion_requires_current_obligations (target : WorkId)
       decompositions corrections = true) :
     obligationsReady target evidence obligations designs decompositions = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.1.1.1.1.1.1
+  exact accepted.1.1.1.1.1.1.1
 
 theorem completion_requires_authoritative_lifecycle (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
@@ -169,7 +210,7 @@ theorem completion_requires_authoritative_lifecycle (target : WorkId)
       decompositions corrections = true) :
     authoritativeReady target work claims adjudications lifecycle = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.1.1.1.2
+  exact accepted.1.1.1.1.2
 
 theorem completion_requires_active_target (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
@@ -185,6 +226,6 @@ theorem completion_requires_active_target (target : WorkId)
       decompositions corrections = true) :
     (Work.activeFor activations target).isSome = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.1.1.1.1.1.2
+  exact accepted.1.1.1.1.1.1.2
 
 end AgentWorkbench.Policy.Completion

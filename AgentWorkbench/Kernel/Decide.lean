@@ -584,7 +584,9 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
     Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
     Policy.Completion.traceReady Policy.Completion.requiredReviewsReady
     Policy.Completion.purposeReviewReady Policy.Completion.requiredReviewPurposes
-    Policy.Completion.correctionsReady
+    Policy.Completion.completionBinding?
+    Policy.Completion.completionBindingReady Policy.Completion.correctionsReady
+    completionBinding? completionBindingReady
     Policy.Traceability.ready
     Review.scopeReady
     Review.scopeFindingsClosed

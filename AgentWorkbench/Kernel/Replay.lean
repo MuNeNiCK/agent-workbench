@@ -497,6 +497,39 @@ def completionRequiredReviewsReady (target : WorkId) (state : State) : Bool :=
           completionRequiredReviewPurposes.all fun purpose =>
             completionPurposeReviewReady target design purpose state
 
+def completionBinding? (target : WorkId) (state : State) :
+    Option (String × String) :=
+  let design :=
+    (state.decompositions.reverse.find? (·.work == target)).map (·.design)
+  match Review.latestPlanFor? design target .designConformance state.reviewPlans,
+      Review.latestPlanFor? design target .implementationQuality
+        state.reviewPlans with
+  | some conformance, some quality =>
+      if Review.sameArtifactScope conformance.scope quality.scope then
+        some (conformance.scope.repositorySnapshot,
+          conformance.scope.artifactDigest)
+      else none
+  | _, _ => none
+
+def completionBindingReady (target : WorkId) (binding : String × String)
+    (state : State) : Bool :=
+  match Lifecycle.forWork state.lifecycle target with
+  | none => false
+  | some completion =>
+      (completion.repositories.all fun record =>
+        record.status == .classified && record.snapshotDigest == binding.1) &&
+      (completion.validations.all fun record =>
+        record.status == .passed && record.artifactDigest == binding.2) &&
+      let current := state.obligations.filter fun obligation =>
+        obligation.work == target && obligation.current
+      !current.isEmpty &&
+      current.all fun obligation =>
+        obligation.snapshot == binding.1 &&
+        obligation.artifactDigest == binding.2 &&
+        state.evidence.any fun item =>
+          Evidence.exactFor item obligation &&
+          item.snapshot == binding.1 && item.artifactDigest == binding.2
+
 def readinessCurrent (work : WorkId) (activation : ActivationId)
     (basis : Work.ReadinessBasis) (state : State) : Bool :=
   Work.noActive state.activations &&
@@ -553,7 +586,9 @@ def completionApplicable (target : WorkId) (state : State) : Bool :=
   !state.corrections.any (fun correction =>
     !correction.resolved &&
     Design.correctionApplies correction target
-      ((state.decompositions.reverse.find? (·.work == target)).map (·.design)))
+      ((state.decompositions.reverse.find? (·.work == target)).map (·.design))) &&
+  (completionBinding? target state).any fun binding =>
+    completionBindingReady target binding state
 
 def eventApplicable (event : Event) (state : State) : Bool :=
   match event with

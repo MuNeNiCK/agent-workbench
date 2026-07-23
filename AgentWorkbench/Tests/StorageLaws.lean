@@ -463,7 +463,12 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
 
 def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
   let run (name : String) (qualityArtifact? qualitySnapshot? : Option String)
-      (adjudicateQuality expectedReady : Bool) : IO Unit := do
+      (adjudicateQuality expectedReviewsReady expectedCloseable : Bool)
+      (repositorySnapshot : String := "snapshot:review-purpose")
+      (validationArtifact : String := "sha256:reviewed-implementation")
+      (evidenceSnapshot : String := "snapshot:review-purpose")
+      (evidenceArtifact : String := "sha256:reviewed-implementation") :
+      IO Unit := do
     let ledger := root / s!"review-purpose-{name}.sqlite3"
     Adapter.SQLite.initializeStore ledger
     let initialized ← bootstrap ledger
@@ -545,7 +550,7 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
     let store ← recordReview "conformance-review" 3 .designConformance
       defaultSnapshot implementationArtifact "conformance-reviewer" true
       decomposed.store
-    let _ ←
+    let store ←
       match qualityArtifact?, qualitySnapshot? with
       | some qualityArtifact, some qualitySnapshot =>
         recordReview "quality-review" 4 .implementationQuality
@@ -553,6 +558,67 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
           store
       | _, _ =>
         pure store
+    let completionPlan : Domain.Lifecycle.CompletionPlan :=
+      { work := ⟨1⟩
+        relatedWork := []
+        phases := []
+        tasks := []
+        checklists := []
+        reviews := []
+        findings := []
+        validations := ["validation"]
+        repositories := ["repository"]
+        corrections := []
+        workRecords := [] }
+    let planned ← mutate ledger s!"{name}-completion-plan"
+      store.ledger.storedHead.value
+      (.planCompletion store.ledger.storedHead completionPlan)
+    let classified ← mutate ledger s!"{name}-repository"
+      planned.store.ledger.storedHead.value
+      (.classifyRepository planned.store.ledger.storedHead ⟨1⟩
+        "repository" repositorySnapshot)
+    let validated ← mutate ledger s!"{name}-validation"
+      classified.store.ledger.storedHead.value
+      (.passValidation classified.store.ledger.storedHead ⟨1⟩
+        "validation" validationArtifact)
+    let obligation : Domain.Evidence.Obligation :=
+      { work := ⟨1⟩
+        key := "completion-proof"
+        revision := validated.store.ledger.storedHead
+        commandProfile := "storage-laws"
+        invocation := ".lake/build/bin/storage-laws"
+        repository := "main"
+        snapshot := evidenceSnapshot
+        artifactDigest := evidenceArtifact
+        current := true
+        requirements := ["review-authority"]
+        expectedProducer := "storage-law-runner"
+        expectedObservation := s!"{name}-observation"
+        design := reviewPurposeDesign.id
+        designRevision := reviewPurposeDesign.revision }
+    let obligated ← mutate ledger s!"{name}-obligation"
+      validated.store.ledger.storedHead.value
+      (.recordObligation validated.store.ledger.storedHead obligation)
+    let evidence : Domain.Evidence.Evidence :=
+      { id := ⟨50⟩
+        work := obligation.work
+        obligation := obligation.key
+        revision := obligation.revision
+        commandProfile := obligation.commandProfile
+        invocation := obligation.invocation
+        exitCode := 0
+        repository := obligation.repository
+        snapshot := obligation.snapshot
+        artifactDigest := obligation.artifactDigest
+        current := true
+        requirements := obligation.requirements
+        producer := obligation.expectedProducer
+        observedAt := obligation.expectedObservation
+        design := obligation.design
+        designRevision := obligation.designRevision }
+    let _ ← mutate ledger s!"{name}-evidence"
+      obligated.store.ledger.storedHead.value
+      (.recordEvidence obligated.store.ledger.storedHead evidence)
     let recovered ← load ledger
     let state ←
       match (Application.Service.status recovered).value.currentState? with
@@ -560,8 +626,14 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       | none => throw <| IO.userError "review-purpose projection is not recoverable"
     expect (Policy.Completion.requiredReviewsReady ⟨1⟩
       state.reviewPlans state.decompositions state.claims state.adjudications
-      state.reviewFindings state.findingVerifications == expectedReady)
+      state.reviewFindings state.findingVerifications == expectedReviewsReady)
       s!"fresh SQLite reconstruction changed required review readiness: {name}"
+    expect (Policy.Completion.closeable ⟨1⟩ state.work state.activations
+      state.claims state.adjudications state.reviewPlans state.reviewFindings
+      state.findingVerifications state.lifecycle state.evidence state.obligations
+      state.designs state.designApprovals state.decompositions state.corrections ==
+        expectedCloseable)
+      s!"fresh SQLite reconstruction changed completion binding: {name}"
     if qualityArtifact?.isSome && qualitySnapshot?.isSome &&
         adjudicateQuality then
       expect (Policy.Completion.purposeReviewReady ⟨1⟩
@@ -576,14 +648,26 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
         s!"fresh SQLite reconstruction invalidated quality review: {name}"
   let implementationArtifact := "sha256:reviewed-implementation"
   let defaultSnapshot := "snapshot:review-purpose"
-  run "complete" (some implementationArtifact) (some defaultSnapshot) true true
-  run "missing-quality" none none false false
+  run "complete" (some implementationArtifact) (some defaultSnapshot) true true true
+  run "missing-quality" none none false false false
   run "mismatched-artifact" (some "sha256:different-artifact")
-    (some defaultSnapshot) true false
+    (some defaultSnapshot) true false false
   run "mismatched-snapshot" (some implementationArtifact)
-    (some "snapshot:different") true false
+    (some "snapshot:different") true false false
   run "missing-quality-adjudication" (some implementationArtifact)
-    (some defaultSnapshot) false false
+    (some defaultSnapshot) false false false
+  run "mismatched-repository" (some implementationArtifact)
+    (some defaultSnapshot) true true false "snapshot:different"
+  run "mismatched-validation-artifact" (some implementationArtifact)
+    (some defaultSnapshot) true true false defaultSnapshot
+    "sha256:different-artifact"
+  run "mismatched-evidence-snapshot" (some implementationArtifact)
+    (some defaultSnapshot) true true false defaultSnapshot implementationArtifact
+    "snapshot:different"
+  run "mismatched-evidence-artifact" (some implementationArtifact)
+    (some defaultSnapshot) true true false defaultSnapshot implementationArtifact
+    defaultSnapshot
+    "sha256:different-artifact"
 
 def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
   let ledger := root / "finding-attempts.sqlite3"
