@@ -25,7 +25,7 @@ structure ManifestPolicy where
 structure PublicDefinitionInventory where
   path : String
   definitions : Array String
-deriving DecidableEq
+deriving DecidableEq, Repr
 
 def identityModules : Array String := #[
   "AgentWorkbench.Domain.Identity",
@@ -173,22 +173,36 @@ def publicProductPaths : Array String :=
 
 def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
   ⟨"AgentWorkbench/Adapter/DurableFilesystem.lean", #[
-    "digest", "objectPath", "verify", "stage", "replace", "reconcile"]⟩,
+    "digest", "instDecidableEqArtifactRef", "instDecidableEqReplacementDurability",
+    "instDecidableEqVerification", "instReprArtifactRef", "instReprReconciliation",
+    "instReprReplacementDurability", "instReprVerification", "objectPath",
+    "verify", "stage", "replace", "reconcile"]⟩,
   ⟨"AgentWorkbench/Adapter/SQLite.lean", #[
     "schemaVersion", "predecessorSchemaVersion", "withWriterLock", "initializeStore",
     "inspectFromAt", "currentSchemaSupported", "predecessorV2Supported", "artifactRoot",
     "inspect", "inspectAtSchema", "inspectWithArtifacts", "diagnose",
+    "instDecidableEqCanonicalRequest", "instDecidableEqMutationError",
+    "instDecidableEqOpenError", "instDecidableEqProjectionRepairPlan",
+    "instDecidableEqProjectionRepairReceipt", "instFromBinaryCanonicalRequest",
+    "instReprCanonicalRequest", "instReprDiagnosis", "instReprMutationError",
+    "instReprMutationOutcome", "instReprOpenError", "instReprProjectionRepairPlan",
+    "instReprProjectionRepairReceipt", "instToBinaryCanonicalRequest",
+    "instToBinaryStoredProjectionRow",
     "repairProjectionWithLockHook", "repairProjectionWithHook", "repairProjection",
     "mutateWithLockHook", "mutateWithHook", "mutate"]⟩,
   ⟨"AgentWorkbench/Adapter/Update.lean", #[
     "inspect", "applyWithLockHook", "applyWithHook", "apply",
+    "instDecidableEqInspection", "instDecidableEqPlan", "instDecidableEqReceipt",
+    "instDecidableEqRestoreReceipt", "instDecidableEqStoragePoint",
+    "instReprInspection", "instReprPlan", "instReprReceipt",
+    "instReprRestoreReceipt", "instReprStoragePoint",
     "restoreWithLockHook", "restoreWithHook", "restore"]⟩,
   ⟨"AgentWorkbench/Application/Service.lean", #[
     "initialStore", "bootstrapCommandAt", "bootstrapCommand", "projectionFor",
     "execute", "complete", "status", "queryValidity", "queryGate", "resolve",
     "repairProjection", "executeRecovery", "executeAction", "executeRequest"]⟩,
   ⟨"AgentWorkbench/Cli/Program.lean", #[
-    "executeRequest", "executeBootstrap", "run"]⟩
+    "Request", "Response", "executeRequest", "executeBootstrap", "run"]⟩
 ]
 
 def expectedMutationSurfaces : Array String := #[
@@ -231,17 +245,39 @@ def validateTrackedPaths (actual : Array String) : Except String Unit := do
   unless actual = expectedTrackedPaths do
     throw "tracked repository paths differ from the exhaustive inventory"
 
-def publicDefinitionNames (content : String) : Array String :=
-  (lines content).filterMap fun line =>
-    if line.startsWith "def " then
-      (line.drop 4).toString.splitOn " " |>.head?
+def publicDefinitionNamespace (path : String) : String :=
+  if path = "AgentWorkbench/Adapter/DurableFilesystem.lean" then
+    "AgentWorkbench.Adapter.DurableFilesystem"
+  else if path = "AgentWorkbench/Adapter/SQLite.lean" then
+    "AgentWorkbench.Adapter.SQLite"
+  else if path = "AgentWorkbench/Adapter/Update.lean" then
+    "AgentWorkbench.Adapter.Update"
+  else if path = "AgentWorkbench/Application/Service.lean" then
+    "AgentWorkbench.Application.Service"
+  else
+    "AgentWorkbench.Cli.Program"
+
+def isPublicDefinition : ConstantInfo → Bool
+  | .defnInfo _ | .opaqueInfo _ => true
+  | _ => false
+
+def publicDefinitionsInNamespace (env : Environment)
+    (namespaceName : String) : Array String :=
+  let namePrefix := namespaceName ++ "."
+  (env.constants.toList.filterMap fun (name, info) =>
+    let rendered := name.toString
+    if isPublicDefinition info && rendered.startsWith namePrefix then
+      let suffix := (rendered.drop namePrefix.length).toString
+      if !suffix.isEmpty && !suffix.contains '.' then some suffix else none
     else
-      none
+      none).toArray.qsort (· < ·)
 
 def validatePublicDefinitions
     (actual : Array PublicDefinitionInventory) : Except String Unit := do
-  unless actual = expectedPublicDefinitions do
-    throw "public definition surfaces differ from the exhaustive inventory"
+  let normalizedExpected := expectedPublicDefinitions.map fun inventory =>
+    { inventory with definitions := inventory.definitions.qsort (· < ·) }
+  unless actual = normalizedExpected do
+    throw s!"public definition surfaces differ from the exhaustive inventory: {repr actual}"
 
 def mutationSurfacesFrom
   (inventories : Array PublicDefinitionInventory) : Array String :=
@@ -270,12 +306,12 @@ def mutationSurfacesFrom
           #["execute", "complete", "repairProjection", "executeRecovery",
             "executeAction", "executeRequest"].contains name
         else
-          true
+          #["executeRequest", "executeBootstrap", "run"].contains name
       if mutates then some s!"{moduleName}.{name}" else none
 
 def validateMutationSurfaces (actual : Array String) : Except String Unit := do
-  unless actual = expectedMutationSurfaces do
-    throw "mutation and update surfaces differ from the exhaustive inventory"
+  unless actual = expectedMutationSurfaces.qsort (· < ·) do
+    throw s!"mutation and update surfaces differ from the exhaustive inventory: {repr actual}"
 
 def forbiddenPublicMarkers : Array String := #[
   "R" ++ "EQ-",
@@ -314,10 +350,13 @@ def auditPublicProductSurfaces : IO Unit := do
     for marker in forbiddenPublicMarkers do
       if content.contains marker then
         fail s!"public product surface {path} contains private planning marker {marker}"
+
+def auditPublicDefinitions (env : Environment) : IO Unit := do
   let mut actualDefinitions := #[]
   for expected in expectedPublicDefinitions do
     actualDefinitions := actualDefinitions.push
-      ⟨expected.path, publicDefinitionNames (← IO.FS.readFile expected.path)⟩
+      ⟨expected.path,
+        publicDefinitionsInNamespace env (publicDefinitionNamespace expected.path)⟩
   match validatePublicDefinitions actualDefinitions with
   | .error error => fail error
   | .ok _ => pure ()
@@ -335,6 +374,13 @@ def auditPublicProductSurfaces : IO Unit := do
     "AgentWorkbench.Adapter.SQLite.alternateMutation"
   if (validateMutationSurfaces alteredMutations).isOk then
     fail "negative unregistered mutation-surface fixture was accepted"
+  let fixtureNamespace :=
+    "AgentWorkbench.Audit.Expected.PublicDeclarationFixtures"
+  let fixtureDefinitions := publicDefinitionsInNamespace env fixtureNamespace
+  let expectedFixtures := #[
+    "attributedMutation", "indentedMutation", "opaqueMutation", "unsafeMutation"]
+  unless fixtureDefinitions = expectedFixtures do
+    fail s!"compiled declaration-form fixtures were not exhaustively enumerated: {repr fixtureDefinitions}"
 
 def parseEntries (key : String) : List String → Array String → Except String (Array String)
   | [], _ => .error s!"unterminated manifest array: {key}"
@@ -585,7 +631,10 @@ def auditDeclarations (env : Environment) : IO Unit := do
     let rendered := name.toString
     if rendered.startsWith "AgentWorkbench." &&
         !rendered.startsWith "AgentWorkbench.Audit." &&
-        !rendered.startsWith "AgentWorkbench.Tests." && info.isUnsafe then
+        !rendered.startsWith "AgentWorkbench.Tests." &&
+        !expectedUnsafeFfiModules.any (fun moduleName =>
+          rendered.startsWith (moduleName ++ ".")) &&
+        info.isUnsafe then
       fail s!"unsafe declaration entered normative implementation: {rendered}"
   let roots := theoremRules.toList.map (·.declaration.toName) ++
     [`AgentWorkbench.Application.Service.execute,
@@ -971,7 +1020,11 @@ def main : IO Unit := do
   initSearchPath (← findSysroot) [".lake/build/lib/lean"]
   let env ← importModules #[
     { module := `AgentWorkbench.Audit.Expected },
-    { module := `AgentWorkbench.Cli.Program }] {}
+    { module := `AgentWorkbench.Cli.Program },
+    { module := `AgentWorkbench.Adapter.DurableFilesystem },
+    { module := `AgentWorkbench.Adapter.SQLite },
+    { module := `AgentWorkbench.Adapter.Update }] {}
+  auditPublicDefinitions env
   auditTheorems env
   auditDeclarations env
   auditCliMutation

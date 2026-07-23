@@ -6,6 +6,18 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open AgentWorkbench.Kernel.Replay
 
+namespace PublicDeclarationFixtures
+
+unsafe def unsafeMutation : Unit := ()
+
+opaque opaqueMutation : Unit
+
+@[inline] def attributedMutation : Unit := ()
+
+  def indentedMutation : Unit := ()
+
+end PublicDeclarationFixtures
+
 def cliWithoutMutationFixture : IO Unit :=
   pure ()
 
