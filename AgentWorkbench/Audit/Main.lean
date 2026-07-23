@@ -86,13 +86,14 @@ def publicDefinitionModuleRules : Array ModuleRule :=
     ⟨"AgentWorkbench.Adapter.SQLite", #[]⟩,
     ⟨"AgentWorkbench.Adapter.Update", #[]⟩,
     ⟨"AgentWorkbench.Cli.Program",
+      #["AgentWorkbench.Application.Service"]⟩,
+    ⟨"AgentWorkbench",
       #["AgentWorkbench.Application.Service"]⟩]
 
 def sourcePathForModule (moduleName : String) : String :=
   String.intercalate "/" (moduleName.splitOn ".") ++ ".lean"
 
 def compiledBoundaryLeanPaths : Array String := #[
-  "AgentWorkbench.lean",
   "Main.lean",
   "lakefile.lean"
 ]
@@ -254,7 +255,9 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
     "f0ae7b33ed816a23d885f55f4f461ae7f932766960f698cd5184bfec9afa2006",
   expectedInventory "AgentWorkbench.Cli.Program" 3
     "231be32dca19471a2473244788b8c9876465c972dd76025b14fb35b0705f39b6" 4
-    "6bb025900d2d164c2153d54dc40f08d7d20aa935452c9308a62fc658cd04f593"
+    "6bb025900d2d164c2153d54dc40f08d7d20aa935452c9308a62fc658cd04f593",
+  expectedInventory "AgentWorkbench" 0 emptyDeclarationDigest 0
+    emptyDeclarationDigest
 ]
 
 def expectedMutationSurfaces : Array String := #[
@@ -1219,6 +1222,7 @@ def main : IO Unit := do
   let env ← importModules #[
     { module := `AgentWorkbench.Audit.Expected },
     { module := `AgentWorkbench.Cli.Program },
+    { module := `AgentWorkbench },
     { module := `AgentWorkbench.Adapter.Codec },
     { module := `AgentWorkbench.Adapter.DurableFilesystem },
     { module := `AgentWorkbench.Adapter.SQLite },
