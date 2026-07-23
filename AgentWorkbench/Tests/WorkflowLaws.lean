@@ -277,6 +277,22 @@ def run : IO Unit := do
   expect (Kernel.Replay.readinessCurrent
     workTwo.id activationTwo.id basisOne state)
     "exact readiness basis did not become current"
+  let closedParentState :=
+    { state with activations := state.activations.map fun activation =>
+        if activation.id == activationOne.id then
+          { activation with status := .closed }
+        else activation }
+  expect (!Kernel.Replay.readinessCurrent
+    workTwo.id activationTwo.id basisOne closedParentState)
+    "readiness accepted a closed stack parent"
+  let missingParentState :=
+    { state with activations := state.activations.map fun activation =>
+        if activation.id == activationTwo.id then
+          { activation with parent := some ⟨99⟩ }
+        else activation }
+  expect (!Kernel.Replay.readinessCurrent
+    workTwo.id activationTwo.id basisOne missingParentState)
+    "readiness accepted a missing stack parent"
   for staleBasis in [
       { basisOne with design := ⟨99⟩ },
       { basisOne with designRevision := designVersion.revision.next },

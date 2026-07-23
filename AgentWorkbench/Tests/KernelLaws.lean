@@ -396,29 +396,6 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
     (.resumeWork store.ledger.storedHead thirdWork.id thirdActivation.id) store
     "dependency resume rejected"
   let store ← completeMinimalActiveWork thirdWork.id store
-  let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
-    "owner registration rejected"
-  let store ← bindWorkContract firstWork.id store
-  let (store, firstBasis) ← recordReadinessEvidence firstWork.id store
-  let firstContext : Domain.Work.SuspensionContext :=
-    { suspensionContext with basis := some firstBasis }
-  let suspendedFirst : Domain.Work.Activation :=
-    { id := firstActivation.id, work := firstActivation.work, status := .suspended
-      readyToResume := false, suspension := some firstContext }
-  let store ← executeStore
-    (.registerSuspendedActivation store.ledger.storedHead suspendedFirst) store
-    "owner activation registration rejected"
-  let store ← executeStore
-    (.confirmResumeReadiness store.ledger.storedHead
-      firstWork.id firstActivation.id firstBasis) store
-    "owner readiness confirmation rejected"
-  let store ← executeStore
-    (.resumeWork store.ledger.storedHead firstWork.id firstActivation.id) store
-    "owner resume rejected"
-  let store ← if missing == some .child || missing == some .dependency then
-      executeStore (.registerWork store.ledger.storedHead blockedRelatedWork) store
-        "blocking related-work registration rejected"
-    else pure store
   let store ← executeStore (.registerWork store.ledger.storedHead parentWork) store
     "parent registration rejected"
   let store ← bindWorkContract parentWork.id store
@@ -431,6 +408,41 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead parentActivation) store
     "parent activation registration rejected"
+  let store ← executeStore
+    (.confirmResumeReadiness store.ledger.storedHead
+      parentWork.id parentActivation.id parentBasis) store
+    "parent readiness confirmation rejected"
+  let store ← executeStore
+    (.resumeWork store.ledger.storedHead parentWork.id parentActivation.id) store
+    "parent resume rejected"
+  let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
+    "owner registration rejected"
+  let store ← bindWorkContract firstWork.id store
+  let (store, firstBasis) ← recordReadinessEvidence firstWork.id store
+  let firstContext : Domain.Work.SuspensionContext :=
+    { suspensionContext with basis := some firstBasis }
+  let suspendedFirst : Domain.Work.Activation :=
+    { id := firstActivation.id, work := firstActivation.work, status := .suspended
+      readyToResume := false, suspension := some firstContext
+      parent := some parentActivation.id }
+  let store ← executeStore
+    (.registerSuspendedActivation store.ledger.storedHead suspendedFirst) store
+    "owner activation registration rejected"
+  let store ← executeStore
+    (.suspendWork store.ledger.storedHead
+      parentWork.id parentActivation.id parentContext)
+    store "parent suspension rejected"
+  let store ← executeStore
+    (.confirmResumeReadiness store.ledger.storedHead
+      firstWork.id firstActivation.id firstBasis) store
+    "owner readiness confirmation rejected"
+  let store ← executeStore
+    (.resumeWork store.ledger.storedHead firstWork.id firstActivation.id) store
+    "owner resume rejected"
+  let store ← if missing == some .child || missing == some .dependency then
+      executeStore (.registerWork store.ledger.storedHead blockedRelatedWork) store
+        "blocking related-work registration rejected"
+    else pure store
   let plan :=
     if missing == some .child then
       { completionPlan with relatedWork := [
@@ -1249,6 +1261,8 @@ def main : IO Unit := do
       activation.work == parentWork.id && activation.status == .suspended &&
         !activation.readyToResume)
     "completion resumed or lost the suspended parent"
+  expect (afterCompletion.returnTarget == some parentActivation.id)
+    "completion did not persist the exact stack-return target"
   let completedStore := completedTransaction.result
   let mismatchStore ← executeStore
     (.registerWork completedStore.ledger.storedHead blockedRelatedWork) completedStore
@@ -1263,8 +1277,27 @@ def main : IO Unit := do
     "resume action accepted an activation belonging to another work"
   expectResolverActionRejected mismatchedResume mismatchStore
     "public resume accepted a mismatched work/activation binding"
+  let competitorBound ← bindWorkContract blockedRelatedWork.id mismatchStore
+  let (competitorEvidenced, competitorBasis) ←
+    recordReadinessEvidence blockedRelatedWork.id competitorBound
+  let competitorContext : Domain.Work.SuspensionContext :=
+    { suspensionContext with basis := some competitorBasis }
+  let competitorActivation : Domain.Work.Activation :=
+    { id := ⟨5⟩
+      work := blockedRelatedWork.id
+      status := .suspended
+      readyToResume := false
+      suspension := some competitorContext }
+  let competitorRegistered ← executeStore
+    (.registerSuspendedActivation competitorEvidenced.ledger.storedHead
+      competitorActivation)
+    competitorEvidenced "competing suspended activation registration rejected"
+  let competitorReady ← executeStore
+    (.confirmResumeReadiness competitorRegistered.ledger.storedHead
+      blockedRelatedWork.id competitorActivation.id competitorBasis)
+    competitorRegistered "competing suspended activation readiness rejected"
   let (parentRefreshed, parentBasis) ←
-    recordReadinessEvidence parentWork.id mismatchStore
+    recordReadinessEvidence parentWork.id competitorReady
   let parentState ← currentState parentRefreshed
   let parentContext ← match parentState.activations.find? (·.id == parentActivation.id) with
     | some activation =>
@@ -1280,6 +1313,12 @@ def main : IO Unit := do
     (.confirmResumeReadiness parentRevised.ledger.storedHead
       parentWork.id parentActivation.id parentBasis)
     parentRevised "parent readiness confirmation rejected"
+  let returnCandidates ← match
+      (Kernel.Projection.inspect parentReady).currentState? with
+    | some state => pure (Kernel.Resolver.resumableActivations state)
+    | none => throw <| IO.userError "stack-return fixture lost its projection"
+  expect (returnCandidates.map (·.id) == [parentActivation.id])
+    "resolver exposed a competing suspended activation instead of the exact parent"
   match (Application.Service.resolve parentReady).value with
   | .action action@(.resumeSuspendedWork _ work activation) =>
       expect (work == parentWork.id && activation == ⟨4⟩)

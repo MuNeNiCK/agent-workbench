@@ -83,12 +83,23 @@ structure State where
   externalOperations : List ExternalOperation.Attempt
   obligations : List Evidence.Obligation
   lifecycle : List Lifecycle.CompletionState
+  returnTarget : Option ActivationId
 deriving DecidableEq, Repr
 
 def ReviewClaimsReferencePlans (_states : List Lifecycle.CompletionState)
     (plans : List Review.Plan) (claims : List Review.Claim) : Prop :=
   (claims.all fun claim =>
     plans.any (fun plan => Review.scopeExact plan claim)) = true
+
+def returnTargetValid (state : State) : Bool :=
+  match state.returnTarget with
+  | none => true
+  | some target =>
+      state.activations.any (fun activation =>
+        activation.id == target && activation.status == .suspended &&
+        Work.workIsOpen state.work activation.work) &&
+      state.activations.any (fun activation =>
+        activation.status == .closed && activation.parent == some target)
 
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
@@ -119,6 +130,7 @@ def ValidState (state : State) : Prop :=
   Evidence.ObligationsReferenceWork (state.work.map (·.id)) state.obligations ∧
   Evidence.CurrentObligationsReferenceOpenWork
     ((state.work.filter (·.status == .open)).map (·.id)) state.obligations ∧
+  returnTargetValid state = true ∧
   True
 
 instance (state : State) : Decidable (ValidState state) := by
@@ -140,6 +152,7 @@ instance (state : State) : Decidable (ValidState state) := by
     Lifecycle.nonemptyKeys
     Evidence.UniqueObligations Evidence.ObligationsWellFormed
     Evidence.ObligationsReferenceWork Evidence.CurrentObligationsReferenceOpenWork
+    returnTargetValid
   infer_instance
 
 structure VerifiedState where
@@ -214,7 +227,8 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       | none => invalidated
   | .workResumed _ activation =>
       match Work.resume state.activations activation with
-      | some activations => { invalidated with activations }
+      | some activations =>
+          { { invalidated with activations } with returnTarget := none }
       | none => invalidated
   | .designImported version =>
       { invalidated with designs := state.designs ++ [version] }
@@ -316,11 +330,13 @@ private def applyUnchecked (event : Event) (state : State) : State :=
         existing.work != obligation.work || existing.key != obligation.key
       { invalidated with obligations := retained ++ [{ obligation with current := true }] }
   | .workCompleted work activation =>
+      let returnTarget := (state.activations.find? (·.id == activation)).bind (·.parent)
       { invalidated with
         work := Work.closeWork state.work work
         activations := Work.closeActivation state.activations activation
         evidence := Evidence.invalidateEvidence state.evidence
-        obligations := Evidence.invalidate state.obligations }
+        obligations := Evidence.invalidate state.obligations
+        returnTarget }
 
 def completionRelatedWorkTerminal (work : List Work.WorkUnit)
     (requirements : List Lifecycle.RelatedWorkRequirement) : Bool :=
@@ -386,7 +402,13 @@ def readinessCurrent (work : WorkId) (activation : ActivationId)
     current.id == activation && current.work == work &&
     current.status == .suspended &&
     current.suspension.any (fun context =>
-      context.readinessWellFormed && context.basis == some basis)) &&
+      context.readinessWellFormed && context.basis == some basis) &&
+    (match current.parent with
+    | none => true
+    | some parent =>
+        state.activations.any (fun candidate =>
+          candidate.id == parent && candidate.status == .suspended &&
+          Work.workIsOpen state.work candidate.work))) &&
   traceReadyFor basis.design work basis.decompositionDigest state &&
   state.designs.any (fun version =>
     version.id == basis.design && version.revision == basis.designRevision) &&
@@ -404,6 +426,7 @@ def resumeCurrent (work : WorkId) (activation : ActivationId) (state : State) : 
   match state.activations.find? (·.id == activation) with
   | none => false
   | some current =>
+      (state.returnTarget.isNone || state.returnTarget == some activation) &&
       current.readyToResume && current.confirmedBasis.any fun basis =>
         readinessCurrent work activation basis state
 
@@ -717,7 +740,8 @@ def emptyState : State :=
     evidence := []
     externalOperations := []
     obligations := []
-    lifecycle := [] }
+    lifecycle := []
+    returnTarget := none }
 
 structure LedgerImage where
   id : LedgerId
@@ -809,7 +833,7 @@ theorem emptyState_valid : ValidState emptyState := by
     Lifecycle.nonemptyKeys,
     Evidence.UniqueObligations, Evidence.ObligationsWellFormed,
     Evidence.ObligationsReferenceWork, Evidence.CurrentObligationsReferenceOpenWork,
-    Work.activeActivations, emptyState]
+    returnTargetValid, Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay
 
