@@ -24,6 +24,7 @@ deriving DecidableEq, Repr
 structure AuthorityException where
   key : String
   plan : ReviewPlanId
+  scope : FrozenScope
   owner : String
   reviewer : String
   adjudicator : String
@@ -76,7 +77,8 @@ def independent (plan : Plan) : Bool :=
   plan.reviewer != plan.owner && plan.reviewer != plan.adjudicator
 
 def exceptionExact (plan : Plan) (exception : AuthorityException) : Bool :=
-  exception.plan == plan.id && exception.owner == plan.owner &&
+  exception.plan == plan.id && exception.scope == plan.scope &&
+  exception.owner == plan.owner &&
   exception.reviewer == plan.reviewer &&
   exception.adjudicator == plan.adjudicator &&
   exception.authorizedBy == "user" && !exception.reason.isEmpty

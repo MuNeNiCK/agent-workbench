@@ -73,6 +73,7 @@ def claimFor (id : Nat) (plan : Domain.Review.Plan)
 def adjudicationFor (claim : Domain.Review.Claim) : Domain.Review.Adjudication :=
   { review := claim.id, decision := .accepted, adjudicator := "owner" }
 
+set_option maxRecDepth 2048 in
 def run : IO Unit := do
   let state ← execute
     (.initializeWork ⟨0⟩ workOne activationOne)
@@ -88,13 +89,36 @@ def run : IO Unit := do
   reject (.recordReviewPlan state.revision badPlan) state
     "owner self-review"
   let exception : Domain.Review.AuthorityException :=
-    { key := "self-review-authority", plan := badPlan.id, owner := badPlan.owner
+    { key := "self-review-authority", plan := badPlan.id, scope := badPlan.scope
+      owner := badPlan.owner
       reviewer := badPlan.reviewer, adjudicator := badPlan.adjudicator
       authorizedBy := "user", reason := "scoped test exception" }
   let state ← execute (.recordAuthorityException state.revision exception) state
     "explicit user authority exception failed"
+  reject (.recordReviewPlan state.revision
+    { badPlan with scope := scope "implementation" "different-artifact" workOne.id })
+    state "authority exception escaped its frozen scope"
   let state ← execute (.recordReviewPlan state.revision badPlan) state
     "authorized scoped review exception failed"
+  reject (.recordReviewPlan state.revision
+    { reviewPlan 11 "design" designVersion.contentDigest workOne.id with
+      owner := "different-owner" })
+    state "review plan owner did not derive from design and work ownership"
+
+  let wrongArtifactPlan :=
+    reviewPlan 12 "design" "sha256:different-design" workOne.id
+  let state ← execute (.recordReviewPlan state.revision wrongArtifactPlan) state
+    "wrong-artifact review plan setup failed"
+  let wrongArtifactClaim := claimFor 12 wrongArtifactPlan .clean
+  let state ← execute
+    (.recordReviewClaim state.revision wrongArtifactClaim) state
+    "wrong-artifact review claim setup failed"
+  let state ← execute
+    (.recordReviewAdjudication state.revision
+      (adjudicationFor wrongArtifactClaim))
+    state "wrong-artifact adjudication setup failed"
+  reject (.approveDesign state.revision designVersion.id) state
+    "design approval accepted a review of a different artifact"
 
   let designPlan := reviewPlan 10 "design" designVersion.contentDigest workOne.id
   let state ← execute (.recordReviewPlan state.revision designPlan) state
