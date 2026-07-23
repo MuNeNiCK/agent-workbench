@@ -372,9 +372,15 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
     if ← staged.pathExists then IO.FS.removeFile staged
     throw error
 
+def restoreWithLockHook (path backupRoot : System.FilePath) (receipt : Receipt)
+    (afterLock afterReplacement : IO Unit) : IO RestoreReceipt :=
+  SQLite.withWriterLock path do
+    afterLock
+    restoreUnlocked path backupRoot receipt afterReplacement
+
 def restoreWithHook (path backupRoot : System.FilePath) (receipt : Receipt)
     (afterReplacement : IO Unit) : IO RestoreReceipt :=
-  SQLite.withWriterLock path (restoreUnlocked path backupRoot receipt afterReplacement)
+  restoreWithLockHook path backupRoot receipt (pure ()) afterReplacement
 
 def restore (path backupRoot : System.FilePath) (receipt : Receipt) : IO RestoreReceipt :=
   restoreWithHook path backupRoot receipt (pure ())

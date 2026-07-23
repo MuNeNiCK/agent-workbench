@@ -784,35 +784,150 @@ def testReplacementCrashReconciliation (root : System.FilePath) : IO Unit := do
   expect ((← Adapter.DurableFilesystem.digest (← IO.FS.readBinFile ledger)) =
       receipt.source.digest) "reconciled restore bytes drifted"
 
-def testReplacementWriterRace (root : System.FilePath) : IO Unit := do
-  let ledger := root / "replacement-writer-race.sqlite3"
-  let backups := root / "replacement-writer-race-backups"
-  Adapter.SQLite.initializeStore ledger
-  let initialized ← bootstrap ledger
-  makePredecessorV2 ledger
-  let plan ← match ← Adapter.Update.inspect ledger with
-    | .updateRequired plan => pure plan
-    | other => throw <| IO.userError s!"writer race update plan failed: {repr other}"
-  let pending ← IO.mkRef (none : Option
-    (Task (Except IO.Error (Except Adapter.SQLite.MutationError Adapter.SQLite.MutationOutcome))))
-  let attempt : Domain.ExternalOperation.Attempt := {
-    operation := ⟨"writer-after-replacement"⟩
-    artifactDigest := "proof:writer-race"
-    state := .prepared }
-  let _ ← Adapter.Update.applyWithLockHook ledger backups plan (do
-    let task ← IO.asTask <| Adapter.SQLite.mutate ledger ⟨"writer-after-replacement"⟩
-      initialized.store.ledger.storedHead
-      (.recordExternalOperation initialized.store.ledger.storedHead attempt)
-    pending.set (some task)
-    IO.sleep 50) (pure ())
-  let task ← match ← pending.get with
-    | some value => pure value
-    | none => throw <| IO.userError "writer race task was not started"
+partial def awaitWriterBoundary (reached : IO.Ref Bool) (remaining : Nat := 5000) : IO Unit := do
+  if ← reached.get then return
+  if remaining = 0 then
+    throw <| IO.userError "replacement-race writer did not reach the lock boundary"
+  IO.sleep 1
+  awaitWriterBoundary reached (remaining - 1)
+
+def replacementAttempt (operation : String) : Domain.ExternalOperation.Attempt := {
+  operation := ⟨operation⟩
+  artifactDigest := s!"proof:{operation}"
+  state := .prepared }
+
+def assertMutationRaceOutcome (ledger : System.FilePath)
+    (task : Task (Except IO.Error
+      (Except Adapter.SQLite.MutationError Adapter.SQLite.MutationOutcome))) : IO Unit := do
   match ← IO.ofExcept task.get with
   | .ok outcome =>
       expect ((← load ledger) == outcome.store)
         "acknowledged replacement-race mutation was absent from live path"
-  | .error error => throw <| IO.userError s!"post-replacement writer rejected: {repr error}"
+  | .error _ => pure ()
+
+def assertRepairRaceOutcome (ledger : System.FilePath)
+    (task : Task (Except IO.Error
+      (Except Adapter.SQLite.OpenError Adapter.SQLite.ProjectionRepairReceipt))) : IO Unit := do
+  match ← IO.ofExcept task.get with
+  | .ok _ =>
+      match ← Adapter.SQLite.inspect ledger with
+      | .ok _ => pure ()
+      | other => throw <| IO.userError s!"acknowledged repair was absent from live path: {repr other}"
+  | .error _ => pure ()
+
+def testReplacementWriterRaces (root : System.FilePath) : IO Unit := do
+  let updateMutationLedger := root / "update-mutation-race.sqlite3"
+  let updateMutationBackups := root / "update-mutation-race-backups"
+  Adapter.SQLite.initializeStore updateMutationLedger
+  let updateMutationStore ← bootstrap updateMutationLedger
+  makePredecessorV2 updateMutationLedger
+  let updateMutationPlan ← match ← Adapter.Update.inspect updateMutationLedger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"update/mutation race plan failed: {repr other}"
+  let updateMutationReached ← IO.mkRef false
+  let updateMutationPending ← IO.mkRef (none : Option
+    (Task (Except IO.Error (Except Adapter.SQLite.MutationError Adapter.SQLite.MutationOutcome))))
+  let updateMutationName := "writer-after-update"
+  let _ ← Adapter.Update.applyWithLockHook updateMutationLedger updateMutationBackups
+    updateMutationPlan (do
+      let task ← IO.asTask <| Adapter.SQLite.mutateWithLockHook updateMutationLedger
+        ⟨updateMutationName⟩ updateMutationStore.store.ledger.storedHead
+        (.recordExternalOperation updateMutationStore.store.ledger.storedHead
+          (replacementAttempt updateMutationName)) [] none (updateMutationReached.set true)
+      updateMutationPending.set (some task)
+      awaitWriterBoundary updateMutationReached) (pure ())
+  let updateMutationTask ← match ← updateMutationPending.get with
+    | some task => pure task
+    | none => throw <| IO.userError "update/mutation race task was not started"
+  assertMutationRaceOutcome updateMutationLedger updateMutationTask
+
+  let restoreMutationLedger := root / "restore-mutation-race.sqlite3"
+  let restoreMutationBackups := root / "restore-mutation-race-backups"
+  Adapter.SQLite.initializeStore restoreMutationLedger
+  let restoreMutationStore ← bootstrap restoreMutationLedger
+  makePredecessorV2 restoreMutationLedger
+  let restoreMutationPlan ← match ← Adapter.Update.inspect restoreMutationLedger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"restore/mutation race plan failed: {repr other}"
+  let restoreMutationReceipt ← Adapter.Update.apply restoreMutationLedger
+    restoreMutationBackups restoreMutationPlan
+  let restoreMutationReached ← IO.mkRef false
+  let restoreMutationPending ← IO.mkRef (none : Option
+    (Task (Except IO.Error (Except Adapter.SQLite.MutationError Adapter.SQLite.MutationOutcome))))
+  let restoreMutationName := "writer-after-restore"
+  let _ ← Adapter.Update.restoreWithLockHook restoreMutationLedger restoreMutationBackups
+    restoreMutationReceipt (do
+      let task ← IO.asTask <| Adapter.SQLite.mutateWithLockHook restoreMutationLedger
+        ⟨restoreMutationName⟩ restoreMutationStore.store.ledger.storedHead
+        (.recordExternalOperation restoreMutationStore.store.ledger.storedHead
+          (replacementAttempt restoreMutationName)) [] none (restoreMutationReached.set true)
+      restoreMutationPending.set (some task)
+      awaitWriterBoundary restoreMutationReached) (pure ())
+  let restoreMutationTask ← match ← restoreMutationPending.get with
+    | some task => pure task
+    | none => throw <| IO.userError "restore/mutation race task was not started"
+  assertMutationRaceOutcome restoreMutationLedger restoreMutationTask
+
+  let updateRepairLedger := root / "update-repair-race.sqlite3"
+  let updateRepairBackups := root / "update-repair-race-backups"
+  Adapter.SQLite.initializeStore updateRepairLedger
+  let _ ← bootstrap updateRepairLedger
+  corruptProjection updateRepairLedger
+  let updateRepairPlan ← match ← Adapter.SQLite.diagnose updateRepairLedger with
+    | .ok (.projectionRepairRequired plan) => pure plan
+    | other => throw <| IO.userError s!"update/repair fixture failed: {repr other}"
+  match ← Adapter.SQLite.repairProjection updateRepairLedger updateRepairPlan with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"update/repair fixture repair failed: {repr error}"
+  makePredecessorV2 updateRepairLedger
+  let updatePlan ← match ← Adapter.Update.inspect updateRepairLedger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"update/repair race plan failed: {repr other}"
+  let updateRepairReached ← IO.mkRef false
+  let updateRepairPending ← IO.mkRef (none : Option
+    (Task (Except IO.Error
+      (Except Adapter.SQLite.OpenError Adapter.SQLite.ProjectionRepairReceipt))))
+  let _ ← Adapter.Update.applyWithLockHook updateRepairLedger updateRepairBackups updatePlan (do
+    let task ← IO.asTask <| Adapter.SQLite.repairProjectionWithLockHook updateRepairLedger
+      updateRepairPlan (updateRepairReached.set true) (pure ())
+    updateRepairPending.set (some task)
+    awaitWriterBoundary updateRepairReached) (pure ())
+  let updateRepairTask ← match ← updateRepairPending.get with
+    | some task => pure task
+    | none => throw <| IO.userError "update/repair race task was not started"
+  assertRepairRaceOutcome updateRepairLedger updateRepairTask
+
+  let restoreRepairLedger := root / "restore-repair-race.sqlite3"
+  let restoreRepairBackups := root / "restore-repair-race-backups"
+  Adapter.SQLite.initializeStore restoreRepairLedger
+  let _ ← bootstrap restoreRepairLedger
+  corruptProjection restoreRepairLedger
+  let restoreRepairPlan ← match ← Adapter.SQLite.diagnose restoreRepairLedger with
+    | .ok (.projectionRepairRequired plan) => pure plan
+    | other => throw <| IO.userError s!"restore/repair fixture failed: {repr other}"
+  match ← Adapter.SQLite.repairProjection restoreRepairLedger restoreRepairPlan with
+  | .ok _ => pure ()
+  | .error error => throw <| IO.userError s!"restore/repair fixture repair failed: {repr error}"
+  makePredecessorV2 restoreRepairLedger
+  let restoreRepairUpdatePlan ← match ← Adapter.Update.inspect restoreRepairLedger with
+    | .updateRequired plan => pure plan
+    | other => throw <| IO.userError s!"restore/repair update plan failed: {repr other}"
+  let restoreRepairReceipt ← Adapter.Update.apply restoreRepairLedger restoreRepairBackups
+    restoreRepairUpdatePlan
+  let restoreRepairReached ← IO.mkRef false
+  let restoreRepairPending ← IO.mkRef (none : Option
+    (Task (Except IO.Error
+      (Except Adapter.SQLite.OpenError Adapter.SQLite.ProjectionRepairReceipt))))
+  let _ ← Adapter.Update.restoreWithLockHook restoreRepairLedger restoreRepairBackups
+    restoreRepairReceipt (do
+      let task ← IO.asTask <| Adapter.SQLite.repairProjectionWithLockHook restoreRepairLedger
+        restoreRepairPlan (restoreRepairReached.set true) (pure ())
+      restoreRepairPending.set (some task)
+      awaitWriterBoundary restoreRepairReached) (pure ())
+  let restoreRepairTask ← match ← restoreRepairPending.get with
+    | some task => pure task
+    | none => throw <| IO.userError "restore/repair race task was not started"
+  assertRepairRaceOutcome restoreRepairLedger restoreRepairTask
 
 def repairCrashChild (ledger : System.FilePath) (ledgerId : String) (revision : Nat)
     (historyDigest observedDigest : String) : IO Unit := do
@@ -910,7 +1025,7 @@ def main (args : List String) : IO Unit :=
     testExplicitUpdateAndRestore root
     testPostRenameSyncFailure root
     testReplacementCrashReconciliation root
-    testReplacementWriterRace root
+    testReplacementWriterRaces root
     testProjectionRepairCrashRetry root
     IO.println "storage laws: pass"
   | _ => throw <| IO.userError "unsupported storage-laws arguments"

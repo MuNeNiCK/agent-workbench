@@ -809,9 +809,10 @@ private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepair
   unless ← statement.step do return none
   return some { plan, adoptedDigest := ← statement.columnText 0 }
 
-def repairProjectionWithHook (path : System.FilePath) (plan : ProjectionRepairPlan)
-    (afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
+def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepairPlan)
+    (beforeWriterLock afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
   if !(← path.pathExists) then return .error .uninitialized
+  beforeWriterLock
   withWriterLock path do
     let db ← _root_.SQLite.openWith path
       { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
@@ -864,6 +865,10 @@ def repairProjectionWithHook (path : System.FilePath) (plan : ProjectionRepairPl
     | .ok _ => afterCommit
     | .error _ => pure ()
     return outcome
+
+def repairProjectionWithHook (path : System.FilePath) (plan : ProjectionRepairPlan)
+    (afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) :=
+  repairProjectionWithLockHook path plan (pure ()) afterCommit
 
 def repairProjection (path : System.FilePath) (plan : ProjectionRepairPlan) :
     IO (Except OpenError ProjectionRepairReceipt) :=
@@ -956,10 +961,11 @@ private def canonicalPayload (command : Decide.Command)
     artifacts := artifacts.map fun reference => (reference.digest, reference.size)
   } : CanonicalRequest)
 
-def mutateWithHook (path : System.FilePath) (operation : OperationId)
+def mutateWithLockHook (path : System.FilePath) (operation : OperationId)
     (expectedRevision : Revision) (command : Decide.Command)
     (artifacts : List DurableFilesystem.ArtifactRef := [])
     (artifactRoot : Option System.FilePath := none)
+    (beforeWriterLock : IO Unit := pure ())
     (beforeArtifactCommit : IO Unit := pure ())
     (afterArtifactVerification : IO Unit := pure ())
     (afterJournalWrite : IO Unit := pure ()) :
@@ -967,6 +973,7 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
   if !(← path.pathExists) then return .error (.openError .uninitialized)
   let requestPayload := canonicalPayload command artifacts
   let payloadDigest ← DurableFilesystem.digest requestPayload
+  beforeWriterLock
   withWriterLock path do
     let db ← _root_.SQLite.openWith path
       { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
@@ -1017,6 +1024,17 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
           if !artifacts.isEmpty then
             writeArtifactRefs db artifactRoot.get! artifacts
           return .ok { receipt, store := transaction.result, exactRetry := false }
+
+def mutateWithHook (path : System.FilePath) (operation : OperationId)
+    (expectedRevision : Revision) (command : Decide.Command)
+    (artifacts : List DurableFilesystem.ArtifactRef := [])
+    (artifactRoot : Option System.FilePath := none)
+    (beforeArtifactCommit : IO Unit := pure ())
+    (afterArtifactVerification : IO Unit := pure ())
+    (afterJournalWrite : IO Unit := pure ()) :
+    IO (Except MutationError MutationOutcome) :=
+  mutateWithLockHook path operation expectedRevision command artifacts artifactRoot
+    (pure ()) beforeArtifactCommit afterArtifactVerification afterJournalWrite
 
 def mutate (path : System.FilePath) (operation : OperationId)
     (expectedRevision : Revision) (command : Decide.Command)
