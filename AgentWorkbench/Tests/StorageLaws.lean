@@ -479,6 +479,9 @@ def makePredecessorV2 (ledger : System.FilePath) : IO Unit := do
       SELECT observed_digest, head_revision, history_digest, adopted_digest
       FROM current_projection_repairs;
       DROP TABLE current_projection_repairs;
+      INSERT INTO update_provenance
+        (singleton, source_schema, source_digest, backup_digest, backup_size)
+      VALUES (1, '1', 'historical-source', 'historical-backup', '0');
       UPDATE metadata SET schema_version = '2' WHERE singleton = 1;"
 
 def removeCoordinator (ledger : System.FilePath) : IO System.FilePath := do
@@ -551,10 +554,11 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
     | .ok receipt => pure receipt
     | .error error => throw <| IO.userError s!"predecessor v2 repair fixture failed: {repr error}"
   makePredecessorV2 predecessorV2
+  let v2SourceBytes ← IO.FS.readBinFile predecessorV2
   let v2Plan ← match ← Adapter.Update.inspect predecessorV2 with
     | .updateRequired plan => pure plan
     | other => throw <| IO.userError s!"real predecessor v2 was not migratable: {repr other}"
-  let _ ← Adapter.Update.apply predecessorV2 predecessorV2Backups v2Plan
+  let v2UpdateReceipt ← Adapter.Update.apply predecessorV2 predecessorV2Backups v2Plan
   expect ((← load predecessorV2) == v2Store.store)
     "predecessor v2 migration changed authoritative state"
   match ← Adapter.SQLite.repairProjection predecessorV2 v2RepairPlan with
@@ -563,6 +567,11 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
         "predecessor v2 repair receipt changed across v3 migration"
   | .error error =>
       throw <| IO.userError s!"migrated predecessor v2 repair retry failed: {repr error}"
+  let v2Restored ← Adapter.Update.restore predecessorV2 predecessorV2Backups v2UpdateReceipt
+  expect (v2Restored.restored == v2UpdateReceipt.source)
+    "predecessor v2 restore returned the wrong source"
+  expect ((← IO.FS.readBinFile predecessorV2) == v2SourceBytes)
+    "predecessor v2 restore was not byte-exact"
 
   let malformedCases := [
     ("extra", "ALTER TABLE events ADD COLUMN unexpected TEXT"),

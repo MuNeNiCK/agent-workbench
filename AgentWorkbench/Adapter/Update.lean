@@ -272,7 +272,13 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
                repair.history_digest, repair.adopted_digest
         FROM old_projection_repairs AS repair JOIN metadata ON metadata.singleton = 1;
         DROP TABLE old_projection_repairs;"
-      let provenance ← db.prepare "INSERT INTO update_provenance VALUES (1, ?, ?, ?, ?)"
+      let provenance ← db.prepare "
+        INSERT INTO update_provenance VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          source_schema=excluded.source_schema,
+          source_digest=excluded.source_digest,
+          backup_digest=excluded.backup_digest,
+          backup_size=excluded.backup_size"
       provenance.bindText 1 (toString plan.source.schemaVersion)
       provenance.bindText 2 plan.source.digest
       provenance.bindText 3 backup.digest
