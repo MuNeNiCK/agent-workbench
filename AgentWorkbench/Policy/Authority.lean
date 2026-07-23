@@ -30,12 +30,11 @@ def blockingFindingsClosed (review : ReviewId) (claims : List Claim)
     finding.review != review || !finding.blocking ||
       (finding.adjudicated &&
         (!finding.accepted ||
-          (finding.closed &&
-            match claims.find? (·.id == finding.review) with
-            | none => false
-            | some claim =>
-                verifications.any fun verification =>
-                  Review.verificationExact finding claim verification)))
+          match claims.find? (·.id == finding.review) with
+          | none => false
+          | some claim =>
+              verifications.any fun verification =>
+                Review.verificationExact finding claim verification))
 
 def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
     (findings : List Finding) (verifications : List Verification) : Bool :=

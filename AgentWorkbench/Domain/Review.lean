@@ -55,6 +55,18 @@ structure Adjudication where
   adjudicator : String := ""
 deriving DecidableEq, Repr
 
+structure ClosureAttempt where
+  attempt : Nat
+  evidenceDigest : String
+  repositorySnapshot : String
+deriving DecidableEq, Repr
+
+inductive VerificationResult
+  | verified
+  | notFixed
+  | needsEvidence
+deriving DecidableEq, Repr, BEq
+
 structure Finding where
   key : String
   review : ReviewId
@@ -63,17 +75,16 @@ structure Finding where
   remediationSurfaces : List String
   accepted : Bool
   adjudicated : Bool
-  closed : Bool
-  closureEvidence : String := ""
-  closureSnapshot : String := ""
+  closureAttempts : List ClosureAttempt := []
 deriving DecidableEq, Repr
 
 structure Verification where
   finding : String
+  attempt : Nat
   verifier : String
   scope : FrozenScope
   evidenceDigest : String
-  claimFixed : Bool
+  result : VerificationResult
   adjudicator : String := ""
   adjudicated : Bool := false
   accepted : Bool
@@ -103,6 +114,28 @@ def findingWellFormed (finding : Finding) : Bool :=
   !finding.remediationSurfaces.isEmpty &&
   finding.remediationSurfaces.all (fun surface => !surface.isEmpty)
 
+def attemptWellFormed (attempt : ClosureAttempt) : Bool :=
+  attempt.attempt > 0 && !attempt.evidenceDigest.isEmpty &&
+  !attempt.repositorySnapshot.isEmpty
+
+def latestAttempt? (finding : Finding) : Option ClosureAttempt :=
+  finding.closureAttempts.getLast?
+
+def verificationForAttempt? (finding : String) (attempt : Nat)
+    (verifications : List Verification) : Option Verification :=
+  verifications.reverse.find? fun verification =>
+    verification.finding == finding && verification.attempt == attempt
+
+def mayStartAttempt (finding : Finding)
+    (verifications : List Verification) : Bool :=
+  match latestAttempt? finding with
+  | none => true
+  | some attempt =>
+      (verificationForAttempt? finding.key attempt.attempt verifications).any
+        fun verification =>
+          verification.adjudicated && verification.accepted &&
+          verification.result != .verified
+
 def sameContext (left right : FrozenScope) : Bool :=
   left.design == right.design && left.work == right.work &&
   left.purpose == right.purpose
@@ -114,13 +147,18 @@ def sameArtifactScope (left right : FrozenScope) : Bool :=
 
 def verificationExact (finding : Finding) (claim : Claim)
     (verification : Verification) : Bool :=
-  verification.finding == finding.key && verification.claimFixed &&
-  verification.adjudicated && verification.accepted &&
-  !verification.verifier.isEmpty && verification.verifier != claim.reviewer &&
-  claim.scope.any (sameContext verification.scope) &&
-  verification.scope.repositorySnapshot == finding.closureSnapshot &&
-  verification.evidenceDigest == finding.closureEvidence &&
-  !verification.evidenceDigest.isEmpty
+  match latestAttempt? finding with
+  | none => false
+  | some attempt =>
+      verification.finding == finding.key &&
+      verification.attempt == attempt.attempt &&
+      verification.result == .verified &&
+      verification.adjudicated && verification.accepted &&
+      !verification.verifier.isEmpty && verification.verifier != claim.reviewer &&
+      claim.scope.any (sameContext verification.scope) &&
+      verification.scope.repositorySnapshot == attempt.repositorySnapshot &&
+      verification.evidenceDigest == attempt.evidenceDigest &&
+      !verification.evidenceDigest.isEmpty
 
 def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
     (findings : List Finding) (verifications : List Verification) : Bool :=
@@ -131,11 +169,11 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
         !claim.scope.any (sameContext scope) || !finding.blocking ||
           (finding.adjudicated &&
             (!finding.accepted ||
-              (finding.closed && verifications.any fun verification =>
+              verifications.any fun verification =>
                 verificationExact finding claim verification &&
-                  verification.scope.repositorySnapshot ==
-                    scope.repositorySnapshot &&
-                  verification.scope.artifactDigest == scope.artifactDigest)))
+                verification.scope.repositorySnapshot ==
+                  scope.repositorySnapshot &&
+                verification.scope.artifactDigest == scope.artifactDigest))
 
 def latestClaimFor (plan : Plan) (claims : List Claim) : Option Claim :=
   claims.reverse.find? (scopeExact plan)

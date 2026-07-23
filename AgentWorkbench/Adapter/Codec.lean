@@ -42,6 +42,8 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Plan
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.AuthorityException
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Claim
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Adjudication
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.ClosureAttempt
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.VerificationResult
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Finding
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Verification
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Obligation

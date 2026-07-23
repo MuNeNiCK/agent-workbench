@@ -197,9 +197,11 @@ inductive Event
   | reviewAdjudicated (decision : Review.Adjudication)
   | reviewFindingRecorded (finding : Review.Finding)
   | reviewFindingAdjudicated (key principal : String) (accepted : Bool)
-  | reviewFindingClosed (key evidenceDigest repositorySnapshot : String)
+  | reviewFindingClosureAttempted (key : String)
+      (attempt : Review.ClosureAttempt)
   | findingVerified (verification : Review.Verification)
-  | findingVerificationAdjudicated (finding adjudicator : String)
+  | findingVerificationAdjudicated (finding : String) (attempt : Nat)
+      (adjudicator : String)
   | correctionRecorded (correction : Design.Correction)
   | userCorrectionResolved (key : String)
   | correctionPromoted (rule : Design.LearnedRule)
@@ -291,18 +293,20 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
           if finding.key == key then { finding with accepted, adjudicated := true }
           else finding }
-  | .reviewFindingClosed key evidenceDigest repositorySnapshot =>
+  | .reviewFindingClosureAttempted key attempt =>
       { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
           if finding.key == key then
-            { finding with closed := true, closureEvidence := evidenceDigest, closureSnapshot := repositorySnapshot }
+            { finding with
+              closureAttempts := finding.closureAttempts ++ [attempt] }
           else finding }
   | .findingVerified verification =>
       { invalidated with
         findingVerifications := state.findingVerifications ++ [verification] }
-  | .findingVerificationAdjudicated finding adjudicator =>
+  | .findingVerificationAdjudicated finding attempt adjudicator =>
       { invalidated with
         findingVerifications := state.findingVerifications.map fun verification =>
-          if verification.finding == finding then
+          if verification.finding == finding &&
+              verification.attempt == attempt then
             { verification with adjudicated := true, accepted := true, adjudicator := adjudicator }
           else verification }
   | .correctionRecorded correction =>
@@ -698,41 +702,48 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !state.adjudications.any (·.review == decision.review)
   | .reviewFindingRecorded finding =>
       Review.findingWellFormed finding &&
-      !finding.adjudicated && !finding.closed &&
+      !finding.adjudicated && finding.closureAttempts.isEmpty &&
       state.claims.any (fun claim => claim.id == finding.review &&
         Review.claimAcceptsFindings claim state.reviewPlans state.claims) &&
       !state.reviewFindings.any (·.key == finding.key)
   | .reviewFindingAdjudicated key principal _ =>
       state.reviewFindings.any (fun finding =>
-        finding.key == key && !finding.adjudicated && !finding.closed &&
+        finding.key == key && !finding.adjudicated &&
+        finding.closureAttempts.isEmpty &&
         state.claims.any (fun claim =>
           claim.id == finding.review &&
           state.reviewPlans.any (fun plan =>
             plan.id == claim.plan && plan.adjudicator == principal &&
             principal != claim.reviewer)))
-  | .reviewFindingClosed key evidenceDigest repositorySnapshot =>
-      !evidenceDigest.isEmpty && !repositorySnapshot.isEmpty &&
+  | .reviewFindingClosureAttempted key attempt =>
+      Review.attemptWellFormed attempt &&
       state.reviewFindings.any (fun finding =>
-        finding.key == key && finding.accepted && !finding.closed &&
+        finding.key == key && finding.accepted &&
+        attempt.attempt == finding.closureAttempts.length + 1 &&
+        Review.mayStartAttempt finding state.findingVerifications &&
         state.claims.any (fun claim =>
           claim.id == finding.review && claim.scope.any (fun scope =>
-            scope.repositorySnapshot != repositorySnapshot)))
+            scope.repositorySnapshot != attempt.repositorySnapshot)))
   | .findingVerified verification =>
       state.reviewFindings.any (fun finding =>
-        finding.key == verification.finding && finding.closed &&
+        finding.key == verification.finding &&
+        finding.closureAttempts.getLast?.any (fun attempt =>
+          attempt.attempt == verification.attempt &&
+          attempt.evidenceDigest == verification.evidenceDigest &&
+          attempt.repositorySnapshot ==
+            verification.scope.repositorySnapshot) &&
         state.claims.any (fun claim =>
           claim.id == finding.review &&
-          verification.claimFixed && !verification.adjudicated &&
-          !verification.accepted &&
+          !verification.adjudicated && !verification.accepted &&
           verification.finding == finding.key &&
-          verification.evidenceDigest == finding.closureEvidence &&
-          verification.scope.repositorySnapshot == finding.closureSnapshot &&
           claim.scope.any (Review.sameContext verification.scope) &&
           verification.verifier != claim.reviewer)) &&
-      !state.findingVerifications.any (·.finding == verification.finding)
-  | .findingVerificationAdjudicated finding adjudicator =>
+      !state.findingVerifications.any (fun existing =>
+        existing.finding == verification.finding &&
+        existing.attempt == verification.attempt)
+  | .findingVerificationAdjudicated finding attempt adjudicator =>
       state.findingVerifications.any (fun verification =>
-        verification.finding == finding && verification.claimFixed &&
+        verification.finding == finding && verification.attempt == attempt &&
         !verification.adjudicated && !verification.accepted &&
         state.reviewFindings.any (fun record =>
           record.key == finding &&

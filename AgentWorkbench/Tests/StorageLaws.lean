@@ -552,6 +552,126 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
   run "missing-quality-adjudication" (some implementationArtifact)
     (some defaultSnapshot) false false
 
+def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
+  let ledger := root / "finding-attempts.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let initialized ← bootstrap ledger
+  let apply (operation : String)
+      (command : Revision → Kernel.Decide.Command)
+      (store : Kernel.Projection.Store) : IO Kernel.Projection.Store := do
+    let outcome ← mutate ledger operation store.ledger.storedHead.value
+      (command store.ledger.storedHead)
+    pure outcome.store
+  let scope : Domain.Review.FrozenScope :=
+    { design := none
+      work := ⟨1⟩
+      repositorySnapshot := "snapshot:before-remediation"
+      artifactDigest := "sha256:before-remediation"
+      purpose := .designConformance }
+  let plan : Domain.Review.Plan :=
+    { id := ⟨100⟩
+      owner := "bootstrap-owner"
+      reviewer := "finding-reviewer"
+      adjudicator := "bootstrap-owner"
+      scope }
+  let store ← apply "finding-plan" (fun revision =>
+    .recordReviewPlan revision plan) initialized.store
+  let claim : Domain.Review.Claim :=
+    { id := ⟨100⟩
+      plan := plan.id
+      work := scope.work
+      epoch := ⟨0⟩
+      claim := .findings
+      reviewer := plan.reviewer
+      scope := some scope }
+  let store ← apply "finding-claim" (fun revision =>
+    .recordReviewClaim revision claim) store
+  let finding : Domain.Review.Finding :=
+    { key := "durable-finding"
+      review := claim.id
+      blocking := true
+      invariant := "failed verification preserves immutable history"
+      remediationSurfaces := ["kernel"]
+      accepted := false
+      adjudicated := false }
+  let store ← apply "finding-record" (fun revision =>
+    .recordReviewFinding revision finding) store
+  let store ← apply "finding-adjudicate" (fun revision =>
+    .adjudicateReviewFinding revision finding.key plan.adjudicator true) store
+  let firstAttempt : Domain.Review.ClosureAttempt :=
+    { attempt := 1
+      evidenceDigest := "sha256:first-fix"
+      repositorySnapshot := "snapshot:first-fix" }
+  let store ← apply "finding-close-1" (fun revision =>
+    .closeReviewFinding revision finding.key firstAttempt) store
+  let firstVerification : Domain.Review.Verification :=
+    { finding := finding.key
+      attempt := firstAttempt.attempt
+      verifier := "first-verifier"
+      scope := { scope with
+        repositorySnapshot := firstAttempt.repositorySnapshot
+        artifactDigest := "sha256:first-fix" }
+      evidenceDigest := firstAttempt.evidenceDigest
+      result := .notFixed
+      accepted := false }
+  let store ← apply "finding-verify-1" (fun revision =>
+    .verifyReviewFinding revision firstVerification) store
+  let _ ← apply "finding-verification-adjudicate-1" (fun revision =>
+    .adjudicateFindingVerification revision finding.key
+      firstAttempt.attempt plan.adjudicator) store
+  let recoveredAfterFailure ← load ledger
+  let failedState ←
+    match (Application.Service.status recoveredAfterFailure).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "failed finding attempt is not recoverable"
+  expect (failedState.reviewFindings.any fun record =>
+    record.key == finding.key &&
+      record.closureAttempts == [firstAttempt])
+    "fresh SQLite reconstruction lost the first immutable closure attempt"
+  expect (failedState.findingVerifications.any fun verification =>
+    verification.finding == finding.key && verification.attempt == 1 &&
+      verification.result == .notFixed && verification.adjudicated)
+    "fresh SQLite reconstruction lost the failed verification result"
+  let secondAttempt : Domain.Review.ClosureAttempt :=
+    { attempt := 2
+      evidenceDigest := "sha256:second-fix"
+      repositorySnapshot := "snapshot:second-fix" }
+  let store ← apply "finding-close-2" (fun revision =>
+    .closeReviewFinding revision finding.key secondAttempt)
+    recoveredAfterFailure
+  let secondVerification : Domain.Review.Verification :=
+    { finding := finding.key
+      attempt := secondAttempt.attempt
+      verifier := "second-verifier"
+      scope := { scope with
+        repositorySnapshot := secondAttempt.repositorySnapshot
+        artifactDigest := "sha256:second-fix" }
+      evidenceDigest := secondAttempt.evidenceDigest
+      result := .verified
+      accepted := false }
+  let store ← apply "finding-verify-2" (fun revision =>
+    .verifyReviewFinding revision secondVerification) store
+  let _ ← apply "finding-verification-adjudicate-2" (fun revision =>
+    .adjudicateFindingVerification revision finding.key
+      secondAttempt.attempt plan.adjudicator) store
+  let recoveredAfterSuccess ← load ledger
+  let successfulState ←
+    match (Application.Service.status recoveredAfterSuccess).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "successful finding attempt is not recoverable"
+  expect (successfulState.reviewFindings.any fun record =>
+    record.key == finding.key &&
+      record.closureAttempts == [firstAttempt, secondAttempt])
+    "fresh SQLite reconstruction rewrote closure attempt history"
+  expect (successfulState.findingVerifications.any fun verification =>
+    verification.finding == finding.key && verification.attempt == 1 &&
+      verification.result == .notFixed && verification.adjudicated)
+    "successful retry rewrote the historical failed verification"
+  expect (Policy.Authority.blockingFindingsClosed claim.id
+    successfulState.claims successfulState.reviewFindings
+    successfulState.findingVerifications)
+    "fresh SQLite reconstruction did not authorize the latest verified attempt"
+
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
     ("deleted", "DELETE FROM artifacts"),
@@ -1265,6 +1385,7 @@ def main (args : List String) : IO Unit :=
     testArtifactsAndEvidence root
     testCorrectionPersistence root
     testReviewPurposePersistence root
+    testFindingAttemptPersistence root
     testArtifactBindingsAndRace root
     testFilesystemArtifactFaults root
     testUpdateInspectionReadOnly root

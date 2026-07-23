@@ -49,12 +49,12 @@ inductive Command
   | recordReviewFinding (expectedRevision : Revision) (finding : Review.Finding)
   | adjudicateReviewFinding (expectedRevision : Revision)
       (key principal : String) (accepted : Bool)
-  | closeReviewFinding (expectedRevision : Revision) (key evidenceDigest
-      repositorySnapshot : String)
+  | closeReviewFinding (expectedRevision : Revision) (key : String)
+      (attempt : Review.ClosureAttempt)
   | verifyReviewFinding (expectedRevision : Revision)
       (verification : Review.Verification)
   | adjudicateFindingVerification (expectedRevision : Revision)
-      (finding adjudicator : String)
+      (finding : String) (attempt : Nat) (adjudicator : String)
   | recordUserCorrection (expectedRevision : Revision)
       (correction : Design.Correction)
   | resolveUserCorrection (expectedRevision : Revision) (key : String)
@@ -93,9 +93,9 @@ def Command.expectedRevision : Command → Revision
   | .recordReviewAdjudication revision _
   | .recordReviewFinding revision _
   | .adjudicateReviewFinding revision _ _ _
-  | .closeReviewFinding revision _ _ _
+  | .closeReviewFinding revision _ _
   | .verifyReviewFinding revision _
-  | .adjudicateFindingVerification revision _ _
+  | .adjudicateFindingVerification revision _ _ _
   | .recordUserCorrection revision _
   | .resolveUserCorrection revision _
   | .promoteCorrection revision _
@@ -328,7 +328,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       .ok ⟨[.reviewAdjudicated adjudication], by simp⟩
   | .recordReviewFinding _ finding =>
       if Review.findingWellFormed finding &&
-          !finding.adjudicated && !finding.closed &&
+          !finding.adjudicated && finding.closureAttempts.isEmpty &&
           state.claims.any (fun claim =>
             claim.id == finding.review &&
               Review.claimAcceptsFindings claim state.reviewPlans state.claims) &&
@@ -338,7 +338,8 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .error (.invalidTransition "finding must be new, scoped, and belong to a findings review")
   | .adjudicateReviewFinding _ key principal accepted =>
       if state.reviewFindings.any (fun finding =>
-          finding.key == key && !finding.adjudicated && !finding.closed &&
+          finding.key == key && !finding.adjudicated &&
+          finding.closureAttempts.isEmpty &&
           state.claims.any (fun claim =>
             claim.id == finding.review &&
             state.reviewPlans.any (fun plan =>
@@ -347,34 +348,40 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.reviewFindingAdjudicated key principal accepted], by simp⟩
       else
         .error (.invalidTransition "finding adjudication requires the frozen plan adjudicator, distinct from the reviewer")
-  | .closeReviewFinding _ key evidenceDigest repositorySnapshot =>
-      if !evidenceDigest.isEmpty && !repositorySnapshot.isEmpty &&
+  | .closeReviewFinding _ key attempt =>
+      if Review.attemptWellFormed attempt &&
           state.reviewFindings.any (fun finding =>
-            finding.key == key && finding.accepted && !finding.closed &&
+            finding.key == key && finding.accepted &&
+            attempt.attempt == finding.closureAttempts.length + 1 &&
+            Review.mayStartAttempt finding state.findingVerifications &&
             state.claims.any (fun claim =>
               claim.id == finding.review && claim.scope.any (fun scope =>
-                scope.repositorySnapshot != repositorySnapshot))) then
-        .ok ⟨[.reviewFindingClosed key evidenceDigest repositorySnapshot], by simp⟩
+                scope.repositorySnapshot != attempt.repositorySnapshot))) then
+        .ok ⟨[.reviewFindingClosureAttempted key attempt], by simp⟩
       else
-        .error (.invalidTransition "only an accepted open finding may enter verification")
+        .error (.invalidTransition "closure attempt must be new, exact, and follow an adjudicated failed verification")
   | .verifyReviewFinding _ verification =>
       if state.reviewFindings.any (fun finding =>
-          finding.key == verification.finding && finding.closed &&
+          finding.key == verification.finding &&
+          finding.closureAttempts.getLast?.any (fun attempt =>
+            attempt.attempt == verification.attempt &&
+            attempt.evidenceDigest == verification.evidenceDigest &&
+            attempt.repositorySnapshot ==
+              verification.scope.repositorySnapshot) &&
           state.claims.any (fun claim =>
             claim.id == finding.review &&
-            verification.claimFixed && !verification.adjudicated &&
-            !verification.accepted &&
-            verification.evidenceDigest == finding.closureEvidence &&
-            verification.scope.repositorySnapshot == finding.closureSnapshot &&
+            !verification.adjudicated && !verification.accepted &&
             claim.scope.any (Review.sameContext verification.scope) &&
             verification.verifier != claim.reviewer)) &&
-          !state.findingVerifications.any (·.finding == verification.finding) then
+          !state.findingVerifications.any (fun existing =>
+            existing.finding == verification.finding &&
+            existing.attempt == verification.attempt) then
         .ok ⟨[.findingVerified verification], by simp⟩
       else
         .error (.invalidTransition "finding verification must be independent and preserve the frozen scope")
-  | .adjudicateFindingVerification _ finding adjudicator =>
+  | .adjudicateFindingVerification _ finding attempt adjudicator =>
       if state.findingVerifications.any (fun verification =>
-          verification.finding == finding && verification.claimFixed &&
+          verification.finding == finding && verification.attempt == attempt &&
           !verification.adjudicated && !verification.accepted &&
           state.reviewFindings.any (fun record =>
             record.key == finding &&
@@ -383,7 +390,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
               state.reviewPlans.any (fun plan =>
                 plan.id == claim.plan && plan.adjudicator == adjudicator &&
                 adjudicator != verification.verifier)))) then
-        .ok ⟨[.findingVerificationAdjudicated finding adjudicator], by simp⟩
+        .ok ⟨[.findingVerificationAdjudicated finding attempt adjudicator], by simp⟩
       else
         .error (.invalidTransition "finding verification requires separate owner adjudication")
   | .recordUserCorrection _ correction =>

@@ -362,8 +362,7 @@ def run : IO Unit := do
       invariant := "finding verification remains snapshot exact"
       remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
       accepted := false
-      adjudicated := false
-      closed := false }
+      adjudicated := false }
   reject (.recordReviewFinding state.revision laterSnapshotFinding) state
     "historical findings claim accepted a later finding"
   let laterSnapshotScope :=
@@ -371,10 +370,11 @@ def run : IO Unit := do
       repositorySnapshot := "commit:later-snapshot" }
   let laterSnapshotVerification : Domain.Review.Verification :=
     { finding := laterSnapshotFinding.key
+      attempt := 1
       verifier := "later-snapshot-verifier"
       scope := laterSnapshotScope
       evidenceDigest := "sha256:later-fix"
-      claimFixed := true
+      result := .verified
       adjudicator := "owner"
       adjudicated := true
       accepted := true }
@@ -382,9 +382,10 @@ def run : IO Unit := do
     { laterSnapshotFinding with
       accepted := true
       adjudicated := true
-      closed := true
-      closureEvidence := laterSnapshotVerification.evidenceDigest
-      closureSnapshot := laterSnapshotScope.repositorySnapshot }
+      closureAttempts := [{
+        attempt := 1
+        evidenceDigest := laterSnapshotVerification.evidenceDigest
+        repositorySnapshot := laterSnapshotScope.repositorySnapshot }] }
   let crossSnapshotState :=
     { state with
       reviewFindings := state.reviewFindings ++ [crossSnapshotFinding]
@@ -402,9 +403,10 @@ def run : IO Unit := do
     { laterSnapshotFinding with
       accepted := true
       adjudicated := true
-      closed := true
-      closureEvidence := wrongArtifactVerification.evidenceDigest
-      closureSnapshot := wrongArtifactScope.repositorySnapshot }
+      closureAttempts := [{
+        attempt := 1
+        evidenceDigest := wrongArtifactVerification.evidenceDigest
+        repositorySnapshot := wrongArtifactScope.repositorySnapshot }] }
   let wrongArtifactState :=
     { state with
       reviewFindings := state.reviewFindings ++ [wrongArtifactFinding]
@@ -420,8 +422,7 @@ def run : IO Unit := do
       invariant := "unadjudicated findings invalidate readiness"
       remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
       accepted := false
-      adjudicated := false
-      closed := false }
+      adjudicated := false }
   let unadjudicatedFindingState :=
     { state with
       reviewFindings := state.reviewFindings ++ [unadjudicatedBlockingFinding] }
@@ -581,12 +582,12 @@ def run : IO Unit := do
       invariant := "resume evidence remains exact"
       remediationSurfaces := ["AgentWorkbench/Kernel/Decide.lean"]
       accepted := false
-      adjudicated := false
-      closed := false }
+      adjudicated := false }
   let state ← execute (.recordReviewFinding state.revision finding) state
     "finding recording failed"
-  reject (.closeReviewFinding state.revision finding.key
-    "sha256:fix" "commit:workflow-v2") state
+  reject (.closeReviewFinding state.revision finding.key {
+    attempt := 1, evidenceDigest := "sha256:fix"
+    repositorySnapshot := "commit:workflow-v2" }) state
     "unadjudicated finding closure"
   let state ← execute
     (.adjudicateReviewFinding state.revision finding.key "owner" true)
@@ -604,29 +605,83 @@ def run : IO Unit := do
   expect (!Kernel.Gates.reviewReadyState bypassPlan.id state)
     "fresh clean claim bypassed an accepted open blocking finding"
 
-  let state ← execute (.closeReviewFinding state.revision finding.key
-    "sha256:fix" bypassPlan.scope.repositorySnapshot) state
+  let state ← execute (.closeReviewFinding state.revision finding.key {
+    attempt := 1, evidenceDigest := "sha256:fix"
+    repositorySnapshot := bypassPlan.scope.repositorySnapshot }) state
     "finding remediation closure failed"
   reject
     (.verifyReviewFinding state.revision {
       finding := finding.key, verifier := findingClaim.reviewer
+      attempt := 1
       scope := bypassPlan.scope, evidenceDigest := "sha256:fix"
-      claimFixed := true, accepted := false })
+      result := .verified, accepted := false })
     state "reviewer self-verification"
-  let verification : Domain.Review.Verification :=
-    { finding := finding.key, verifier := "fresh-verifier"
+  let failedVerification : Domain.Review.Verification :=
+    { finding := finding.key, attempt := 1, verifier := "fresh-verifier"
       scope := bypassPlan.scope, evidenceDigest := "sha256:fix"
-      claimFixed := true, accepted := false }
-  let state ← execute (.verifyReviewFinding state.revision verification) state
+      result := .notFixed, accepted := false }
+  let state ← execute
+    (.verifyReviewFinding state.revision failedVerification) state
     "independent finding verification failed"
   expect (!Kernel.Gates.reviewReadyState bypassPlan.id state)
     "unadjudicated verification changed readiness"
   let state ← execute
-    (.adjudicateFindingVerification state.revision finding.key "owner")
+    (.adjudicateFindingVerification state.revision finding.key 1 "owner")
     state "verification adjudication failed"
+  expect (!(Policy.Authority.blockingFindingsClosed findingClaim.id
+    state.claims state.reviewFindings state.findingVerifications))
+    "not-fixed verification closed the blocking finding"
+  reject (.verifyReviewFinding state.revision
+    { failedVerification with result := .verified }) state
+    "historical verification result rewrite"
+  reject (.closeReviewFinding state.revision finding.key {
+    attempt := 1, evidenceDigest := "sha256:fix-reused"
+    repositorySnapshot := bypassPlan.scope.repositorySnapshot }) state
+    "historical closure attempt rewrite"
+  let state ← execute (.closeReviewFinding state.revision finding.key {
+    attempt := 2, evidenceDigest := "sha256:fix-v2"
+    repositorySnapshot := bypassPlan.scope.repositorySnapshot }) state
+    "second finding remediation closure failed"
+  let incompleteVerification : Domain.Review.Verification :=
+    { finding := finding.key, attempt := 2, verifier := "second-fresh-verifier"
+      scope := bypassPlan.scope, evidenceDigest := "sha256:fix-v2"
+      result := .needsEvidence, accepted := false }
+  let state ← execute
+    (.verifyReviewFinding state.revision incompleteVerification) state
+    "second independent finding verification failed"
+  let state ← execute
+    (.adjudicateFindingVerification state.revision finding.key 2 "owner")
+    state "second verification adjudication failed"
+  expect (!(Policy.Authority.blockingFindingsClosed findingClaim.id
+    state.claims state.reviewFindings state.findingVerifications))
+    "needs-evidence verification closed the blocking finding"
+  let state ← execute (.closeReviewFinding state.revision finding.key {
+    attempt := 3, evidenceDigest := "sha256:fix-v3"
+    repositorySnapshot := bypassPlan.scope.repositorySnapshot }) state
+    "third finding remediation closure failed"
+  let verification : Domain.Review.Verification :=
+    { finding := finding.key, attempt := 3, verifier := "third-fresh-verifier"
+      scope := bypassPlan.scope, evidenceDigest := "sha256:fix-v3"
+      result := .verified, accepted := false }
+  let state ← execute (.verifyReviewFinding state.revision verification) state
+    "third independent finding verification failed"
+  let state ← execute
+    (.adjudicateFindingVerification state.revision finding.key 3 "owner")
+    state "third verification adjudication failed"
   expect (Policy.Authority.blockingFindingsClosed findingClaim.id
     state.claims state.reviewFindings state.findingVerifications)
     "verified accepted blocking finding remained open"
+  expect (state.reviewFindings.any fun record =>
+    record.key == finding.key && record.closureAttempts.length == 3)
+    "immutable closure attempt history was not preserved"
+  expect (state.findingVerifications.any fun result =>
+    result.finding == finding.key && result.attempt == 1 &&
+      result.result == .notFixed && result.adjudicated)
+    "immutable failed verification result was not preserved"
+  expect (state.findingVerifications.any fun result =>
+    result.finding == finding.key && result.attempt == 2 &&
+      result.result == .needsEvidence && result.adjudicated)
+    "immutable needs-evidence verification result was not preserved"
   expect (!Kernel.Gates.reviewReadyState findingPlan.id state)
     "a findings review incorrectly replaced the required fresh clean review"
 
