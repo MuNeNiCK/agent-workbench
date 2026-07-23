@@ -36,6 +36,7 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.TraceIte
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Decomposition
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Correction
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.LearnedRule
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Purpose
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.FrozenScope
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Plan
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.AuthorityException

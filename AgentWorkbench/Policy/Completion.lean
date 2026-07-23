@@ -82,7 +82,22 @@ def traceReady (target : WorkId) (designs : List Design.DesignVersion)
           approval.design == design.id &&
           Traceability.ready design approval decomposition
 
-def implementationReviewReady (target : WorkId) (plans : List Review.Plan)
+def purposeReviewReady (target : WorkId) (design : Option DesignId)
+    (purpose : Review.Purpose) (plans : List Review.Plan)
+    (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (findings : List Review.Finding)
+    (verifications : List Review.Verification) : Bool :=
+  match plans.reverse.find? fun plan =>
+      plan.scope.work == target && plan.scope.design == design &&
+      plan.scope.purpose == purpose with
+  | none => false
+  | some plan =>
+      Review.scopeReady plan claims adjudications findings verifications
+
+def requiredReviewPurposes : List Review.Purpose :=
+  [.designConformance, .implementationQuality]
+
+def requiredReviewsReady (target : WorkId) (plans : List Review.Plan)
     (decompositions : List Design.Decomposition)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
     (findings : List Review.Finding)
@@ -90,11 +105,19 @@ def implementationReviewReady (target : WorkId) (plans : List Review.Plan)
   let design :=
     (decompositions.reverse.find? (·.work == target)).map (·.design)
   match plans.reverse.find? fun plan =>
-      plan.scope.work == target && plan.scope.stage == "implementation" with
+      plan.scope.work == target && plan.scope.design == design &&
+      plan.scope.purpose == .designConformance with
   | none => false
-  | some plan =>
-      plan.scope.design == design &&
-      Review.scopeReady plan claims adjudications findings verifications
+  | some conformance =>
+      match plans.reverse.find? fun plan =>
+          plan.scope.work == target && plan.scope.design == design &&
+          plan.scope.purpose == .implementationQuality with
+      | none => false
+      | some quality =>
+          Review.sameArtifactScope conformance.scope quality.scope &&
+          requiredReviewPurposes.all fun purpose =>
+            purposeReviewReady target design purpose plans claims adjudications
+              findings verifications
 
 def correctionsReady (target : WorkId)
     (decompositions : List Design.Decomposition)
@@ -118,7 +141,7 @@ def closeable (target : WorkId) (work : List Work.WorkUnit)
   Work.workIsOpen work target &&
   authoritativeReady target work claims adjudications lifecycle &&
   traceReady target designs approvals decompositions &&
-  implementationReviewReady target reviewPlans decompositions claims
+  requiredReviewsReady target reviewPlans decompositions claims
     adjudications findings verifications &&
   correctionsReady target decompositions corrections
 

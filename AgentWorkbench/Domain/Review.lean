@@ -5,12 +5,19 @@ namespace AgentWorkbench.Domain.Review
 
 open AgentWorkbench.Domain
 
+inductive Purpose
+  | design
+  | decomposition
+  | designConformance
+  | implementationQuality
+deriving DecidableEq, Repr, BEq
+
 structure FrozenScope where
   design : Option DesignId
   work : WorkId
   repositorySnapshot : String
   artifactDigest : String
-  stage : String
+  purpose : Purpose
 deriving DecidableEq, Repr
 
 structure Plan where
@@ -89,8 +96,7 @@ def scopeExact (plan : Plan) (claim : Claim) : Bool :=
 
 def planWellFormed (plan : Plan) : Bool :=
   !plan.scope.repositorySnapshot.isEmpty && !plan.scope.artifactDigest.isEmpty &&
-  !plan.scope.stage.isEmpty && !plan.owner.isEmpty && !plan.reviewer.isEmpty &&
-  !plan.adjudicator.isEmpty
+  !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty
 
 def findingWellFormed (finding : Finding) : Bool :=
   !finding.key.isEmpty && !finding.invariant.isEmpty &&
@@ -99,7 +105,12 @@ def findingWellFormed (finding : Finding) : Bool :=
 
 def sameContext (left right : FrozenScope) : Bool :=
   left.design == right.design && left.work == right.work &&
-  left.stage == right.stage
+  left.purpose == right.purpose
+
+def sameArtifactScope (left right : FrozenScope) : Bool :=
+  left.design == right.design && left.work == right.work &&
+  left.repositorySnapshot == right.repositorySnapshot &&
+  left.artifactDigest == right.artifactDigest
 
 def verificationExact (finding : Finding) (claim : Claim)
     (verification : Verification) : Bool :=

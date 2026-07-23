@@ -42,6 +42,15 @@ def storageDesign : Domain.Design.DesignVersion :=
     decisions := ["stored evidence binds an exact design version"]
     validationGates := ["storage-evidence-matrix"] }
 
+def reviewPurposeDesign : Domain.Design.DesignVersion :=
+  { id := ⟨2⟩
+    revision := ⟨1⟩
+    owner := "bootstrap-owner"
+    contentDigest := "sha256:review-purpose-design"
+    requirements := [{ key := "review-authority", active := true }]
+    decisions := ["completion requires two typed reviews"]
+    validationGates := ["review-purpose-matrix"] }
+
 def testRecoveryAndRetry (root : System.FilePath) : IO Unit := do
   let ledger := root / "recovery.sqlite3"
   Adapter.SQLite.initializeStore ledger
@@ -418,6 +427,99 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
     "fresh SQLite session lost resolved correction provenance"
   expect (promotedState.learnedRules.contains rule)
     "fresh SQLite session lost promoted correction provenance"
+
+def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
+  let run (name : String) (includeQuality : Bool) : IO Unit := do
+    let ledger := root / s!"review-purpose-{name}.sqlite3"
+    Adapter.SQLite.initializeStore ledger
+    let initialized ← bootstrap ledger
+    let imported ← mutate ledger s!"{name}-design"
+      initialized.store.ledger.storedHead.value
+      (.importDesign initialized.store.ledger.storedHead reviewPurposeDesign)
+    let scope (purpose : Domain.Review.Purpose) (artifact : String) :
+        Domain.Review.FrozenScope :=
+      { design := some reviewPurposeDesign.id
+        work := ⟨1⟩
+        repositorySnapshot := "snapshot:review-purpose"
+        artifactDigest := artifact
+        purpose }
+    let recordReview (operation : String) (id : Nat)
+        (purpose : Domain.Review.Purpose) (artifact reviewer : String)
+        (store : Kernel.Projection.Store) : IO Kernel.Projection.Store := do
+      let plan : Domain.Review.Plan :=
+        { id := ⟨id⟩
+          owner := reviewPurposeDesign.owner
+          reviewer
+          adjudicator := reviewPurposeDesign.owner
+          scope := scope purpose artifact }
+      let planned ← mutate ledger s!"{operation}-plan"
+        store.ledger.storedHead.value
+        (.recordReviewPlan store.ledger.storedHead plan)
+      let claim : Domain.Review.Claim :=
+        { id := ⟨id⟩
+          plan := plan.id
+          work := ⟨1⟩
+          epoch := ⟨0⟩
+          claim := .clean
+          reviewer
+          scope := some plan.scope }
+      let claimed ← mutate ledger s!"{operation}-claim"
+        planned.store.ledger.storedHead.value
+        (.recordReviewClaim planned.store.ledger.storedHead claim)
+      let adjudicated ← mutate ledger s!"{operation}-adjudication"
+        claimed.store.ledger.storedHead.value
+        (.recordReviewAdjudication claimed.store.ledger.storedHead
+          { review := claim.id, decision := .accepted
+            adjudicator := reviewPurposeDesign.owner })
+      pure adjudicated.store
+    let store ← recordReview "design-review" 1 .design
+      reviewPurposeDesign.contentDigest "design-reviewer" imported.store
+    let approved ← mutate ledger s!"{name}-approval"
+      store.ledger.storedHead.value
+      (.approveDesign store.ledger.storedHead reviewPurposeDesign.id)
+    let decompositionDigest := "sha256:review-purpose-decomposition"
+    let store ← recordReview "decomposition-review" 2 .decomposition
+      decompositionDigest "decomposition-reviewer" approved.store
+    let decomposition : Domain.Design.Decomposition :=
+      { key := "review-purpose-decomposition"
+        design := reviewPurposeDesign.id
+        work := ⟨1⟩
+        designRevision := reviewPurposeDesign.revision
+        contentDigest := decompositionDigest
+        items := [{
+          key := "review-purpose"
+          requirements := ["review-authority"]
+          implementationWork := ["typed review purposes"]
+          tasks := ["enforce both completion reviews"]
+          completionChecks := ["review purpose laws"]
+          checklists := ["both purposes reviewed"]
+          validationGates := ["review-purpose-matrix"] }]
+        reviewer := "decomposition-reviewer"
+        adjudicator := reviewPurposeDesign.owner
+        accepted := true }
+    let decomposed ← mutate ledger s!"{name}-decomposition"
+      store.ledger.storedHead.value
+      (.recordDecomposition store.ledger.storedHead decomposition)
+    let implementationArtifact := "sha256:reviewed-implementation"
+    let store ← recordReview "conformance-review" 3 .designConformance
+      implementationArtifact "conformance-reviewer" decomposed.store
+    let _ ←
+      if includeQuality then
+        recordReview "quality-review" 4 .implementationQuality
+          implementationArtifact "quality-reviewer" store
+      else
+        pure store
+    let recovered ← load ledger
+    let state ←
+      match (Application.Service.status recovered).value.currentState? with
+      | some state => pure state
+      | none => throw <| IO.userError "review-purpose projection is not recoverable"
+    expect (Policy.Completion.requiredReviewsReady ⟨1⟩
+      state.reviewPlans state.decompositions state.claims state.adjudications
+      state.reviewFindings state.findingVerifications == includeQuality)
+      s!"fresh SQLite reconstruction changed required review readiness: {name}"
+  run "complete" true
+  run "missing-quality" false
 
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
@@ -1131,6 +1233,7 @@ def main (args : List String) : IO Unit :=
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
     testCorrectionPersistence root
+    testReviewPurposePersistence root
     testArtifactBindingsAndRace root
     testFilesystemArtifactFaults root
     testUpdateInspectionReadOnly root

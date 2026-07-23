@@ -424,7 +424,7 @@ def decompositionRecordable (decomposition : Design.Decomposition)
   state.reviewPlans.any (fun plan =>
     plan.scope.design == some decomposition.design &&
     plan.scope.work == decomposition.work &&
-    plan.scope.stage == "decomposition" &&
+    plan.scope.purpose == .decomposition &&
     plan.scope.artifactDigest == decomposition.contentDigest &&
     plan.reviewer == decomposition.reviewer &&
     plan.adjudicator == decomposition.adjudicator &&
@@ -459,12 +459,42 @@ def implementationReviewReadyFor (basis : Work.ReadinessBasis) (work : WorkId)
     (state : State) : Bool :=
   match state.reviewPlans.reverse.find? (fun plan =>
       plan.scope.work == work && plan.scope.design == some basis.design &&
-      plan.scope.stage == "implementation") with
+      plan.scope.purpose == .designConformance) with
   | none => false
   | some plan =>
       plan.id == basis.reviewPlan &&
       plan.scope.repositorySnapshot == basis.repositorySnapshot &&
       reviewScopeReady plan.id state
+
+def completionPurposeReviewReady (target : WorkId) (design : Option DesignId)
+    (purpose : Review.Purpose) (state : State) : Bool :=
+  match state.reviewPlans.reverse.find? fun plan =>
+      plan.scope.work == target && plan.scope.design == design &&
+      plan.scope.purpose == purpose with
+  | none => false
+  | some plan =>
+      Review.scopeReady plan state.claims state.adjudications
+        state.reviewFindings state.findingVerifications
+
+def completionRequiredReviewPurposes : List Review.Purpose :=
+  [.designConformance, .implementationQuality]
+
+def completionRequiredReviewsReady (target : WorkId) (state : State) : Bool :=
+  let design :=
+    (state.decompositions.reverse.find? (·.work == target)).map (·.design)
+  match state.reviewPlans.reverse.find? fun plan =>
+      plan.scope.work == target && plan.scope.design == design &&
+      plan.scope.purpose == .designConformance with
+  | none => false
+  | some conformance =>
+      match state.reviewPlans.reverse.find? fun plan =>
+          plan.scope.work == target && plan.scope.design == design &&
+          plan.scope.purpose == .implementationQuality with
+      | none => false
+      | some quality =>
+          Review.sameArtifactScope conformance.scope quality.scope &&
+          completionRequiredReviewPurposes.all fun purpose =>
+            completionPurposeReviewReady target design purpose state
 
 def readinessCurrent (work : WorkId) (activation : ActivationId)
     (basis : Work.ReadinessBasis) (state : State) : Bool :=
@@ -518,15 +548,7 @@ def completionApplicable (target : WorkId) (state : State) : Bool :=
         state.designApprovals.any fun approval =>
           approval.design == design.id &&
           Design.decompositionCovers design approval decomposition) &&
-  (let design :=
-      (state.decompositions.reverse.find? (·.work == target)).map (·.design)
-    match state.reviewPlans.reverse.find? fun plan =>
-        plan.scope.work == target && plan.scope.stage == "implementation" with
-    | none => false
-    | some plan =>
-        plan.scope.design == design &&
-        Review.scopeReady plan state.claims state.adjudications
-          state.reviewFindings state.findingVerifications) &&
+  completionRequiredReviewsReady target state &&
   !state.corrections.any (fun correction =>
     !correction.resolved &&
     Design.correctionApplies correction target
@@ -580,7 +602,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       state.designs.any (fun version => version.id == approval.design &&
       state.reviewPlans.any (fun plan =>
         plan.scope.design == some approval.design &&
-        plan.scope.stage == "design" &&
+        plan.scope.purpose == .design &&
         plan.scope.artifactDigest == version.contentDigest &&
         plan.owner == version.owner &&
         state.claims.any (fun claim =>

@@ -188,7 +188,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       | none => .error (.invalidTransition "design version is missing")
       | some version =>
           match state.reviewPlans.find? (fun plan =>
-              plan.scope.design == some design && plan.scope.stage == "design" &&
+              plan.scope.design == some design && plan.scope.purpose == .design &&
               plan.scope.artifactDigest == version.contentDigest &&
               plan.owner == version.owner && Replay.reviewScopeReady plan.id state) with
           | none =>
@@ -568,10 +568,13 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
   unfold completionApplicable completionObligationsReady
     completionObligationSatisfied completionRelatedWorkTerminal
     completionReviewsReady latestCompletionReview
+    completionRequiredReviewsReady completionPurposeReviewReady
+    completionRequiredReviewPurposes
     completionReady Policy.Completion.closeable Policy.Completion.obligationsReady
     Policy.Completion.obligationSatisfied Policy.Completion.authoritativeReady
     Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
-    Policy.Completion.traceReady Policy.Completion.implementationReviewReady
+    Policy.Completion.traceReady Policy.Completion.requiredReviewsReady
+    Policy.Completion.purposeReviewReady Policy.Completion.requiredReviewPurposes
     Policy.Completion.correctionsReady
     Policy.Traceability.ready
     Review.scopeReady

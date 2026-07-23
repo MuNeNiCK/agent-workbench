@@ -45,20 +45,22 @@ def designVersion : Domain.Design.DesignVersion :=
       "resume-matrix", "trace-matrix", "review-matrix",
       "evidence-matrix", "persistence-matrix"] }
 
-def scope (stage digest : String) (work : WorkId) : Domain.Review.FrozenScope :=
+def scope (purpose : Domain.Review.Purpose) (digest : String) (work : WorkId) :
+    Domain.Review.FrozenScope :=
   { design := some designVersion.id
     work
     repositorySnapshot := s!"commit:{digest}"
     artifactDigest := digest
-    stage }
+    purpose }
 
-def reviewPlan (id : Nat) (stage digest : String) (work : WorkId) :
+def reviewPlan (id : Nat) (purpose : Domain.Review.Purpose)
+    (digest : String) (work : WorkId) :
     Domain.Review.Plan :=
   { id := ⟨id⟩
     owner := "owner"
     reviewer := s!"reviewer-{id}"
     adjudicator := "owner"
-    scope := scope stage digest work }
+    scope := scope purpose digest work }
 
 def claimFor (id : Nat) (plan : Domain.Review.Plan)
     (result : ReviewClaim) : Domain.Review.Claim :=
@@ -84,7 +86,7 @@ def run : IO Unit := do
     "unreviewed design approval"
 
   let badPlan := {
-    reviewPlan 1 "design" designVersion.contentDigest workOne.id with
+    reviewPlan 1 .design designVersion.contentDigest workOne.id with
       reviewer := "owner" }
   reject (.recordReviewPlan state.revision badPlan) state
     "owner self-review"
@@ -96,17 +98,18 @@ def run : IO Unit := do
   let state ← execute (.recordAuthorityException state.revision exception) state
     "explicit user authority exception failed"
   reject (.recordReviewPlan state.revision
-    { badPlan with scope := scope "implementation" "different-artifact" workOne.id })
+    { badPlan with
+      scope := scope .designConformance "different-artifact" workOne.id })
     state "authority exception escaped its frozen scope"
   let state ← execute (.recordReviewPlan state.revision badPlan) state
     "authorized scoped review exception failed"
   reject (.recordReviewPlan state.revision
-    { reviewPlan 11 "design" designVersion.contentDigest workOne.id with
+    { reviewPlan 11 .design designVersion.contentDigest workOne.id with
       owner := "different-owner" })
     state "review plan owner did not derive from design and work ownership"
 
   let wrongArtifactPlan :=
-    reviewPlan 12 "design" "sha256:different-design" workOne.id
+    reviewPlan 12 .design "sha256:different-design" workOne.id
   let state ← execute (.recordReviewPlan state.revision wrongArtifactPlan) state
     "wrong-artifact review plan setup failed"
   let wrongArtifactClaim := claimFor 12 wrongArtifactPlan .clean
@@ -120,7 +123,7 @@ def run : IO Unit := do
   reject (.approveDesign state.revision designVersion.id) state
     "design approval accepted a review of a different artifact"
 
-  let designPlan := reviewPlan 10 "design" designVersion.contentDigest workOne.id
+  let designPlan := reviewPlan 10 .design designVersion.contentDigest workOne.id
   let state ← execute (.recordReviewPlan state.revision designPlan) state
     "design review plan failed"
   let designClaim := claimFor 10 designPlan .clean
@@ -160,7 +163,8 @@ def run : IO Unit := do
   reject (.registerSuspendedActivation state.revision untracedActivation) state
     "activation without reviewed decomposition"
 
-  let decompositionPlan := reviewPlan 2 "decomposition" "decomposition-v1" workTwo.id
+  let decompositionPlan :=
+    reviewPlan 2 .decomposition "decomposition-v1" workTwo.id
   let state ← execute (.recordReviewPlan state.revision decompositionPlan) state
     "decomposition review plan failed"
   let decompositionClaim := claimFor 2 decompositionPlan .clean
@@ -228,7 +232,7 @@ def run : IO Unit := do
     "trace gate reused an older complete decomposition"
 
   let implementationPlan :=
-    reviewPlan 3 "implementation" "sha256:implementation-v1" workTwo.id
+    reviewPlan 3 .designConformance "sha256:implementation-v1" workTwo.id
   let state ← execute (.recordReviewPlan state.revision implementationPlan) state
     "implementation review plan failed"
   let initialFindingsClaim := claimFor 98 implementationPlan .findings
@@ -438,7 +442,7 @@ def run : IO Unit := do
   expect (!Kernel.Replay.resumeCurrent workTwo.id activationTwo.id newerClaimState)
     "older clean claim remained resumable after a newer findings claim"
   let newerImplementationPlan :=
-    reviewPlan 99 "implementation" "sha256:implementation-v2" workTwo.id
+    reviewPlan 99 .designConformance "sha256:implementation-v2" workTwo.id
   let newerPlanState :=
     { state with reviewPlans := state.reviewPlans ++ [newerImplementationPlan] }
   expect (!Kernel.Replay.resumeCurrent workTwo.id activationTwo.id newerPlanState)
@@ -563,7 +567,8 @@ def run : IO Unit := do
     activation.id == activationOne.id && activation.status == .suspended)
     "child activation lost its stack-return parent"
 
-  let findingPlan := reviewPlan 4 "implementation" "sha256:implementation-v1" workTwo.id
+  let findingPlan :=
+    reviewPlan 4 .designConformance "sha256:implementation-v1" workTwo.id
   let state ← execute (.recordReviewPlan state.revision findingPlan) state
     "finding review plan failed"
   let findingClaim := claimFor 4 findingPlan .findings
@@ -586,7 +591,8 @@ def run : IO Unit := do
   let state ← execute
     (.adjudicateReviewFinding state.revision finding.key "owner" true)
     state "finding adjudication failed"
-  let bypassPlan := reviewPlan 5 "implementation" "sha256:implementation-v2" workTwo.id
+  let bypassPlan :=
+    reviewPlan 5 .designConformance "sha256:implementation-v2" workTwo.id
   let state ← execute (.recordReviewPlan state.revision bypassPlan) state
     "bypass review plan failed"
   let bypassClaim := claimFor 5 bypassPlan .clean
@@ -624,7 +630,8 @@ def run : IO Unit := do
   expect (!Kernel.Gates.reviewReadyState findingPlan.id state)
     "a findings review incorrectly replaced the required fresh clean review"
 
-  let freshPlan := reviewPlan 6 "implementation" "sha256:implementation-v2" workTwo.id
+  let freshPlan :=
+    reviewPlan 6 .designConformance "sha256:implementation-v2" workTwo.id
   let state ← execute (.recordReviewPlan state.revision freshPlan) state
     "fresh review plan failed"
   let freshClaim := claimFor 6 freshPlan .clean

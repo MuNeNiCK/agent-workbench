@@ -143,13 +143,14 @@ def executeStore (command : Kernel.Decide.Command) (store : Kernel.Projection.St
   | .ok transaction => pure transaction.result
   | .error error => throw <| IO.userError s!"{message}: {repr error}"
 
-def contractScope (work : WorkId) (stage digest : String) :
+def contractScope (work : WorkId) (purpose : Domain.Review.Purpose)
+    (digest : String) :
     Domain.Review.FrozenScope :=
   { design := some evidenceDesign.id
     work
     repositorySnapshot := s!"snapshot-{work.value}"
     artifactDigest := digest
-    stage }
+    purpose }
 
 def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
     IO Kernel.Projection.Store := do
@@ -160,7 +161,7 @@ def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
       owner := evidenceDesign.owner
       reviewer := "design-reviewer"
       adjudicator := evidenceDesign.owner
-      scope := contractScope work "design" evidenceDesign.contentDigest }
+      scope := contractScope work .design evidenceDesign.contentDigest }
   let store ← executeStore (.recordReviewPlan store.ledger.storedHead plan) store
     "completion design review plan rejected"
   let claim : Domain.Review.Claim :=
@@ -180,7 +181,8 @@ def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
   executeStore (.approveDesign store.ledger.storedHead evidenceDesign.id) store
     "completion design approval rejected"
 
-def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store) :
+def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
+    (includeQuality : Bool := true) :
     IO Kernel.Projection.Store := do
   let decompositionDigest := s!"decomposition-{work.value}"
   let decompositionPlan : Domain.Review.Plan :=
@@ -188,7 +190,7 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store) :
       owner := evidenceDesign.owner
       reviewer := s!"decomposition-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
-      scope := contractScope work "decomposition" decompositionDigest }
+      scope := contractScope work .decomposition decompositionDigest }
   let store ← executeStore
     (.recordReviewPlan store.ledger.storedHead decompositionPlan) store
     "decomposition review plan rejected"
@@ -233,7 +235,8 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store) :
       owner := evidenceDesign.owner
       reviewer := s!"implementation-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
-      scope := contractScope work "implementation" s!"implementation-{work.value}" }
+      scope :=
+        contractScope work .designConformance s!"implementation-{work.value}" }
   let store ← executeStore
     (.recordReviewPlan store.ledger.storedHead implementationPlan) store
     "implementation review plan rejected"
@@ -248,11 +251,39 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store) :
   let store ← executeStore
     (.recordReviewClaim store.ledger.storedHead implementationClaim) store
     "implementation review claim rejected"
-  executeStore
+  let store ← executeStore
     (.recordReviewAdjudication store.ledger.storedHead
       { review := implementationClaim.id, decision := .accepted
         adjudicator := implementationPlan.adjudicator })
     store "implementation review adjudication rejected"
+  if !includeQuality then
+    return store
+  let qualityPlan : Domain.Review.Plan :=
+    { id := ⟨4000 + work.value⟩
+      owner := evidenceDesign.owner
+      reviewer := s!"quality-reviewer-{work.value}"
+      adjudicator := evidenceDesign.owner
+      scope :=
+        contractScope work .implementationQuality s!"implementation-{work.value}" }
+  let store ← executeStore
+    (.recordReviewPlan store.ledger.storedHead qualityPlan) store
+    "implementation quality review plan rejected"
+  let qualityClaim : Domain.Review.Claim :=
+    { id := ⟨4000 + work.value⟩
+      plan := qualityPlan.id
+      work
+      epoch := ⟨0⟩
+      claim := .clean
+      reviewer := qualityPlan.reviewer
+      scope := some qualityPlan.scope }
+  let store ← executeStore
+    (.recordReviewClaim store.ledger.storedHead qualityClaim) store
+    "implementation quality review claim rejected"
+  executeStore
+    (.recordReviewAdjudication store.ledger.storedHead
+      { review := qualityClaim.id, decision := .accepted
+        adjudicator := qualityPlan.adjudicator })
+    store "implementation quality review adjudication rejected"
 
 def recordReadinessEvidence (work : WorkId) (store : Kernel.Projection.Store) :
     IO (Kernel.Projection.Store × Domain.Work.ReadinessBasis) := do
@@ -328,7 +359,7 @@ def minimalCompletionPlan (work : WorkId) : Domain.Lifecycle.CompletionPlan :=
     corrections := []
     workRecords := [] }
 
-def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
+def prepareMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
     IO Kernel.Projection.Store := do
   let store ← executeStore
     (.planCompletion store.ledger.storedHead (minimalCompletionPlan work)) store
@@ -365,6 +396,11 @@ def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) 
       designRevision := obligation.designRevision }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
     s!"minimal evidence rejected for {work.value}"
+  pure store
+
+def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) :
+    IO Kernel.Projection.Store := do
+  let store ← prepareMinimalActiveWork work store
   match Application.Service.complete store.ledger.storedHead work store with
   | .ok transaction => pure transaction.result
   | .error error => throw <| IO.userError s!"minimal authoritative completion rejected for {work.value}: {repr error}"
@@ -509,7 +545,8 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
       let claim : Domain.Review.Claim :=
         { id := ⟨10⟩, plan := ⟨3001⟩, work := firstWork.id, epoch
           claim := .clean, reviewer := "implementation-reviewer-1"
-          scope := some (contractScope firstWork.id "implementation" "implementation-1") }
+          scope := some
+            (contractScope firstWork.id .designConformance "implementation-1") }
       let claimed ← executeStore
         (.recordReviewClaim store.ledger.storedHead claim) store "review claim rejected"
       executeStore (.recordReviewAdjudication claimed.ledger.storedHead
@@ -568,9 +605,30 @@ def expectPublicCompletionRejected (missing : MissingCompletionCondition)
     activation.work == firstWork.id && activation.status == .active)
     s!"{label}: rejected completion did not retain the owning activation"
 
+def expectMissingRequiredReviewRejected : IO Unit := do
+  let store ← executeStore
+    (.initializeWork Application.Service.initialStore.ledger.storedHead
+      secondWork secondActivation)
+    Application.Service.initialStore "required-review fixture initialization rejected"
+  let store ← installDesignContract secondWork.id store
+  let store ← bindWorkContract secondWork.id store false
+  let store ← prepareMinimalActiveWork secondWork.id store
+  match Application.Service.complete store.ledger.storedHead secondWork.id store with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "public completion accepted a missing implementation-quality review"
+  let state ← currentState store
+  expect (!Kernel.Replay.completionRequiredReviewsReady secondWork.id state)
+    "replay accepted a missing implementation-quality review"
+  expect (state.work.any fun work =>
+    work.id == secondWork.id && work.status == .open)
+    "required-review rejection changed the active work"
+
 set_option maxRecDepth 2048 in
 def main : IO Unit := do
   testEvidenceScopeSatisfaction
+  expectMissingRequiredReviewRejected
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
   expectRejectedNoEffect
@@ -772,7 +830,8 @@ def main : IO Unit := do
   let claim : Domain.Review.Claim :=
     { id := ⟨1⟩, plan := ⟨3001⟩, work := firstWork.id, epoch
       claim := .clean, reviewer := "implementation-reviewer-1"
-      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
+      scope := some
+        (contractScope firstWork.id .designConformance "implementation-1") }
   let claimed ← executeState
     (.recordReviewClaim repositoryDone.revision claim) repositoryDone
     "current scoped review claim rejected"
@@ -807,7 +866,8 @@ def main : IO Unit := do
     { id := ⟨2⟩, plan := ⟨3001⟩, work := firstWork.id,
       epoch := refreshedEpoch, claim := .clean
       reviewer := "implementation-reviewer-1"
-      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
+      scope := some
+        (contractScope firstWork.id .designConformance "implementation-1") }
   let freshlyClaimed ← executeState
     (.recordReviewClaim repositoryRefreshed.revision freshClaim) repositoryRefreshed
     "fresh scoped review claim rejected"
@@ -853,6 +913,50 @@ def main : IO Unit := do
     completable.evidence completable.obligations completable.designs
     completable.designApprovals completable.decompositions completable.corrections)
     "authoritative current lifecycle records must allow completion"
+  let withoutQualityReview :=
+    { completable with
+      reviewPlans := completable.reviewPlans.filter fun plan =>
+        plan.scope.purpose != .implementationQuality }
+  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+    withoutQualityReview.reviewPlans withoutQualityReview.decompositions
+    withoutQualityReview.claims withoutQualityReview.adjudications
+    withoutQualityReview.reviewFindings withoutQualityReview.findingVerifications))
+    "completion accepted a missing implementation-quality review"
+  let reusedConformanceReview :=
+    { completable with
+      reviewPlans := completable.reviewPlans.map fun
+          (plan : Domain.Review.Plan) =>
+        if plan.scope.purpose ==
+            Domain.Review.Purpose.implementationQuality then
+          { plan with scope :=
+              { plan.scope with
+                purpose := Domain.Review.Purpose.designConformance } }
+        else plan }
+  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+    reusedConformanceReview.reviewPlans reusedConformanceReview.decompositions
+    reusedConformanceReview.claims reusedConformanceReview.adjudications
+    reusedConformanceReview.reviewFindings
+    reusedConformanceReview.findingVerifications))
+    "one design-conformance review was reused for both required purposes"
+  let mismatchedQualityScope :=
+    { completable with
+      reviewPlans := completable.reviewPlans.map fun
+          (plan : Domain.Review.Plan) =>
+        if plan.scope.purpose ==
+            Domain.Review.Purpose.implementationQuality then
+          { plan with scope :=
+              { plan.scope with artifactDigest := "sha256:different-artifact" } }
+        else plan }
+  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+    mismatchedQualityScope.reviewPlans mismatchedQualityScope.decompositions
+    mismatchedQualityScope.claims mismatchedQualityScope.adjudications
+    mismatchedQualityScope.reviewFindings mismatchedQualityScope.findingVerifications))
+    "completion combined required reviews from different frozen artifact scopes"
+  expect (Kernel.Replay.completionRequiredReviewsReady firstWork.id completable)
+    "replay did not recognize both exact required review purposes"
+  expect (!Kernel.Replay.completionRequiredReviewsReady
+    firstWork.id withoutQualityReview)
+    "replay accepted a missing required review purpose"
   let otherDesign :=
     { evidenceDesign with id := ⟨2⟩, contentDigest := "sha256:other-design" }
   let otherDesignObligation :=
@@ -912,7 +1016,8 @@ def main : IO Unit := do
       owner := "owner"
       reviewer := "implementation-reviewer-new"
       adjudicator := "owner"
-      scope := contractScope firstWork.id "implementation" "implementation-new" }
+      scope :=
+        contractScope firstWork.id .designConformance "implementation-new" }
   let supersededReviewState :=
     { completable with
       reviewPlans := completable.reviewPlans ++ [supersedingImplementationPlan] }
@@ -1206,7 +1311,8 @@ def main : IO Unit := do
     { id := ⟨11⟩, plan := ⟨3001⟩, work := firstWork.id,
       epoch := allReadyEpoch, claim := .findings
       reviewer := "implementation-reviewer-1"
-      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
+      scope := some
+        (contractScope firstWork.id .designConformance "implementation-1") }
   let findingsClaimed ← executeStore
     (.recordReviewClaim allReadyStore.ledger.storedHead findingsClaim) allReadyStore
     "current findings claim rejected"
@@ -1247,7 +1353,8 @@ def main : IO Unit := do
     { id := ⟨12⟩, plan := ⟨3001⟩, work := firstWork.id,
       epoch := allReadyEpoch, claim := .clean
       reviewer := "implementation-reviewer-1"
-      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
+      scope := some
+        (contractScope firstWork.id .designConformance "implementation-1") }
   let recoveryClaimed ← executeStore
     (.recordReviewClaim findingsRefreshed.ledger.storedHead recoveryClaim)
     findingsRefreshed "recovery clean claim rejected"
