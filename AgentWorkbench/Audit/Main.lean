@@ -992,8 +992,26 @@ inductive ManagedProjectStage
   | build
   | test
   | audit
-  | cli
-  | workflow
+  | behavior
+deriving DecidableEq, Repr
+
+inductive ManagedWorkflowStage
+  | initialize
+  | design
+  | designReview
+  | decompositionReview
+  | decomposition
+  | conformanceReview
+  | qualityReview
+  | planning
+  | phase
+  | task
+  | checklist
+  | workRecord
+  | validation
+  | repository
+  | evidence
+  | completion
 deriving DecidableEq, Repr
 
 structure ManagedProjectCommand where
@@ -1008,6 +1026,13 @@ structure ManagedProjectObservation where
   exitCode : Int
   stdout : String
   stderr : String
+deriving DecidableEq, Repr
+
+structure ManagedWorkflowResult where
+  stages : Array ManagedWorkflowStage
+  evidenceCount : Nat
+  stateDigest : String
+  closed : Bool
 deriving DecidableEq, Repr
 
 structure ManagedProjectFixture where
@@ -1053,7 +1078,7 @@ def managedProjectFixtures : Array ManagedProjectFixture := #[
       ⟨.build, "make", #["build"]⟩,
       ⟨.test, "make", #["test"]⟩,
       ⟨.audit, "make", #["audit"]⟩]
-    behavior := ⟨.test, "./build/app", #[]⟩
+    behavior := ⟨.behavior, "./build/app", #[]⟩
     privateIdentity := "c-project-private-identity"
   },
   {
@@ -1076,7 +1101,7 @@ def managedProjectFixtures : Array ManagedProjectFixture := #[
       ⟨.build, "python3", #["build.py"]⟩,
       ⟨.test, "python3", #["test_project.py"]⟩,
       ⟨.audit, "python3", #["-m", "py_compile", "src/app.py", "test_project.py"]⟩]
-    behavior := ⟨.test, "python3", #["src/app.py"]⟩
+    behavior := ⟨.behavior, "python3", #["src/app.py"]⟩
     privateIdentity := "python-project-private-identity"
   }
 ]
@@ -1107,20 +1132,22 @@ def observeManagedCommand (project : System.FilePath)
     stderr := output.stderr
   }
 
-def observeManagedProject (binary workflow project : System.FilePath)
+def observeManagedProject (project : System.FilePath)
     (fixture : ManagedProjectFixture) : IO (Array ManagedProjectObservation) := do
   let mut observations := #[]
   for command in fixture.commands do
     observations := observations.push (← observeManagedCommand project command)
   observations := observations.push (← observeManagedCommand project fixture.behavior)
-  observations := observations.push (← observeManagedCommand project
-    ⟨.cli, binary.toString, #[]⟩)
-  observations := observations.push (← observeManagedCommand project
-    ⟨.workflow, workflow.toString, #[]⟩)
   pure observations
 
 def requiredManagedStages : Array ManagedProjectStage :=
-  #[.build, .test, .audit, .cli, .workflow]
+  #[.build, .test, .audit, .behavior]
+
+def requiredManagedWorkflowStages : Array ManagedWorkflowStage :=
+  #[.initialize, .design, .designReview, .decompositionReview,
+    .decomposition, .conformanceReview, .qualityReview, .planning,
+    .phase, .task, .checklist, .workRecord, .validation, .repository,
+    .evidence, .completion]
 
 def validateManagedFixtureSet
     (fixtures : Array ManagedProjectFixture) : Except String Unit := do
@@ -1222,13 +1249,14 @@ def recordManagedReview (fixture : ManagedProjectFixture)
       adjudicator := plan.adjudicator
     }) store s!"{repr purpose} review adjudication"
 
-def recordManagedObservations (fixture : ManagedProjectFixture)
-    (observations : Array ManagedProjectObservation) : IO Unit := do
+def runManagedWorkflow (fixture : ManagedProjectFixture)
+    (observations : Array ManagedProjectObservation) : IO ManagedWorkflowResult := do
   let transaction ← match Application.Service.execute
       Application.Service.bootstrapCommand Application.Service.initialStore with
     | .error error =>
         fail s!"managed-project fixture {fixture.name} could not initialize its workflow: {repr error}"
     | .ok transaction => pure transaction
+  let mut stages : Array ManagedWorkflowStage := #[.initialize]
   let work : Domain.WorkId := ⟨1⟩
   let designId : Domain.DesignId := ⟨1⟩
   let design : Domain.Design.DesignVersion := {
@@ -1245,13 +1273,16 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
   let mut store ← executeManagedCommand fixture
     (.importDesign transaction.result.ledger.storedHead design)
     transaction.result "design import"
+  stages := stages.push .design
   store ← recordManagedReview fixture 100 .design designId work
     snapshot design.contentDigest ⟨0⟩ store
   store ← executeManagedCommand fixture
     (.approveDesign store.ledger.storedHead designId) store "design approval"
+  stages := stages.push .designReview
   let decompositionArtifact := s!"decomposition:{fixture.name}"
   store ← recordManagedReview fixture 200 .decomposition designId work
     snapshot decompositionArtifact ⟨0⟩ store
+  stages := stages.push .decompositionReview
   let decomposition : Domain.Design.Decomposition := {
     key := decompositionArtifact
     design := designId
@@ -1274,11 +1305,14 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
   store ← executeManagedCommand fixture
     (.recordDecomposition store.ledger.storedHead decomposition)
     store "reviewed decomposition"
+  stages := stages.push .decomposition
   let completionEpoch : Domain.CompletionEpoch := ⟨4⟩
   store ← recordManagedReview fixture 300 .designConformance designId work
     snapshot artifact completionEpoch store
+  stages := stages.push .conformanceReview
   store ← recordManagedReview fixture 400 .implementationQuality designId work
     snapshot artifact completionEpoch store
+  stages := stages.push .qualityReview
   let completionPlan : Domain.Lifecycle.CompletionPlan := {
     work
     relatedWork := []
@@ -1295,25 +1329,32 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
   store ← executeManagedCommand fixture
     (.planCompletion store.ledger.storedHead completionPlan)
     store "completion planning"
+  stages := stages.push .planning
   store ← executeManagedCommand fixture
     (.completePhase store.ledger.storedHead work "project-execution")
     store "phase completion"
+  stages := stages.push .phase
   store ← executeManagedCommand fixture
     (.completeTask store.ledger.storedHead work "build-test-audit")
     store "task completion"
+  stages := stages.push .task
   store ← executeManagedCommand fixture
     (.completeChecklist store.ledger.storedHead work "state-independence")
     store "checklist completion"
+  stages := stages.push .checklist
   store ← executeManagedCommand fixture
     (.linkWorkRecord store.ledger.storedHead work
       "project-observations" s!"observations:{artifact}")
     store "work-record linkage"
+  stages := stages.push .workRecord
   store ← executeManagedCommand fixture
     (.passValidation store.ledger.storedHead work "project-validation" artifact)
     store "validation recording"
+  stages := stages.push .validation
   store ← executeManagedCommand fixture
     (.classifyRepository store.ledger.storedHead work "project-snapshot" snapshot)
     store "repository classification"
+  stages := stages.push .repository
   for (observation, index) in observations.zipIdx do
     let key := s!"project-observation-{index}"
     let obligation : Domain.Evidence.Obligation := {
@@ -1329,7 +1370,7 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
       kind := if observation.stage == .build then .build else .test
       requirements := ["managed-project-independence"]
       expectedProducer := s!"{fixture.language}:{fixture.buildSystem}:{fixture.validationTool}"
-      expectedObservation := s!"private-state-present:{index}"
+      expectedObservation := s!"project-observation:{index}"
       design := designId
       designRevision := design.revision
     }
@@ -1361,6 +1402,7 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
     unless (Application.Service.queryGate
         (.evidenceExact work key) store).value == .pass do
       fail s!"managed-project fixture {fixture.name} evidence gate rejected {key}"
+  stages := stages.push .evidence
   let state ← match (Application.Service.status store).value.currentState? with
     | none => fail s!"managed-project fixture {fixture.name} lost its current workflow state"
     | some state => pure state
@@ -1379,6 +1421,22 @@ def recordManagedObservations (fixture : ManagedProjectFixture)
   unless completedState.work.any fun unit =>
       unit.id == work && unit.status == .closed do
     fail s!"managed-project fixture {fixture.name} did not complete its workflow"
+  stages := stages.push .completion
+  pure {
+    stages
+    evidenceCount := state.evidence.length
+    stateDigest := (Kernel.Replay.stateDigest completedState).value
+    closed := true
+  }
+
+def validateManagedWorkflowResult (expectedEvidence : Nat)
+    (result : ManagedWorkflowResult) : Except String Unit := do
+  unless result.stages = requiredManagedWorkflowStages do
+    throw "managed-project workflow omitted, duplicated, or reordered a required lifecycle stage"
+  unless result.evidenceCount = expectedEvidence do
+    throw "managed-project workflow did not bind every project observation as exact evidence"
+  unless result.closed && !result.stateDigest.isEmpty do
+    throw "managed-project workflow did not reach a deterministic closed state"
 
 def auditManagedProjectNegativeFixtures : IO Unit := do
   match validateManagedFixtureSet managedProjectFixtures with
@@ -1404,11 +1462,11 @@ def auditManagedProjectNegativeFixtures : IO Unit := do
   let movedState := System.FilePath.mk "moved-private-state"
   let observations : Array ManagedProjectObservation := requiredManagedStages.map fun stage =>
     { stage, invocation := "fixture-command", exitCode := 0, stdout := "", stderr := "" }
-  if (validateManagedProjectResult fixture files files
-      (observations.filter (·.stage != .workflow))
-      (observations.filter (·.stage != .workflow))
-      privateState movedState).isOk then
-    fail "missing managed-project workflow stage fixture was accepted"
+  for stage in requiredManagedStages do
+    let incomplete := observations.filter (·.stage != stage)
+    if (validateManagedProjectResult fixture files files incomplete incomplete
+        privateState movedState).isOk then
+      fail s!"missing managed-project command stage fixture was accepted: {repr stage}"
   if (validateManagedProjectResult fixture files
       (files.push ("changed", "bytes")) observations observations
       privateState movedState).isOk then
@@ -1421,14 +1479,30 @@ def auditManagedProjectNegativeFixtures : IO Unit := do
       changedObservations privateState movedState).isOk then
     fail "private-state-dependent managed-project behavior fixture was accepted"
   let leaked := observations.map fun observation =>
-    if observation.stage == .cli then
+    if observation.stage == .behavior then
       { observation with stdout := fixture.privateIdentity }
     else observation
   if (validateManagedProjectResult fixture files files leaked leaked
       privateState movedState).isOk then
     fail "managed-project identity leak fixture was accepted"
+  let completeWorkflow : ManagedWorkflowResult := {
+    stages := requiredManagedWorkflowStages
+    evidenceCount := observations.size
+    stateDigest := "deterministic-state"
+    closed := true
+  }
+  for stage in requiredManagedWorkflowStages do
+    let incomplete := {
+      completeWorkflow with
+      stages := completeWorkflow.stages.filter (· != stage)
+    }
+    if (validateManagedWorkflowResult observations.size incomplete).isOk then
+      fail s!"missing managed-project lifecycle stage fixture was accepted: {repr stage}"
+  if (validateManagedWorkflowResult observations.size
+      { completeWorkflow with evidenceCount := observations.size - 1 }).isOk then
+    fail "incomplete managed-project evidence fixture was accepted"
 
-def runManagedProjectFixture (binary workflow root : System.FilePath)
+def runManagedProjectFixture (root : System.FilePath)
     (fixture : ManagedProjectFixture) : IO Unit := do
   let project := root / fixture.name
   IO.FS.createDirAll project
@@ -1437,29 +1511,29 @@ def runManagedProjectFixture (binary workflow root : System.FilePath)
   IO.FS.createDirAll privateState
   IO.FS.writeFile (privateState / "identity") fixture.privateIdentity
   let beforeFiles ← readFixtureFiles project fixture.publicFiles
-  let before ← observeManagedProject binary workflow project fixture
+  let before ← observeManagedProject project fixture
+  let beforeWorkflow ← runManagedWorkflow fixture before
   let movedState := root / s!"{fixture.name}-private-state"
   IO.FS.rename privateState movedState
-  let after ← observeManagedProject binary workflow project fixture
+  let after ← observeManagedProject project fixture
+  let afterWorkflow ← runManagedWorkflow fixture after
   let afterFiles ← readFixtureFiles project fixture.publicFiles
   match validateManagedProjectResult fixture beforeFiles afterFiles before after
       privateState movedState with
   | .error error => fail error
   | .ok _ => pure ()
-  recordManagedObservations fixture before
+  match validateManagedWorkflowResult before.size beforeWorkflow,
+      validateManagedWorkflowResult after.size afterWorkflow with
+  | .error error, _ | _, .error error => fail error
+  | .ok _, .ok _ => pure ()
+  unless beforeWorkflow = afterWorkflow do
+    fail s!"managed-project fixture {fixture.name} complete workflow depends on private state presence"
 
 def auditManagedProjectIndependence : IO Unit := do
   auditManagedProjectNegativeFixtures
-  let buildBin := (← IO.currentDir) / ".lake" / "build" / "bin"
-  let binary := buildBin / "agent-workbench"
-  let workflow := buildBin / "workflow-laws"
-  unless ← binary.pathExists do
-    fail s!"compiled CLI is absent: {binary}"
-  unless ← workflow.pathExists do
-    fail s!"compiled workflow validation is absent: {workflow}"
   IO.FS.withTempDir fun root => do
     for fixture in managedProjectFixtures do
-      runManagedProjectFixture binary workflow root fixture
+      runManagedProjectFixture root fixture
 
 def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := designRules ++ #[
   ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
