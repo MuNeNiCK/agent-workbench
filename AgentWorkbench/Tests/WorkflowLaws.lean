@@ -657,18 +657,59 @@ def run : IO Unit := do
     | .ok transaction => pure transaction.result
     | .error error => throw <| IO.userError s!"public bootstrap failed: {repr error}"
   let publicCorrection : Domain.Design.Correction :=
-    { key := "PUBLIC-COR", scope := "global", statement := "persist", resolved := false }
+    { key := "PUBLIC-COR", scope := "workflow", statement := "persist"
+      resolved := false, work := some workOne.id }
   let publicStore ←
     match Application.Service.execute
         (.recordUserCorrection publicStore.ledger.storedHead publicCorrection)
         publicStore with
     | .ok transaction => pure transaction.result
     | .error error => throw <| IO.userError s!"public correction failed: {repr error}"
-  match (Kernel.Projection.inspect publicStore).currentState? with
-  | some recovered =>
-      expect (recovered.corrections.contains publicCorrection)
-        "public replay projection lost durable correction"
-  | none => throw <| IO.userError "public replay projection unavailable"
+  let replacementSession := { publicStore with active := none }
+  let recoveryAction ←
+    match (Application.Service.resolve replacementSession).value with
+    | .action action => pure action
+    | .blocked blocker =>
+        throw <| IO.userError s!"replacement session recovery blocked: {repr blocker}"
+  let recoveredStore ←
+    match Application.Service.executeRecovery recoveryAction replacementSession with
+    | .ok transaction => pure transaction.adopted.result
+    | .error error =>
+        throw <| IO.userError s!"replacement session replay failed: {repr error}"
+  let recoveredState ←
+    match (Application.Service.status recoveredStore).value.currentState? with
+    | some recovered => pure recovered
+    | none => throw <| IO.userError "replacement session projection unavailable"
+  expect (recoveredState.corrections.contains publicCorrection)
+    "replacement session replay lost durable correction"
+  expect (recoveredState.reviewPlans.isEmpty)
+    "replacement session introduced planning state before correction recovery"
+  expect ((Application.Service.queryGate
+      (.correctionsReady publicCorrection.scope) recoveredStore).value ==
+        .blocked "an applicable durable user correction remains unresolved")
+    "recovered correction was not visible to the public readiness gate"
+  let resolvedStore ←
+    match Application.Service.execute
+        (.resolveUserCorrection recoveredStore.ledger.storedHead publicCorrection.key)
+        recoveredStore with
+    | .ok transaction => pure transaction.result
+    | .error error => throw <| IO.userError s!"public correction resolution failed: {repr error}"
+  let publicRule : Domain.Design.LearnedRule :=
+    { key := "PUBLIC-RULE", correction := publicCorrection.key
+      scope := publicCorrection.scope, statement := publicCorrection.statement }
+  let promotedStore ←
+    match Application.Service.execute
+        (.promoteCorrection resolvedStore.ledger.storedHead publicRule) resolvedStore with
+    | .ok transaction => pure transaction.result
+    | .error error => throw <| IO.userError s!"public correction promotion failed: {repr error}"
+  match (Application.Service.status promotedStore).value.currentState? with
+  | some promoted =>
+      expect (promoted.corrections.any fun item =>
+        item.key == publicCorrection.key && item.resolved)
+        "promoted correction lost its resolved provenance"
+      expect (promoted.learnedRules.contains publicRule)
+        "replacement session lost promoted correction provenance"
+  | none => throw <| IO.userError "promoted correction projection unavailable"
 
   IO.println "workflow laws: pass"
 
