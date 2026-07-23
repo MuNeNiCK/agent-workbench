@@ -737,11 +737,15 @@ def diagnose (path : System.FilePath) : IO (Except OpenError Diagnosis) := do
 private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepairPlan) :
     IO (Option ProjectionRepairReceipt) := do
   let statement ← db.prepare "
-    SELECT adopted_digest FROM projection_repairs
-    WHERE observed_digest=? AND head_revision=? AND history_digest=?"
-  statement.bindText 1 plan.observedDigest
-  statement.bindText 2 (toString plan.head.revision.value)
-  statement.bindText 3 plan.head.historyDigest.value
+    SELECT repair.adopted_digest
+    FROM projection_repairs AS repair
+    JOIN metadata AS store ON store.singleton = 1
+    WHERE store.ledger_id=? AND repair.observed_digest=?
+      AND repair.head_revision=? AND repair.history_digest=?"
+  statement.bindText 1 plan.head.ledger.value
+  statement.bindText 2 plan.observedDigest
+  statement.bindText 3 (toString plan.head.revision.value)
+  statement.bindText 4 plan.head.historyDigest.value
   unless ← statement.step do return none
   return some { plan, adoptedDigest := ← statement.columnText 0 }
 

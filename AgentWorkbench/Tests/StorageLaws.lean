@@ -732,6 +732,10 @@ def testProjectionRepairCrashRetry (root : System.FilePath) : IO Unit := do
   match ← Adapter.SQLite.repairProjection ledger changed with
   | .error (.corrupt _) => pure ()
   | other => throw <| IO.userError s!"changed projection repair plan was accepted: {repr other}"
+  let changedLedger := { plan with head := { plan.head with ledger := ⟨"different-ledger"⟩ } }
+  match ← Adapter.SQLite.repairProjection ledger changedLedger with
+  | .error (.corrupt _) => pure ()
+  | other => throw <| IO.userError s!"changed-ledger projection repair was accepted: {repr other}"
   let unseen := { plan with head := { plan.head with revision := plan.head.revision.next } }
   match ← Adapter.SQLite.repairProjection ledger unseen with
   | .error (.corrupt _) => pure ()
