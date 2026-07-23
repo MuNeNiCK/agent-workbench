@@ -1004,6 +1004,7 @@ deriving DecidableEq, Repr
 
 structure ManagedProjectObservation where
   stage : ManagedProjectStage
+  invocation : String
   exitCode : Int
   stdout : String
   stderr : String
@@ -1100,6 +1101,7 @@ def observeManagedCommand (project : System.FilePath)
     cmd := command.command, args := command.args, cwd := some project }
   pure {
     stage := command.stage
+    invocation := String.intercalate " " (command.command :: command.args.toList)
     exitCode := Int.ofNat output.exitCode.toNat
     stdout := output.stdout
     stderr := output.stderr
@@ -1159,31 +1161,224 @@ def validateManagedProjectResult (fixture : ManagedProjectFixture)
         contentHasMarker observation.stderr privateMarkers then
       throw s!"managed-project fixture {fixture.name} exposed private identity or path"
 
+def executeManagedCommand (fixture : ManagedProjectFixture)
+    (command : Kernel.Decide.Command) (store : Kernel.Projection.Store)
+    (stage : String) : IO Kernel.Projection.Store := do
+  match Application.Service.execute command store with
+  | .error error =>
+      fail s!"managed-project fixture {fixture.name} rejected {stage}: {repr error}"
+  | .ok transaction => pure transaction.result
+
+def managedObservationDigest
+    (observations : Array ManagedProjectObservation) : IO String :=
+  IO.FS.withTempFile fun handle path => do
+    for observation in observations do
+      handle.putStr s!"{repr observation.stage}\n{observation.invocation}\n"
+      handle.putStr s!"{observation.exitCode}\n{observation.stdout}\n{observation.stderr}\n"
+    handle.flush
+    sha256File path.toString
+
+def managedScope (design : Domain.DesignId) (work : Domain.WorkId)
+    (snapshot artifact : String) (purpose : Domain.Review.Purpose) :
+    Domain.Review.FrozenScope := {
+  design := some design
+  work
+  repositorySnapshot := snapshot
+  artifactDigest := artifact
+  purpose
+}
+
+def recordManagedReview (fixture : ManagedProjectFixture)
+    (id : Nat) (purpose : Domain.Review.Purpose)
+    (design : Domain.DesignId) (work : Domain.WorkId) (snapshot artifact : String)
+    (claimEpoch : Domain.CompletionEpoch) (store : Kernel.Projection.Store) :
+    IO Kernel.Projection.Store := do
+  let plan : Domain.Review.Plan := {
+    id := ⟨id⟩
+    owner := "bootstrap-owner"
+    reviewer := s!"independent-reviewer-{id}"
+    adjudicator := "bootstrap-owner"
+    scope := managedScope design work snapshot artifact purpose
+  }
+  let store ← executeManagedCommand fixture
+    (.recordReviewPlan store.ledger.storedHead plan) store
+    s!"{repr purpose} review plan"
+  let claim : Domain.Review.Claim := {
+    id := ⟨id⟩
+    plan := plan.id
+    work
+    epoch := claimEpoch
+    claim := .clean
+    reviewer := plan.reviewer
+    scope := some plan.scope
+  }
+  let store ← executeManagedCommand fixture
+    (.recordReviewClaim store.ledger.storedHead claim) store
+    s!"{repr purpose} review claim"
+  executeManagedCommand fixture
+    (.recordReviewAdjudication store.ledger.storedHead {
+      review := claim.id
+      decision := .accepted
+      adjudicator := plan.adjudicator
+    }) store s!"{repr purpose} review adjudication"
+
 def recordManagedObservations (fixture : ManagedProjectFixture)
     (observations : Array ManagedProjectObservation) : IO Unit := do
   let transaction ← match Application.Service.execute
       Application.Service.bootstrapCommand Application.Service.initialStore with
     | .error error =>
-        fail s!"managed-project fixture {fixture.name} could not initialize typed workflow: {repr error}"
+        fail s!"managed-project fixture {fixture.name} could not initialize its workflow: {repr error}"
     | .ok transaction => pure transaction
-  let mut store := transaction.result
+  let work : Domain.WorkId := ⟨1⟩
+  let designId : Domain.DesignId := ⟨1⟩
+  let design : Domain.Design.DesignVersion := {
+    id := designId
+    revision := ⟨1⟩
+    owner := "bootstrap-owner"
+    contentDigest := s!"design:{fixture.name}"
+    requirements := [{ key := "managed-project-independence", active := true }]
+    decisions := ["project tools enter through typed observations"]
+    validationGates := ["project build, test, audit, and state independence"]
+  }
+  let snapshot := s!"fixture:{fixture.name}"
+  let artifact ← managedObservationDigest observations
+  let mut store ← executeManagedCommand fixture
+    (.importDesign transaction.result.ledger.storedHead design)
+    transaction.result "design import"
+  store ← recordManagedReview fixture 100 .design designId work
+    snapshot design.contentDigest ⟨0⟩ store
+  store ← executeManagedCommand fixture
+    (.approveDesign store.ledger.storedHead designId) store "design approval"
+  let decompositionArtifact := s!"decomposition:{fixture.name}"
+  store ← recordManagedReview fixture 200 .decomposition designId work
+    snapshot decompositionArtifact ⟨0⟩ store
+  let decomposition : Domain.Design.Decomposition := {
+    key := decompositionArtifact
+    design := designId
+    work
+    designRevision := design.revision
+    contentDigest := decompositionArtifact
+    items := [{
+      key := "project-lifecycle"
+      requirements := ["managed-project-independence"]
+      implementationWork := ["run project toolchain"]
+      tasks := ["build, test, and audit"]
+      completionChecks := ["behavior is independent of private state"]
+      checklists := ["typed evidence is exact"]
+      validationGates := ["complete project workflow"]
+    }]
+    reviewer := "independent-reviewer-200"
+    adjudicator := "bootstrap-owner"
+    accepted := true
+  }
+  store ← executeManagedCommand fixture
+    (.recordDecomposition store.ledger.storedHead decomposition)
+    store "reviewed decomposition"
+  let completionEpoch : Domain.CompletionEpoch := ⟨4⟩
+  store ← recordManagedReview fixture 300 .designConformance designId work
+    snapshot artifact completionEpoch store
+  store ← recordManagedReview fixture 400 .implementationQuality designId work
+    snapshot artifact completionEpoch store
+  let completionPlan : Domain.Lifecycle.CompletionPlan := {
+    work
+    relatedWork := []
+    phases := ["project-execution"]
+    tasks := ["build-test-audit"]
+    checklists := ["state-independence"]
+    reviews := [⟨300⟩, ⟨400⟩]
+    findings := []
+    validations := ["project-validation"]
+    repositories := ["project-snapshot"]
+    corrections := []
+    workRecords := ["project-observations"]
+  }
+  store ← executeManagedCommand fixture
+    (.planCompletion store.ledger.storedHead completionPlan)
+    store "completion planning"
+  store ← executeManagedCommand fixture
+    (.completePhase store.ledger.storedHead work "project-execution")
+    store "phase completion"
+  store ← executeManagedCommand fixture
+    (.completeTask store.ledger.storedHead work "build-test-audit")
+    store "task completion"
+  store ← executeManagedCommand fixture
+    (.completeChecklist store.ledger.storedHead work "state-independence")
+    store "checklist completion"
+  store ← executeManagedCommand fixture
+    (.linkWorkRecord store.ledger.storedHead work
+      "project-observations" s!"observations:{artifact}")
+    store "work-record linkage"
+  store ← executeManagedCommand fixture
+    (.passValidation store.ledger.storedHead work "project-validation" artifact)
+    store "validation recording"
+  store ← executeManagedCommand fixture
+    (.classifyRepository store.ledger.storedHead work "project-snapshot" snapshot)
+    store "repository classification"
   for (observation, index) in observations.zipIdx do
-    let attempt : Domain.ExternalOperation.Attempt := {
-      operation := ⟨s!"{fixture.name}-{repr observation.stage}-{index}"⟩
-      artifactDigest := s!"exit:{observation.exitCode};stdout:{observation.stdout.length};stderr:{observation.stderr.length}"
-      state := .prepared
+    let key := s!"project-observation-{index}"
+    let obligation : Domain.Evidence.Obligation := {
+      work
+      key
+      revision := store.ledger.storedHead
+      commandProfile := s!"{repr observation.stage}"
+      invocation := observation.invocation
+      repository := fixture.name
+      snapshot
+      artifactDigest := artifact
+      current := true
+      kind := if observation.stage == .build then .build else .test
+      requirements := ["managed-project-independence"]
+      expectedProducer := s!"{fixture.language}:{fixture.buildSystem}:{fixture.validationTool}"
+      expectedObservation := s!"private-state-present:{index}"
+      design := designId
+      designRevision := design.revision
     }
-    store ← match Application.Service.execute
-        (.recordExternalOperation store.ledger.storedHead attempt) store with
-      | .error error =>
-          fail s!"managed-project fixture {fixture.name} typed observation was rejected: {repr error}"
-      | .ok transaction => pure transaction.result
-  let inspection := (Application.Service.status store).value
-  let state ← match inspection.currentState? with
+    store ← executeManagedCommand fixture
+      (.recordObligation store.ledger.storedHead obligation)
+      store s!"typed obligation {index}"
+    let evidence : Domain.Evidence.Evidence := {
+      id := ⟨1000 + index⟩
+      work
+      obligation := obligation.key
+      revision := obligation.revision
+      commandProfile := obligation.commandProfile
+      invocation := obligation.invocation
+      exitCode := observation.exitCode
+      repository := obligation.repository
+      snapshot := obligation.snapshot
+      artifactDigest := obligation.artifactDigest
+      current := true
+      kind := obligation.kind
+      requirements := obligation.requirements
+      producer := obligation.expectedProducer
+      observedAt := obligation.expectedObservation
+      design := obligation.design
+      designRevision := obligation.designRevision
+    }
+    store ← executeManagedCommand fixture
+      (.recordEvidence store.ledger.storedHead evidence)
+      store s!"typed evidence {index}"
+    unless (Application.Service.queryGate
+        (.evidenceExact work key) store).value == .pass do
+      fail s!"managed-project fixture {fixture.name} evidence gate rejected {key}"
+  let state ← match (Application.Service.status store).value.currentState? with
     | none => fail s!"managed-project fixture {fixture.name} lost its current workflow state"
     | some state => pure state
-  unless state.externalOperations.length = observations.size do
+  unless state.evidence.length = observations.size &&
+      state.obligations.length = observations.size do
     fail s!"managed-project fixture {fixture.name} did not persist every typed observation"
+  unless (Application.Service.queryGate (.completion work) store).value == .pass do
+    fail s!"managed-project fixture {fixture.name} did not reach completion readiness"
+  let completed ← match Application.Service.complete store.ledger.storedHead work store with
+    | .error error =>
+        fail s!"managed-project fixture {fixture.name} completion was rejected: {repr error}"
+    | .ok transaction => pure transaction.result
+  let completedState ← match (Application.Service.status completed).value.currentState? with
+    | none => fail s!"managed-project fixture {fixture.name} lost completed state"
+    | some state => pure state
+  unless completedState.work.any fun unit =>
+      unit.id == work && unit.status == .closed do
+    fail s!"managed-project fixture {fixture.name} did not complete its workflow"
 
 def auditManagedProjectNegativeFixtures : IO Unit := do
   match validateManagedFixtureSet managedProjectFixtures with
@@ -1208,7 +1403,7 @@ def auditManagedProjectNegativeFixtures : IO Unit := do
   let privateState := System.FilePath.mk (".private-" ++ "state")
   let movedState := System.FilePath.mk "moved-private-state"
   let observations : Array ManagedProjectObservation := requiredManagedStages.map fun stage =>
-    { stage, exitCode := 0, stdout := "", stderr := "" }
+    { stage, invocation := "fixture-command", exitCode := 0, stdout := "", stderr := "" }
   if (validateManagedProjectResult fixture files files
       (observations.filter (·.stage != .workflow))
       (observations.filter (·.stage != .workflow))
