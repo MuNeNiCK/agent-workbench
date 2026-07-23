@@ -637,17 +637,24 @@ def run : IO Unit := do
     "fresh clean adjudicated review did not pass readiness"
 
   for wrong in [
+      { evidenceTwo with work := ⟨99⟩ },
+      { evidenceTwo with obligation := "wrong-obligation" },
       { evidenceTwo with kind := .build },
       { evidenceTwo with commandProfile := "wrong-profile" },
+      { evidenceTwo with invocation := "wrong-invocation" },
+      { evidenceTwo with exitCode := 1 },
       { evidenceTwo with design := ⟨99⟩ },
+      { evidenceTwo with designRevision := evidenceTwo.designRevision.next },
       { evidenceTwo with artifactDigest := "sha256:wrong" },
       { evidenceTwo with repository := "wrong-repository" },
       { evidenceTwo with snapshot := "wrong-snapshot" },
       { evidenceTwo with revision := evidenceTwo.revision.next },
+      { evidenceTwo with current := false },
+      { evidenceTwo with requirements := ["wrong-requirement"] },
       { evidenceTwo with producer := "wrong-producer" },
       { evidenceTwo with observedAt := "wrong-observation" }] do
     expect (!Domain.Evidence.exactFor wrong obligationTwo)
-      "wrong kind or scope evidence matched its obligation"
+      "independently mismatched evidence matched its obligation"
   expect (Kernel.Gates.evidenceExactState workTwo.id obligationTwo.key state)
     "exact traceable evidence did not pass evidence readiness"
 

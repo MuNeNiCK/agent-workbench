@@ -371,6 +371,54 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
   expect (designed.store.ledger.storedHead == ⟨2⟩)
     "evidence fixture design import drifted"
 
+def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
+  let ledger := root / "corrections.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let initialized ← bootstrap ledger
+  let correction : Domain.Design.Correction := {
+    key := "durable-correction"
+    scope := "workflow"
+    statement := "recover before planning"
+    resolved := false
+    work := some ⟨1⟩ }
+  let recorded ← mutate ledger "record-correction"
+    initialized.store.ledger.storedHead.value
+    (.recordUserCorrection initialized.store.ledger.storedHead correction)
+  let recovered ← load ledger
+  let recoveredState ←
+    match (Application.Service.status recovered).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "fresh correction session is not recoverable"
+  expect (recoveredState.corrections.contains correction)
+    "fresh SQLite session lost the durable correction"
+  expect (recoveredState.reviewPlans.isEmpty)
+    "fresh SQLite session introduced planning before correction recovery"
+  expect ((Application.Service.queryGate
+      (.correctionsReady correction.scope) recovered).value ==
+        .blocked "an applicable durable user correction remains unresolved")
+    "fresh SQLite session did not expose the correction readiness blocker"
+  let resolved ← mutate ledger "resolve-correction"
+    recorded.store.ledger.storedHead.value
+    (.resolveUserCorrection recorded.store.ledger.storedHead correction.key)
+  let rule : Domain.Design.LearnedRule := {
+    key := "durable-correction-rule"
+    correction := correction.key
+    scope := correction.scope
+    statement := correction.statement }
+  let _ ← mutate ledger "promote-correction"
+    resolved.store.ledger.storedHead.value
+    (.promoteCorrection resolved.store.ledger.storedHead rule)
+  let promoted ← load ledger
+  let promotedState ←
+    match (Application.Service.status promoted).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "promoted correction session is not recoverable"
+  expect (promotedState.corrections.any fun item =>
+    item.key == correction.key && item.resolved)
+    "fresh SQLite session lost resolved correction provenance"
+  expect (promotedState.learnedRules.contains rule)
+    "fresh SQLite session lost promoted correction provenance"
+
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
     ("deleted", "DELETE FROM artifacts"),
@@ -1082,6 +1130,7 @@ def main (args : List String) : IO Unit :=
     testRelativeReplacement root
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
+    testCorrectionPersistence root
     testArtifactBindingsAndRace root
     testFilesystemArtifactFaults root
     testUpdateInspectionReadOnly root
