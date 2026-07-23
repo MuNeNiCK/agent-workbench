@@ -210,6 +210,28 @@ def testReadOnlyFaultDetection (root : System.FilePath) : IO Unit := do
   | .ok retry => expect (retry == repairReceipt) "projection repair retry changed receipt"
   | .error error => throw <| IO.userError s!"exact projection repair retry failed: {repr error}"
   let _ ← load projectionLedger
+  let laterAttempt : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"after-projection-repair"⟩
+    artifactDigest := "proof:after-projection-repair"
+    state := .prepared }
+  let advanced ← match ← Adapter.SQLite.mutate projectionLedger ⟨"after-projection-repair"⟩
+      ⟨1⟩ (.recordExternalOperation ⟨1⟩ laterAttempt) with
+    | .ok outcome => pure outcome
+    | .error error => throw <| IO.userError s!"post-repair advancement failed: {repr error}"
+  let advancedBefore ← IO.FS.readBinFile projectionLedger
+  match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
+  | .ok retry =>
+      expect (retry == repairReceipt)
+        "historical projection repair retry changed receipt"
+  | .error error =>
+      throw <| IO.userError s!"historical projection repair retry failed: {repr error}"
+  expect ((← IO.FS.readBinFile projectionLedger) == advancedBefore &&
+      (← load projectionLedger) == advanced.store)
+    "historical projection repair retry changed current authoritative state"
+  let changedHistorical := { repairPlan with observedDigest := repairPlan.observedDigest ++ "-changed" }
+  match ← Adapter.SQLite.repairProjection projectionLedger changedHistorical with
+  | .error (.corrupt _) => pure ()
+  | other => throw <| IO.userError s!"changed historical repair plan was accepted: {repr other}"
   execSql projectionLedger "UPDATE projection_repairs SET adopted_digest='tampered'"
   let tamperedBefore ← IO.FS.readBinFile projectionLedger
   match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with

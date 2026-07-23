@@ -853,6 +853,24 @@ private def writeCanonicalProjection (db : _root_.SQLite)
   statement.bindBlob 4 (toBinary projection)
   statement.exec
 
+private def projectionAtPoint (ledger : Replay.VerifiedLedger)
+    (point : Domain.Projection.LedgerPoint) : Except OpenError Projection.ProjectionObservation := do
+  unless point.ledger = ledger.image.id do
+    throw (.corrupt "projection repair receipt belongs to another ledger")
+  let events := ledger.image.events.take point.revision.value
+  let historyDigest := Replay.eventDigest events
+  unless historyDigest = point.historyDigest do
+    throw (.corrupt "projection repair receipt history is not authoritative")
+  let state ← match Replay.replayAt ledger point.revision with
+    | .ok value => pure value
+    | .error fault => throw (.corrupt s!"projection repair receipt replay failed: {repr fault}")
+  let image : Replay.LedgerImage := {
+    id := ledger.image.id
+    events
+    storedHead := point.revision
+    storedHistoryDigest := historyDigest }
+  return Application.Service.projectionFor image state.state
+
 def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepairPlan)
     (beforeWriterLock afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
   if !(← path.pathExists) then return .error .uninitialized
@@ -870,21 +888,29 @@ def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepa
           | .error error => return .error error
         let projection := Application.Service.projectionFor ledger.image ledger.head.state
         let canonicalDigest ← DurableFilesystem.digest (toBinary projection)
+        match ← lookupProjectionRepair db plan with
+        | some receipt =>
+            let historical ← match projectionAtPoint ledger plan.head with
+              | .ok value => pure value
+              | .error error => return .error error
+            let historicalDigest ← DurableFilesystem.digest (toBinary historical)
+            unless receipt.adoptedDigest = historicalDigest do
+              return .error (.corrupt "projection repair receipt does not match canonical projection")
+            if ledger.point = plan.head then
+              let diagnosis ← match ← diagnoseFrom db with
+                | .ok value => pure value
+                | .error error => return .error error
+              match diagnosis with
+              | .healthy _ => pure ()
+              | .projectionRepairRequired current =>
+                  unless current = plan do
+                    return .error (.corrupt "projection repair plan is stale")
+                  writeCanonicalProjection db projection
+            return .ok receipt
+        | none => pure ()
         let diagnosis ← match ← diagnoseFrom db with
           | .ok value => pure value
           | .error error => return .error error
-        match ← lookupProjectionRepair db plan with
-        | some receipt =>
-            unless receipt.adoptedDigest = canonicalDigest do
-              return .error (.corrupt "projection repair receipt does not match canonical projection")
-            match diagnosis with
-            | .healthy _ => pure ()
-            | .projectionRepairRequired current =>
-                unless current = plan do
-                  return .error (.corrupt "projection repair plan is stale")
-                writeCanonicalProjection db projection
-            return .ok receipt
-        | none => pure ()
         let current ← match diagnosis with
           | .projectionRepairRequired value => pure value
           | .healthy _ => return .error (.corrupt "projection repair is no longer required")
