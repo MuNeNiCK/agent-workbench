@@ -562,10 +562,34 @@ def run : IO Unit := do
     { key := "resume-readiness-correction", scope := "workflow"
       statement := "resume only after current readiness is re-established"
       resolved := false, work := some workTwo.id, design := some designVersion.id }
+  let unrelatedCorrection :=
+    { correction with key := "unrelated-correction", work := some ⟨99⟩ }
+  let unrelatedCorrectionState :=
+    { state with corrections := state.corrections ++ [unrelatedCorrection] }
+  expect (!(Kernel.Resolver.resumableActivations unrelatedCorrectionState).isEmpty)
+    "unrelated correction blocked a resumable activation"
+  let globalCorrection :=
+    { correction with key := "global-correction", work := none, design := none }
+  let globalCorrectionState :=
+    { state with corrections := state.corrections ++ [globalCorrection] }
+  expect (Kernel.Resolver.resumableActivations globalCorrectionState).isEmpty
+    "global correction allowed a resumable activation"
+  let workCorrectionState :=
+    { state with corrections := state.corrections ++ [{
+        correction with key := "work-correction", design := none }] }
+  expect (Kernel.Resolver.resumableActivations workCorrectionState).isEmpty
+    "work-scoped correction allowed a resumable activation"
+  let designCorrectionState :=
+    { state with corrections := state.corrections ++ [{
+        correction with key := "design-correction", work := none }] }
+  expect (Kernel.Resolver.resumableActivations designCorrectionState).isEmpty
+    "design-scoped correction allowed a resumable activation"
   let state ← execute (.recordUserCorrection state.revision correction) state
     "durable correction failed"
   expect (!Kernel.Gates.correctionsReadyState correction.scope state)
     "unresolved correction passed correction readiness"
+  expect (Kernel.Resolver.resumableActivations state).isEmpty
+    "resolver selected resume while an applicable correction remained"
   reject (.resumeWork state.revision workTwo.id activationTwo.id) state
     "stale confirmation resumed after correction"
   let state ← execute (.resolveUserCorrection state.revision correction.key) state
@@ -624,6 +648,25 @@ def run : IO Unit := do
   expect (state.activations.any fun activation =>
     activation.id == activationOne.id && activation.status == .suspended)
     "child activation lost its stack-return parent"
+  let resolverPoint : Domain.Projection.LedgerPoint :=
+    { ledger := ⟨"workflow-laws"⟩
+      revision := state.revision
+      historyDigest := ⟨"workflow-laws"⟩ }
+  let activeUnrelated :=
+    { state with corrections := state.corrections ++ [{
+        correction with key := "active-unrelated", work := some ⟨99⟩ }] }
+  expect ((Kernel.Resolver.candidateCurrentAction resolverPoint
+    activeUnrelated).isSome)
+    "unrelated correction blocked continue"
+  for applicable in [
+      { correction with key := "active-global", work := none, design := none },
+      { correction with key := "active-work", design := none },
+      { correction with key := "active-design", work := none }] do
+    let blockedState :=
+      { state with corrections := state.corrections ++ [applicable] }
+    expect ((Kernel.Resolver.candidateCurrentAction resolverPoint
+      blockedState).isNone)
+      "resolver selected continue with an applicable correction"
 
   let findingPlan :=
     reviewPlan 4 .designConformance "sha256:implementation-v1" workTwo.id

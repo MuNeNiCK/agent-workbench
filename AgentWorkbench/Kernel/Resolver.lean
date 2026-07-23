@@ -33,6 +33,7 @@ deriving DecidableEq, Repr
 def resumableActivations (state : State) : List Domain.Work.Activation :=
   state.activations.filter fun activation =>
     Domain.Work.workIsOpen state.work activation.work &&
+      Replay.workCorrectionsCurrent state activation.work &&
       Domain.Work.resumable state.activations activation.id &&
       Replay.resumeCurrent activation.work activation.id state
 
@@ -49,6 +50,7 @@ def Action.executable (inspection : Projection.Inspection) : Action → Bool
       match inspection.currentState?, inspection.ledgerPoint? with
       | some state, some current =>
           decide (point = current) && decide (ValidState state) &&
+            Replay.workCorrectionsCurrent state work &&
             state.activations.any fun candidate =>
               candidate.id == activation && candidate.work == work &&
                 candidate.status == .active
@@ -58,6 +60,7 @@ def Action.executable (inspection : Projection.Inspection) : Action → Bool
       | some state, some current =>
           decide (point = current) && decide (ValidState state) &&
             Domain.Work.workIsOpen state.work work &&
+            Replay.workCorrectionsCurrent state work &&
             state.activations.any (fun candidate =>
               candidate.id == activation && candidate.work == work) &&
             Domain.Work.resumable state.activations activation &&
@@ -71,7 +74,10 @@ def candidateCurrentAction (point : Domain.Projection.LedgerPoint)
       if state.activations.isEmpty then some (.initializeWork point) else none
     else
       match (Domain.Work.activeActivations state.activations).head? with
-      | some activation => some (.continueActiveWork point activation.work activation.id)
+      | some activation =>
+          if Replay.workCorrectionsCurrent state activation.work then
+            some (.continueActiveWork point activation.work activation.id)
+          else none
       | none =>
           match (resumableActivations state).head? with
           | some activation => some (.resumeSuspendedWork point activation.work activation.id)

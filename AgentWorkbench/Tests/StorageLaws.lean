@@ -439,9 +439,20 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
       (.correctionsReady correction.scope) recovered).value ==
         .blocked "an applicable durable user correction remains unresolved")
     "fresh SQLite session did not expose the correction readiness blocker"
+  match (Application.Service.resolve recovered).value with
+  | .blocked _ => pure ()
+  | .action _ =>
+      throw <| IO.userError
+        "fresh SQLite session selected continue with an applicable correction"
   let resolved ← mutate ledger "resolve-correction"
     recorded.store.ledger.storedHead.value
     (.resolveUserCorrection recorded.store.ledger.storedHead correction.key)
+  match (Application.Service.resolve resolved.store).value with
+  | .action (.continueActiveWork _ work _) =>
+      expect (work == ⟨1⟩)
+        "resolved correction restored continue for the wrong work"
+  | other =>
+      throw <| IO.userError s!"resolved correction did not restore continue: {repr other}"
   let rule : Domain.Design.LearnedRule := {
     key := "durable-correction-rule"
     correction := correction.key

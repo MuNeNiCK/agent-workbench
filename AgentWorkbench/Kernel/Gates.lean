@@ -65,6 +65,7 @@ def traceReadyState (design : DesignId) (work : WorkId) (state : State) : Bool :
 def resumeReadyState (work : WorkId) (activation : ActivationId)
     (state : State) : Bool :=
   Work.workIsOpen state.work work &&
+  Replay.workCorrectionsCurrent state work &&
   state.activations.any (fun current =>
     current.id == activation && current.work == work) &&
   Work.resumable state.activations activation &&

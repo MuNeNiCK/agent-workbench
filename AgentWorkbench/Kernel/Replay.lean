@@ -530,6 +530,17 @@ def completionBindingReady (target : WorkId) (binding : String × String)
           Evidence.exactFor item obligation &&
           item.snapshot == binding.1 && item.artifactDigest == binding.2
 
+def correctionsCurrentFor (state : State) (work : WorkId)
+    (design : Option DesignId) : Bool :=
+  !state.corrections.any fun correction =>
+    !correction.resolved && Design.correctionApplies correction work design
+
+def currentDesignFor (state : State) (work : WorkId) : Option DesignId :=
+  (state.decompositions.reverse.find? (·.work == work)).map (·.design)
+
+def workCorrectionsCurrent (state : State) (work : WorkId) : Bool :=
+  correctionsCurrentFor state work (currentDesignFor state work)
+
 def readinessCurrent (work : WorkId) (activation : ActivationId)
     (basis : Work.ReadinessBasis) (state : State) : Bool :=
   Work.noActive state.activations &&
@@ -550,9 +561,7 @@ def readinessCurrent (work : WorkId) (activation : ActivationId)
     version.id == basis.design && version.revision == basis.designRevision) &&
   implementationReviewReadyFor basis work state &&
   evidenceReadyFor basis work state &&
-  !state.corrections.any (fun correction =>
-    !correction.resolved &&
-    Design.correctionApplies correction work (some basis.design))
+  correctionsCurrentFor state work (some basis.design)
 
 def resumeCurrent (work : WorkId) (activation : ActivationId) (state : State) : Bool :=
   match state.activations.find? (·.id == activation) with
