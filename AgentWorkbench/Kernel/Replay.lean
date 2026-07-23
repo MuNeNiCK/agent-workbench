@@ -379,21 +379,36 @@ def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
 
 def traceReadyFor (design : DesignId) (work : WorkId)
     (digest : String) (state : State) : Bool :=
-  state.designs.any fun version =>
-    version.id == design && state.designApprovals.any fun approval =>
-      approval.design == design && state.decompositions.any fun decomposition =>
-        decomposition.work == work && decomposition.contentDigest == digest &&
-        Design.decompositionCovers version approval decomposition
+  match state.decompositions.reverse.find? (·.work == work) with
+  | none => false
+  | some decomposition =>
+      decomposition.design == design && decomposition.contentDigest == digest &&
+      state.designs.any fun version =>
+        version.id == design && state.designApprovals.any fun approval =>
+          approval.design == design &&
+          Design.decompositionCovers version approval decomposition
 
 def evidenceReadyFor (basis : Work.ReadinessBasis) (work : WorkId)
     (state : State) : Bool :=
-  state.obligations.any fun obligation =>
-    obligation.work == work && obligation.current &&
+  let current := state.obligations.filter fun obligation =>
+    obligation.work == work && obligation.current
+  !current.isEmpty && current.all fun obligation =>
     obligation.design == basis.design &&
     obligation.designRevision == basis.designRevision &&
     obligation.snapshot == basis.repositorySnapshot &&
     state.evidence.any fun item =>
       Evidence.exactFor item obligation && item.revision == basis.evidenceRevision
+
+def implementationReviewReadyFor (basis : Work.ReadinessBasis) (work : WorkId)
+    (state : State) : Bool :=
+  match state.reviewPlans.reverse.find? (fun plan =>
+      plan.scope.work == work && plan.scope.design == some basis.design &&
+      plan.scope.stage == "implementation") with
+  | none => false
+  | some plan =>
+      plan.id == basis.reviewPlan &&
+      plan.scope.repositorySnapshot == basis.repositorySnapshot &&
+      reviewScopeReady plan.id state
 
 def readinessCurrent (work : WorkId) (activation : ActivationId)
     (basis : Work.ReadinessBasis) (state : State) : Bool :=
@@ -412,11 +427,7 @@ def readinessCurrent (work : WorkId) (activation : ActivationId)
   traceReadyFor basis.design work basis.decompositionDigest state &&
   state.designs.any (fun version =>
     version.id == basis.design && version.revision == basis.designRevision) &&
-  state.reviewPlans.any (fun plan =>
-    plan.id == basis.reviewPlan && plan.scope.work == work &&
-    plan.scope.design == some basis.design &&
-    plan.scope.repositorySnapshot == basis.repositorySnapshot) &&
-  reviewScopeReady basis.reviewPlan state &&
+  implementationReviewReadyFor basis work state &&
   evidenceReadyFor basis work state &&
   !state.corrections.any (fun correction =>
     !correction.resolved &&

@@ -308,6 +308,62 @@ def run : IO Unit := do
     state "resume readiness confirmation failed"
   expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
     "confirmed activation did not pass resume readiness"
+  let newerImplementationPlan :=
+    reviewPlan 99 "implementation" "sha256:implementation-v2" workTwo.id
+  let newerPlanState :=
+    { state with reviewPlans := state.reviewPlans ++ [newerImplementationPlan] }
+  expect (!Kernel.Replay.resumeCurrent workTwo.id activationTwo.id newerPlanState)
+    "older review plan remained resumable after a newer plan was recorded"
+  let newerObligation : Domain.Evidence.Obligation :=
+    { work := obligation.work
+      key := "additional-current-evidence"
+      revision := obligation.revision
+      commandProfile := obligation.commandProfile
+      invocation := obligation.invocation
+      repository := obligation.repository
+      snapshot := "commit:newer"
+      artifactDigest := obligation.artifactDigest
+      current := true
+      kind := obligation.kind
+      requirements := obligation.requirements
+      expectedProducer := obligation.expectedProducer
+      expectedObservation := "observation-newer"
+      design := obligation.design
+      designRevision := obligation.designRevision }
+  let newerEvidence : Domain.Evidence.Evidence :=
+    { id := ⟨99⟩
+      work := newerObligation.work
+      obligation := newerObligation.key
+      revision := newerObligation.revision
+      commandProfile := newerObligation.commandProfile
+      invocation := newerObligation.invocation
+      exitCode := 0
+      repository := newerObligation.repository
+      snapshot := newerObligation.snapshot
+      artifactDigest := newerObligation.artifactDigest
+      current := true
+      kind := newerObligation.kind
+      requirements := newerObligation.requirements
+      producer := newerObligation.expectedProducer
+      observedAt := newerObligation.expectedObservation
+      design := newerObligation.design
+      designRevision := newerObligation.designRevision }
+  let newerObligationState :=
+    { state with
+      obligations := state.obligations ++ [newerObligation]
+      evidence := state.evidence ++ [newerEvidence] }
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id newerObligationState)
+    "older evidence basis remained resumable with a different current obligation"
+  let newerDecomposition :=
+    { decomposition with
+      key := "decomposition-v2"
+      contentDigest := "decomposition-v2" }
+  let newerDecompositionState :=
+    { state with decompositions := state.decompositions ++ [newerDecomposition] }
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id newerDecompositionState)
+    "older trace basis remained resumable after a newer decomposition was recorded"
 
   let correction : Domain.Design.Correction :=
     { key := "resume-readiness-correction", scope := "workflow"
