@@ -43,9 +43,9 @@ structure Evidence where
   designRevision : Revision := ⟨0⟩
 deriving DecidableEq, Repr
 
-def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
+def provenanceExact (item : Evidence) (obligation : Obligation) : Bool :=
   item.work == obligation.work && item.obligation == obligation.key &&
-  item.current && obligation.current && item.revision == obligation.revision &&
+  item.revision == obligation.revision &&
   item.exitCode == 0 && item.commandProfile == obligation.commandProfile &&
   item.invocation == obligation.invocation &&
   item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
@@ -57,6 +57,12 @@ def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
   item.design == obligation.design &&
   item.designRevision == obligation.designRevision
 
+def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
+  item.current && obligation.current && provenanceExact item obligation
+
+def historicalExact (item : Evidence) (obligation : Obligation) : Bool :=
+  item.current == obligation.current && provenanceExact item obligation
+
 def traceable (item : Evidence) : Bool :=
   !item.requirements.isEmpty &&
   item.requirements.all (fun requirement => !requirement.isEmpty) &&
@@ -66,10 +72,12 @@ def obligationsCurrent (obligations : List Obligation) : Bool :=
   obligations.all (·.current)
 
 def forWork (obligations : List Obligation) (work : WorkId) : List Obligation :=
-  obligations.filter (·.work == work)
+  obligations.filter fun obligation =>
+    obligation.work == work && obligation.current
 
 def UniqueObligations (obligations : List Obligation) : Prop :=
-  (obligations.map fun obligation => (obligation.work, obligation.key)).Nodup
+  (obligations.map fun obligation =>
+    (obligation.work, obligation.key, obligation.revision)).Nodup
 
 def UniqueEvidenceIds (evidence : List Evidence) : Prop :=
   (evidence.map (·.id)).Nodup
@@ -103,9 +111,7 @@ def CurrentObligationsReferenceOpenWork (openWork : List WorkId)
 def EvidenceReferencesObligations (evidence : List Evidence)
     (obligations : List Obligation) : Prop :=
   (evidence.all fun item => obligations.any fun obligation =>
-    obligation.work == item.work && obligation.key == item.obligation &&
-      (!item.current ||
-        (obligation.current && obligation.revision == item.revision))) = true
+    historicalExact item obligation) = true
 
 def invalidateEvidence (evidence : List Evidence) : List Evidence :=
   evidence.map fun item => { item with current := false }

@@ -334,9 +334,19 @@ private def applyUnchecked (event : Event) (state : State) : State :=
   | .externalOperationRecorded attempt =>
       { invalidated with externalOperations := state.externalOperations ++ [attempt] }
   | .obligationRecorded obligation =>
-      let retained := invalidated.obligations.filter fun existing =>
-        existing.work != obligation.work || existing.key != obligation.key
-      { invalidated with obligations := retained ++ [{ obligation with current := true }] }
+      let obligations := invalidated.obligations.map fun existing =>
+        if existing.work == obligation.work && existing.key == obligation.key then
+          { existing with current := false }
+        else
+          existing
+      let evidence := invalidated.evidence.map fun item =>
+        if item.work == obligation.work && item.obligation == obligation.key then
+          { item with current := false }
+        else
+          item
+      { invalidated with
+        obligations := obligations ++ [{ obligation with current := true }]
+        evidence }
   | .workCompleted work activation =>
       let returnTarget := (state.activations.find? (·.id == activation)).bind (·.parent)
       { invalidated with

@@ -529,6 +529,23 @@ def run : IO Unit := do
   expect (state.evidence.any fun item =>
     item.id == evidenceOne.id && item.revision == evidenceOne.revision)
     "historical evidence revision was mutated"
+  let historicalObligation ←
+    match state.obligations.find? fun item =>
+        item.work == obligation.work && item.key == obligation.key &&
+        item.revision == obligation.revision with
+    | some item => pure item
+    | none => throw <| IO.userError "historical obligation was discarded"
+  let historicalEvidence ←
+    match state.evidence.find? (·.id == evidenceOne.id) with
+    | some item => pure item
+    | none => throw <| IO.userError "historical evidence was discarded"
+  expect (Domain.Evidence.historicalExact
+    historicalEvidence historicalObligation)
+    "historical evidence lost its exact obligation provenance"
+  expect (!Domain.Evidence.historicalExact
+    { historicalEvidence with producer := "different-producer" }
+    historicalObligation)
+    "mutated historical provenance remained valid"
   let basisTwo := { basisOne with evidenceRevision := evidenceTwo.revision }
   let revisedSuspension := { childSuspension with basis := some basisTwo }
   let state ← execute
