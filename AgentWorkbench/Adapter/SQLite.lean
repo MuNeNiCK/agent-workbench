@@ -376,6 +376,33 @@ private def applicationTables (db : _root_.SQLite) : IO (List String) := do
     tables := (← statement.columnText 0) :: tables
   return tables.reverse
 
+private def applicationSchemaObjects (db : _root_.SQLite) : IO (List (String × String)) := do
+  let statement ← db.prepare "
+    SELECT type, name FROM sqlite_schema
+    WHERE name NOT LIKE 'sqlite_%'
+    ORDER BY type, name"
+  let mut objects := []
+  while ← statement.step do
+    objects := ((← statement.columnText 0), (← statement.columnText 1)) :: objects
+  return objects.reverse
+
+private def currentSchemaObjects : List (String × String) := [
+  ("table", "artifacts"),
+  ("table", "events"),
+  ("table", "metadata"),
+  ("table", "operations"),
+  ("table", "projection"),
+  ("table", "projection_repairs"),
+  ("table", "update_provenance")]
+
+private def legacySchemaObjects : List (String × String) := [
+  ("table", "artifacts"),
+  ("table", "events"),
+  ("table", "metadata"),
+  ("table", "operations"),
+  ("table", "projection"),
+  ("table", "projection_repairs")]
+
 private def normalizeSchemaSql (value : String) : String :=
   String.ofList <| value.toList.filter fun character => !character.isWhitespace
 
@@ -482,6 +509,7 @@ def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
     return (← applicationTables db) =
         ["artifacts", "events", "metadata", "operations", "projection",
          "projection_repairs", "update_provenance"] &&
+      (← applicationSchemaObjects db) = currentSchemaObjects &&
       (← commonSchemaMatches db) &&
       (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
       (← tableColumns db "operations") =
@@ -538,6 +566,7 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
   try
     unless (← applicationTables db) =
         ["artifacts", "events", "metadata", "operations", "projection", "projection_repairs"] &&
+        (← applicationSchemaObjects db) = legacySchemaObjects &&
         (← commonSchemaMatches db) && (← commonDefinitionsMatch db) do
       return none
     if (← tableColumns db "events") = ["revision", "payload"] &&

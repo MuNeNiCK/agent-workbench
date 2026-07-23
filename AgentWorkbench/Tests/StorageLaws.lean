@@ -422,7 +422,11 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
       ALTER TABLE events RENAME TO old_events;
       CREATE TABLE events (revision INTEGER, payload BLOB, operation_id TEXT);
       INSERT INTO events SELECT revision, payload, operation_id FROM old_events;
-      DROP TABLE old_events;")]
+      DROP TABLE old_events;"),
+    ("trigger", "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON events
+      BEGIN SELECT RAISE(ABORT, 'blocked'); END"),
+    ("view", "CREATE VIEW unexpected_view AS SELECT * FROM events"),
+    ("index", "CREATE INDEX unexpected_index ON events(operation_id)")]
   for (name, sql) in malformedCases do
     let ledger := root / s!"malformed-v2-{name}.sqlite3"
     Adapter.SQLite.initializeStore ledger
@@ -434,21 +438,28 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
     expect ((← IO.FS.readBinFile ledger) == before)
       s!"malformed current inspection mutated storage: {name}"
 
-  let malformedPredecessor := root / "malformed-predecessor-constraints.sqlite3"
-  Adapter.SQLite.initializeStore malformedPredecessor
-  makePredecessorV1 malformedPredecessor
-  execSql malformedPredecessor "
-    ALTER TABLE events RENAME TO old_events;
-    CREATE TABLE events (revision INTEGER, payload BLOB, operation_id TEXT);
-    INSERT INTO events SELECT revision, payload, operation_id FROM old_events;
-    DROP TABLE old_events;"
-  let predecessorBefore ← IO.FS.readBinFile malformedPredecessor
-  match ← Adapter.Update.inspect malformedPredecessor with
-  | .unsupported point =>
-      expect (point.schemaVersion == 1) "same-name malformed predecessor identity drifted"
-  | other => throw <| IO.userError s!"same-name malformed predecessor was accepted: {repr other}"
-  expect ((← IO.FS.readBinFile malformedPredecessor) == predecessorBefore)
-    "malformed predecessor inspection mutated storage"
+  let predecessorCorruptions := [
+    ("constraints", "
+      ALTER TABLE events RENAME TO old_events;
+      CREATE TABLE events (revision INTEGER, payload BLOB, operation_id TEXT);
+      INSERT INTO events SELECT revision, payload, operation_id FROM old_events;
+      DROP TABLE old_events;"),
+    ("trigger", "CREATE TRIGGER unexpected_trigger BEFORE INSERT ON events
+      BEGIN SELECT RAISE(ABORT, 'blocked'); END"),
+    ("view", "CREATE VIEW unexpected_view AS SELECT * FROM events"),
+    ("index", "CREATE INDEX unexpected_index ON events(operation_id)")]
+  for (name, sql) in predecessorCorruptions do
+    let malformedPredecessor := root / s!"malformed-predecessor-{name}.sqlite3"
+    Adapter.SQLite.initializeStore malformedPredecessor
+    makePredecessorV1 malformedPredecessor
+    execSql malformedPredecessor sql
+    let predecessorBefore ← IO.FS.readBinFile malformedPredecessor
+    match ← Adapter.Update.inspect malformedPredecessor with
+    | .unsupported point =>
+        expect (point.schemaVersion == 1) s!"malformed predecessor identity drifted: {name}"
+    | other => throw <| IO.userError s!"malformed predecessor was accepted ({name}): {repr other}"
+    expect ((← IO.FS.readBinFile malformedPredecessor) == predecessorBefore)
+      s!"malformed predecessor inspection mutated storage: {name}"
 
 def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   let ledger := root / "update.sqlite3"
