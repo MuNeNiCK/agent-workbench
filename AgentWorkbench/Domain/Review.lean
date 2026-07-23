@@ -123,11 +123,13 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
 def scopeReady (plan : Plan) (claims : List Claim)
     (adjudications : List Adjudication) (findings : List Finding)
     (verifications : List Verification) : Bool :=
-  claims.any fun claim =>
-    scopeExact plan claim && claim.claim == .clean &&
-    adjudications.any (fun decision =>
-      decision.review == claim.id && decision.decision == .accepted) &&
-    scopeFindingsClosed plan.scope claims findings verifications
+  match claims.reverse.find? (scopeExact plan) with
+  | none => false
+  | some claim =>
+      claim.claim == .clean &&
+      adjudications.any (fun decision =>
+        decision.review == claim.id && decision.decision == .accepted) &&
+      scopeFindingsClosed plan.scope claims findings verifications
 
 def acceptedReviews (decisions : List Adjudication) : List ReviewId :=
   decisions.filterMap fun decision =>

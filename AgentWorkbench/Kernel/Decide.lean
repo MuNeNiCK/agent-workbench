@@ -588,7 +588,7 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
     Policy.Completion.traceReady Policy.Completion.implementationReviewReady
     Policy.Completion.correctionsReady
     Policy.Traceability.ready
-    Policy.Authority.scopeFindingsClosed Review.scopeReady
+    Review.scopeReady
     Review.scopeFindingsClosed
     Policy.Completion.latestAcceptedReviewClaim
   rfl

@@ -68,11 +68,7 @@ def implementationReviewReady (target : WorkId) (plans : List Review.Plan)
     (verifications : List Review.Verification) : Bool :=
   plans.any fun plan =>
     plan.scope.work == target && plan.scope.stage == "implementation" &&
-    claims.any fun claim =>
-      Review.scopeExact plan claim && claim.claim == .clean &&
-      adjudications.any (fun decision =>
-        decision.review == claim.id && decision.decision == .accepted) &&
-      Authority.scopeFindingsClosed plan.scope claims findings verifications
+    Review.scopeReady plan claims adjudications findings verifications
 
 def correctionsReady (target : WorkId)
     (decompositions : List Design.Decomposition)

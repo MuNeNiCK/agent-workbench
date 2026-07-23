@@ -308,6 +308,19 @@ def run : IO Unit := do
     state "resume readiness confirmation failed"
   expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
     "confirmed activation did not pass resume readiness"
+  let newerFindingsClaim :=
+    { implementationClaim with id := ⟨99⟩, claim := ReviewClaim.findings }
+  let unadjudicatedClaimState :=
+    { state with claims := state.claims ++ [newerFindingsClaim] }
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id unadjudicatedClaimState)
+    "older clean claim remained resumable after a newer unadjudicated claim"
+  let newerClaimState :=
+    { unadjudicatedClaimState with
+      adjudications := unadjudicatedClaimState.adjudications ++
+        [adjudicationFor newerFindingsClaim] }
+  expect (!Kernel.Replay.resumeCurrent workTwo.id activationTwo.id newerClaimState)
+    "older clean claim remained resumable after a newer findings claim"
   let newerImplementationPlan :=
     reviewPlan 99 "implementation" "sha256:implementation-v2" workTwo.id
   let newerPlanState :=
