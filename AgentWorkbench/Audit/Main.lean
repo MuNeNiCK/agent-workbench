@@ -172,6 +172,8 @@ def publicProductPaths : Array String :=
   expectedTrackedPaths.filter fun path => !verificationAndBoundaryPaths.contains path
 
 def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
+  ⟨"AgentWorkbench/Adapter/DurableFilesystem.lean", #[
+    "digest", "objectPath", "verify", "stage", "replace", "reconcile"]⟩,
   ⟨"AgentWorkbench/Adapter/SQLite.lean", #[
     "schemaVersion", "predecessorSchemaVersion", "withWriterLock", "initializeStore",
     "inspectFromAt", "currentSchemaSupported", "predecessorV2Supported", "artifactRoot",
@@ -190,6 +192,8 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
 ]
 
 def expectedMutationSurfaces : Array String := #[
+  "AgentWorkbench.Adapter.DurableFilesystem.stage",
+  "AgentWorkbench.Adapter.DurableFilesystem.replace",
   "AgentWorkbench.Adapter.SQLite.initializeStore",
   "AgentWorkbench.Adapter.SQLite.repairProjectionWithLockHook",
   "AgentWorkbench.Adapter.SQLite.repairProjectionWithHook",
@@ -243,7 +247,9 @@ def mutationSurfacesFrom
   (inventories : Array PublicDefinitionInventory) : Array String :=
   inventories.flatMap fun inventory =>
     let moduleName :=
-      if inventory.path = "AgentWorkbench/Adapter/SQLite.lean" then
+      if inventory.path = "AgentWorkbench/Adapter/DurableFilesystem.lean" then
+        "AgentWorkbench.Adapter.DurableFilesystem"
+      else if inventory.path = "AgentWorkbench/Adapter/SQLite.lean" then
         "AgentWorkbench.Adapter.SQLite"
       else if inventory.path = "AgentWorkbench/Adapter/Update.lean" then
         "AgentWorkbench.Adapter.Update"
@@ -253,7 +259,9 @@ def mutationSurfacesFrom
         "AgentWorkbench.Cli.Program"
     inventory.definitions.filterMap fun name =>
       let mutates :=
-        if moduleName = "AgentWorkbench.Adapter.SQLite" then
+        if moduleName = "AgentWorkbench.Adapter.DurableFilesystem" then
+          name = "stage" || name = "replace"
+        else if moduleName = "AgentWorkbench.Adapter.SQLite" then
           name = "initializeStore" || name.startsWith "repairProjection" ||
             name.startsWith "mutate"
         else if moduleName = "AgentWorkbench.Adapter.Update" then
@@ -298,6 +306,9 @@ def auditRepositoryInventory : IO Unit := do
     fail "negative unregistered tracked-path fixture was accepted"
 
 def auditPublicProductSurfaces : IO Unit := do
+  for marker in forbiddenPublicMarkers do
+    unless contentHasMarker s!"known private value: {marker}" forbiddenPublicMarkers do
+      fail s!"negative public-marker fixture was not rejected for {marker}"
   for path in publicProductPaths do
     let content ← IO.FS.readFile path
     for marker in forbiddenPublicMarkers do
