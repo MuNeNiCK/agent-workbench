@@ -647,13 +647,60 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
         repositorySnapshot := secondAttempt.repositorySnapshot
         artifactDigest := "sha256:second-fix" }
       evidenceDigest := secondAttempt.evidenceDigest
-      result := .verified
+      result := .needsEvidence
       accepted := false }
   let store ← apply "finding-verify-2" (fun revision =>
     .verifyReviewFinding revision secondVerification) store
   let _ ← apply "finding-verification-adjudicate-2" (fun revision =>
     .adjudicateFindingVerification revision finding.key
       secondAttempt.attempt plan.adjudicator) store
+  let recoveredAfterIncomplete ← load ledger
+  let incompleteState ←
+    match (Application.Service.status recoveredAfterIncomplete).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "incomplete finding attempt is not recoverable"
+  expect (incompleteState.reviewFindings.any fun record =>
+    record.key == finding.key &&
+      record.closureAttempts == [firstAttempt, secondAttempt])
+    "fresh SQLite reconstruction lost the needs-evidence closure attempt"
+  expect (incompleteState.findingVerifications.any fun verification =>
+    verification.finding == finding.key && verification.attempt == 2 &&
+      verification.result == .needsEvidence && verification.adjudicated)
+    "fresh SQLite reconstruction lost the needs-evidence result"
+  expectFailure
+    (mutate ledger "finding-close-history-conflict"
+      recoveredAfterIncomplete.ledger.storedHead.value
+      (.closeReviewFinding recoveredAfterIncomplete.ledger.storedHead
+        finding.key secondAttempt))
+    "fresh SQLite session accepted a historical closure attempt rewrite"
+  expectFailure
+    (mutate ledger "finding-verification-history-conflict"
+      recoveredAfterIncomplete.ledger.storedHead.value
+      (.verifyReviewFinding recoveredAfterIncomplete.ledger.storedHead
+        { secondVerification with result := .verified }))
+    "fresh SQLite session accepted a historical verification result rewrite"
+  let thirdAttempt : Domain.Review.ClosureAttempt :=
+    { attempt := 3
+      evidenceDigest := "sha256:third-fix"
+      repositorySnapshot := "snapshot:third-fix" }
+  let store ← apply "finding-close-3" (fun revision =>
+    .closeReviewFinding revision finding.key thirdAttempt)
+    recoveredAfterIncomplete
+  let thirdVerification : Domain.Review.Verification :=
+    { finding := finding.key
+      attempt := thirdAttempt.attempt
+      verifier := "third-verifier"
+      scope := { scope with
+        repositorySnapshot := thirdAttempt.repositorySnapshot
+        artifactDigest := "sha256:third-fix" }
+      evidenceDigest := thirdAttempt.evidenceDigest
+      result := .verified
+      accepted := false }
+  let store ← apply "finding-verify-3" (fun revision =>
+    .verifyReviewFinding revision thirdVerification) store
+  let _ ← apply "finding-verification-adjudicate-3" (fun revision =>
+    .adjudicateFindingVerification revision finding.key
+      thirdAttempt.attempt plan.adjudicator) store
   let recoveredAfterSuccess ← load ledger
   let successfulState ←
     match (Application.Service.status recoveredAfterSuccess).value.currentState? with
@@ -661,12 +708,16 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
     | none => throw <| IO.userError "successful finding attempt is not recoverable"
   expect (successfulState.reviewFindings.any fun record =>
     record.key == finding.key &&
-      record.closureAttempts == [firstAttempt, secondAttempt])
+      record.closureAttempts == [firstAttempt, secondAttempt, thirdAttempt])
     "fresh SQLite reconstruction rewrote closure attempt history"
   expect (successfulState.findingVerifications.any fun verification =>
     verification.finding == finding.key && verification.attempt == 1 &&
       verification.result == .notFixed && verification.adjudicated)
     "successful retry rewrote the historical failed verification"
+  expect (successfulState.findingVerifications.any fun verification =>
+    verification.finding == finding.key && verification.attempt == 2 &&
+      verification.result == .needsEvidence && verification.adjudicated)
+    "successful retry rewrote the historical needs-evidence verification"
   expect (Policy.Authority.blockingFindingsClosed claim.id
     successfulState.claims successfulState.reviewFindings
     successfulState.findingVerifications)
