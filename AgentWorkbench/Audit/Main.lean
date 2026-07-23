@@ -208,6 +208,7 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
 def expectedMutationSurfaces : Array String := #[
   "AgentWorkbench.Adapter.DurableFilesystem.stage",
   "AgentWorkbench.Adapter.DurableFilesystem.replace",
+  "AgentWorkbench.Adapter.SQLite.withWriterLock",
   "AgentWorkbench.Adapter.SQLite.initializeStore",
   "AgentWorkbench.Adapter.SQLite.repairProjectionWithLockHook",
   "AgentWorkbench.Adapter.SQLite.repairProjectionWithHook",
@@ -298,8 +299,8 @@ def mutationSurfacesFrom
         if moduleName = "AgentWorkbench.Adapter.DurableFilesystem" then
           name = "stage" || name = "replace"
         else if moduleName = "AgentWorkbench.Adapter.SQLite" then
-          name = "initializeStore" || name.startsWith "repairProjection" ||
-            name.startsWith "mutate"
+          name = "withWriterLock" || name = "initializeStore" ||
+            name.startsWith "repairProjection" || name.startsWith "mutate"
         else if moduleName = "AgentWorkbench.Adapter.Update" then
           name.startsWith "apply" || name.startsWith "restore"
         else if moduleName = "AgentWorkbench.Application.Service" then
