@@ -393,6 +393,25 @@ def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
     plan.id == planId && Review.scopeReady plan state.claims state.adjudications
       state.reviewFindings state.findingVerifications
 
+def decompositionRecordable (decomposition : Design.Decomposition)
+    (state : State) : Bool :=
+  Design.decompositionWellFormed decomposition &&
+  !state.decompositions.any (·.key == decomposition.key) &&
+  state.designs.any (fun version =>
+    version.id == decomposition.design &&
+    version.revision == decomposition.designRevision &&
+    state.designApprovals.any fun approval =>
+      approval.design == version.id &&
+      Design.decompositionCovers version approval decomposition) &&
+  state.reviewPlans.any (fun plan =>
+    plan.scope.design == some decomposition.design &&
+    plan.scope.work == decomposition.work &&
+    plan.scope.stage == "decomposition" &&
+    plan.scope.artifactDigest == decomposition.contentDigest &&
+    plan.reviewer == decomposition.reviewer &&
+    plan.adjudicator == decomposition.adjudicator &&
+    reviewScopeReady plan.id state)
+
 def traceReadyFor (design : DesignId) (work : WorkId)
     (key digest : String) (state : State) : Bool :=
   match state.decompositions.reverse.find? (·.work == work) with
@@ -557,23 +576,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
         (correction.design == some approval.design ||
           (correction.design.isNone && correction.work.isNone)))
   | .decompositionRecorded decomposition =>
-      Design.decompositionWellFormed decomposition &&
-      !state.decompositions.any (·.key == decomposition.key) &&
-      state.designs.any (fun version =>
-        version.id == decomposition.design &&
-        version.revision == decomposition.designRevision &&
-        state.designApprovals.any (·.design == version.id)) &&
-      state.reviewPlans.any (fun plan =>
-        plan.scope.design == some decomposition.design &&
-        plan.scope.work == decomposition.work &&
-        plan.scope.stage == "decomposition" &&
-        plan.scope.artifactDigest == decomposition.contentDigest &&
-        plan.reviewer == decomposition.reviewer &&
-        plan.adjudicator == decomposition.adjudicator &&
-        state.claims.any (fun claim =>
-          Review.scopeExact plan claim && claim.claim == .clean &&
-          state.adjudications.any (fun decision =>
-            decision.review == claim.id && decision.decision == .accepted)))
+      decompositionRecordable decomposition state
   | .authorityExceptionRecorded exception =>
       !exception.key.isEmpty && !exception.reason.isEmpty &&
       exception.authorizedBy == "user" &&

@@ -211,23 +211,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
                   else
                     .error (.invalidTransition "design is already approved or has an applicable correction")
   | .recordDecomposition _ decomposition =>
-      if Design.decompositionWellFormed decomposition &&
-          !state.decompositions.any (·.key == decomposition.key) &&
-          state.designs.any (fun version =>
-            version.id == decomposition.design &&
-            version.revision == decomposition.designRevision &&
-            state.designApprovals.any (·.design == version.id)) &&
-          state.reviewPlans.any (fun plan =>
-            plan.scope.design == some decomposition.design &&
-            plan.scope.work == decomposition.work &&
-            plan.scope.stage == "decomposition" &&
-            plan.scope.artifactDigest == decomposition.contentDigest &&
-            plan.reviewer == decomposition.reviewer &&
-            plan.adjudicator == decomposition.adjudicator &&
-            state.claims.any (fun claim =>
-              Review.scopeExact plan claim && claim.claim == .clean &&
-              state.adjudications.any (fun decision =>
-                decision.review == claim.id && decision.decision == .accepted))) then
+      if Replay.decompositionRecordable decomposition state then
         .ok ⟨[.decompositionRecorded decomposition], by simp⟩
       else
         .error (.invalidTransition "decomposition must be new, complete, and bind an exact approved design version")

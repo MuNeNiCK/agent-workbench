@@ -214,6 +214,18 @@ def run : IO Unit := do
           { item with validationGates := [] } }] do
     expect (!Policy.Traceability.ready designVersion approval incomplete)
       "an independently missing trace dimension passed readiness"
+  let uncoveredDecomposition :=
+    { decomposition with
+      key := "uncovered-decomposition"
+      items := decomposition.items.map fun item =>
+        { item with requirements := ["unknown-requirement"] } }
+  reject (.recordDecomposition state.revision uncoveredDecomposition) state
+    "decomposition omitted an active design requirement"
+  let uncoveredTraceState :=
+    { state with decompositions := state.decompositions ++ [uncoveredDecomposition] }
+  expect (!Kernel.Gates.traceReadyState
+    designVersion.id workTwo.id uncoveredTraceState)
+    "trace gate reused an older complete decomposition"
 
   let implementationPlan :=
     reviewPlan 3 "implementation" "sha256:implementation-v1" workTwo.id

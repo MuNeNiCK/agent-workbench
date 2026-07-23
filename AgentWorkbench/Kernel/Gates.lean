@@ -56,11 +56,11 @@ def designReadyState (design : DesignId) (state : State) : Bool :=
       (correction.design.isNone && correction.work.isNone)))
 
 def traceReadyState (design : DesignId) (work : WorkId) (state : State) : Bool :=
-  state.designs.any fun version =>
-    version.id == design && state.designApprovals.any fun approval =>
-      approval.design == design && state.decompositions.any fun decomposition =>
-        decomposition.work == work &&
-        Policy.Traceability.ready version approval decomposition
+  match state.decompositions.reverse.find? (·.work == work) with
+  | none => false
+  | some decomposition =>
+      Replay.traceReadyFor design work decomposition.key
+        decomposition.contentDigest state
 
 def resumeReadyState (work : WorkId) (activation : ActivationId)
     (state : State) : Bool :=
