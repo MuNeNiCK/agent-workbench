@@ -847,6 +847,46 @@ def main : IO Unit := do
     completable.evidence completable.obligations completable.designs
     completable.designApprovals completable.decompositions completable.corrections)
     "authoritative current lifecycle records must allow completion"
+  let supersedingImplementationPlan : Domain.Review.Plan :=
+    { id := ⟨3999⟩
+      owner := "owner"
+      reviewer := "implementation-reviewer-new"
+      adjudicator := "owner"
+      scope := contractScope firstWork.id "implementation" "implementation-new" }
+  let supersededReviewState :=
+    { completable with
+      reviewPlans := completable.reviewPlans ++ [supersedingImplementationPlan] }
+  expect (!(Policy.Completion.closeable firstWork.id
+    supersededReviewState.work supersededReviewState.activations
+    supersededReviewState.claims supersededReviewState.adjudications
+    supersededReviewState.reviewPlans supersededReviewState.reviewFindings
+    supersededReviewState.findingVerifications supersededReviewState.lifecycle
+    supersededReviewState.evidence supersededReviewState.obligations
+    supersededReviewState.designs supersededReviewState.designApprovals
+    supersededReviewState.decompositions supersededReviewState.corrections))
+    "an older implementation review remained sufficient after a newer plan"
+  let currentDecomposition ←
+    match completable.decompositions.reverse.find? (·.work == firstWork.id) with
+    | some decomposition => pure decomposition
+    | none => throw <| IO.userError "completion decomposition disappeared"
+  let supersedingDecomposition :=
+    { currentDecomposition with
+      key := "decomposition-new"
+      contentDigest := "decomposition-new"
+      items := currentDecomposition.items.map fun item =>
+        { item with requirements := ["different-requirement"] } }
+  let supersededTraceState :=
+    { completable with
+      decompositions := completable.decompositions ++ [supersedingDecomposition] }
+  expect (!(Policy.Completion.closeable firstWork.id
+    supersededTraceState.work supersededTraceState.activations
+    supersededTraceState.claims supersededTraceState.adjudications
+    supersededTraceState.reviewPlans supersededTraceState.reviewFindings
+    supersededTraceState.findingVerifications supersededTraceState.lifecycle
+    supersededTraceState.evidence supersededTraceState.obligations
+    supersededTraceState.designs supersededTraceState.designApprovals
+    supersededTraceState.decompositions supersededTraceState.corrections))
+    "an older complete trace remained sufficient after a newer decomposition"
   let completed ← match Kernel.Decide.closeWork completable.revision firstWork.id completable with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid completion rejected: {repr error}"

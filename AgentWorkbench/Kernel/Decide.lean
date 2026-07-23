@@ -583,7 +583,7 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
       completionReady target state := by
   unfold completionApplicable completionObligationsReady
     completionObligationSatisfied completionRelatedWorkTerminal
-    completionReviewsReady latestAcceptedCompletionReview
+    completionReviewsReady latestCompletionReview
     completionReady Policy.Completion.closeable Policy.Completion.obligationsReady
     Policy.Completion.obligationSatisfied Policy.Completion.authoritativeReady
     Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
@@ -592,7 +592,7 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
     Policy.Traceability.ready
     Review.scopeReady
     Review.scopeFindingsClosed
-    Policy.Completion.latestAcceptedReviewClaim
+    Policy.Completion.latestReviewClaim
   rfl
 
 theorem close_work_emits_atomic_event (expectedRevision : Revision) (target : WorkId) (state : State)

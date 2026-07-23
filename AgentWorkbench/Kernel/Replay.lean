@@ -344,13 +344,10 @@ def completionRelatedWorkTerminal (work : List Work.WorkUnit)
     work.any fun unit => unit.id == requirement.work &&
       (unit.status == .closed || unit.status == .abandoned)
 
-def latestAcceptedCompletionReview (plan : ReviewPlanId) (work : WorkId)
-    (epoch : CompletionEpoch) (claims : List Review.Claim)
-    (adjudications : List Review.Adjudication) : Option Review.Claim :=
+def latestCompletionReview (plan : ReviewPlanId) (work : WorkId)
+    (epoch : CompletionEpoch) (claims : List Review.Claim) : Option Review.Claim :=
   claims.foldl (init := none) fun latest claim =>
-    if claim.plan == plan && claim.work == work && claim.epoch == epoch &&
-        adjudications.any (fun decision =>
-          decision.review == claim.id && decision.decision == .accepted) then
+    if claim.plan == plan && claim.work == work && claim.epoch == epoch then
       some claim
     else
       latest
@@ -358,9 +355,10 @@ def latestAcceptedCompletionReview (plan : ReviewPlanId) (work : WorkId)
 def completionReviewsReady (state : Lifecycle.CompletionState)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication) : Bool :=
   state.plan.reviews.all fun plan =>
-    match latestAcceptedCompletionReview plan state.plan.work state.epoch
-        claims adjudications with
-    | some claim => claim.claim == .clean
+    match latestCompletionReview plan state.plan.work state.epoch claims with
+    | some claim =>
+        claim.claim == .clean && adjudications.any (fun decision =>
+          decision.review == claim.id && decision.decision == .accepted)
     | none => false
 
 def completionObligationSatisfied (evidence : List Evidence.Evidence)
@@ -455,19 +453,28 @@ def completionApplicable (target : WorkId) (state : State) : Bool :=
       completionRelatedWorkTerminal state.work completion.plan.relatedWork &&
       Lifecycle.recordsReady completion &&
       completionReviewsReady completion state.claims state.adjudications) &&
-  (state.designs.any fun design =>
-    state.designApprovals.any fun approval =>
-      approval.design == design.id && state.decompositions.any fun decomposition =>
-        decomposition.work == target &&
-        Design.decompositionCovers design approval decomposition) &&
-  (state.reviewPlans.any fun plan =>
-    plan.scope.work == target && plan.scope.stage == "implementation" &&
-    Review.scopeReady plan state.claims state.adjudications
-      state.reviewFindings state.findingVerifications) &&
+  (match state.decompositions.reverse.find? (·.work == target) with
+  | none => false
+  | some decomposition =>
+      state.designs.any fun design =>
+        design.id == decomposition.design &&
+        design.revision == decomposition.designRevision &&
+        state.designApprovals.any fun approval =>
+          approval.design == design.id &&
+          Design.decompositionCovers design approval decomposition) &&
+  (let design :=
+      (state.decompositions.reverse.find? (·.work == target)).map (·.design)
+    match state.reviewPlans.reverse.find? fun plan =>
+        plan.scope.work == target && plan.scope.stage == "implementation" with
+    | none => false
+    | some plan =>
+        plan.scope.design == design &&
+        Review.scopeReady plan state.claims state.adjudications
+          state.reviewFindings state.findingVerifications) &&
   !state.corrections.any (fun correction =>
     !correction.resolved &&
     Design.correctionApplies correction target
-      ((state.decompositions.find? (·.work == target)).map (·.design)))
+      ((state.decompositions.reverse.find? (·.work == target)).map (·.design)))
 
 def eventApplicable (event : Event) (state : State) : Bool :=
   match event with

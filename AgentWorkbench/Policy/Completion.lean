@@ -15,13 +15,10 @@ def relatedWorkTerminal (work : List Work.WorkUnit)
     work.any fun unit => unit.id == requirement.work &&
       (unit.status == .closed || unit.status == .abandoned)
 
-def latestAcceptedReviewClaim (plan : ReviewPlanId) (work : WorkId)
-    (epoch : CompletionEpoch) (claims : List Review.Claim)
-    (adjudications : List Review.Adjudication) : Option Review.Claim :=
+def latestReviewClaim (plan : ReviewPlanId) (work : WorkId)
+    (epoch : CompletionEpoch) (claims : List Review.Claim) : Option Review.Claim :=
   claims.foldl (init := none) fun latest claim =>
-    if claim.plan == plan && claim.work == work && claim.epoch == epoch &&
-        adjudications.any (fun decision =>
-          decision.review == claim.id && decision.decision == .accepted) then
+    if claim.plan == plan && claim.work == work && claim.epoch == epoch then
       some claim
     else
       latest
@@ -29,9 +26,10 @@ def latestAcceptedReviewClaim (plan : ReviewPlanId) (work : WorkId)
 def reviewsReady (state : Lifecycle.CompletionState) (claims : List Review.Claim)
     (adjudications : List Review.Adjudication) : Bool :=
   state.plan.reviews.all fun plan =>
-    match latestAcceptedReviewClaim plan state.plan.work state.epoch
-        claims adjudications with
-    | some claim => claim.claim == .clean
+    match latestReviewClaim plan state.plan.work state.epoch claims with
+    | some claim =>
+        claim.claim == .clean && adjudications.any (fun decision =>
+          decision.review == claim.id && decision.decision == .accepted)
     | none => false
 
 def authoritativeReady (target : WorkId) (work : List Work.WorkUnit)
@@ -56,24 +54,34 @@ def obligationsReady (target : WorkId) (evidence : List Evidence.Evidence)
 def traceReady (target : WorkId) (designs : List Design.DesignVersion)
     (approvals : List Design.Approval)
     (decompositions : List Design.Decomposition) : Bool :=
-  designs.any fun design =>
-    approvals.any fun approval =>
-      approval.design == design.id && decompositions.any fun decomposition =>
-        decomposition.work == target &&
-        Traceability.ready design approval decomposition
+  match decompositions.reverse.find? (·.work == target) with
+  | none => false
+  | some decomposition =>
+      designs.any fun design =>
+        design.id == decomposition.design &&
+        design.revision == decomposition.designRevision &&
+        approvals.any fun approval =>
+          approval.design == design.id &&
+          Traceability.ready design approval decomposition
 
 def implementationReviewReady (target : WorkId) (plans : List Review.Plan)
+    (decompositions : List Design.Decomposition)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
     (findings : List Review.Finding)
     (verifications : List Review.Verification) : Bool :=
-  plans.any fun plan =>
-    plan.scope.work == target && plan.scope.stage == "implementation" &&
-    Review.scopeReady plan claims adjudications findings verifications
+  let design :=
+    (decompositions.reverse.find? (·.work == target)).map (·.design)
+  match plans.reverse.find? fun plan =>
+      plan.scope.work == target && plan.scope.stage == "implementation" with
+  | none => false
+  | some plan =>
+      plan.scope.design == design &&
+      Review.scopeReady plan claims adjudications findings verifications
 
 def correctionsReady (target : WorkId)
     (decompositions : List Design.Decomposition)
     (corrections : List Design.Correction) : Bool :=
-  let design := (decompositions.find? (·.work == target)).map (·.design)
+  let design := (decompositions.reverse.find? (·.work == target)).map (·.design)
   !corrections.any fun correction =>
     !correction.resolved && Design.correctionApplies correction target design
 
@@ -92,7 +100,8 @@ def closeable (target : WorkId) (work : List Work.WorkUnit)
   Work.workIsOpen work target &&
   authoritativeReady target work claims adjudications lifecycle &&
   traceReady target designs approvals decompositions &&
-  implementationReviewReady target reviewPlans claims adjudications findings verifications &&
+  implementationReviewReady target reviewPlans decompositions claims
+    adjudications findings verifications &&
   correctionsReady target decompositions corrections
 
 theorem completion_requires_current_obligations (target : WorkId)
