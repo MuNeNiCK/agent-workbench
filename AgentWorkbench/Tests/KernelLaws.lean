@@ -295,8 +295,10 @@ def recordReadinessEvidence (work : WorkId) (store : Kernel.Projection.Store) :
   let basis : Domain.Work.ReadinessBasis :=
     { design := evidenceDesign.id
       designRevision := evidenceDesign.revision
+      decompositionKey := s!"decomposition-{work.value}"
       decompositionDigest := s!"decomposition-{work.value}"
       repositorySnapshot := obligation.snapshot
+      obligationKeys := [obligation.key]
       evidenceRevision := evidence.revision
       reviewPlan := ⟨3000 + work.value⟩ }
   pure (store, basis)

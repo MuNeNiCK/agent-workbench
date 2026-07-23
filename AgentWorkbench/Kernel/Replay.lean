@@ -378,11 +378,12 @@ def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
       state.reviewFindings state.findingVerifications
 
 def traceReadyFor (design : DesignId) (work : WorkId)
-    (digest : String) (state : State) : Bool :=
+    (key digest : String) (state : State) : Bool :=
   match state.decompositions.reverse.find? (·.work == work) with
   | none => false
   | some decomposition =>
-      decomposition.design == design && decomposition.contentDigest == digest &&
+      decomposition.design == design && decomposition.key == key &&
+      decomposition.contentDigest == digest &&
       state.designs.any fun version =>
         version.id == design && state.designApprovals.any fun approval =>
           approval.design == design &&
@@ -392,7 +393,9 @@ def evidenceReadyFor (basis : Work.ReadinessBasis) (work : WorkId)
     (state : State) : Bool :=
   let current := state.obligations.filter fun obligation =>
     obligation.work == work && obligation.current
+  current.map (·.key) == basis.obligationKeys &&
   !current.isEmpty && current.all fun obligation =>
+    obligation.revision == basis.evidenceRevision &&
     obligation.design == basis.design &&
     obligation.designRevision == basis.designRevision &&
     obligation.snapshot == basis.repositorySnapshot &&
@@ -424,7 +427,8 @@ def readinessCurrent (work : WorkId) (activation : ActivationId)
         state.activations.any (fun candidate =>
           candidate.id == parent && candidate.status == .suspended &&
           Work.workIsOpen state.work candidate.work))) &&
-  traceReadyFor basis.design work basis.decompositionDigest state &&
+  traceReadyFor basis.design work basis.decompositionKey
+    basis.decompositionDigest state &&
   state.designs.any (fun version =>
     version.id == basis.design && version.revision == basis.designRevision) &&
   implementationReviewReadyFor basis work state &&
@@ -486,7 +490,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       (activation.suspension.any fun context =>
         context.basis.any fun basis =>
           traceReadyFor basis.design activation.work
-            basis.decompositionDigest state) &&
+            basis.decompositionKey basis.decompositionDigest state) &&
       (activation.parent.isNone || activation.parent.any fun parent =>
         state.activations.any (fun current =>
           current.id == parent && current.status == .active))
@@ -697,6 +701,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
       !obligation.requirements.isEmpty && !obligation.expectedProducer.isEmpty &&
       !obligation.expectedObservation.isEmpty &&
+      obligation.revision == state.revision &&
       state.work.any (fun work => work.id == obligation.work && work.status == .open) &&
       (state.designs.any (fun version =>
         version.id == obligation.design &&

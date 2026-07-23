@@ -142,7 +142,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           (activation.suspension.any fun context =>
             context.basis.any fun basis =>
               Replay.traceReadyFor basis.design activation.work
-                basis.decompositionDigest state) &&
+                basis.decompositionKey basis.decompositionDigest state) &&
           (activation.parent.isNone || activation.parent.any fun parent =>
             state.activations.any (fun current =>
               current.id == parent && current.status == .active)) then
@@ -440,6 +440,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       if !obligation.requirements.isEmpty &&
           !obligation.expectedProducer.isEmpty &&
           !obligation.expectedObservation.isEmpty &&
+          obligation.revision == state.revision &&
           state.designs.any (fun version =>
             version.id == obligation.design &&
             version.revision == obligation.designRevision) then

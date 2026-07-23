@@ -246,8 +246,10 @@ def run : IO Unit := do
   let basisOne : Domain.Work.ReadinessBasis :=
     { design := designVersion.id
       designRevision := designVersion.revision
+      decompositionKey := decomposition.key
       decompositionDigest := decomposition.contentDigest
       repositorySnapshot := implementationPlan.scope.repositorySnapshot
+      obligationKeys := [obligation.key]
       evidenceRevision := evidenceOne.revision
       reviewPlan := implementationPlan.id }
   let childSuspension : Domain.Work.SuspensionContext :=
@@ -296,8 +298,10 @@ def run : IO Unit := do
   for staleBasis in [
       { basisOne with design := ⟨99⟩ },
       { basisOne with designRevision := designVersion.revision.next },
+      { basisOne with decompositionKey := "wrong-decomposition" },
       { basisOne with decompositionDigest := "wrong-decomposition" },
       { basisOne with repositorySnapshot := "wrong-snapshot" },
+      { basisOne with obligationKeys := ["wrong-obligation"] },
       { basisOne with evidenceRevision := evidenceOne.revision.next },
       { basisOne with reviewPlan := ⟨99⟩ }] do
     expect (!Kernel.Replay.readinessCurrent
@@ -349,7 +353,7 @@ def run : IO Unit := do
       commandProfile := obligation.commandProfile
       invocation := obligation.invocation
       repository := obligation.repository
-      snapshot := "commit:newer"
+      snapshot := obligation.snapshot
       artifactDigest := obligation.artifactDigest
       current := true
       kind := obligation.kind
@@ -376,6 +380,8 @@ def run : IO Unit := do
       observedAt := newerObligation.expectedObservation
       design := newerObligation.design
       designRevision := newerObligation.designRevision }
+  reject (.recordObligation state.revision newerObligation) state
+    "later obligation reused a frozen evidence revision"
   let newerObligationState :=
     { state with
       obligations := state.obligations ++ [newerObligation]
@@ -386,7 +392,7 @@ def run : IO Unit := do
   let newerDecomposition :=
     { decomposition with
       key := "decomposition-v2"
-      contentDigest := "decomposition-v2" }
+      contentDigest := decomposition.contentDigest }
   let newerDecompositionState :=
     { state with decompositions := state.decompositions ++ [newerDecomposition] }
   expect (!Kernel.Replay.resumeCurrent

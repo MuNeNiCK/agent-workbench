@@ -14,8 +14,10 @@ deriving DecidableEq, Repr
 structure ReadinessBasis where
   design : DesignId
   designRevision : Revision
+  decompositionKey : String
   decompositionDigest : String
   repositorySnapshot : String
+  obligationKeys : List String
   evidenceRevision : Revision
   reviewPlan : ReviewPlanId
 deriving DecidableEq, Repr
@@ -37,7 +39,9 @@ def SuspensionContext.wellFormed (context : SuspensionContext) : Bool :=
 def SuspensionContext.readinessWellFormed (context : SuspensionContext) : Bool :=
   context.wellFormed &&
   context.basis.any (fun basis =>
-    !basis.decompositionDigest.isEmpty && !basis.repositorySnapshot.isEmpty)
+    !basis.decompositionKey.isEmpty && !basis.decompositionDigest.isEmpty &&
+      !basis.repositorySnapshot.isEmpty && !basis.obligationKeys.isEmpty &&
+      basis.obligationKeys.all (fun key => !key.isEmpty))
 
 structure Activation where
   id : ActivationId
