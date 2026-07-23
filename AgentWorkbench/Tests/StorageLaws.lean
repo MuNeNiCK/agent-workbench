@@ -543,6 +543,13 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
   let predecessorV2Backups := root / "predecessor-v2-backups"
   Adapter.SQLite.initializeStore predecessorV2
   let v2Store ← bootstrap predecessorV2
+  corruptProjection predecessorV2
+  let v2RepairPlan ← match ← Adapter.SQLite.diagnose predecessorV2 with
+    | .ok (.projectionRepairRequired plan) => pure plan
+    | other => throw <| IO.userError s!"predecessor v2 repair fixture failed: {repr other}"
+  let v2RepairReceipt ← match ← Adapter.SQLite.repairProjection predecessorV2 v2RepairPlan with
+    | .ok receipt => pure receipt
+    | .error error => throw <| IO.userError s!"predecessor v2 repair fixture failed: {repr error}"
   makePredecessorV2 predecessorV2
   let v2Plan ← match ← Adapter.Update.inspect predecessorV2 with
     | .updateRequired plan => pure plan
@@ -550,6 +557,12 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
   let _ ← Adapter.Update.apply predecessorV2 predecessorV2Backups v2Plan
   expect ((← load predecessorV2) == v2Store.store)
     "predecessor v2 migration changed authoritative state"
+  match ← Adapter.SQLite.repairProjection predecessorV2 v2RepairPlan with
+  | .ok retry =>
+      expect (retry == v2RepairReceipt)
+        "predecessor v2 repair receipt changed across v3 migration"
+  | .error error =>
+      throw <| IO.userError s!"migrated predecessor v2 repair retry failed: {repr error}"
 
   let malformedCases := [
     ("extra", "ALTER TABLE events ADD COLUMN unexpected TEXT"),
