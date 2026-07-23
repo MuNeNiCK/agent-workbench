@@ -1,5 +1,15 @@
 # Release history
 
+## v0.1.26 — 2026-07-24
+
+- Add an audited public path to rebind a completed task derivation to the
+  correct checklist condition during scoped finding remediation.
+- Let a typed source correction reconcile a generated checklist across design
+  versions through its same-session alias.
+- Keep remediation selection identical across status, next actions, mutation
+  guards, closure operations, and database constraints, including mixed typed
+  corrections, plan disposition, and terminal versus nonterminal acceptances.
+
 ## v0.1.25 — 2026-07-23
 
 - Let an ordinary structurally ready Decomposition Plan publish a reviewed
