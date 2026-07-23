@@ -87,9 +87,7 @@ def purposeReviewReady (target : WorkId) (design : Option DesignId)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
     (findings : List Review.Finding)
     (verifications : List Review.Verification) : Bool :=
-  match plans.reverse.find? fun plan =>
-      plan.scope.work == target && plan.scope.design == design &&
-      plan.scope.purpose == purpose with
+  match Review.latestPlanFor? design target purpose plans with
   | none => false
   | some plan =>
       Review.scopeReady plan claims adjudications findings verifications
@@ -104,14 +102,10 @@ def requiredReviewsReady (target : WorkId) (plans : List Review.Plan)
     (verifications : List Review.Verification) : Bool :=
   let design :=
     (decompositions.reverse.find? (·.work == target)).map (·.design)
-  match plans.reverse.find? fun plan =>
-      plan.scope.work == target && plan.scope.design == design &&
-      plan.scope.purpose == .designConformance with
+  match Review.latestPlanFor? design target .designConformance plans with
   | none => false
   | some conformance =>
-      match plans.reverse.find? fun plan =>
-          plan.scope.work == target && plan.scope.design == design &&
-          plan.scope.purpose == .implementationQuality with
+      match Review.latestPlanFor? design target .implementationQuality plans with
       | none => false
       | some quality =>
           Review.sameArtifactScope conformance.scope quality.scope &&

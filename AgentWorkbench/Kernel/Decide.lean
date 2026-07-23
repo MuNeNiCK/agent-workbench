@@ -190,7 +190,9 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           match state.reviewPlans.find? (fun plan =>
               plan.scope.design == some design && plan.scope.purpose == .design &&
               plan.scope.artifactDigest == version.contentDigest &&
-              plan.owner == version.owner && Replay.reviewScopeReady plan.id state) with
+              plan.owner == version.owner &&
+              Review.isLatestPlan plan state.reviewPlans &&
+              Replay.reviewScopeReady plan.id state) with
           | none =>
               .error (.invalidTransition "design approval requires an exact adjudicated fresh clean independent review and closed findings")
           | some plan =>

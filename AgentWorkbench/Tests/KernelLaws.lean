@@ -1102,7 +1102,8 @@ def main : IO Unit := do
       reviewer := "implementation-reviewer-new"
       adjudicator := "owner"
       scope :=
-        contractScope firstWork.id .designConformance "implementation-new" }
+        contractScope firstWork.id .designConformance
+          s!"implementation-{firstWork.id.value}" }
   let supersededReviewState :=
     { completable with
       reviewPlans := completable.reviewPlans ++ [supersedingImplementationPlan] }
@@ -1115,6 +1116,49 @@ def main : IO Unit := do
     supersededReviewState.designs supersededReviewState.designApprovals
     supersededReviewState.decompositions supersededReviewState.corrections))
     "an older implementation review remained sufficient after a newer plan"
+  expect (!Kernel.Gates.reviewReadyState ⟨3000 + firstWork.id.value⟩
+    supersededReviewState)
+    "an older implementation review gate remained ready after a newer plan"
+  let supersedingFindingsClaim : Domain.Review.Claim :=
+    { id := ⟨3998⟩
+      plan := supersedingImplementationPlan.id
+      work := firstWork.id
+      epoch := ⟨0⟩
+      claim := .findings
+      reviewer := supersedingImplementationPlan.reviewer
+      scope := some supersedingImplementationPlan.scope }
+  let supersededByFindings :=
+    { supersededReviewState with
+      claims := supersededReviewState.claims ++ [supersedingFindingsClaim] }
+  expect (!(Policy.Completion.closeable firstWork.id
+    supersededByFindings.work supersededByFindings.activations
+    supersededByFindings.claims supersededByFindings.adjudications
+    supersededByFindings.reviewPlans supersededByFindings.reviewFindings
+    supersededByFindings.findingVerifications supersededByFindings.lifecycle
+    supersededByFindings.evidence supersededByFindings.obligations
+    supersededByFindings.designs supersededByFindings.designApprovals
+    supersededByFindings.decompositions supersededByFindings.corrections))
+    "an older clean implementation review bypassed newer findings"
+  let latestCleanClaim : Domain.Review.Claim :=
+    { supersedingFindingsClaim with id := ⟨3997⟩, claim := .clean }
+  let latestCleanAdjudication : Domain.Review.Adjudication :=
+    { review := latestCleanClaim.id
+      decision := .accepted
+      adjudicator := supersedingImplementationPlan.adjudicator }
+  let restoredLatestReview :=
+    { supersededByFindings with
+      claims := supersededByFindings.claims ++ [latestCleanClaim]
+      adjudications :=
+        supersededByFindings.adjudications ++ [latestCleanAdjudication] }
+  expect (Policy.Completion.closeable firstWork.id
+    restoredLatestReview.work restoredLatestReview.activations
+    restoredLatestReview.claims restoredLatestReview.adjudications
+    restoredLatestReview.reviewPlans restoredLatestReview.reviewFindings
+    restoredLatestReview.findingVerifications restoredLatestReview.lifecycle
+    restoredLatestReview.evidence restoredLatestReview.obligations
+    restoredLatestReview.designs restoredLatestReview.designApprovals
+    restoredLatestReview.decompositions restoredLatestReview.corrections)
+    "latest clean implementation review did not restore completion authority"
   let currentDecomposition ←
     match completable.decompositions.reverse.find? (·.work == firstWork.id) with
     | some decomposition => pure decomposition

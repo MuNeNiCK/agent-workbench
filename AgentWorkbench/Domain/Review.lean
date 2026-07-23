@@ -145,6 +145,16 @@ def sameArtifactScope (left right : FrozenScope) : Bool :=
   left.repositorySnapshot == right.repositorySnapshot &&
   left.artifactDigest == right.artifactDigest
 
+def latestPlanFor? (design : Option DesignId) (work : WorkId)
+    (purpose : Purpose) (plans : List Plan) : Option Plan :=
+  plans.reverse.find? fun plan =>
+    plan.scope.design == design && plan.scope.work == work &&
+    plan.scope.purpose == purpose
+
+def isLatestPlan (plan : Plan) (plans : List Plan) : Bool :=
+  (latestPlanFor? plan.scope.design plan.scope.work plan.scope.purpose plans).any
+    (·.id == plan.id)
+
 def verificationExact (finding : Finding) (claim : Claim)
     (verification : Verification) : Bool :=
   match latestAttempt? finding with

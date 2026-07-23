@@ -72,7 +72,8 @@ def resumeReadyState (work : WorkId) (activation : ActivationId)
 
 def reviewReadyState (target : ReviewPlanId) (state : State) : Bool :=
   state.reviewPlans.any fun plan =>
-    plan.id == target && Review.scopeReady plan state.claims
+    plan.id == target && Review.isLatestPlan plan state.reviewPlans &&
+      Review.scopeReady plan state.claims
       state.adjudications state.reviewFindings state.findingVerifications
 
 def evidenceExactState (work : WorkId) (key : String) (state : State) : Bool :=

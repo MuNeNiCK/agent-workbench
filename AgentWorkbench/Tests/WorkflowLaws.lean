@@ -142,6 +142,30 @@ def run : IO Unit := do
   let state ← execute
     (.recordReviewAdjudication state.revision (adjudicationFor designClaim))
     state "owner adjudication failed"
+  let supersedingDesignPlan :=
+    reviewPlan 13 .design designVersion.contentDigest workOne.id
+  let state ← execute
+    (.recordReviewPlan state.revision supersedingDesignPlan) state
+    "superseding design review plan failed"
+  expect (!Kernel.Gates.reviewReadyState designPlan.id state)
+    "older design review gate remained ready after a newer pending plan"
+  reject (.approveDesign state.revision designVersion.id) state
+    "older clean design review authorized approval after a newer pending plan"
+  let supersedingDesignFindings :=
+    claimFor 13 supersedingDesignPlan .findings
+  let state ← execute
+    (.recordReviewClaim state.revision supersedingDesignFindings) state
+    "superseding design findings claim failed"
+  reject (.approveDesign state.revision designVersion.id) state
+    "older clean design review authorized approval after newer findings"
+  let latestDesignClaim := claimFor 14 supersedingDesignPlan .clean
+  let state ← execute
+    (.recordReviewClaim state.revision latestDesignClaim) state
+    "latest design clean claim failed"
+  let state ← execute
+    (.recordReviewAdjudication state.revision
+      (adjudicationFor latestDesignClaim)) state
+    "latest design adjudication failed"
   let state ← execute (.approveDesign state.revision designVersion.id) state
     "reviewed design approval failed"
   expect (state.designApprovals.any (·.design == designVersion.id))
@@ -173,6 +197,13 @@ def run : IO Unit := do
   let state ← execute
     (.recordReviewAdjudication state.revision (adjudicationFor decompositionClaim))
     state "decomposition adjudication failed"
+  let supersedingDecompositionPlan :=
+    reviewPlan 20 .decomposition "decomposition-v1" workTwo.id
+  let state ← execute
+    (.recordReviewPlan state.revision supersedingDecompositionPlan) state
+    "superseding decomposition plan failed"
+  expect (!Kernel.Gates.reviewReadyState decompositionPlan.id state)
+    "older decomposition review gate remained ready after a newer pending plan"
   let decomposition : Domain.Design.Decomposition :=
     { key := "decomposition-v1"
       design := designVersion.id
@@ -191,13 +222,31 @@ def run : IO Unit := do
         validationGates := [
           "resume-matrix", "trace-matrix", "review-matrix",
           "evidence-matrix", "persistence-matrix"] }]
-      reviewer := decompositionPlan.reviewer
-      adjudicator := decompositionPlan.adjudicator
+      reviewer := supersedingDecompositionPlan.reviewer
+      adjudicator := supersedingDecompositionPlan.adjudicator
       accepted := true }
+  reject (.recordDecomposition state.revision decomposition) state
+    "older clean decomposition review authorized after a newer pending plan"
+  let supersedingDecompositionFindings :=
+    claimFor 20 supersedingDecompositionPlan .findings
+  let state ← execute
+    (.recordReviewClaim state.revision supersedingDecompositionFindings) state
+    "superseding decomposition findings claim failed"
+  reject (.recordDecomposition state.revision decomposition) state
+    "older clean decomposition review authorized after newer findings"
+  let latestDecompositionClaim :=
+    claimFor 21 supersedingDecompositionPlan .clean
+  let state ← execute
+    (.recordReviewClaim state.revision latestDecompositionClaim) state
+    "latest decomposition clean claim failed"
+  let state ← execute
+    (.recordReviewAdjudication state.revision
+      (adjudicationFor latestDecompositionClaim)) state
+    "latest decomposition adjudication failed"
   let state ← execute (.recordDecomposition state.revision decomposition) state
     "reviewed decomposition failed"
   let approval : Domain.Design.Approval :=
-    { design := designVersion.id, review := designClaim.id }
+    { design := designVersion.id, review := latestDesignClaim.id }
   expect (Policy.Traceability.ready designVersion approval decomposition)
     "complete reviewed trace did not become ready"
   expect (Kernel.Gates.traceReadyState designVersion.id workTwo.id state)
