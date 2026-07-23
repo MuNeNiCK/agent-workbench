@@ -711,6 +711,14 @@ structure ProjectionRepairReceipt where
   adoptedDigest : String
 deriving DecidableEq, Repr
 
+private structure StoredProjectionRow where
+  revision : String
+  historyDigest : String
+  stateDigest : String
+  payload : ByteArray
+
+deriving instance ToBinary for StoredProjectionRow
+
 inductive Diagnosis
   | healthy (store : Projection.Store)
   | projectionRepairRequired (plan : ProjectionRepairPlan)
@@ -755,36 +763,56 @@ private def validateProjectionTolerantFrom (path : System.FilePath) (db : _root_
     return .error (.corrupt s!"artifact reconciliation failed: {repr reconciliation}")
   return .ok ledger
 
-private def readProjectionPayload? (db : _root_.SQLite) : IO (Option ByteArray) := do
-  let statement ← db.prepare "SELECT payload FROM projection WHERE singleton = 1"
+private def readStoredProjectionRow? (db : _root_.SQLite) : IO (Option StoredProjectionRow) := do
+  let statement ← db.prepare "
+    SELECT revision, history_digest, state_digest, payload
+    FROM projection WHERE singleton = 1"
   unless ← statement.step do return none
-  return some (← statement.columnBlob 0)
+  return some {
+    revision := ← statement.columnText 0
+    historyDigest := ← statement.columnText 1
+    stateDigest := ← statement.columnText 2
+    payload := ← statement.columnBlob 3 }
+
+private def projectionRowMatches (row : StoredProjectionRow)
+    (projection : Projection.ProjectionObservation) : Bool :=
+  row.revision = toString projection.reference.revision.value &&
+    row.historyDigest = projection.reference.historyDigest.value &&
+    row.stateDigest = projection.reference.stateDigest.value &&
+    row.payload = toBinary projection
+
+private def observedProjectionDigest (row? : Option StoredProjectionRow) : IO String := do
+  let some row := row? | return "missing"
+  match fromBinary row.payload with
+  | .ok (projection : Projection.ProjectionObservation) =>
+      if row.revision = toString projection.reference.revision.value &&
+          row.historyDigest = projection.reference.historyDigest.value &&
+          row.stateDigest = projection.reference.stateDigest.value then
+        DurableFilesystem.digest row.payload
+      else
+        return "row:" ++ (← DurableFilesystem.digest (toBinary row))
+  | .error _ => DurableFilesystem.digest row.payload
 
 private def diagnoseFrom (db : _root_.SQLite) : IO (Except OpenError Diagnosis) := do
   let ledger ← match ← readLedger db with
     | .ok value => pure value
     | .error error => return .error error
-  let payload? ← readProjectionPayload? db
-  let observedDigest ← match payload? with
-    | none => pure "missing"
-    | some payload => DurableFilesystem.digest payload
+  let row? ← readStoredProjectionRow? db
+  let observedDigest ← observedProjectionDigest row?
   let plan : ProjectionRepairPlan := { head := ledger.point, observedDigest }
-  let projection? : Option Projection.ProjectionObservation := match payload? with
-    | none => none
-    | some payload =>
-        match fromBinary payload with
-        | .ok projection => some projection
-        | .error _ => none
-  let store : Projection.Store := {
-    ledger := ledger.image
-    active := projection?
-    staged := []
-    receipts := []
-    nextStage := ⟨1⟩ }
-  match Projection.inspect store with
-  | .fresh _ _ => return .ok (.healthy store)
-  | .ledgerCorrupt fault => return .error (.corrupt s!"ledger integrity failed: {repr fault}")
-  | _ => return .ok (.projectionRepairRequired plan)
+  let canonical := Application.Service.projectionFor ledger.image ledger.head.state
+  match row? with
+  | some row =>
+      if projectionRowMatches row canonical then
+        return .ok (.healthy {
+          ledger := ledger.image
+          active := some canonical
+          staged := []
+          receipts := []
+          nextStage := ⟨1⟩ })
+      else
+        return .ok (.projectionRepairRequired plan)
+  | none => return .ok (.projectionRepairRequired plan)
 
 def diagnose (path : System.FilePath) : IO (Except OpenError Diagnosis) := do
   if !(← path.pathExists) then return .error .uninitialized
@@ -809,6 +837,22 @@ private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepair
   unless ← statement.step do return none
   return some { plan, adoptedDigest := ← statement.columnText 0 }
 
+private def writeCanonicalProjection (db : _root_.SQLite)
+    (projection : Projection.ProjectionObservation) : IO Unit := do
+  let statement ← db.prepare "
+    INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
+    VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(singleton) DO UPDATE SET
+      revision=excluded.revision,
+      history_digest=excluded.history_digest,
+      state_digest=excluded.state_digest,
+      payload=excluded.payload"
+  statement.bindText 1 (toString projection.reference.revision.value)
+  statement.bindText 2 projection.reference.historyDigest.value
+  statement.bindText 3 projection.reference.stateDigest.value
+  statement.bindBlob 4 (toBinary projection)
+  statement.exec
+
 def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepairPlan)
     (beforeWriterLock afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
   if !(← path.pathExists) then return .error .uninitialized
@@ -821,35 +865,32 @@ def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepa
         match ← validateProjectionTolerantFrom path db with
         | .ok _ => pure ()
         | .error error => return .error error
-        match ← lookupProjectionRepair db plan with
-        | some receipt => return .ok receipt
-        | none => pure ()
+        let ledger ← match ← readLedger db with
+          | .ok value => pure value
+          | .error error => return .error error
+        let projection := Application.Service.projectionFor ledger.image ledger.head.state
+        let canonicalDigest ← DurableFilesystem.digest (toBinary projection)
         let diagnosis ← match ← diagnoseFrom db with
           | .ok value => pure value
           | .error error => return .error error
+        match ← lookupProjectionRepair db plan with
+        | some receipt =>
+            unless receipt.adoptedDigest = canonicalDigest do
+              return .error (.corrupt "projection repair receipt does not match canonical projection")
+            match diagnosis with
+            | .healthy _ => pure ()
+            | .projectionRepairRequired current =>
+                unless current = plan do
+                  return .error (.corrupt "projection repair plan is stale")
+                writeCanonicalProjection db projection
+            return .ok receipt
+        | none => pure ()
         let current ← match diagnosis with
           | .projectionRepairRequired value => pure value
           | .healthy _ => return .error (.corrupt "projection repair is no longer required")
         unless current = plan do
           return .error (.corrupt "projection repair plan is stale")
-        let ledger ← match ← readLedger db with
-          | .ok value => pure value
-          | .error error => return .error error
-        let projection := Application.Service.projectionFor ledger.image ledger.head.state
-        let statement ← db.prepare "
-          INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
-          VALUES (1, ?, ?, ?, ?)
-          ON CONFLICT(singleton) DO UPDATE SET
-            revision=excluded.revision,
-            history_digest=excluded.history_digest,
-            state_digest=excluded.state_digest,
-            payload=excluded.payload"
-        statement.bindText 1 (toString projection.reference.revision.value)
-        statement.bindText 2 projection.reference.historyDigest.value
-        statement.bindText 3 projection.reference.stateDigest.value
-        statement.bindBlob 4 (toBinary projection)
-        statement.exec
-        let adoptedDigest ← DurableFilesystem.digest (toBinary projection)
+        writeCanonicalProjection db projection
         let receiptStatement ← db.prepare "
           INSERT INTO projection_repairs
             (ledger_id, observed_digest, head_revision, history_digest, adopted_digest)
@@ -858,9 +899,9 @@ def repairProjectionWithLockHook (path : System.FilePath) (plan : ProjectionRepa
         receiptStatement.bindText 2 plan.observedDigest
         receiptStatement.bindText 3 (toString plan.head.revision.value)
         receiptStatement.bindText 4 plan.head.historyDigest.value
-        receiptStatement.bindText 5 adoptedDigest
+        receiptStatement.bindText 5 canonicalDigest
         receiptStatement.exec
-        return .ok { plan, adoptedDigest }
+        return .ok { plan, adoptedDigest := canonicalDigest }
     match outcome with
     | .ok _ => afterCommit
     | .error _ => pure ()

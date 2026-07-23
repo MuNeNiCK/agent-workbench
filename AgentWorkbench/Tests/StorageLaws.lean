@@ -205,9 +205,42 @@ def testReadOnlyFaultDetection (root : System.FilePath) : IO Unit := do
   | .ok receipt => pure receipt
   | .error error => throw <| IO.userError s!"explicit projection repair failed: {repr error}"
   let _ ← load projectionLedger
+  corruptProjection projectionLedger
   match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
   | .ok retry => expect (retry == repairReceipt) "projection repair retry changed receipt"
   | .error error => throw <| IO.userError s!"exact projection repair retry failed: {repr error}"
+  let _ ← load projectionLedger
+  execSql projectionLedger "UPDATE projection_repairs SET adopted_digest='tampered'"
+  let tamperedBefore ← IO.FS.readBinFile projectionLedger
+  match ← Adapter.SQLite.repairProjection projectionLedger repairPlan with
+  | .error (.corrupt _) => pure ()
+  | other => throw <| IO.userError s!"tampered repair receipt was accepted: {repr other}"
+  expect ((← IO.FS.readBinFile projectionLedger) == tamperedBefore)
+    "tampered repair receipt rejection changed storage"
+
+  let projectionColumnCases := [
+    ("revision", "UPDATE projection SET revision='999' WHERE singleton=1"),
+    ("history", "UPDATE projection SET history_digest='corrupt' WHERE singleton=1"),
+    ("state", "UPDATE projection SET state_digest='corrupt' WHERE singleton=1")]
+  for (name, sql) in projectionColumnCases do
+    let ledger := root / s!"projection-column-{name}.sqlite3"
+    Adapter.SQLite.initializeStore ledger
+    let _ ← bootstrap ledger
+    execSql ledger sql
+    match ← Adapter.SQLite.inspect ledger with
+    | .error (.corrupt _) => pure ()
+    | other => throw <| IO.userError s!"projection column corruption {name} was accepted: {repr other}"
+    let columnBefore ← IO.FS.readBinFile ledger
+    let columnPlan ← match ← Adapter.SQLite.diagnose ledger with
+      | .ok (.projectionRepairRequired plan) => pure plan
+      | other => throw <| IO.userError s!"projection column diagnosis {name} failed: {repr other}"
+    expect ((← IO.FS.readBinFile ledger) == columnBefore)
+      s!"projection column diagnosis wrote storage: {name}"
+    match ← Adapter.SQLite.repairProjection ledger columnPlan with
+    | .ok _ => pure ()
+    | .error error =>
+        throw <| IO.userError s!"projection column repair {name} failed: {repr error}"
+    let _ ← load ledger
 
   let historyLedger := root / "history-fault.sqlite3"
   Adapter.SQLite.initializeStore historyLedger
