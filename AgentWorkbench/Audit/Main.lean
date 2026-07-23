@@ -198,12 +198,15 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
     "instReprRestoreReceipt", "instReprStoragePoint",
     "restoreWithLockHook", "restoreWithHook", "restore"]⟩,
   ⟨"AgentWorkbench/Application/Service.lean", #[
-    "actionOutput", "gateOutput", "inspectionOutput", "resolutionOutput",
+    "actionErrorOutput", "actionOutput", "gateOutput", "inspectionOutput",
+    "resolutionOutput",
     "initialStore", "bootstrapCommandAt", "bootstrapCommand", "projectionFor",
     "execute", "complete", "status", "queryValidity", "queryGate", "resolve",
-    "repairProjection", "executeRecovery", "executeAction", "executeRequest"]⟩,
+    "repairProjection", "executeRecovery", "executeAction", "executeRequest",
+    "renderDecision", "renderBootstrap"]⟩,
   ⟨"AgentWorkbench/Cli/Program.lean", #[
-    "Request", "Response", "executeRequest", "executeBootstrap", "run"]⟩
+    "Request", "Response", "executeRequest", "executeBootstrap",
+    "renderDecision", "renderBootstrap", "run"]⟩
 ]
 
 def expectedMutationSurfaces : Array String := #[
@@ -767,6 +770,10 @@ def auditResponseOutput : IO Unit := do
     | .ok response =>
         checkOutput label response.output
         pure response
+  let checkCliResult (label : String) (result : Except String String) : IO Unit := do
+    match result with
+    | .error error => checkOutput s!"{label} error" error
+    | .ok output => checkOutput label output
   let hostilePoint : Domain.Projection.LedgerPoint := {
     ledger := ⟨"ledger-main"⟩
     revision := ⟨991⟩
@@ -791,6 +798,8 @@ def auditResponseOutput : IO Unit := do
   ]
   for action in formatterActions do
     checkOutput "action formatter" (Application.Service.actionOutput action)
+    checkOutput "action error formatter"
+      (Application.Service.actionErrorOutput action)
     checkOutput "resolution formatter"
       (Application.Service.resolutionOutput (.action action))
     match Application.Service.executeRequest (.action action) initial with
@@ -799,6 +808,35 @@ def auditResponseOutput : IO Unit := do
   checkOutput "blocked resolution formatter" <|
     Application.Service.resolutionOutput <|
       .blocked (.noResumableActivation hostilePoint [⟨992⟩])
+  let initializeAction ← match (Application.Service.resolve initial).value with
+    | .action action@(.initializeWork _) => pure action
+    | _ => fail "initialization success fixture did not produce an action"
+  discard <| requireResponse "initialization success response"
+    (Application.Service.executeRequest (.action initializeAction) initial)
+  let hostileResponse : Application.Service.Response := {
+    store := initial
+    output := "owner-private-value /private/project/state sha3-256: 991"
+  }
+  checkCliResult "CLI bootstrap rejection" <|
+    Cli.Program.renderBootstrap <|
+      .error (.invalidTransition
+        "owner-private-value /private/project/state sha3-256: 991")
+  checkCliResult "CLI validity rejection" <|
+    Cli.Program.renderDecision
+      (.blocked "owner-private-value /private/project/state")
+      (.action (.initializeWork hostilePoint))
+      (fun _ => .ok hostileResponse)
+  checkCliResult "CLI resolver rejection" <|
+    Cli.Program.renderDecision .pass
+      (.blocked (.noResumableActivation hostilePoint [⟨992⟩]))
+      (fun _ => .ok hostileResponse)
+  checkCliResult "CLI action rejection" <|
+    Cli.Program.renderDecision .pass (.action (.initializeWork hostilePoint))
+      (fun _ => .error
+        "owner-private-value /private/project/state sha3-256: 991")
+  checkCliResult "CLI success response" <|
+    Cli.Program.renderDecision .pass (.action (.initializeWork hostilePoint))
+      (fun _ => .ok hostileResponse)
   for request in requests do
     discard <| requireResponse "initial public response"
       (Application.Service.executeRequest request initial)
@@ -829,6 +867,8 @@ def auditResponseOutput : IO Unit := do
   let repairAction ← match (Application.Service.resolve missingStore).value with
     | .action action@(.repairProjection _) => pure action
     | _ => fail "repair output fixture did not produce a repair action"
+  checkOutput "repair error formatter"
+    (Application.Service.actionErrorOutput repairAction)
   discard <| requireResponse "repair action response"
     (Application.Service.executeRequest (.action repairAction) missingStore)
   match Application.Service.executeRequest (.repairProjection repairCommand) hostileStore with

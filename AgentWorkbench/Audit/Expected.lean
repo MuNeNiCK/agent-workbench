@@ -25,18 +25,34 @@ def expectedExecuteBootstrap :=
   Application.Service.execute Application.Service.bootstrapCommand
     Application.Service.initialStore
 
-def expectedCliRun : IO Unit := do
-  match expectedExecuteBootstrap with
-  | .error _ => throw <| IO.userError "verified mutation rejected"
+def expectedRenderDecision (validity : Domain.GateResult)
+    (resolution : Kernel.Resolver.Resolution)
+    (executeAction : Kernel.Resolver.Action →
+      Except String Application.Service.Response) : Except String String :=
+  match validity, resolution with
+  | .pass, .action action =>
+      match executeAction action with
+      | .ok _ => .ok s!"agent-workbench verified core: {
+          Application.Service.actionOutput action}"
+      | .error _ => .error "resolver action rejected"
+  | .blocked _, _ => .error "verified state blocked"
+  | _, .blocked _ => .error "resolver blocked"
+
+def expectedRenderBootstrap (bootstrap : Except DomainError
+    Application.Service.MutationTransaction) : Except String String :=
+  match bootstrap with
+  | .error _ => .error "verified mutation rejected"
   | .ok transaction =>
-      match (Application.Service.queryValidity transaction.result).value,
-          (Application.Service.resolve transaction.result).value with
-      | .pass, .action action =>
-          match Application.Service.executeRequest (.action action) transaction.result with
-          | .ok response => IO.println s!"agent-workbench verified core: {response.output}"
-          | .error error => throw <| IO.userError s!"resolver action rejected: {error}"
-      | .blocked _, _ => throw <| IO.userError "verified state blocked"
-      | _, .blocked _ => throw <| IO.userError "resolver blocked"
+      expectedRenderDecision
+        (Application.Service.queryValidity transaction.result).value
+        (Application.Service.resolve transaction.result).value
+        (fun action =>
+          Application.Service.executeRequest (.action action) transaction.result)
+
+def expectedCliRun : IO Unit := do
+  match expectedRenderBootstrap expectedExecuteBootstrap with
+  | .ok output => IO.println output
+  | .error error => throw <| IO.userError error
 
 def cliConditionalBypassFixture : IO Unit := do
   let takeMutation ← pure false

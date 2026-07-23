@@ -126,6 +126,12 @@ def actionOutput : Resolver.Action → String
   | .continueActiveWork _ _ _ => "work ready"
   | .resumeSuspendedWork _ _ _ => "work resumed"
 
+def actionErrorOutput : Resolver.Action → String
+  | .repairProjection _ => "projection repair rejected"
+  | .initializeWork _ => "work initialization rejected"
+  | .continueActiveWork _ _ _ => "work continuation rejected"
+  | .resumeSuspendedWork _ _ _ => "work resume rejected"
+
 def resolutionOutput : Resolver.Resolution → String
   | .action action => s!"next action: {actionOutput action}"
   | .blocked _ => "no executable action"
@@ -136,21 +142,21 @@ def executeAction (action : Resolver.Action) (store : Projection.Store) :
     match action with
     | .repairProjection command =>
         match repairProjection command store with
-        | .error _ => .error "projection repair rejected"
+        | .error _ => .error (actionErrorOutput action)
         | .ok transaction =>
             .ok {
               store := transaction.adopted.result
               output := actionOutput action }
     | .initializeWork point =>
         match execute (bootstrapCommandAt point.revision) store with
-        | .error _ => .error "work initialization rejected"
+        | .error _ => .error (actionErrorOutput action)
         | .ok transaction =>
             .ok { store := transaction.result, output := actionOutput action }
     | .continueActiveWork _ _ _ =>
         .ok { store, output := actionOutput action }
     | .resumeSuspendedWork point work activation =>
         match execute (.resumeWork point.revision work activation) store with
-        | .error _ => .error "work resume rejected"
+        | .error _ => .error (actionErrorOutput action)
         | .ok transaction =>
             .ok { store := transaction.result, output := actionOutput action }
   else
@@ -183,6 +189,27 @@ def executeRequest (request : Request) (store : Projection.Store) :
             store := transaction.adopted.result
             output := "projection repaired" }
   | .action action => executeAction action store
+
+def renderDecision (validity : GateResult) (resolution : Resolver.Resolution)
+    (runAction : Resolver.Action → Except String Response) :
+    Except String String :=
+  match validity, resolution with
+  | .pass, .action action =>
+      match runAction action with
+      | .ok _ => .ok s!"agent-workbench verified core: {actionOutput action}"
+      | .error _ => .error "resolver action rejected"
+  | .blocked _, _ => .error "verified state blocked"
+  | _, .blocked _ => .error "resolver blocked"
+
+def renderBootstrap (bootstrap : Except DomainError MutationTransaction) :
+    Except String String :=
+  match bootstrap with
+  | .error _ => .error "verified mutation rejected"
+  | .ok transaction =>
+      renderDecision
+        (queryValidity transaction.result).value
+        (resolve transaction.result).value
+        (fun action => executeRequest (.action action) transaction.result)
 
 theorem status_is_read_only (store : Projection.Store) :
     (status store).store = store :=
