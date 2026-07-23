@@ -38,9 +38,7 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
     }
     if let Some(blocker) = current_phase_blocker(&tx)? {
         let expected = format!("agent-workbench work remediate --finding {finding_id}");
-        if (blocker.finding_id == Some(finding_id) || blocker.work_unit_id.is_none())
-            && blocker.next_action != expected
-        {
+        if blocker.next_action != expected {
             bail!(
                 "work remediate is not the selected action; next: {}",
                 blocker.next_action
@@ -60,6 +58,7 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
               and f.status = 'open' and f.classification = 'valid'
               and p.required = 1 and p.stage = 'close-ready'
               and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=c.id
               )
@@ -67,6 +66,9 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
                 select 1 from acceptance_records ar
                 where ar.finding_id = f.id and ar.target_type = 'finding'
                   and ar.status = 'approved'
+                  and ar.acceptance_type in (
+                    'accepted_out_of_scope', 'explicit_exception', 'classified_failure'
+                  )
               )
             order by c.id desc limit 1
             "#,
@@ -98,8 +100,24 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
             join closures c on c.id = b.closure_id and c.status = 'registered'
             join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
             join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+            join review_runs r on r.id = f.review_run_id
+            join review_plans p on p.id = r.review_plan_id
             where b.project_id = ?1
-            order by b.id limit 1
+              and p.required = 1 and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.status not in ('exhausted', 'needs_user_decision')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=c.id
+              )
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
+            order by f.id,c.id,b.id limit 1
             "#,
             params![project_id],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
@@ -126,6 +144,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
                   and f.status = 'open' and f.classification = 'valid'
                   and p.required = 1 and p.stage = 'close-ready'
                   and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and p.status not in ('exhausted', 'needs_user_decision')
+                  and not exists(
+                    select 1 from correction_tokens token where token.closure_id=c.id
+                  )
+                  and not exists(
+                    select 1 from acceptance_records accepted
+                    where accepted.finding_id=f.id and accepted.target_type='finding'
+                      and accepted.status='approved'
+                      and accepted.acceptance_type in (
+                        'accepted_out_of_scope','explicit_exception','classified_failure'
+                      )
+                  )
                   and not exists (
                     select 1 from finding_remediation_bindings b
                     where b.finding_id = f.id and b.closure_id = c.id
@@ -157,7 +187,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
         where f.project_id = ?1 and f.status = 'open' and f.classification = 'valid'
           and p.required = 1 and p.stage = 'close-ready'
           and p.review_type in ('implementation_review', 'design_implementation_diff')
-          and not exists (select 1 from acceptance_records ar where ar.finding_id = f.id and ar.status = 'approved')
+          and p.status not in ('exhausted', 'needs_user_decision')
+          and not exists(
+            select 1 from correction_tokens token where token.closure_id=c.id
+          )
+          and not exists(
+            select 1 from acceptance_records ar
+            where ar.finding_id=f.id and ar.target_type='finding'
+              and ar.status='approved'
+              and ar.acceptance_type in (
+                'accepted_out_of_scope','explicit_exception','classified_failure'
+              )
+          )
         order by
           case when exists (
             select 1 from finding_remediation_bindings prior
@@ -259,6 +300,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
           and f.status = 'open' and f.classification = 'valid'
           and p.required = 1 and p.stage = 'close-ready'
           and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and p.status not in ('exhausted', 'needs_user_decision')
+          and not exists(
+            select 1 from correction_tokens token where token.closure_id=c.id
+          )
+          and not exists(
+            select 1 from acceptance_records accepted
+            where accepted.finding_id=f.id and accepted.target_type='finding'
+              and accepted.status='approved'
+              and accepted.acceptance_type in (
+                'accepted_out_of_scope','explicit_exception','classified_failure'
+              )
+          )
         order by f.id
         "#,
     )?;

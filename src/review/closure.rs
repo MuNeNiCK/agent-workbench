@@ -78,6 +78,14 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             from closures c join findings f on f.id = c.finding_id
             where c.id = ?1 and c.project_id = ?2
               and f.status = 'open' and f.classification = 'valid'
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
             "#,
             params![input.closure_id, project_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -97,6 +105,15 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             where f.id = ?1 and p.project_id = ?2 and p.required = 1
               and p.stage = 'close-ready'
               and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.status not in ('exhausted', 'needs_user_decision')
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=?3
               )
@@ -117,7 +134,23 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
               and selected_c.status = 'registered'
             join work_unit_activations selected_a on selected_a.id = b.work_unit_activation_id
               and selected_a.status = 'active'
+            join review_runs selected_r on selected_r.id = selected_f.review_run_id
+            join review_plans selected_p on selected_p.id = selected_r.review_plan_id
             where b.work_unit_id = ?1 and b.project_id = ?2
+              and selected_p.required = 1 and selected_p.stage = 'close-ready'
+              and selected_p.review_type in ('implementation_review', 'design_implementation_diff')
+              and selected_p.status not in ('exhausted', 'needs_user_decision')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=selected_c.id
+              )
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=selected_f.id
+                  and accepted.target_type='finding' and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
             "#,
             params![work_unit_id, project_id],
             |row| row.get(0),
@@ -390,6 +423,14 @@ pub fn supersede_closure(
             where c.id = ?1 and c.project_id = ?2
               and c.status in ('registered', 'incomplete')
               and f.status = 'open' and f.classification = 'valid'
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
             "#,
             params![input.closure_id, project_id],
             |row| row.get(0),
@@ -653,6 +694,23 @@ pub(super) fn ensure_review_finding_target(
     finding_id: i64,
     operation: &str,
 ) -> Result<()> {
+    let terminally_accepted: bool = conn.query_row(
+        r#"
+        select exists(
+          select 1 from acceptance_records accepted
+          where accepted.finding_id=?1 and accepted.target_type='finding'
+            and accepted.status='approved'
+            and accepted.acceptance_type in (
+              'accepted_out_of_scope','explicit_exception','classified_failure'
+            )
+        )
+        "#,
+        [finding_id],
+        |row| row.get(0),
+    )?;
+    if terminally_accepted {
+        bail!("{operation} requires a finding without a terminal acceptance");
+    }
     if let Some(blocker) = current_phase_blocker(conn)? {
         let same_selected_finding =
             blocker.kind == "required_review_finding" && blocker.finding_id == Some(finding_id);
@@ -687,12 +745,36 @@ pub(super) fn ensure_review_finding_target(
           join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
           join closures c on c.id = b.closure_id and c.status = 'registered'
           join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+          join review_runs r on r.id=f.review_run_id
+          join review_plans p on p.id=r.review_plan_id
+          where p.required=1 and p.stage='close-ready'
+            and p.review_type in ('implementation_review','design_implementation_diff')
+            and p.status not in ('exhausted','needs_user_decision')
+            and not exists(
+              select 1 from correction_tokens token where token.closure_id=c.id
+            )
+            and not exists(
+              select 1 from acceptance_records accepted
+              where accepted.finding_id=f.id and accepted.target_type='finding'
+                and accepted.status='approved'
+                and accepted.acceptance_type in (
+                  'accepted_out_of_scope','explicit_exception','classified_failure'
+                )
+            )
           union
           select s.finding_id
           from correction_sessions s
           join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
           join closures c on c.id = s.closure_id and c.status = 'registered'
           where s.status = 'active'
+            and not exists(
+              select 1 from acceptance_records accepted
+              where accepted.finding_id=f.id and accepted.target_type='finding'
+                and accepted.status='approved'
+                and accepted.acceptance_type in (
+                  'accepted_out_of_scope','explicit_exception','classified_failure'
+                )
+            )
         )
         select exists(select 1 from active_scopes where finding_id=?1),
                (select min(finding_id) from active_scopes)
@@ -723,6 +805,15 @@ pub(super) fn finding_is_remediation_eligible(
             where f.id = ?1 and f.project_id = ?2
               and p.required = 1 and p.stage = 'close-ready'
               and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.status not in ('exhausted', 'needs_user_decision')
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
         )
         "#,
         params![finding_id, project_id],

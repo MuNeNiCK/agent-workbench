@@ -344,6 +344,9 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                       select 1 from acceptance_records ar
                       where ar.target_type = 'finding' and ar.finding_id = f.id
                         and ar.status = 'approved'
+                        and ar.acceptance_type in (
+                          'accepted_out_of_scope','explicit_exception','classified_failure'
+                        )
                   )
             )
         begin

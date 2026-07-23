@@ -386,6 +386,7 @@ pub(super) fn current_finding_remediations(conn: &Connection) -> Result<Vec<Find
          and b.work_unit_id = p.work_unit_id and b.work_unit_activation_id = a.id
         where p.project_id = ?1 and p.required = 1 and p.stage = 'close-ready'
           and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and p.status not in ('exhausted', 'needs_user_decision')
           and not exists(
             select 1 from correction_tokens token where token.closure_id=c.id
           )
@@ -604,7 +605,21 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             join review_plans p on p.id = r.review_plan_id
             join work_units w on w.id = p.work_unit_id
             where b.project_id = ?1
-            order by b.id limit 1
+              and p.required = 1 and p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.status not in ('exhausted', 'needs_user_decision')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=c.id
+              )
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
+            order by f.id,c.id,b.id limit 1
             "#,
             params![project_id],
             |row| {

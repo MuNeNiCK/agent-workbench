@@ -160,6 +160,15 @@ pub fn rebind_task_derivation(
               and source_plan.design_version_id=?4
               and source_plan.required=1 and source_plan.stage='close-ready'
               and source_plan.review_type in ('implementation_review','design_implementation_diff')
+              and source_plan.status not in ('exhausted','needs_user_decision')
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=finding.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
               and (finding.task_id is null or finding.task_id=task.id)
               and (
                 finding.design_requirement_id is null

@@ -306,6 +306,14 @@ pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginO
             left join design_packages dp on dp.id = dv.design_package_id
             where c.id = ?1 and c.project_id = ?2 and c.status = 'registered'
               and f.status = 'open' and f.classification = 'valid'
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
             "#,
             params![closure_id, project_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),

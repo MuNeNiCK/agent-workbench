@@ -430,7 +430,23 @@ pub(super) fn ensure_work_mutation_allowed(
             join findings f on f.id = b.finding_id and f.status = 'open' and f.classification = 'valid'
             join closures c on c.id = b.closure_id and c.status = 'registered'
             join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
+            join review_runs r on r.id=f.review_run_id
+            join review_plans p on p.id=r.review_plan_id
             where b.project_id = (select id from projects order by id limit 1)
+              and p.required=1 and p.stage='close-ready'
+              and p.review_type in ('implementation_review','design_implementation_diff')
+              and p.status not in ('exhausted','needs_user_decision')
+              and not exists(
+                select 1 from correction_tokens token where token.closure_id=c.id
+              )
+              and not exists(
+                select 1 from acceptance_records accepted
+                where accepted.finding_id=f.id and accepted.target_type='finding'
+                  and accepted.status='approved'
+                  and accepted.acceptance_type in (
+                    'accepted_out_of_scope','explicit_exception','classified_failure'
+                  )
+              )
             union all
             select 'source_correction', s.finding_id, s.closure_id, null
             from correction_sessions s
@@ -438,6 +454,7 @@ pub(super) fn ensure_work_mutation_allowed(
             join closures c on c.id = s.closure_id and c.status = 'registered'
             where s.status = 'active'
               and s.project_id = (select id from projects order by id limit 1)
+            order by 2,3
             limit 1
             "#,
             [],
@@ -448,7 +465,10 @@ pub(super) fn ensure_work_mutation_allowed(
         let permitted_alternate = kind == "finding_remediation"
             && selected_owner_action.is_some_and(|(target, command)| {
                 work_unit_id == Some(target)
-                    && matches!(command, "work suspend" | "work block" | "work abandon")
+                    && matches!(
+                        command,
+                        "work suspend" | "work block" | "work unblock" | "work abandon"
+                    )
             });
         if permitted_alternate {
             return Ok(());

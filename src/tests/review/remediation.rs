@@ -108,6 +108,210 @@ fn typed_close_ready_contract_routes_to_source_correction() {
 }
 
 #[test]
+fn remediation_batch_excludes_typed_correction_but_keeps_nonterminal_acceptance() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "mixed correction owner", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("implementation and managed correction required"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let implementation = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "repair implementation code",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    let typed = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "repair managed documentation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), implementation.finding_id, "valid").unwrap();
+    classify_finding(temp.path(), typed.finding_id, "valid").unwrap();
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-owner"),
+            summary: "accept an evidence gap without disposing the finding",
+            scope: Some("finding remediation"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: &format!("finding:{}", implementation.finding_id),
+            acceptance_type: "evidence_gap",
+            reason: "the finding still requires implementation remediation",
+            approval_authority_event_id: authority.authority_event_id,
+        },
+    )
+    .unwrap();
+    let implementation_closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: implementation.finding_id,
+            design_invariant: "implementation behavior is corrected",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("repair implementation"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("independent verification"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let typed_closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: typed.finding_id,
+            design_invariant: "managed documentation is corrected",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("docs:create:docs/mixed-fix.md"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("create the declared document"),
+            tests_or_gates: Some("managed correction routing"),
+            verification_plan: Some("inspect the exact correction"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+
+    let status = project_status(temp.path()).unwrap();
+    assert!(status.owner_actions[0].next_action.contains(&format!(
+        "work remediate --finding {}",
+        implementation.finding_id
+    )));
+    let NextAction::OwnerActions { owners } = next_action(temp.path()).unwrap() else {
+        panic!("nonterminal finding acceptance must preserve the owner action");
+    };
+    assert!(owners[0].next_action.contains(&format!(
+        "work remediate --finding {}",
+        implementation.finding_id
+    )));
+    let remediation = remediate_work(temp.path(), implementation.finding_id).unwrap();
+    assert_eq!(remediation.binding_count, 1);
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let bindings: (i64, i64) = conn
+        .query_row(
+            "select count(*),sum(closure_id=?1) from finding_remediation_bindings where work_unit_activation_id=?2",
+            params![implementation_closure.closure_id, remediation.activation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(bindings, (1, 1));
+    let typed_tokens: i64 = conn
+        .query_row(
+            "select count(*) from correction_tokens where closure_id=?1",
+            [typed_closure.closure_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(typed_tokens, 1);
+    drop(conn);
+
+    add_general_acceptance(
+        temp.path(),
+        NewGeneralAcceptance {
+            target: &format!("finding:{}", implementation.finding_id),
+            acceptance_type: "explicit_exception",
+            reason: "terminally dispose the implementation finding",
+            approval_authority_event_id: authority.authority_event_id,
+        },
+    )
+    .unwrap();
+    assert!(
+        ready_closure(
+            temp.path(),
+            ClosureReady {
+                closure_id: implementation_closure.closure_id,
+                implementation_evidence: "must not be accepted after terminal disposition",
+                tests_or_gates: "not run",
+                closed_by_commit: None,
+            },
+        )
+        .is_err()
+    );
+    assert!(
+        supersede_closure(
+            temp.path(),
+            ClosureSupersession {
+                closure_id: implementation_closure.closure_id,
+                new_closure: NewClosure {
+                    finding_id: implementation.finding_id,
+                    design_invariant: "must not replace a terminally disposed finding",
+                    design_citations: None,
+                    implementation_evidence: None,
+                    affected_surfaces: Some("docs:create:docs/terminal-finding.md"),
+                    same_invariant_search: None,
+                    other_violations_found: None,
+                    fix_plan: Some("not applicable"),
+                    tests_or_gates: Some("not applicable"),
+                    verification_plan: Some("not applicable"),
+                    closed_by_commit: None,
+                },
+                reason: "must be rejected",
+                authority_event_id: authority.authority_event_id,
+            },
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn source_correction_rejects_repository_authority_without_publishing_a_closure() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -1453,4 +1657,208 @@ fn zero_resume_quota_still_allows_exactly_one_required_attempt_review() {
     add_review_run(temp.path(), fresh_run()).unwrap();
     let fresh_exceeded = add_review_run(temp.path(), fresh_run()).unwrap_err();
     assert!(fresh_exceeded.to_string().contains("limit exceeded"));
+}
+
+#[test]
+fn remediation_batch_keeps_one_canonical_finding_after_rebinding_and_blocking() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "ordered remediation batch", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("two ordered findings"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let first = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "first remediation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    let second = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "second remediation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), first.finding_id, "valid").unwrap();
+    classify_finding(temp.path(), second.finding_id, "valid").unwrap();
+    let closure = |finding_id, invariant: &'static str| NewClosure {
+        finding_id,
+        design_invariant: invariant,
+        design_citations: None,
+        implementation_evidence: None,
+        affected_surfaces: Some("src/review.rs"),
+        same_invariant_search: None,
+        other_violations_found: None,
+        fix_plan: Some("repair the selected implementation surface"),
+        tests_or_gates: Some("cargo test"),
+        verification_plan: Some("independent verification"),
+        closed_by_commit: None,
+    };
+    let first_closure =
+        add_closure(temp.path(), closure(first.finding_id, "first invariant")).unwrap();
+    let second_closure =
+        add_closure(temp.path(), closure(second.finding_id, "second invariant")).unwrap();
+    remediate_work(temp.path(), first.finding_id).unwrap();
+
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-owner"),
+            summary: "replace the first remediation contract",
+            scope: Some("work-unit:1"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let replacement = supersede_closure(
+        temp.path(),
+        ClosureSupersession {
+            closure_id: first_closure.closure_id,
+            new_closure: closure(first.finding_id, "replacement first invariant"),
+            reason: "replace the first contract without changing finding precedence",
+            authority_event_id: authority.authority_event_id,
+        },
+    )
+    .unwrap();
+    remediate_work(temp.path(), first.finding_id).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let binding_count_before: i64 = conn
+        .query_row(
+            "select count(*) from finding_remediation_bindings",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        conn.execute(
+            r#"
+            insert into finding_remediation_bindings(
+              project_id,finding_id,closure_id,work_unit_id,
+              work_unit_activation_id,created_at
+            )
+            select project_id,finding_id,closure_id,work_unit_id,
+                   work_unit_activation_id,current_timestamp
+            from finding_remediation_bindings
+            where finding_id=?1 and closure_id=?2
+            "#,
+            params![first.finding_id, replacement.closure_id],
+        )
+        .is_err()
+    );
+    drop(conn);
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let binding_count_after: i64 = conn
+        .query_row(
+            "select count(*) from finding_remediation_bindings",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(binding_count_after, binding_count_before);
+    drop(conn);
+
+    block_work(
+        temp.path(),
+        Some(work.work_unit_id),
+        "pause the remediation batch",
+    )
+    .unwrap();
+    let blocked = project_status_for(temp.path(), Some(work.work_unit_id)).unwrap();
+    assert_eq!(
+        blocked.owner_actions[0].next_action,
+        format!(
+            "agent-workbench work unblock {} --reason \"<reason>\"; then agent-workbench work remediate --finding {}",
+            work.work_unit_id, first.finding_id
+        )
+    );
+    unblock_work(
+        temp.path(),
+        Some(work.work_unit_id),
+        "continue the canonical remediation",
+    )
+    .unwrap();
+    let selected = project_status_for(temp.path(), Some(work.work_unit_id)).unwrap();
+    assert_eq!(
+        selected.finding_remediations[0].finding_id,
+        first.finding_id
+    );
+    assert_eq!(
+        selected.owner_actions[0].next_action,
+        format!(
+            "implement the scoped fix, then agent-workbench closure ready {} --evidence \"<evidence>\" --tests \"<tests>\"",
+            replacement.closure_id
+        )
+    );
+    let out_of_order = ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: second_closure.closure_id,
+            implementation_evidence: "second fix",
+            tests_or_gates: "tests pass",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        out_of_order
+            .to_string()
+            .contains(&format!("finding {} is selected", first.finding_id))
+    );
+    ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: replacement.closure_id,
+            implementation_evidence: "first fix",
+            tests_or_gates: "tests pass",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
 }

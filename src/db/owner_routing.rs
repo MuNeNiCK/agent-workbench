@@ -538,8 +538,81 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
           and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
           and not exists(select 1 from acceptance_records ar
                          where ar.target_type='finding' and ar.finding_id=f.id
-                           and ar.status='approved')
-        order by case when f.classification!='valid' then 0 else 1 end, f.id
+                           and ar.status='approved'
+                           and ar.acceptance_type in (
+                             'accepted_out_of_scope','explicit_exception','classified_failure'
+                           ))
+        order by
+          case
+            when f.classification!='valid' then 1
+            when p.status in ('exhausted','needs_user_decision') then 2
+            when p.required=0 or exists(
+              select 1 from acceptance_records plan_acceptance
+              where plan_acceptance.target_type='review_plan'
+                and plan_acceptance.review_plan_id=p.id
+                and plan_acceptance.status='approved'
+            ) then 3
+            when not exists(
+              select 1 from closures c
+              where c.finding_id=f.id and c.status!='superseded'
+            ) then 4
+            when exists(
+              select 1 from closures c
+              where c.finding_id=f.id and c.status='incomplete'
+            ) then 5
+            when exists(
+              select 1 from closures c
+              where c.finding_id=f.id and c.status='ready_for_verification'
+            ) then 6
+            when not (
+              p.required=1 and p.stage='close-ready'
+              and p.review_type in ('implementation_review','design_implementation_diff')
+            ) then 7
+            else 8
+          end,
+          case p.stage
+            when 'design-ready' then 1
+            when 'implementation-ready' then 2
+            when 'close-ready' then 3
+            when 'resume-ready' then 4
+            else 5
+          end,
+          case when
+            f.classification='valid'
+            and p.stage='close-ready'
+            and p.review_type in ('implementation_review','design_implementation_diff')
+            and exists(
+              select 1 from finding_remediation_bindings prior
+              join work_unit_activations prior_a
+                on prior_a.id=prior.work_unit_activation_id
+              where prior.work_unit_id=p.work_unit_id and prior_a.status='suspended'
+                and prior.id=(
+                  select max(last.id) from finding_remediation_bindings last
+                  where last.work_unit_id=p.work_unit_id
+                )
+            ) then 1 else 0 end,
+          case when
+            f.classification='valid'
+            and p.stage='close-ready'
+            and p.review_type in ('implementation_review','design_implementation_diff')
+            and exists(
+              select 1 from finding_remediation_bindings prior
+              join work_unit_activations prior_a
+                on prior_a.id=prior.work_unit_activation_id
+              where prior.work_unit_id=p.work_unit_id and prior_a.status='suspended'
+                and prior.id=(
+                  select max(last.id) from finding_remediation_bindings last
+                  where last.work_unit_id=p.work_unit_id
+                )
+            ) then coalesce((
+              select max(last.id) from finding_remediation_bindings last
+              where last.work_unit_id=p.work_unit_id
+            ),0) else 0 end,
+          f.id,
+          p.work_unit_id,
+          coalesce((select max(c.id) from closures c where c.finding_id=f.id),0),
+          p.id,
+          r.id
         limit 1
         "#,
         params![owner_id],

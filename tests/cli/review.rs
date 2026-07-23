@@ -1,12 +1,12 @@
 use super::*;
 use agent_workbench::{
-    AdjudicationInput, ClosureReady, DesignPackageImport, NewAuthorityEvent, NewClosure,
-    NewDecisionContinuation, NewDesignPackage, NewFinding, NewReviewPlan, NewReviewPolicy,
-    NewReviewRun, NewTask, add_authority_event, add_closure, add_decision_continuation,
-    add_finding, add_review_plan, add_review_policy, add_review_run,
+    AdjudicationInput, ClosureReady, ClosureSupersession, DesignPackageImport, NewAuthorityEvent,
+    NewClosure, NewDecisionContinuation, NewDesignPackage, NewFinding, NewReviewPlan,
+    NewReviewPolicy, NewReviewRun, NewTask, add_authority_event, add_closure,
+    add_decision_continuation, add_finding, add_review_plan, add_review_policy, add_review_run,
     add_review_run_with_finding_result, add_task, adjudicate_verification, begin_correction,
     classify_finding, import_design_package, init_design_package, init_project, list_findings,
-    ready_closure, start_work,
+    ready_closure, start_work, supersede_closure,
 };
 
 #[test]
@@ -590,6 +590,168 @@ fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
     assert!(context_help.contains("--finding"));
     assert!(context_help.contains("--closure"));
     assert!(context_help.contains("--attempt"));
+}
+
+#[test]
+fn remediation_cli_keeps_the_same_canonical_finding_after_unblock() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "public ordered remediation", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("two ordered findings"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let first = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "first public remediation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    let second = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "second public remediation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), first.finding_id, "valid").unwrap();
+    classify_finding(temp.path(), second.finding_id, "valid").unwrap();
+    let closure = |finding_id, invariant: &'static str| NewClosure {
+        finding_id,
+        design_invariant: invariant,
+        design_citations: None,
+        implementation_evidence: None,
+        affected_surfaces: Some("src/review.rs"),
+        same_invariant_search: None,
+        other_violations_found: None,
+        fix_plan: Some("repair the selected implementation surface"),
+        tests_or_gates: Some("cargo test"),
+        verification_plan: Some("independent verification"),
+        closed_by_commit: None,
+    };
+    let first_closure = add_closure(
+        temp.path(),
+        closure(first.finding_id, "first public invariant"),
+    )
+    .unwrap();
+    add_closure(
+        temp.path(),
+        closure(second.finding_id, "second public invariant"),
+    )
+    .unwrap();
+
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "remediate",
+            "--finding",
+            &first.finding_id.to_string(),
+        ],
+    );
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-owner"),
+            summary: "replace the first public remediation contract",
+            scope: Some("work-unit:1"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let replacement = supersede_closure(
+        temp.path(),
+        ClosureSupersession {
+            closure_id: first_closure.closure_id,
+            new_closure: closure(first.finding_id, "replacement public invariant"),
+            reason: "replace the first public contract",
+            authority_event_id: authority.authority_event_id,
+        },
+    )
+    .unwrap();
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "remediate",
+            "--finding",
+            &first.finding_id.to_string(),
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "block",
+            &work.work_unit_id.to_string(),
+            "--reason",
+            "pause public remediation",
+        ],
+    );
+    let blocked = ok(temp.path(), &["status", "--work", "1"]);
+    assert!(blocked.contains(&format!(
+        "work unblock 1 --reason \"<reason>\"; then agent-workbench work remediate --finding {}",
+        first.finding_id
+    )));
+
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "unblock",
+            &work.work_unit_id.to_string(),
+            "--reason",
+            "continue public remediation",
+        ],
+    );
+    let status = ok(temp.path(), &["status", "--work", "1"]);
+    assert!(status.contains(&format!("finding_id: {}", first.finding_id)));
+    assert!(status.contains(&format!("closure ready {}", replacement.closure_id)));
+    assert!(!status.contains(&format!("closure ready {}", first_closure.closure_id)));
 }
 
 #[test]
