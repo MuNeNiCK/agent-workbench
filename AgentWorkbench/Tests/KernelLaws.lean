@@ -617,6 +617,12 @@ def main : IO Unit := do
     "evidence design import rejected"
   let currentObligation :=
     { unboundObligation with revision := designed.revision }
+  let noDesignObligation :=
+    { currentObligation with design := ⟨99⟩, designRevision := ⟨99⟩ }
+  let noDesignObligationState :=
+    { first with obligations := [noDesignObligation] }
+  expect (!(decide (Kernel.Replay.ValidState noDesignObligationState)))
+    "valid state accepted an obligation for a missing design"
   let obligated ← match Kernel.Decide.decide
       (.recordObligation designed.revision currentObligation) designed with
     | .ok transaction => pure transaction.result.state

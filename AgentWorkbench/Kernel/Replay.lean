@@ -101,6 +101,13 @@ def returnTargetValid (state : State) : Bool :=
       state.activations.any (fun activation =>
         activation.status == .closed && activation.parent == some target)
 
+def ObligationsReferenceDesigns (designs : List Design.DesignVersion)
+    (obligations : List Evidence.Obligation) : Prop :=
+  (obligations.all fun obligation =>
+    designs.any fun design =>
+      design.id == obligation.design &&
+      design.revision == obligation.designRevision) = true
+
 def ValidState (state : State) : Prop :=
   Work.ValidWorkState state.work state.activations ∧
   (state.designs.map (·.id)).Nodup ∧
@@ -128,6 +135,7 @@ def ValidState (state : State) : Prop :=
   Evidence.UniqueObligations state.obligations ∧
   Evidence.ObligationsWellFormed state.obligations ∧
   Evidence.ObligationsReferenceWork (state.work.map (·.id)) state.obligations ∧
+  ObligationsReferenceDesigns state.designs state.obligations ∧
   Evidence.CurrentObligationsReferenceOpenWork
     ((state.work.filter (·.status == .open)).map (·.id)) state.obligations ∧
   returnTargetValid state = true ∧
@@ -152,7 +160,7 @@ instance (state : State) : Decidable (ValidState state) := by
     Lifecycle.nonemptyKeys
     Evidence.UniqueObligations Evidence.ObligationsWellFormed
     Evidence.ObligationsReferenceWork Evidence.CurrentObligationsReferenceOpenWork
-    returnTargetValid
+    ObligationsReferenceDesigns returnTargetValid
   infer_instance
 
 structure VerifiedState where
@@ -877,7 +885,8 @@ theorem emptyState_valid : ValidState emptyState := by
     Lifecycle.RecordsWellFormed,
     Lifecycle.nonemptyKeys,
     Evidence.UniqueObligations, Evidence.ObligationsWellFormed,
-    Evidence.ObligationsReferenceWork, Evidence.CurrentObligationsReferenceOpenWork,
+    Evidence.ObligationsReferenceWork, ObligationsReferenceDesigns,
+    Evidence.CurrentObligationsReferenceOpenWork,
     returnTargetValid, Work.activeActivations, emptyState]
 
 end AgentWorkbench.Kernel.Replay
