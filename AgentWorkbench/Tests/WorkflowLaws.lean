@@ -324,17 +324,8 @@ def run : IO Unit := do
       accepted := false
       adjudicated := false
       closed := false }
-  let laterSnapshotState ← execute
-    (.recordReviewFinding state.revision laterSnapshotFinding) state
-    "later-snapshot finding recording failed"
-  let laterSnapshotState ← execute
-    (.adjudicateReviewFinding laterSnapshotState.revision
-      laterSnapshotFinding.key "owner" true)
-    laterSnapshotState "later-snapshot finding adjudication failed"
-  let laterSnapshotState ← execute
-    (.closeReviewFinding laterSnapshotState.revision laterSnapshotFinding.key
-      "sha256:later-fix" "commit:later-snapshot")
-    laterSnapshotState "later-snapshot finding closure failed"
+  reject (.recordReviewFinding state.revision laterSnapshotFinding) state
+    "historical findings claim accepted a later finding"
   let laterSnapshotScope :=
     { implementationPlan.scope with
       repositorySnapshot := "commit:later-snapshot" }
@@ -344,16 +335,23 @@ def run : IO Unit := do
       scope := laterSnapshotScope
       evidenceDigest := "sha256:later-fix"
       claimFixed := true
-      accepted := false }
-  let laterSnapshotState ← execute
-    (.verifyReviewFinding laterSnapshotState.revision laterSnapshotVerification)
-    laterSnapshotState "later-snapshot finding verification failed"
-  let laterSnapshotState ← execute
-    (.adjudicateFindingVerification laterSnapshotState.revision
-      laterSnapshotFinding.key "owner")
-    laterSnapshotState "later-snapshot verification adjudication failed"
+      adjudicator := "owner"
+      adjudicated := true
+      accepted := true }
+  let crossSnapshotFinding :=
+    { laterSnapshotFinding with
+      accepted := true
+      adjudicated := true
+      closed := true
+      closureEvidence := laterSnapshotVerification.evidenceDigest
+      closureSnapshot := laterSnapshotScope.repositorySnapshot }
+  let crossSnapshotState :=
+    { state with
+      reviewFindings := state.reviewFindings ++ [crossSnapshotFinding]
+      findingVerifications :=
+        state.findingVerifications ++ [laterSnapshotVerification] }
   expect (!Kernel.Replay.resumeCurrent
-    workTwo.id activationTwo.id laterSnapshotState)
+    workTwo.id activationTwo.id crossSnapshotState)
     "verification at a later snapshot reactivated an older readiness basis"
   let unadjudicatedBlockingFinding : Domain.Review.Finding :=
     { key := "unadjudicated-resume-finding"

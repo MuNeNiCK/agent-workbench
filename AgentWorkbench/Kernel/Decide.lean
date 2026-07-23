@@ -346,7 +346,8 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       if Review.findingWellFormed finding &&
           !finding.adjudicated && !finding.closed &&
           state.claims.any (fun claim =>
-            claim.id == finding.review && claim.claim == .findings) &&
+            claim.id == finding.review &&
+              Review.claimAcceptsFindings claim state.reviewPlans state.claims) &&
           !state.reviewFindings.any (·.key == finding.key) then
         .ok ⟨[.reviewFindingRecorded finding], by simp⟩
       else

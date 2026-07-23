@@ -631,7 +631,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       Review.findingWellFormed finding &&
       !finding.adjudicated && !finding.closed &&
       state.claims.any (fun claim => claim.id == finding.review &&
-        claim.claim == .findings) &&
+        Review.claimAcceptsFindings claim state.reviewPlans state.claims) &&
       !state.reviewFindings.any (·.key == finding.key)
   | .reviewFindingAdjudicated key principal _ =>
       state.reviewFindings.any (fun finding =>

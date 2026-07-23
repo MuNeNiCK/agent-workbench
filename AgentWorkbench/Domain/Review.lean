@@ -123,10 +123,19 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
                   verification.scope.repositorySnapshot ==
                     scope.repositorySnapshot)))
 
+def latestClaimFor (plan : Plan) (claims : List Claim) : Option Claim :=
+  claims.reverse.find? (scopeExact plan)
+
+def claimAcceptsFindings (claim : Claim) (plans : List Plan)
+    (claims : List Claim) : Bool :=
+  claim.claim == .findings && plans.any fun plan =>
+    scopeExact plan claim &&
+      (latestClaimFor plan claims).any (·.id == claim.id)
+
 def scopeReady (plan : Plan) (claims : List Claim)
     (adjudications : List Adjudication) (findings : List Finding)
     (verifications : List Verification) : Bool :=
-  match claims.reverse.find? (scopeExact plan) with
+  match latestClaimFor plan claims with
   | none => false
   | some claim =>
       claim.claim == .clean &&
