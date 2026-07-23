@@ -8,8 +8,9 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open SQLite.Blob
 
-def schemaVersion : Nat := 2
+def schemaVersion : Nat := 3
 def legacySchemaVersion : Nat := 1
+def predecessorSchemaVersion : Nat := 2
 
 private def writerPath (path : System.FilePath) : System.FilePath :=
   System.FilePath.mk s!"{path}.writer.sqlite3"
@@ -101,11 +102,12 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
       payload BLOB NOT NULL
     );
     CREATE TABLE projection_repairs (
+      ledger_id TEXT NOT NULL,
       observed_digest TEXT NOT NULL,
       head_revision TEXT NOT NULL,
       history_digest TEXT NOT NULL,
       adopted_digest TEXT NOT NULL,
-      PRIMARY KEY (observed_digest, head_revision, history_digest)
+      PRIMARY KEY (ledger_id, observed_digest, head_revision, history_digest)
     );
     CREATE TABLE update_provenance (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -115,8 +117,10 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
       backup_size TEXT NOT NULL
     );"
 
-private def writeInitialRows (db : _root_.SQLite) : IO Unit := do
-  let store := Projection.initialStore
+private def writeInitialRows (db : _root_.SQLite) (ledgerIdentity : String) : IO Unit := do
+  let initial := Projection.initialStore
+  let store : Projection.Store := {
+    initial with ledger := { initial.ledger with id := ⟨ledgerIdentity⟩ } }
   let metadata ← db.prepare
     "INSERT INTO metadata VALUES (1, ?, ?, ?, ?)"
   metadata.bindText 1 (toString schemaVersion)
@@ -124,9 +128,10 @@ private def writeInitialRows (db : _root_.SQLite) : IO Unit := do
   metadata.bindText 3 (toString store.ledger.storedHead.value)
   metadata.bindText 4 store.ledger.storedHistoryDigest.value
   metadata.exec
-  let active ← match store.active with
-    | some projection => pure projection
-    | none => throw <| IO.userError "initial projection is missing"
+  let verified ← match Replay.verifyLedger store.ledger with
+    | .ok ledger => pure ledger
+    | .error fault => throw <| IO.userError s!"initial ledger is invalid: {repr fault}"
+  let active := Application.Service.projectionFor store.ledger verified.head.state
   let projection ← db.prepare
     "INSERT INTO projection VALUES (1, ?, ?, ?, ?)"
   projection.bindText 1 (toString active.reference.revision.value)
@@ -143,7 +148,7 @@ def initializeStore (path : System.FilePath) : IO Unit := do
   db.exec "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;"
   db.transaction (mode := .immediate) do
     createSchema db
-    writeInitialRows db
+    writeInitialRows db path.toString
   withWriterLock path (pure ())
 
 private def readMetadataAt (db : _root_.SQLite) (expectedSchema : Nat) :
@@ -415,12 +420,21 @@ private def projectionDefinition := "CREATE TABLE projection (
   payload BLOB NOT NULL
 )"
 
-private def projectionRepairsDefinition := "CREATE TABLE projection_repairs (
+private def legacyProjectionRepairsDefinition := "CREATE TABLE projection_repairs (
   observed_digest TEXT NOT NULL,
   head_revision TEXT NOT NULL,
   history_digest TEXT NOT NULL,
   adopted_digest TEXT NOT NULL,
   PRIMARY KEY (observed_digest, head_revision, history_digest)
+)"
+
+private def projectionRepairsDefinition := "CREATE TABLE projection_repairs (
+  ledger_id TEXT NOT NULL,
+  observed_digest TEXT NOT NULL,
+  head_revision TEXT NOT NULL,
+  history_digest TEXT NOT NULL,
+  adopted_digest TEXT NOT NULL,
+  PRIMARY KEY (ledger_id, observed_digest, head_revision, history_digest)
 )"
 
 private def currentEventsDefinition := "CREATE TABLE events (
@@ -480,16 +494,13 @@ private def definitionsMatch (db : _root_.SQLite)
 private def commonDefinitionsMatch (db : _root_.SQLite) : IO Bool :=
   definitionsMatch db [
     ("metadata", metadataDefinition),
-    ("projection", projectionDefinition),
-    ("projection_repairs", projectionRepairsDefinition)]
+    ("projection", projectionDefinition)]
 
 private def commonSchemaMatches (db : _root_.SQLite) : IO Bool := do
   return (← tableColumns db "metadata") =
       ["singleton", "schema_version", "ledger_id", "head_revision", "history_digest"] &&
     (← tableColumns db "projection") =
-      ["singleton", "revision", "history_digest", "state_digest", "payload"] &&
-    (← tableColumns db "projection_repairs") =
-      ["observed_digest", "head_revision", "history_digest", "adopted_digest"]
+      ["singleton", "revision", "history_digest", "state_digest", "payload"]
 
 def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
   try
@@ -503,6 +514,8 @@ def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
         ["operation_id", "request_payload", "payload_digest", "result_digest",
          "start_revision", "end_revision", "history_digest", "receipt"] &&
       (← tableColumns db "artifacts") = ["digest", "size", "payload"] &&
+      (← tableColumns db "projection_repairs") =
+        ["ledger_id", "observed_digest", "head_revision", "history_digest", "adopted_digest"] &&
       (← tableColumns db "update_provenance") =
         ["singleton", "source_schema", "source_digest", "backup_digest", "backup_size"] &&
       (← commonDefinitionsMatch db) &&
@@ -510,6 +523,7 @@ def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
         ("events", currentEventsDefinition),
         ("operations", currentOperationsDefinition),
         ("artifacts", currentArtifactsDefinition),
+        ("projection_repairs", projectionRepairsDefinition),
         ("update_provenance", updateProvenanceDefinition)])
   catch _ => return false
 
@@ -554,7 +568,9 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
     unless (← applicationTables db) =
         ["artifacts", "events", "metadata", "operations", "projection", "projection_repairs"] &&
         (← applicationSchemaObjects db) = legacySchemaObjects &&
-        (← commonSchemaMatches db) && (← commonDefinitionsMatch db) do
+        (← commonSchemaMatches db) && (← commonDefinitionsMatch db) &&
+        (← tableColumns db "projection_repairs") =
+          ["observed_digest", "head_revision", "history_digest", "adopted_digest"] do
       return none
     if (← tableColumns db "events") = ["revision", "payload"] &&
         (← tableColumns db "operations") =
@@ -563,7 +579,8 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
         (← definitionsMatch db [
           ("events", originalEventsDefinition),
           ("operations", originalOperationsDefinition),
-          ("artifacts", originalArtifactsDefinition)]) &&
+          ("artifacts", originalArtifactsDefinition),
+          ("projection_repairs", legacyProjectionRepairsDefinition)]) &&
         (← originalV1EmptyValid db) then
       return some .originalEmpty
     if (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
@@ -574,7 +591,8 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
         (← definitionsMatch db [
           ("events", currentEventsDefinition),
           ("operations", currentOperationsDefinition),
-          ("artifacts", currentArtifactsDefinition)]) then
+          ("artifacts", currentArtifactsDefinition),
+          ("projection_repairs", legacyProjectionRepairsDefinition)]) then
       match ← loadFromAt db legacySchemaVersion with
       | .ok _ => return some .predecessor
       | .error _ => return none
@@ -583,6 +601,24 @@ def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
 
 def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
   return (← legacyV1Layout? db) = some .originalEmpty
+
+def predecessorV2Supported (db : _root_.SQLite) : IO Bool := do
+  try
+    unless (← applicationSchemaObjects db) = currentSchemaObjects &&
+        (← commonDefinitionsMatch db) &&
+        (← tableColumns db "projection_repairs") =
+          ["observed_digest", "head_revision", "history_digest", "adopted_digest"] &&
+        (← definitionsMatch db [
+          ("events", currentEventsDefinition),
+          ("operations", currentOperationsDefinition),
+          ("artifacts", currentArtifactsDefinition),
+          ("projection_repairs", legacyProjectionRepairsDefinition),
+          ("update_provenance", updateProvenanceDefinition)]) do
+      return false
+    match ← loadFromAt db predecessorSchemaVersion with
+    | .ok _ => return true
+    | .error _ => return false
+  catch _ => return false
 
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do
@@ -694,6 +730,31 @@ private def readLedger (db : _root_.SQLite) : IO (Except OpenError Replay.Verifi
   | .ok ledger => return .ok ledger
   | .error fault => return .error (.corrupt s!"ledger integrity failed: {repr fault}")
 
+private def validateProjectionTolerantFrom (path : System.FilePath) (db : _root_.SQLite) :
+    IO (Except OpenError Replay.VerifiedLedger) := do
+  unless ← currentSchemaSupported db do
+    return .error (.corrupt "storage schema fingerprint is not canonical")
+  match ← verifySQLiteIntegrity db with
+  | .ok () => pure ()
+  | .error error => return .error error
+  let ledger ← match ← readLedger db with
+    | .ok value => pure value
+    | .error error => return .error error
+  match ← validateOperationJournal db ledger with
+  | .ok () => pure ()
+  | .error error => return .error error
+  let references ← match ← readArtifactRefs db with
+    | .ok value => pure value
+    | .error error => return .error error
+  let required := requiredFileArtifacts ledger.image.events
+  unless required.all (fun digest => references.any (·.digest = digest)) &&
+      references.all (fun reference => required.contains reference.digest) do
+    return .error (.corrupt "artifact table does not exactly match authoritative events")
+  let reconciliation ← DurableFilesystem.reconcile (artifactRoot path) references
+  unless reconciliation.missing.isEmpty && reconciliation.mismatched.isEmpty do
+    return .error (.corrupt s!"artifact reconciliation failed: {repr reconciliation}")
+  return .ok ledger
+
 private def readProjectionPayload? (db : _root_.SQLite) : IO (Option ByteArray) := do
   let statement ← db.prepare "SELECT payload FROM projection WHERE singleton = 1"
   unless ← statement.step do return none
@@ -730,17 +791,16 @@ def diagnose (path : System.FilePath) : IO (Except OpenError Diagnosis) := do
   let db ← _root_.SQLite.openWith path
     { mode := .readonly, threading := some .fullmutex } (busyTimeoutMs := 5000)
   db.transaction do
-    unless ← currentSchemaSupported db do
-      return .error (.corrupt "storage schema fingerprint is not canonical")
+    match ← validateProjectionTolerantFrom path db with
+    | .ok _ => pure ()
+    | .error error => return .error error
     diagnoseFrom db
 
 private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepairPlan) :
     IO (Option ProjectionRepairReceipt) := do
   let statement ← db.prepare "
-    SELECT repair.adopted_digest
-    FROM projection_repairs AS repair
-    JOIN metadata AS store ON store.singleton = 1
-    WHERE store.ledger_id=? AND repair.observed_digest=?
+    SELECT repair.adopted_digest FROM projection_repairs AS repair
+    WHERE repair.ledger_id=? AND repair.observed_digest=?
       AND repair.head_revision=? AND repair.history_digest=?"
   statement.bindText 1 plan.head.ledger.value
   statement.bindText 2 plan.observedDigest
@@ -752,52 +812,54 @@ private def lookupProjectionRepair (db : _root_.SQLite) (plan : ProjectionRepair
 def repairProjectionWithHook (path : System.FilePath) (plan : ProjectionRepairPlan)
     (afterCommit : IO Unit) : IO (Except OpenError ProjectionRepairReceipt) := do
   if !(← path.pathExists) then return .error .uninitialized
-  let db ← _root_.SQLite.openWith path
-    { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
   withWriterLock path do
+    let db ← _root_.SQLite.openWith path
+      { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
     let outcome : Except OpenError ProjectionRepairReceipt ←
       db.transaction (mode := .immediate) do
-      unless ← currentSchemaSupported db do
-        return .error (.corrupt "storage schema fingerprint is not canonical")
-      match ← lookupProjectionRepair db plan with
-      | some receipt => return .ok receipt
-      | none => pure ()
-      let diagnosis ← match ← diagnoseFrom db with
-        | .ok value => pure value
+        match ← validateProjectionTolerantFrom path db with
+        | .ok _ => pure ()
         | .error error => return .error error
-      let current ← match diagnosis with
-        | .projectionRepairRequired value => pure value
-        | .healthy _ => return .error (.corrupt "projection repair is no longer required")
-      unless current = plan do
-        return .error (.corrupt "projection repair plan is stale")
-      let ledger ← match ← readLedger db with
-        | .ok value => pure value
-        | .error error => return .error error
-      let projection := Application.Service.projectionFor ledger.image ledger.head.state
-      let statement ← db.prepare "
-        INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
-        VALUES (1, ?, ?, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET
-          revision=excluded.revision,
-          history_digest=excluded.history_digest,
-          state_digest=excluded.state_digest,
-          payload=excluded.payload"
-      statement.bindText 1 (toString projection.reference.revision.value)
-      statement.bindText 2 projection.reference.historyDigest.value
-      statement.bindText 3 projection.reference.stateDigest.value
-      statement.bindBlob 4 (toBinary projection)
-      statement.exec
-      let adoptedDigest ← DurableFilesystem.digest (toBinary projection)
-      let receiptStatement ← db.prepare "
-        INSERT INTO projection_repairs
-          (observed_digest, head_revision, history_digest, adopted_digest)
-        VALUES (?, ?, ?, ?)"
-      receiptStatement.bindText 1 plan.observedDigest
-      receiptStatement.bindText 2 (toString plan.head.revision.value)
-      receiptStatement.bindText 3 plan.head.historyDigest.value
-      receiptStatement.bindText 4 adoptedDigest
-      receiptStatement.exec
-      return .ok { plan, adoptedDigest }
+        match ← lookupProjectionRepair db plan with
+        | some receipt => return .ok receipt
+        | none => pure ()
+        let diagnosis ← match ← diagnoseFrom db with
+          | .ok value => pure value
+          | .error error => return .error error
+        let current ← match diagnosis with
+          | .projectionRepairRequired value => pure value
+          | .healthy _ => return .error (.corrupt "projection repair is no longer required")
+        unless current = plan do
+          return .error (.corrupt "projection repair plan is stale")
+        let ledger ← match ← readLedger db with
+          | .ok value => pure value
+          | .error error => return .error error
+        let projection := Application.Service.projectionFor ledger.image ledger.head.state
+        let statement ← db.prepare "
+          INSERT INTO projection (singleton, revision, history_digest, state_digest, payload)
+          VALUES (1, ?, ?, ?, ?)
+          ON CONFLICT(singleton) DO UPDATE SET
+            revision=excluded.revision,
+            history_digest=excluded.history_digest,
+            state_digest=excluded.state_digest,
+            payload=excluded.payload"
+        statement.bindText 1 (toString projection.reference.revision.value)
+        statement.bindText 2 projection.reference.historyDigest.value
+        statement.bindText 3 projection.reference.stateDigest.value
+        statement.bindBlob 4 (toBinary projection)
+        statement.exec
+        let adoptedDigest ← DurableFilesystem.digest (toBinary projection)
+        let receiptStatement ← db.prepare "
+          INSERT INTO projection_repairs
+            (ledger_id, observed_digest, head_revision, history_digest, adopted_digest)
+          VALUES (?, ?, ?, ?, ?)"
+        receiptStatement.bindText 1 plan.head.ledger.value
+        receiptStatement.bindText 2 plan.observedDigest
+        receiptStatement.bindText 3 (toString plan.head.revision.value)
+        receiptStatement.bindText 4 plan.head.historyDigest.value
+        receiptStatement.bindText 5 adoptedDigest
+        receiptStatement.exec
+        return .ok { plan, adoptedDigest }
     match outcome with
     | .ok _ => afterCommit
     | .error _ => pure ()
@@ -905,55 +967,56 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
   if !(← path.pathExists) then return .error (.openError .uninitialized)
   let requestPayload := canonicalPayload command artifacts
   let payloadDigest ← DurableFilesystem.digest requestPayload
-  let db ← _root_.SQLite.openWith path
-    { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
-  withWriterLock path <| db.transaction (mode := .immediate) do
-    let store ← match ← loadAuthoritativeFrom path db with
-      | .ok value => pure value
-      | .error error => return .error (.openError error)
-    match ← lookupReceipt db operation with
-    | some (storedPayload, receipt) =>
-        if storedPayload = payloadDigest then
-          return .ok { receipt, store, exactRetry := true }
-        else
-          return .error .operationConflict
-    | none =>
-        if store.ledger.storedHead != expectedRevision then
-          return .error .staleRevision
-        let transaction ← match Application.Service.execute command store with
-          | .ok value => pure value
-          | .error error => return .error (.rejected error)
-        let requiredArtifacts := requiredFileArtifacts transaction.accepted.events
-        unless requiredArtifacts.all (fun digest => artifacts.any (·.digest = digest)) &&
-            artifacts.all (fun reference => requiredArtifacts.contains reference.digest) &&
-            artifacts.eraseDups.length = artifacts.length do
-          return .error (.artifactInvalid "event/artifact binding mismatch")
-        beforeArtifactCommit
-        if !artifacts.isEmpty then
-          let root ← match artifactRoot with
-            | some value => pure value
-            | none => return .error (.artifactInvalid "artifact root is required")
-          unless root = SQLite.artifactRoot path do
-            return .error (.artifactInvalid "artifact root does not match the store binding")
-          for reference in artifacts do
-            match ← DurableFilesystem.verify root reference with
-            | .valid => pure ()
-            | _ => return .error (.artifactInvalid reference.digest)
-        afterArtifactVerification
-        let startRevision := store.ledger.events.length
-        let endRevision := transaction.result.ledger.events.length
-        let historyDigest := transaction.result.ledger.storedHistoryDigest.value
-        let receipt : Policy.Update.Receipt := {
-          operation
-          payloadDigest
-          resultDigest := Replay.stateDigest transaction.accepted.result.state |>.value }
-        writeReceipt db receipt requestPayload startRevision endRevision historyDigest
-        appendEvents db operation startRevision transaction.accepted.events
-        afterJournalWrite
-        writeHead db transaction.result
-        if !artifacts.isEmpty then
-          writeArtifactRefs db artifactRoot.get! artifacts
-        return .ok { receipt, store := transaction.result, exactRetry := false }
+  withWriterLock path do
+    let db ← _root_.SQLite.openWith path
+      { mode := .readWrite, threading := some .fullmutex } (busyTimeoutMs := 5000)
+    db.transaction (mode := .immediate) do
+      let store ← match ← loadAuthoritativeFrom path db with
+        | .ok value => pure value
+        | .error error => return .error (.openError error)
+      match ← lookupReceipt db operation with
+      | some (storedPayload, receipt) =>
+          if storedPayload = payloadDigest then
+            return .ok { receipt, store, exactRetry := true }
+          else
+            return .error .operationConflict
+      | none =>
+          if store.ledger.storedHead != expectedRevision then
+            return .error .staleRevision
+          let transaction ← match Application.Service.execute command store with
+            | .ok value => pure value
+            | .error error => return .error (.rejected error)
+          let requiredArtifacts := requiredFileArtifacts transaction.accepted.events
+          unless requiredArtifacts.all (fun digest => artifacts.any (·.digest = digest)) &&
+              artifacts.all (fun reference => requiredArtifacts.contains reference.digest) &&
+              artifacts.eraseDups.length = artifacts.length do
+            return .error (.artifactInvalid "event/artifact binding mismatch")
+          beforeArtifactCommit
+          if !artifacts.isEmpty then
+            let root ← match artifactRoot with
+              | some value => pure value
+              | none => return .error (.artifactInvalid "artifact root is required")
+            unless root = SQLite.artifactRoot path do
+              return .error (.artifactInvalid "artifact root does not match the store binding")
+            for reference in artifacts do
+              match ← DurableFilesystem.verify root reference with
+              | .valid => pure ()
+              | _ => return .error (.artifactInvalid reference.digest)
+          afterArtifactVerification
+          let startRevision := store.ledger.events.length
+          let endRevision := transaction.result.ledger.events.length
+          let historyDigest := transaction.result.ledger.storedHistoryDigest.value
+          let receipt : Policy.Update.Receipt := {
+            operation
+            payloadDigest
+            resultDigest := Replay.stateDigest transaction.accepted.result.state |>.value }
+          writeReceipt db receipt requestPayload startRevision endRevision historyDigest
+          appendEvents db operation startRevision transaction.accepted.events
+          afterJournalWrite
+          writeHead db transaction.result
+          if !artifacts.isEmpty then
+            writeArtifactRefs db artifactRoot.get! artifacts
+          return .ok { receipt, store := transaction.result, exactRetry := false }
 
 def mutate (path : System.FilePath) (operation : OperationId)
     (expectedRevision : Revision) (command : Decide.Command)

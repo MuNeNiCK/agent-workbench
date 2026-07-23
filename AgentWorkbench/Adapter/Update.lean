@@ -64,6 +64,9 @@ def inspect (path : System.FilePath) : IO Inspection := do
       match ← SQLite.legacyV1Layout? db with
       | some _ => return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
       | none => pure ()
+    if observed.schemaVersion = SQLite.predecessorSchemaVersion &&
+        (← SQLite.predecessorV2Supported db) then
+      return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
     return .unsupported observed
 
 private def stagedPath (path : System.FilePath) (digest : String) : System.FilePath :=
@@ -202,7 +205,8 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
         | .valid => return receipt
         | _ => throw <| IO.userError "adopted update backup is unavailable"
     | none => throw <| IO.userError "update source changed after inspection"
-  unless plan.source.schemaVersion = SQLite.legacySchemaVersion &&
+  unless (plan.source.schemaVersion = SQLite.legacySchemaVersion ||
+      plan.source.schemaVersion = SQLite.predecessorSchemaVersion) &&
       plan.targetVersion = SQLite.schemaVersion do
     throw <| IO.userError "unsupported update transition"
   let sourceBytes ← IO.FS.readBinFile path
@@ -212,11 +216,12 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
   try
     let db ← _root_.SQLite.openWith staged { mode := .readWrite, threading := some .fullmutex }
     db.transaction (mode := .immediate) do
-      let layout ← match ← SQLite.legacyV1Layout? db with
-        | some value => pure value
-        | none => throw <| IO.userError "legacy v1 storage is not safely migratable"
-      match layout with
-      | .originalEmpty => db.exec "
+      if plan.source.schemaVersion = SQLite.legacySchemaVersion then
+        let layout ← match ← SQLite.legacyV1Layout? db with
+          | some value => pure value
+          | none => throw <| IO.userError "legacy v1 storage is not safely migratable"
+        match layout with
+        | .originalEmpty => db.exec "
           DROP TABLE events;
           CREATE TABLE events (
             revision INTEGER PRIMARY KEY CHECK (revision > 0),
@@ -240,14 +245,33 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
             size TEXT NOT NULL,
             payload BLOB NOT NULL
           );"
-      | .predecessor => pure ()
-      db.exec "CREATE TABLE update_provenance (
+        | .predecessor => pure ()
+        db.exec "CREATE TABLE update_provenance (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           source_schema TEXT NOT NULL,
           source_digest TEXT NOT NULL,
           backup_digest TEXT NOT NULL,
           backup_size TEXT NOT NULL
         );"
+      else
+        unless ← SQLite.predecessorV2Supported db do
+          throw <| IO.userError "predecessor v2 storage is not safely migratable"
+      db.exec "
+        ALTER TABLE projection_repairs RENAME TO old_projection_repairs;
+        CREATE TABLE projection_repairs (
+          ledger_id TEXT NOT NULL,
+          observed_digest TEXT NOT NULL,
+          head_revision TEXT NOT NULL,
+          history_digest TEXT NOT NULL,
+          adopted_digest TEXT NOT NULL,
+          PRIMARY KEY (ledger_id, observed_digest, head_revision, history_digest)
+        );
+        INSERT INTO projection_repairs
+          (ledger_id, observed_digest, head_revision, history_digest, adopted_digest)
+        SELECT metadata.ledger_id, repair.observed_digest, repair.head_revision,
+               repair.history_digest, repair.adopted_digest
+        FROM old_projection_repairs AS repair JOIN metadata ON metadata.singleton = 1;
+        DROP TABLE old_projection_repairs;"
       let provenance ← db.prepare "INSERT INTO update_provenance VALUES (1, ?, ?, ?, ?)"
       provenance.bindText 1 (toString plan.source.schemaVersion)
       provenance.bindText 2 plan.source.digest
@@ -279,9 +303,15 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
     if ← staged.pathExists then IO.FS.removeFile staged
     throw error
 
+def applyWithLockHook (path backupRoot : System.FilePath) (plan : Plan)
+    (afterLock afterReplacement : IO Unit) : IO Receipt :=
+  SQLite.withWriterLock path do
+    afterLock
+    applyUnlocked path backupRoot plan afterReplacement
+
 def applyWithHook (path backupRoot : System.FilePath) (plan : Plan)
     (afterReplacement : IO Unit) : IO Receipt :=
-  SQLite.withWriterLock path (applyUnlocked path backupRoot plan afterReplacement)
+  applyWithLockHook path backupRoot plan (pure ()) afterReplacement
 
 def apply (path backupRoot : System.FilePath) (plan : Plan) : IO Receipt :=
   applyWithHook path backupRoot plan (pure ())
@@ -322,6 +352,11 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
         { mode := .readonly, threading := some .fullmutex }
       unless (← db.transaction (SQLite.legacyV1Layout? db)).isSome do
         throw <| IO.userError "staged legacy backup failed integrity"
+    else if receipt.source.schemaVersion = SQLite.predecessorSchemaVersion then
+      let db ← _root_.SQLite.openWith staged
+        { mode := .readonly, threading := some .fullmutex }
+      unless ← db.transaction (SQLite.predecessorV2Supported db) do
+        throw <| IO.userError "staged predecessor backup failed integrity"
     else
       let db ← _root_.SQLite.openWith staged
         { mode := .readonly, threading := some .fullmutex }
