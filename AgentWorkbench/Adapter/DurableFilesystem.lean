@@ -17,6 +17,9 @@ deriving DecidableEq, Repr
 private opaque stageDurableFile (temporary final : @& String)
     (bytes : @& ByteArray) : IO UInt32
 
+@[extern "aw_create_durable_directory"]
+private opaque createDurableDirectory (path : @& String) : IO Unit
+
 @[extern "aw_replace_durable_file"]
 private opaque replaceDurableFile (staged current : @& String) : IO UInt32
 
@@ -50,7 +53,7 @@ def verify (root : System.FilePath) (reference : ArtifactRef) : IO Verification 
   return .mismatch observed
 
 def stage (root : System.FilePath) (bytes : ByteArray) : IO ArtifactRef := do
-  IO.FS.createDirAll root
+  createDurableDirectory root.toString
   let reference : ArtifactRef := { digest := ← digest bytes, size := bytes.size }
   let final := objectPath root reference
   let temporary := root / s!".{objectName reference.digest}.stage"

@@ -74,6 +74,76 @@ static int aw_fsync_parent(const char *path) {
   return result;
 }
 
+static int aw_sync_directory_entry(const char *path, int created) {
+  int directory = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory < 0) return -1;
+  int result = fsync(directory);
+  int saved = errno;
+  close(directory);
+  errno = saved;
+  if (result != 0) return -1;
+  const char *force_failure = getenv("AW_TEST_FAIL_DIRECTORY_PARENT_FSYNC");
+  if (created && force_failure != NULL && strcmp(force_failure, "1") == 0) {
+    errno = EIO;
+    return -1;
+  }
+  return aw_fsync_parent(path);
+}
+
+static int aw_ensure_durable_directory(const char *path) {
+  char *copy = strdup(path);
+  if (copy == NULL) return -1;
+  size_t length = strlen(copy);
+  while (length > 1 && copy[length - 1] == '/') copy[--length] = '\0';
+  if (length == 0) {
+    free(copy);
+    errno = ENOENT;
+    return -1;
+  }
+
+  char *cursor = copy[0] == '/' ? copy + 1 : copy;
+  for (;;) {
+    while (*cursor != '/' && *cursor != '\0') cursor++;
+    char saved = *cursor;
+    *cursor = '\0';
+    if (copy[0] != '\0' && strcmp(copy, "/") != 0) {
+      int created = 0;
+      if (mkdir(copy, 0700) == 0) {
+        created = 1;
+      } else if (errno == EEXIST) {
+        struct stat info;
+        if (stat(copy, &info) != 0) {
+          free(copy);
+          return -1;
+        }
+        if (!S_ISDIR(info.st_mode)) {
+          errno = ENOTDIR;
+          free(copy);
+          return -1;
+        }
+      } else {
+        free(copy);
+        return -1;
+      }
+      if (aw_sync_directory_entry(copy, created) != 0) {
+        free(copy);
+        return -1;
+      }
+    }
+    *cursor = saved;
+    if (saved == '\0') break;
+    cursor++;
+  }
+  free(copy);
+  return 0;
+}
+
+LEAN_EXPORT lean_obj_res aw_create_durable_directory(b_lean_obj_arg path_obj) {
+  if (aw_ensure_durable_directory(lean_string_cstr(path_obj)) != 0)
+    return aw_io_error("create durable directory");
+  return lean_io_result_mk_ok(lean_box(0));
+}
+
 LEAN_EXPORT lean_obj_res aw_stage_durable_file(
     b_lean_obj_arg temp_obj, b_lean_obj_arg final_obj, b_lean_obj_arg bytes_obj) {
   const char *temp = lean_string_cstr(temp_obj);

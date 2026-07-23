@@ -812,6 +812,38 @@ def testPostRenameSyncFailure (root : System.FilePath) : IO Unit := do
   unless result.exitCode = 0 do
     throw <| IO.userError s!"post-rename sync failure child failed: {result.stderr}"
 
+def freshRootSyncFailureChild (root : System.FilePath) : IO Unit := do
+  let payload := "fresh root durability".toUTF8
+  let artifactRoot := root / "fresh-artifact-root" / "objects"
+  expectFailure (Adapter.DurableFilesystem.stage artifactRoot payload)
+    "fresh artifact root parent sync failure was accepted"
+  let reference : Adapter.DurableFilesystem.ArtifactRef := {
+    digest := ← Adapter.DurableFilesystem.digest payload
+    size := payload.size }
+  expect (!(← (Adapter.DurableFilesystem.objectPath artifactRoot reference).pathExists))
+    "fresh-root sync failure adopted an artifact"
+
+  let ledger := root / "fresh-backup-sync-failure.sqlite3"
+  let backups := root / "fresh-backup-root" / "objects"
+  Adapter.SQLite.initializeStore ledger
+  makeLegacyV1 ledger
+  let before ← IO.FS.readBinFile ledger
+  let plan ← match ← Adapter.Update.inspect ledger with
+    | .updateRequired value => pure value
+    | other => throw <| IO.userError s!"fresh backup sync fixture failed: {repr other}"
+  expectFailure (Adapter.Update.apply ledger backups plan)
+    "fresh backup root parent sync failure was accepted"
+  expect ((← IO.FS.readBinFile ledger) == before)
+    "fresh backup root sync failure changed the authoritative store"
+
+def testFreshRootSyncFailure (root : System.FilePath) : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := ".lake/build/bin/storage-laws"
+    args := #["--fresh-root-sync-failure-child", root.toString]
+    env := #[("AW_TEST_FAIL_DIRECTORY_PARENT_FSYNC", some "1")] }
+  unless result.exitCode = 0 do
+    throw <| IO.userError s!"fresh-root sync failure child failed: {result.stderr}"
+
 def updateCrashChild (ledger backups : System.FilePath) : IO Unit := do
   let plan ← match ← Adapter.Update.inspect ledger with
     | .updateRequired plan => pure plan
@@ -1074,6 +1106,7 @@ def main (args : List String) : IO Unit :=
   match args with
   | ["--crash-child", ledger] => crashChild ledger
   | ["--post-rename-sync-failure-child", root] => postRenameSyncFailureChild root
+  | ["--fresh-root-sync-failure-child", root] => freshRootSyncFailureChild root
   | ["--update-replacement-crash-child", ledger, backups] =>
       updateCrashChild ledger backups
   | ["--restore-replacement-crash-child", ledger, backups, sourceDigest,
@@ -1101,6 +1134,7 @@ def main (args : List String) : IO Unit :=
     testSchemaFingerprintsAndPredecessorMigration root
     testExplicitUpdateAndRestore root
     testPostRenameSyncFailure root
+    testFreshRootSyncFailure root
     testReplacementCrashReconciliation root
     testReplacementWriterRaces root
     testProjectionRepairCrashRetry root
