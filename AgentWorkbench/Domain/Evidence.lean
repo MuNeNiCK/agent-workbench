@@ -15,7 +15,12 @@ structure Obligation where
   snapshot : String
   artifactDigest : String
   current : Bool
+  kind : EvidenceKind := .test
   requirements : List String := []
+  expectedProducer : String := ""
+  expectedObservation : String := ""
+  design : DesignId := ⟨0⟩
+  designRevision : Revision := ⟨0⟩
 deriving DecidableEq, Repr
 
 structure Evidence where
@@ -30,9 +35,12 @@ structure Evidence where
   snapshot : String
   artifactDigest : String
   current : Bool
+  kind : EvidenceKind := .test
   requirements : List String := []
   producer : String := ""
   observedAt : String := ""
+  design : DesignId := ⟨0⟩
+  designRevision : Revision := ⟨0⟩
 deriving DecidableEq, Repr
 
 def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
@@ -42,7 +50,12 @@ def exactFor (item : Evidence) (obligation : Obligation) : Bool :=
   item.invocation == obligation.invocation &&
   item.repository == obligation.repository && item.snapshot == obligation.snapshot &&
   item.artifactDigest == obligation.artifactDigest &&
-  item.requirements == obligation.requirements
+  item.kind == obligation.kind &&
+  item.requirements == obligation.requirements &&
+  item.producer == obligation.expectedProducer &&
+  item.observedAt == obligation.expectedObservation &&
+  item.design == obligation.design &&
+  item.designRevision == obligation.designRevision
 
 def traceable (item : Evidence) : Bool :=
   !item.requirements.isEmpty &&
@@ -65,7 +78,8 @@ def EvidenceWellFormed (evidence : List Evidence) : Prop :=
   (evidence.all fun item =>
     !item.obligation.isEmpty && !item.commandProfile.isEmpty &&
       !item.invocation.isEmpty && !item.repository.isEmpty &&
-      !item.snapshot.isEmpty && !item.artifactDigest.isEmpty) = true
+      !item.snapshot.isEmpty && !item.artifactDigest.isEmpty &&
+      traceable item) = true
 
 def EvidenceCurrentAt (revision : Revision) (evidence : List Evidence) : Prop :=
   (evidence.all fun item => !item.current || item.revision == revision) = true
@@ -74,7 +88,9 @@ def ObligationsWellFormed (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation =>
     !obligation.key.isEmpty && !obligation.commandProfile.isEmpty &&
       !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&
-      !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty) = true
+      !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
+      !obligation.requirements.isEmpty && !obligation.expectedProducer.isEmpty &&
+      !obligation.expectedObservation.isEmpty) = true
 
 def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => work.contains obligation.work) = true

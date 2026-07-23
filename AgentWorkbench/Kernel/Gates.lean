@@ -31,7 +31,10 @@ def completionGate (target : WorkId) (store : Projection.Store) : GateResult :=
   match inspection.currentState? with
   | some state =>
       if Policy.Completion.closeable target state.work state.activations
-          state.claims state.adjudications state.lifecycle state.evidence state.obligations then
+          state.claims state.adjudications state.reviewPlans
+          state.reviewFindings state.findingVerifications state.lifecycle
+          state.evidence state.obligations state.designs state.designApprovals
+          state.decompositions state.corrections then
         .pass
       else
         .blocked "completion obligations remain"
@@ -45,14 +48,19 @@ private def inspectState (store : Projection.Store)
   | none => .blocked s!"projection unavailable: {repr inspection.repairCommand?}"
 
 def designReadyState (design : DesignId) (state : State) : Bool :=
-  state.designs.any (fun version => version.id == design && version.approved) &&
-  !state.corrections.any (fun correction => !correction.resolved)
+  state.designs.any (·.id == design) &&
+  state.designApprovals.any (·.design == design) &&
+  !state.corrections.any (fun correction =>
+    !correction.resolved &&
+    (correction.design == some design ||
+      (correction.design.isNone && correction.work.isNone)))
 
 def traceReadyState (design : DesignId) (work : WorkId) (state : State) : Bool :=
   state.designs.any fun version =>
-    version.id == design && state.decompositions.any fun decomposition =>
-      decomposition.work == work &&
-      Policy.Traceability.ready version decomposition
+    version.id == design && state.designApprovals.any fun approval =>
+      approval.design == design && state.decompositions.any fun decomposition =>
+        decomposition.work == work &&
+        Policy.Traceability.ready version approval decomposition
 
 def resumeReadyState (work : WorkId) (activation : ActivationId)
     (state : State) : Bool :=
@@ -60,16 +68,12 @@ def resumeReadyState (work : WorkId) (activation : ActivationId)
   state.activations.any (fun current =>
     current.id == activation && current.work == work) &&
   Work.resumable state.activations activation &&
-  !state.corrections.any (fun correction => !correction.resolved)
+  Replay.resumeCurrent work activation state
 
 def reviewReadyState (target : ReviewPlanId) (state : State) : Bool :=
   state.reviewPlans.any fun plan =>
-    plan.id == target && state.claims.any fun claim =>
-      Review.scopeExact plan claim && claim.claim == .clean &&
-      state.adjudications.any (fun decision =>
-        decision.review == claim.id && decision.decision == .accepted) &&
-      Policy.Authority.blockingFindingsClosed claim.id
-        state.reviewFindings state.findingVerifications
+    plan.id == target && Review.scopeReady plan state.claims
+      state.adjudications state.reviewFindings state.findingVerifications
 
 def evidenceExactState (work : WorkId) (key : String) (state : State) : Bool :=
   state.obligations.any fun obligation =>

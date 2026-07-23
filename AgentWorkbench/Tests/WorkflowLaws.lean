@@ -21,23 +21,13 @@ def reject (command : Kernel.Decide.Command) (state : Kernel.Replay.State)
   | .ok _ => throw <| IO.userError s!"{message}: command unexpectedly accepted"
 
 def workOne : Domain.Work.WorkUnit :=
-  { id := ⟨1⟩, status := .open }
+  { id := ⟨1⟩, status := .open, owner := "owner" }
 
 def workTwo : Domain.Work.WorkUnit :=
-  { id := ⟨2⟩, status := .open }
+  { id := ⟨2⟩, status := .open, owner := "owner" }
 
 def activationOne : Domain.Work.Activation :=
   { id := ⟨1⟩, work := workOne.id, status := .active, readyToResume := false }
-
-def suspension : Domain.Work.SuspensionContext :=
-  { reason := "independent workflow review"
-    returnPoint := "activate reviewed implementation plan"
-    assumptions := ["design-v1", "repository-snapshot-v1"]
-    resumeConditions := ["trace complete", "corrections resolved"] }
-
-def activationTwo : Domain.Work.Activation :=
-  { id := ⟨2⟩, work := workTwo.id, status := .suspended
-    readyToResume := false, suspension := some suspension }
 
 def designVersion : Domain.Design.DesignVersion :=
   { id := ⟨1⟩
@@ -45,17 +35,20 @@ def designVersion : Domain.Design.DesignVersion :=
     owner := "owner"
     contentDigest := "sha256:design-v1"
     requirements := [
-      { key := "REQ-003", active := true },
-      { key := "REQ-004", active := true },
-      { key := "REQ-005", active := true },
-      { key := "REQ-006", active := true },
-      { key := "REQ-009", active := true }]
-    approved := false }
+      { key := "resume-readiness", active := true },
+      { key := "completion-integrity", active := true },
+      { key := "review-authority", active := true },
+      { key := "evidence-integrity", active := true },
+      { key := "durable-corrections", active := true }]
+    decisions := ["workflow mutations are kernel transitions"]
+    validationGates := [
+      "resume-matrix", "trace-matrix", "review-matrix",
+      "evidence-matrix", "persistence-matrix"] }
 
 def scope (stage digest : String) (work : WorkId) : Domain.Review.FrozenScope :=
   { design := some designVersion.id
     work
-    repositorySnapshot := "commit:workflow-v1"
+    repositorySnapshot := s!"commit:{digest}"
     artifactDigest := digest
     stage }
 
@@ -65,8 +58,7 @@ def reviewPlan (id : Nat) (stage digest : String) (work : WorkId) :
     owner := "owner"
     reviewer := s!"reviewer-{id}"
     adjudicator := "owner"
-    scope := scope stage digest work
-    userAuthorizedException := none }
+    scope := scope stage digest work }
 
 def claimFor (id : Nat) (plan : Domain.Review.Plan)
     (result : ReviewClaim) : Domain.Review.Claim :=
@@ -95,11 +87,22 @@ def run : IO Unit := do
       reviewer := "owner" }
   reject (.recordReviewPlan state.revision badPlan) state
     "owner self-review"
+  let exception : Domain.Review.AuthorityException :=
+    { key := "self-review-authority", plan := badPlan.id, owner := badPlan.owner
+      reviewer := badPlan.reviewer, adjudicator := badPlan.adjudicator
+      authorizedBy := "user", reason := "scoped test exception" }
+  let state ← execute (.recordAuthorityException state.revision exception) state
+    "explicit user authority exception failed"
+  let state ← execute (.recordReviewPlan state.revision badPlan) state
+    "authorized scoped review exception failed"
 
-  let designPlan := reviewPlan 1 "design" designVersion.contentDigest workOne.id
+  let designPlan := reviewPlan 10 "design" designVersion.contentDigest workOne.id
   let state ← execute (.recordReviewPlan state.revision designPlan) state
     "design review plan failed"
-  let designClaim := claimFor 1 designPlan .clean
+  let designClaim := claimFor 10 designPlan .clean
+  reject
+    (.recordReviewClaim state.revision { designClaim with scope := none })
+    state "review claim without its frozen scope"
   let state ← execute (.recordReviewClaim state.revision designClaim) state
     "design review claim failed"
   reject (.approveDesign state.revision designVersion.id) state
@@ -114,15 +117,23 @@ def run : IO Unit := do
     state "owner adjudication failed"
   let state ← execute (.approveDesign state.revision designVersion.id) state
     "reviewed design approval failed"
-  expect (state.designs.any (fun version =>
-    version.id == designVersion.id && version.approved))
+  expect (state.designApprovals.any (·.design == designVersion.id))
     "approved design version was not durable"
   expect (Kernel.Gates.designReadyState designVersion.id state)
     "approved design did not pass design readiness"
 
   let state ← execute (.registerWork state.revision workTwo) state
     "implementation work registration failed"
-  reject (.registerSuspendedActivation state.revision activationTwo) state
+  let untracedActivation : Domain.Work.Activation :=
+    { id := ⟨2⟩, work := workTwo.id, status := .suspended
+      readyToResume := false
+      suspension := some {
+        reason := "implementation handoff"
+        returnPoint := "resume implementation"
+        assumptions := ["approved design"]
+        resumeConditions := ["reviewed decomposition"] }
+      parent := some activationOne.id }
+  reject (.registerSuspendedActivation state.revision untracedActivation) state
     "activation without reviewed decomposition"
 
   let decompositionPlan := reviewPlan 2 "decomposition" "decomposition-v1" workTwo.id
@@ -139,68 +150,207 @@ def run : IO Unit := do
       design := designVersion.id
       work := workTwo.id
       designRevision := designVersion.revision
+      contentDigest := "decomposition-v1"
       items := [{
-        key := "governed-workflow"
-        requirements := ["REQ-003", "REQ-004", "REQ-005", "REQ-006", "REQ-009"]
+        key := "workflow-integrity"
+        requirements := [
+          "resume-readiness", "completion-integrity", "review-authority",
+          "evidence-integrity", "durable-corrections"]
         implementationWork := ["kernel workflow transitions"]
+        tasks := ["implement workflow transitions"]
         completionChecks := ["workflow laws"]
-        validationGates := ["GATE-003", "GATE-004", "GATE-005", "GATE-006", "GATE-009"] }]
+        checklists := ["authority and freshness reviewed"]
+        validationGates := [
+          "resume-matrix", "trace-matrix", "review-matrix",
+          "evidence-matrix", "persistence-matrix"] }]
       reviewer := decompositionPlan.reviewer
       adjudicator := decompositionPlan.adjudicator
       accepted := true }
   let state ← execute (.recordDecomposition state.revision decomposition) state
     "reviewed decomposition failed"
-  expect (Policy.Traceability.ready
-    { designVersion with approved := true } decomposition)
+  let approval : Domain.Design.Approval :=
+    { design := designVersion.id, review := designClaim.id }
+  expect (Policy.Traceability.ready designVersion approval decomposition)
     "complete reviewed trace did not become ready"
   expect (Kernel.Gates.traceReadyState designVersion.id workTwo.id state)
     "reviewed decomposition did not pass trace readiness"
 
+  for incomplete in [
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with requirements := [] } },
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with implementationWork := [] } },
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with tasks := [] } },
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with completionChecks := [] } },
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with checklists := [] } },
+      { decomposition with items := decomposition.items.map fun item =>
+          { item with validationGates := [] } }] do
+    expect (!Policy.Traceability.ready designVersion approval incomplete)
+      "an independently missing trace dimension passed readiness"
+
+  let implementationPlan :=
+    reviewPlan 3 "implementation" "sha256:implementation-v1" workTwo.id
+  let state ← execute (.recordReviewPlan state.revision implementationPlan) state
+    "implementation review plan failed"
+  let implementationClaim := claimFor 3 implementationPlan .clean
+  let state ← execute (.recordReviewClaim state.revision implementationClaim) state
+    "implementation review claim failed"
+  let state ← execute
+    (.recordReviewAdjudication state.revision (adjudicationFor implementationClaim))
+    state "implementation review adjudication failed"
+
+  let obligation : Domain.Evidence.Obligation :=
+    { work := workTwo.id
+      key := "evidence-matrix"
+      revision := state.revision
+      commandProfile := "workflow-laws"
+      invocation := ".lake/build/bin/workflow-laws"
+      repository := "agent-workbench"
+      snapshot := implementationPlan.scope.repositorySnapshot
+      artifactDigest := "sha256:workflow-laws"
+      current := true
+      kind := .test
+      requirements := ["resume-readiness", "evidence-integrity"]
+      expectedProducer := "workflow-law-runner"
+      expectedObservation := "observation-1"
+      design := designVersion.id
+      designRevision := designVersion.revision }
+  let state ← execute (.recordObligation state.revision obligation) state
+    "traceable obligation failed"
+  let evidenceOne : Domain.Evidence.Evidence :=
+    { id := ⟨1⟩
+      work := workTwo.id
+      obligation := obligation.key
+      revision := obligation.revision
+      commandProfile := obligation.commandProfile
+      invocation := obligation.invocation
+      exitCode := 0
+      repository := obligation.repository
+      snapshot := obligation.snapshot
+      artifactDigest := obligation.artifactDigest
+      current := true
+      kind := obligation.kind
+      requirements := obligation.requirements
+      producer := obligation.expectedProducer
+      observedAt := "observation-1"
+      design := obligation.design
+      designRevision := obligation.designRevision }
+  reject (.recordEvidence state.revision { evidenceOne with producer := "" }) state
+    "evidence without provenance"
+  let state ← execute (.recordEvidence state.revision evidenceOne) state
+    "exact evidence recording failed"
+
+  let basisOne : Domain.Work.ReadinessBasis :=
+    { design := designVersion.id
+      designRevision := designVersion.revision
+      decompositionDigest := decomposition.contentDigest
+      repositorySnapshot := implementationPlan.scope.repositorySnapshot
+      evidenceRevision := evidenceOne.revision
+      reviewPlan := implementationPlan.id }
+  let childSuspension : Domain.Work.SuspensionContext :=
+    { reason := "independent workflow review"
+      returnPoint := "activate reviewed implementation plan"
+      assumptions := ["design-v1", "repository-snapshot-v1"]
+      resumeConditions := ["trace complete", "corrections resolved"]
+      basis := some basisOne }
+  let activationTwo : Domain.Work.Activation :=
+    { id := ⟨2⟩, work := workTwo.id, status := .suspended
+      readyToResume := false, suspension := some childSuspension
+      parent := some activationOne.id }
+  reject
+    (.registerSuspendedActivation state.revision
+      { activationTwo with readyToResume := true })
+    state "pre-confirmed activation bypass"
+  let state ← execute (.registerSuspendedActivation state.revision activationTwo) state
+    "traceable activation registration failed"
+  let parentSuspension : Domain.Work.SuspensionContext :=
+    { reason := "child implementation"
+      returnPoint := "parent completion"
+      assumptions := ["child returns"]
+      resumeConditions := ["child terminal"] }
+  let state ← execute
+    (.suspendWork state.revision workOne.id activationOne.id parentSuspension)
+    state "active work suspension failed"
+  expect (Kernel.Replay.readinessCurrent
+    workTwo.id activationTwo.id basisOne state)
+    "exact readiness basis did not become current"
+  for staleBasis in [
+      { basisOne with design := ⟨99⟩ },
+      { basisOne with designRevision := designVersion.revision.next },
+      { basisOne with decompositionDigest := "wrong-decomposition" },
+      { basisOne with repositorySnapshot := "wrong-snapshot" },
+      { basisOne with evidenceRevision := evidenceOne.revision.next },
+      { basisOne with reviewPlan := ⟨99⟩ }] do
+    expect (!Kernel.Replay.readinessCurrent
+      workTwo.id activationTwo.id staleBasis state)
+      "stale readiness basis passed exact resume checks"
+  let state ← execute
+    (.confirmResumeReadiness state.revision workTwo.id activationTwo.id basisOne)
+    state "resume readiness confirmation failed"
+  expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
+    "confirmed activation did not pass resume readiness"
+
   let correction : Domain.Design.Correction :=
-    { key := "COR-1", scope := "workflow"
+    { key := "resume-readiness-correction", scope := "workflow"
       statement := "resume only after current readiness is re-established"
-      resolved := false }
+      resolved := false, work := some workTwo.id, design := some designVersion.id }
   let state ← execute (.recordUserCorrection state.revision correction) state
     "durable correction failed"
   expect (!Kernel.Gates.correctionsReadyState correction.scope state)
     "unresolved correction passed correction readiness"
-  reject (.registerSuspendedActivation state.revision activationTwo) state
-    "unresolved correction did not invalidate activation readiness"
+  reject (.resumeWork state.revision workTwo.id activationTwo.id) state
+    "stale confirmation resumed after correction"
   let state ← execute (.resolveUserCorrection state.revision correction.key) state
     "correction resolution failed"
-  expect (Kernel.Gates.correctionsReadyState correction.scope state)
-    "resolved correction still blocked correction readiness"
   let rule : Domain.Design.LearnedRule :=
-    { key := "RULE-1", correction := correction.key, scope := correction.scope
+    { key := "resume-readiness-rule", correction := correction.key, scope := correction.scope
       statement := correction.statement }
   let state ← execute (.promoteCorrection state.revision rule) state
     "learning promotion failed"
-  expect (state.learnedRules.contains rule) "promoted learning was not durable"
-  let state ← execute (.registerSuspendedActivation state.revision activationTwo) state
-    "traceable activation failed"
 
+  let obligationTwo :=
+    { { obligation with revision := state.revision } with
+      expectedObservation := "observation-2" }
+  let state ← execute (.recordObligation state.revision obligationTwo) state
+    "replacement obligation failed"
+  let evidenceTwo :=
+    { evidenceOne with
+      id := ⟨2⟩
+      revision := obligationTwo.revision
+      observedAt := "observation-2" }
+  let state ← execute (.recordEvidence state.revision evidenceTwo) state
+    "replacement evidence failed"
+  expect (state.evidence.any fun item =>
+    item.id == evidenceOne.id && item.revision == evidenceOne.revision)
+    "historical evidence revision was mutated"
+  let basisTwo := { basisOne with evidenceRevision := evidenceTwo.revision }
+  let revisedSuspension := { childSuspension with basis := some basisTwo }
   let state ← execute
-    (.suspendWork state.revision workOne.id activationOne.id suspension)
-    state "active work suspension failed"
+    (.reviseSuspension state.revision workTwo.id activationTwo.id revisedSuspension)
+    state "suspension basis revision failed"
   let state ← execute
-    (.confirmResumeReadiness state.revision workTwo.id activationTwo.id)
-    state "resume readiness confirmation failed"
-  expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
-    "confirmed activation did not pass resume readiness"
+    (.confirmResumeReadiness state.revision workTwo.id activationTwo.id basisTwo)
+    state "current resume readiness confirmation failed"
   let state ← execute
     (.resumeWork state.revision workTwo.id activationTwo.id)
     state "reviewed implementation activation failed"
   expect ((Domain.Work.activeFor state.activations workTwo.id).isSome)
     "resumed work is not the unique active frame"
+  expect (state.activations.any fun activation =>
+    activation.id == activationOne.id && activation.status == .suspended)
+    "child activation lost its stack-return parent"
 
-  let findingPlan := reviewPlan 3 "implementation" "sha256:implementation-v1" workTwo.id
+  let findingPlan := reviewPlan 4 "implementation" "sha256:implementation-v1" workTwo.id
   let state ← execute (.recordReviewPlan state.revision findingPlan) state
     "finding review plan failed"
-  let findingClaim := claimFor 3 findingPlan .findings
+  let findingClaim := claimFor 4 findingPlan .findings
   let state ← execute (.recordReviewClaim state.revision findingClaim) state
     "finding review claim failed"
   let finding : Domain.Review.Finding :=
-    { key := "FINDING-1"
+    { key := "resume-evidence-finding"
       review := findingClaim.id
       blocking := true
       invariant := "resume evidence remains exact"
@@ -210,33 +360,54 @@ def run : IO Unit := do
       closed := false }
   let state ← execute (.recordReviewFinding state.revision finding) state
     "finding recording failed"
-  reject (.closeReviewFinding state.revision finding.key) state
+  reject (.closeReviewFinding state.revision finding.key
+    "sha256:fix" "commit:workflow-v2") state
     "unadjudicated finding closure"
   let state ← execute
     (.adjudicateReviewFinding state.revision finding.key "owner" true)
     state "finding adjudication failed"
-  let state ← execute (.closeReviewFinding state.revision finding.key) state
+  let bypassPlan := reviewPlan 5 "implementation" "sha256:implementation-v2" workTwo.id
+  let state ← execute (.recordReviewPlan state.revision bypassPlan) state
+    "bypass review plan failed"
+  let bypassClaim := claimFor 5 bypassPlan .clean
+  let state ← execute (.recordReviewClaim state.revision bypassClaim) state
+    "bypass clean claim failed"
+  let state ← execute
+    (.recordReviewAdjudication state.revision (adjudicationFor bypassClaim))
+    state "bypass claim adjudication failed"
+  expect (!Kernel.Gates.reviewReadyState bypassPlan.id state)
+    "fresh clean claim bypassed an accepted open blocking finding"
+
+  let state ← execute (.closeReviewFinding state.revision finding.key
+    "sha256:fix" bypassPlan.scope.repositorySnapshot) state
     "finding remediation closure failed"
   reject
     (.verifyReviewFinding state.revision {
       finding := finding.key, verifier := findingClaim.reviewer
-      scope := findingPlan.scope, accepted := true })
+      scope := bypassPlan.scope, evidenceDigest := "sha256:fix"
+      claimFixed := true, accepted := false })
     state "reviewer self-verification"
   let verification : Domain.Review.Verification :=
     { finding := finding.key, verifier := "fresh-verifier"
-      scope := findingPlan.scope, accepted := true }
+      scope := bypassPlan.scope, evidenceDigest := "sha256:fix"
+      claimFixed := true, accepted := false }
   let state ← execute (.verifyReviewFinding state.revision verification) state
     "independent finding verification failed"
+  expect (!Kernel.Gates.reviewReadyState bypassPlan.id state)
+    "unadjudicated verification changed readiness"
+  let state ← execute
+    (.adjudicateFindingVerification state.revision finding.key "owner")
+    state "verification adjudication failed"
   expect (Policy.Authority.blockingFindingsClosed findingClaim.id
     state.reviewFindings state.findingVerifications)
     "verified accepted blocking finding remained open"
   expect (!Kernel.Gates.reviewReadyState findingPlan.id state)
     "a findings review incorrectly replaced the required fresh clean review"
 
-  let freshPlan := reviewPlan 4 "implementation" "sha256:implementation-v2" workTwo.id
+  let freshPlan := reviewPlan 6 "implementation" "sha256:implementation-v2" workTwo.id
   let state ← execute (.recordReviewPlan state.revision freshPlan) state
     "fresh review plan failed"
-  let freshClaim := claimFor 4 freshPlan .clean
+  let freshClaim := claimFor 6 freshPlan .clean
   let state ← execute (.recordReviewClaim state.revision freshClaim) state
     "fresh clean review claim failed"
   let state ← execute
@@ -245,48 +416,39 @@ def run : IO Unit := do
   expect (Kernel.Gates.reviewReadyState freshPlan.id state)
     "fresh clean adjudicated review did not pass readiness"
 
-  let obligation : Domain.Evidence.Obligation :=
-    { work := workTwo.id
-      key := "GATE-006"
-      revision := state.revision
-      commandProfile := "workflow-laws"
-      invocation := ".lake/build/bin/workflow-laws"
-      repository := "agent-workbench"
-      snapshot := "commit:workflow-v1"
-      artifactDigest := "sha256:workflow-laws"
-      current := true
-      requirements := ["REQ-006"] }
-  let state ← execute (.recordObligation state.revision obligation) state
-    "traceable obligation failed"
-  let badEvidence : Domain.Evidence.Evidence :=
-    { id := ⟨1⟩
-      work := workTwo.id
-      obligation := obligation.key
-      revision := state.revision
-      commandProfile := obligation.commandProfile
-      invocation := obligation.invocation
-      exitCode := 0
-      repository := obligation.repository
-      snapshot := obligation.snapshot
-      artifactDigest := obligation.artifactDigest
-      current := true
-      requirements := obligation.requirements }
-  reject (.recordEvidence state.revision badEvidence) state
-    "evidence without provenance"
-  let exactEvidence :=
-    { badEvidence with producer := "workflow-law-runner", observedAt := "revision-current" }
-  let state ← execute (.recordEvidence state.revision exactEvidence) state
-    "exact evidence recording failed"
-  let currentObligation := { obligation with revision := state.revision }
-  expect (Domain.Evidence.exactFor
-    { exactEvidence with revision := state.revision } currentObligation)
-    "exact evidence did not match its obligation"
-  expect (!Domain.Evidence.exactFor
-    { exactEvidence with revision := state.revision, snapshot := "commit:stale" }
-    currentObligation)
-    "stale-scope evidence matched its obligation"
-  expect (Kernel.Gates.evidenceExactState workTwo.id obligation.key state)
+  for wrong in [
+      { evidenceTwo with kind := .build },
+      { evidenceTwo with commandProfile := "wrong-profile" },
+      { evidenceTwo with design := ⟨99⟩ },
+      { evidenceTwo with artifactDigest := "sha256:wrong" },
+      { evidenceTwo with repository := "wrong-repository" },
+      { evidenceTwo with snapshot := "wrong-snapshot" },
+      { evidenceTwo with revision := evidenceTwo.revision.next },
+      { evidenceTwo with producer := "wrong-producer" },
+      { evidenceTwo with observedAt := "wrong-observation" }] do
+    expect (!Domain.Evidence.exactFor wrong obligationTwo)
+      "wrong kind or scope evidence matched its obligation"
+  expect (Kernel.Gates.evidenceExactState workTwo.id obligationTwo.key state)
     "exact traceable evidence did not pass evidence readiness"
+
+  let publicStore ←
+    match Application.Service.execute Application.Service.bootstrapCommand
+        Application.Service.initialStore with
+    | .ok transaction => pure transaction.result
+    | .error error => throw <| IO.userError s!"public bootstrap failed: {repr error}"
+  let publicCorrection : Domain.Design.Correction :=
+    { key := "PUBLIC-COR", scope := "global", statement := "persist", resolved := false }
+  let publicStore ←
+    match Application.Service.execute
+        (.recordUserCorrection publicStore.ledger.storedHead publicCorrection)
+        publicStore with
+    | .ok transaction => pure transaction.result
+    | .error error => throw <| IO.userError s!"public correction failed: {repr error}"
+  match (Kernel.Projection.inspect publicStore).currentState? with
+  | some recovered =>
+      expect (recovered.corrections.contains publicCorrection)
+        "public replay projection lost durable correction"
+  | none => throw <| IO.userError "public replay projection unavailable"
 
   IO.println "workflow laws: pass"
 

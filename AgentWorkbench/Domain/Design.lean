@@ -16,14 +16,22 @@ structure DesignVersion where
   owner : String
   contentDigest : String
   requirements : List Requirement
-  approved : Bool
+  decisions : List String
+  validationGates : List String
+deriving DecidableEq, Repr
+
+structure Approval where
+  design : DesignId
+  review : ReviewId
 deriving DecidableEq, Repr
 
 structure TraceItem where
   key : String
   requirements : List String
   implementationWork : List String
+  tasks : List String
   completionChecks : List String
+  checklists : List String
   validationGates : List String
 deriving DecidableEq, Repr
 
@@ -32,6 +40,7 @@ structure Decomposition where
   design : DesignId
   work : WorkId
   designRevision : Revision
+  contentDigest : String
   items : List TraceItem
   reviewer : String
   adjudicator : String
@@ -43,6 +52,8 @@ structure Correction where
   scope : String
   statement : String
   resolved : Bool
+  work : Option WorkId := none
+  design : Option DesignId := none
 deriving DecidableEq, Repr
 
 structure LearnedRule where
@@ -54,33 +65,47 @@ deriving DecidableEq, Repr
 
 def versionWellFormed (version : DesignVersion) : Bool :=
   !version.owner.isEmpty && !version.contentDigest.isEmpty &&
-  !version.requirements.isEmpty &&
+  !version.requirements.isEmpty && !version.decisions.isEmpty &&
+  !version.validationGates.isEmpty &&
   version.requirements.all (fun requirement => !requirement.key.isEmpty) &&
+  version.decisions.all (fun decision => !decision.isEmpty) &&
+  version.validationGates.all (fun gate => !gate.isEmpty) &&
   (version.requirements.map (·.key)).Nodup
 
 def decompositionWellFormed (decomposition : Decomposition) : Bool :=
-  !decomposition.key.isEmpty && !decomposition.items.isEmpty &&
+  !decomposition.key.isEmpty && !decomposition.contentDigest.isEmpty &&
+  !decomposition.items.isEmpty &&
   !decomposition.reviewer.isEmpty && !decomposition.adjudicator.isEmpty &&
   decomposition.items.all fun item =>
     !item.key.isEmpty && !item.requirements.isEmpty &&
-    !item.implementationWork.isEmpty && !item.completionChecks.isEmpty &&
-    !item.validationGates.isEmpty
+    !item.implementationWork.isEmpty && !item.tasks.isEmpty &&
+    !item.completionChecks.isEmpty && !item.checklists.isEmpty &&
+    !item.validationGates.isEmpty &&
+    (item.implementationWork ++ item.tasks ++ item.completionChecks ++
+      item.checklists ++ item.validationGates).all (fun value => !value.isEmpty)
 
 def traceItemCovers (item : TraceItem) (requirement : String) : Bool :=
   item.requirements.contains requirement &&
-  !item.implementationWork.isEmpty && !item.completionChecks.isEmpty &&
+  !item.implementationWork.isEmpty && !item.tasks.isEmpty &&
+  !item.completionChecks.isEmpty && !item.checklists.isEmpty &&
   !item.validationGates.isEmpty
 
-def decompositionCovers (version : DesignVersion)
+def decompositionCovers (version : DesignVersion) (approval : Approval)
     (decomposition : Decomposition) : Bool :=
   let active := (version.requirements.filter (·.active)).map (·.key)
-  version.approved && decomposition.design == version.id &&
+  approval.design == version.id && !version.owner.isEmpty &&
+  !version.contentDigest.isEmpty && decomposition.design == version.id &&
   decomposition.designRevision == version.revision &&
   decomposition.accepted && decompositionWellFormed decomposition &&
   decomposition.reviewer != version.owner &&
   decomposition.reviewer != decomposition.adjudicator &&
   active.all fun requirement =>
     decomposition.items.any (traceItemCovers · requirement)
+
+def correctionApplies (correction : Correction) (work : WorkId)
+    (design : Option DesignId) : Bool :=
+  (correction.work.isNone || correction.work == some work) &&
+  (correction.design.isNone || correction.design == design)
 
 def correctionWellFormed (correction : Correction) : Bool :=
   !correction.key.isEmpty && !correction.scope.isEmpty &&

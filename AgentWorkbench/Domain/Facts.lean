@@ -24,6 +24,13 @@ inductive OwnerDecision
   | rejected
 deriving DecidableEq, Repr, BEq
 
+inductive EvidenceKind
+  | build
+  | test
+  | review
+  | remediation
+deriving DecidableEq, Repr, BEq
+
 inductive GateResult
   | pass
   | blocked (reason : String)

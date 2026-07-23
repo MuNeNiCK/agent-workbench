@@ -60,10 +60,6 @@ def inspect (path : System.FilePath) : IO Inspection := do
         | .ok _ => return .current observed
         | .error _ => return .unsupported observed
       return .unsupported observed
-    if observed.schemaVersion = SQLite.legacySchemaVersion then
-      match ← SQLite.legacyV1Layout? db with
-      | some _ => return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
-      | none => pure ()
     if observed.schemaVersion = SQLite.predecessorSchemaVersion &&
         (← SQLite.predecessorV2Supported db) then
       return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
@@ -205,8 +201,7 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
         | .valid => return receipt
         | _ => throw <| IO.userError "adopted update backup is unavailable"
     | none => throw <| IO.userError "update source changed after inspection"
-  unless (plan.source.schemaVersion = SQLite.legacySchemaVersion ||
-      plan.source.schemaVersion = SQLite.predecessorSchemaVersion) &&
+  unless plan.source.schemaVersion = SQLite.predecessorSchemaVersion &&
       plan.targetVersion = SQLite.schemaVersion do
     throw <| IO.userError "unsupported update transition"
   let sourceBytes ← IO.FS.readBinFile path
@@ -216,46 +211,8 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
   try
     let db ← _root_.SQLite.openWith staged { mode := .readWrite, threading := some .fullmutex }
     db.transaction (mode := .immediate) do
-      if plan.source.schemaVersion = SQLite.legacySchemaVersion then
-        let layout ← match ← SQLite.legacyV1Layout? db with
-          | some value => pure value
-          | none => throw <| IO.userError "legacy v1 storage is not safely migratable"
-        match layout with
-        | .originalEmpty => db.exec "
-          DROP TABLE events;
-          CREATE TABLE events (
-            revision INTEGER PRIMARY KEY CHECK (revision > 0),
-            payload BLOB NOT NULL,
-            operation_id TEXT NOT NULL
-          );
-          DROP TABLE operations;
-          CREATE TABLE operations (
-            operation_id TEXT PRIMARY KEY,
-            request_payload BLOB NOT NULL,
-            payload_digest TEXT NOT NULL,
-            result_digest TEXT NOT NULL,
-            start_revision TEXT NOT NULL,
-            end_revision TEXT NOT NULL,
-            history_digest TEXT NOT NULL,
-            receipt BLOB NOT NULL
-          );
-          DROP TABLE artifacts;
-          CREATE TABLE artifacts (
-            digest TEXT PRIMARY KEY,
-            size TEXT NOT NULL,
-            payload BLOB NOT NULL
-          );"
-        | .predecessor => pure ()
-        db.exec "CREATE TABLE update_provenance (
-          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-          source_schema TEXT NOT NULL,
-          source_digest TEXT NOT NULL,
-          backup_digest TEXT NOT NULL,
-          backup_size TEXT NOT NULL
-        );"
-      else
-        unless ← SQLite.predecessorV2Supported db do
-          throw <| IO.userError "predecessor v2 storage is not safely migratable"
+      unless ← SQLite.predecessorV2Supported db do
+        throw <| IO.userError "predecessor storage is not safely migratable"
       db.exec "
         ALTER TABLE projection_repairs RENAME TO old_projection_repairs;
         CREATE TABLE projection_repairs (
@@ -329,15 +286,9 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
     if observed = receipt.source then
       match ← lookupRestoreReplacement backupRoot receipt with
       | some recovered =>
-          if receipt.source.schemaVersion = SQLite.legacySchemaVersion then
-            let db ← _root_.SQLite.openWith path
-              { mode := .readonly, threading := some .fullmutex }
-            unless (← db.transaction (SQLite.legacyV1Layout? db)).isSome do
-              throw <| IO.userError "reconciled restore source is invalid"
-          else
-            match ← SQLite.inspectAtSchema path receipt.source.schemaVersion with
-            | .ok _ => pure ()
-            | .error error => throw <| IO.userError s!"reconciled restore is invalid: {repr error}"
+          match ← SQLite.inspectAtSchema path receipt.source.schemaVersion with
+          | .ok _ => pure ()
+          | .error error => throw <| IO.userError s!"reconciled restore is invalid: {repr error}"
           return recovered
       | none => pure ()
     throw <| IO.userError "restore target changed after inspection"
@@ -353,12 +304,7 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
     let stagedPoint ← point staged
     unless stagedPoint = receipt.source do
       throw <| IO.userError "staged backup is not the update receipt source"
-    if receipt.source.schemaVersion = SQLite.legacySchemaVersion then
-      let db ← _root_.SQLite.openWith staged
-        { mode := .readonly, threading := some .fullmutex }
-      unless (← db.transaction (SQLite.legacyV1Layout? db)).isSome do
-        throw <| IO.userError "staged legacy backup failed integrity"
-    else if receipt.source.schemaVersion = SQLite.predecessorSchemaVersion then
+    if receipt.source.schemaVersion = SQLite.predecessorSchemaVersion then
       let db ← _root_.SQLite.openWith staged
         { mode := .readonly, threading := some .fullmutex }
       unless ← db.transaction (SQLite.predecessorV2Supported db) do

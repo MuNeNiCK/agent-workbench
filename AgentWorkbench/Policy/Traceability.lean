@@ -31,22 +31,16 @@ def implementationBound (item : Design.TraceItem) : Bool :=
   !item.key.isEmpty && !item.requirements.isEmpty &&
   !item.implementationWork.isEmpty &&
   item.implementationWork.all (fun target => !target.isEmpty) &&
+  !item.tasks.isEmpty && item.tasks.all (fun task => !task.isEmpty) &&
   !item.completionChecks.isEmpty &&
-  !item.validationGates.isEmpty
+  item.completionChecks.all (fun condition => !condition.isEmpty) &&
+  !item.checklists.isEmpty &&
+  item.checklists.all (fun checklist => !checklist.isEmpty) &&
+  !item.validationGates.isEmpty &&
+  item.validationGates.all (fun gate => !gate.isEmpty)
 
 def ready (design : Design.DesignVersion)
-    (decomposition : Design.Decomposition) : Bool :=
-  let active := (design.requirements.filter (·.active)).map (·.key)
-  design.approved && !design.owner.isEmpty && !design.contentDigest.isEmpty &&
-  decomposition.design == design.id &&
-  decomposition.designRevision == design.revision &&
-  decomposition.accepted &&
-  !decomposition.reviewer.isEmpty && !decomposition.adjudicator.isEmpty &&
-  decomposition.reviewer != design.owner &&
-  decomposition.reviewer != decomposition.adjudicator &&
-  !decomposition.items.isEmpty &&
-  decomposition.items.all implementationBound &&
-  allCovered active (decomposition.items.map fromTraceItem) &&
-  Design.decompositionCovers design decomposition
+    (approval : Design.Approval) (decomposition : Design.Decomposition) : Bool :=
+  Design.decompositionCovers design approval decomposition
 
 end AgentWorkbench.Policy.Traceability

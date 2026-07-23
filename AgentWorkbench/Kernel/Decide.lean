@@ -18,13 +18,17 @@ inductive Command
   | suspendWork (expectedRevision : Revision) (work : WorkId)
       (activation : ActivationId) (context : Work.SuspensionContext)
   | confirmResumeReadiness (expectedRevision : Revision) (work : WorkId)
-      (activation : ActivationId)
+      (activation : ActivationId) (basis : Work.ReadinessBasis)
+  | reviseSuspension (expectedRevision : Revision) (work : WorkId)
+      (activation : ActivationId) (context : Work.SuspensionContext)
   | resumeWork (expectedRevision : Revision) (work : WorkId)
       (activation : ActivationId)
   | importDesign (expectedRevision : Revision) (version : Design.DesignVersion)
   | approveDesign (expectedRevision : Revision) (design : DesignId)
   | recordDecomposition (expectedRevision : Revision)
       (decomposition : Design.Decomposition)
+  | recordAuthorityException (expectedRevision : Revision)
+      (exception : Review.AuthorityException)
   | recordReviewPlan (expectedRevision : Revision) (plan : Review.Plan)
   | planCompletion (expectedRevision : Revision) (plan : Lifecycle.CompletionPlan)
   | acknowledgeRelatedWorkTerminal (expectedRevision : Revision) (owner related : WorkId)
@@ -45,9 +49,12 @@ inductive Command
   | recordReviewFinding (expectedRevision : Revision) (finding : Review.Finding)
   | adjudicateReviewFinding (expectedRevision : Revision)
       (key principal : String) (accepted : Bool)
-  | closeReviewFinding (expectedRevision : Revision) (key : String)
+  | closeReviewFinding (expectedRevision : Revision) (key evidenceDigest
+      repositorySnapshot : String)
   | verifyReviewFinding (expectedRevision : Revision)
       (verification : Review.Verification)
+  | adjudicateFindingVerification (expectedRevision : Revision)
+      (finding adjudicator : String)
   | recordUserCorrection (expectedRevision : Revision)
       (correction : Design.Correction)
   | resolveUserCorrection (expectedRevision : Revision) (key : String)
@@ -64,11 +71,13 @@ def Command.expectedRevision : Command → Revision
   | .registerWork revision _
   | .registerSuspendedActivation revision _
   | .suspendWork revision _ _ _
-  | .confirmResumeReadiness revision _ _
+  | .confirmResumeReadiness revision _ _ _
+  | .reviseSuspension revision _ _ _
   | .resumeWork revision _ _
   | .importDesign revision _
   | .approveDesign revision _
   | .recordDecomposition revision _
+  | .recordAuthorityException revision _
   | .recordReviewPlan revision _
   | .planCompletion revision _
   | .acknowledgeRelatedWorkTerminal revision _ _
@@ -84,8 +93,9 @@ def Command.expectedRevision : Command → Revision
   | .recordReviewAdjudication revision _
   | .recordReviewFinding revision _
   | .adjudicateReviewFinding revision _ _ _
-  | .closeReviewFinding revision _
+  | .closeReviewFinding revision _ _ _
   | .verifyReviewFinding revision _
+  | .adjudicateFindingVerification revision _ _
   | .recordUserCorrection revision _
   | .resolveUserCorrection revision _
   | .promoteCorrection revision _
@@ -98,30 +108,44 @@ structure DerivedEvents where
   events : List Event
   eventsNonempty : events ≠ []
 
+def completionReady (target : WorkId) (state : State) : Bool :=
+  Policy.Completion.closeable target state.work state.activations
+    state.claims state.adjudications state.reviewPlans
+    state.reviewFindings state.findingVerifications state.lifecycle
+    state.evidence state.obligations state.designs
+    state.designApprovals state.decompositions state.corrections
+
 def deriveEvents (command : Command) (state : State) : Except DomainError DerivedEvents :=
   match command with
   | .initializeWork _ work activation =>
       if state.work.isEmpty && state.activations.isEmpty &&
-          work.status == .open && activation.status == .active &&
+          work.status == .open && !work.owner.isEmpty &&
+          activation.status == .active &&
           !activation.readyToResume && activation.work == work.id then
         .ok ⟨[.workInitialized work activation], by simp⟩
       else
         .error (.invalidTransition "work initialization requires an empty state and one matching open active frame")
   | .registerWork _ work =>
-      if work.status == .open && !state.work.any (·.id == work.id) then
+      if work.status == .open && !work.owner.isEmpty &&
+          !state.work.any (·.id == work.id) then
         .ok ⟨[.workRegistered work], by simp⟩
       else
         .error (.invalidTransition "registered work must be a new open work unit")
   | .registerSuspendedActivation _ activation =>
       if activation.status == .suspended &&
-          activation.suspension.any Work.SuspensionContext.wellFormed &&
+          !activation.readyToResume && activation.confirmedBasis.isNone &&
+          activation.suspension.any (fun context =>
+            context.wellFormed &&
+            context.readinessWellFormed) &&
           state.work.any (fun work => work.id == activation.work && work.status == .open) &&
           !state.activations.any (·.id == activation.id) &&
-          (state.designs.isEmpty || state.designs.any (fun version =>
-            state.decompositions.any (fun decomposition =>
-              decomposition.work == activation.work &&
-              Policy.Traceability.ready version decomposition))) &&
-          !state.corrections.any (fun correction => !correction.resolved) then
+          (activation.suspension.any fun context =>
+            context.basis.any fun basis =>
+              Replay.traceReadyFor basis.design activation.work
+                basis.decompositionDigest state) &&
+          (activation.parent.isNone || activation.parent.any fun parent =>
+            state.activations.any (fun current =>
+              current.id == parent && current.status == .active)) then
         .ok ⟨[.suspendedActivationRegistered activation], by simp⟩
       else
         .error (.invalidTransition "registered parent activation must be new, suspended with durable context, and reference open work")
@@ -132,55 +156,72 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.workSuspended work activation context], by simp⟩
       else
         .error (.invalidTransition "suspension requires the exact active frame and a complete durable context")
-  | .confirmResumeReadiness _ work activation =>
-      if state.activations.any (fun current =>
-          current.id == activation && current.work == work &&
-            current.status == .suspended &&
-            current.suspension.any Work.SuspensionContext.wellFormed) &&
-          Work.noActive state.activations &&
-          !state.corrections.any (fun correction => !correction.resolved) then
-        .ok ⟨[.resumeReadinessConfirmed work activation], by simp⟩
+  | .confirmResumeReadiness _ work activation basis =>
+      if Replay.readinessCurrent work activation basis state then
+        .ok ⟨[.resumeReadinessConfirmed work activation basis], by simp⟩
       else
         .error (.invalidTransition "resume readiness requires current assumptions, no active frame, and no unresolved correction")
+  | .reviseSuspension _ work activation context =>
+      if context.readinessWellFormed && state.activations.any (fun current =>
+          current.id == activation && current.work == work &&
+          current.status == .suspended) then
+        .ok ⟨[.suspensionRevised work activation context], by simp⟩
+      else
+        .error (.invalidTransition "suspension revision requires an exact suspended frame and complete current basis")
   | .resumeWork _ work activation =>
       if Work.workIsOpen state.work work &&
           state.activations.any (fun candidate =>
             candidate.id == activation && candidate.work == work) &&
-          Work.resumable state.activations activation then
+          Work.resumable state.activations activation &&
+          Replay.resumeCurrent work activation state then
         .ok ⟨[.workResumed work activation], by simp⟩
       else
         .error (.invalidTransition "resumed activation must be ready, suspended, inactive, and reference the exact open work")
   | .importDesign _ version =>
-      if !version.approved && Design.versionWellFormed version &&
+      if Design.versionWellFormed version &&
           !state.designs.any (·.id == version.id) then
         .ok ⟨[.designImported version], by simp⟩
       else
         .error (.invalidTransition "design import requires a new immutable, well-formed, unapproved version")
   | .approveDesign _ design =>
-      if state.designs.any (fun version => version.id == design && !version.approved) &&
-          state.reviewPlans.any (fun plan =>
-            plan.scope.design == some design &&
-            state.claims.any (fun claim =>
-              Review.scopeExact plan claim && claim.claim == .clean &&
-              state.adjudications.any (fun decision =>
-                decision.review == claim.id && decision.decision == .accepted) &&
-              Policy.Authority.blockingFindingsClosed claim.id
-                state.reviewFindings state.findingVerifications)) &&
-          !state.corrections.any (fun correction => !correction.resolved) then
-        .ok ⟨[.designApproved design], by simp⟩
-      else
-        .error (.invalidTransition "design approval requires an adjudicated fresh clean independent review and closed findings")
+      match state.designs.find? (·.id == design) with
+      | none => .error (.invalidTransition "design version is missing")
+      | some version =>
+          match state.reviewPlans.find? (fun plan =>
+              plan.scope.design == some design && plan.scope.stage == "design" &&
+              plan.scope.artifactDigest == version.contentDigest &&
+              plan.owner == version.owner && Replay.reviewScopeReady plan.id state) with
+          | none =>
+              .error (.invalidTransition "design approval requires an exact adjudicated fresh clean independent review and closed findings")
+          | some plan =>
+              match state.claims.find? (fun claim =>
+                  claim.plan == plan.id && claim.claim == .clean &&
+                  state.adjudications.any (fun decision =>
+                    decision.review == claim.id &&
+                    decision.decision == .accepted)) with
+              | none => .error (.invalidTransition "accepted design review claim is missing")
+              | some claim =>
+                  let approval : Design.Approval := { design, review := claim.id }
+                  if !state.designApprovals.any (·.design == design) &&
+                      !state.corrections.any (fun correction =>
+                        !correction.resolved &&
+                        (correction.design == some design ||
+                          (correction.design.isNone && correction.work.isNone))) then
+                    .ok ⟨[.designApproved approval], by simp⟩
+                  else
+                    .error (.invalidTransition "design is already approved or has an applicable correction")
   | .recordDecomposition _ decomposition =>
       if Design.decompositionWellFormed decomposition &&
           !state.decompositions.any (·.key == decomposition.key) &&
           state.designs.any (fun version =>
             version.id == decomposition.design &&
-            version.revision == decomposition.designRevision && version.approved) &&
+            version.revision == decomposition.designRevision &&
+            state.designApprovals.any (·.design == version.id)) &&
           state.reviewPlans.any (fun plan =>
             plan.scope.design == some decomposition.design &&
             plan.scope.work == decomposition.work &&
             plan.scope.stage == "decomposition" &&
-            plan.scope.artifactDigest == decomposition.key &&
+            plan.scope.artifactDigest == decomposition.contentDigest &&
             plan.reviewer == decomposition.reviewer &&
             plan.adjudicator == decomposition.adjudicator &&
             state.claims.any (fun claim =>
@@ -190,20 +231,34 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.decompositionRecorded decomposition], by simp⟩
       else
         .error (.invalidTransition "decomposition must be new, complete, and bind an exact approved design version")
+  | .recordAuthorityException _ exception =>
+      if !exception.key.isEmpty && !exception.reason.isEmpty &&
+          exception.authorizedBy == "user" &&
+          !state.authorityExceptions.any (·.key == exception.key) then
+        .ok ⟨[.authorityExceptionRecorded exception], by simp⟩
+      else
+        .error (.invalidTransition "review separation bypass requires a new explicit scoped user authority event")
   | .recordReviewPlan _ plan =>
-      if Policy.Authority.mayInvoke plan &&
+      if Policy.Authority.mayInvoke plan state.authorityExceptions &&
           Review.planWellFormed plan && !state.reviewPlans.any (·.id == plan.id) &&
           state.work.any (·.id == plan.scope.work) &&
           (match plan.scope.design with
-          | some design => state.designs.any (·.id == design)
-          | none => true) then
+          | some design => state.designs.any (fun version =>
+              version.id == design && version.owner == plan.owner) &&
+              state.work.any (fun work =>
+                work.id == plan.scope.work && work.owner == plan.owner)
+          | none => state.work.any (fun work =>
+              work.id == plan.scope.work && work.owner == plan.owner)) then
         .ok ⟨[.reviewPlanRecorded plan], by simp⟩
       else
         .error (.invalidTransition "review plan must freeze an exact scope and satisfy independent authority")
   | .planCompletion _ plan =>
       if state.lifecycle.any (fun completion => completion.plan.work == plan.work) then
         .error (.invalidTransition "completion plan already exists")
-      else if Lifecycle.ValidPlan (state.work.map (·.id)) plan then
+      else if Lifecycle.ValidPlan (state.work.map (·.id)) plan &&
+          plan.reviews.all (fun review =>
+            state.reviewPlans.any (fun existing =>
+              existing.id == review && existing.scope.work == plan.work)) then
         .ok ⟨[.completionPlanned plan], by simp⟩
       else
         .error (.invalidTransition "completion plan is not authoritative or well formed")
@@ -281,11 +336,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       | none => .error (.invalidTransition "completion plan is missing")
   | .recordReviewClaim _ claim =>
       if !state.claims.any (·.id == claim.id) &&
-          (state.reviewPlans.any (fun plan => Review.scopeExact plan claim) ||
-            match Lifecycle.forWork state.lifecycle claim.work with
-            | some completion => completion.plan.reviews.contains claim.plan &&
-                claim.epoch == completion.epoch
-            | none => false) then
+          state.reviewPlans.any (fun plan => Review.scopeExact plan claim) then
         .ok ⟨[.reviewClaimed claim], by simp⟩
       else
         .error (.invalidTransition "review claim is not bound to the exact frozen scope")
@@ -311,10 +362,14 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .ok ⟨[.reviewFindingAdjudicated key principal accepted], by simp⟩
       else
         .error (.invalidTransition "finding adjudication requires the frozen plan adjudicator, distinct from the reviewer")
-  | .closeReviewFinding _ key =>
-      if state.reviewFindings.any (fun finding =>
-          finding.key == key && finding.accepted && !finding.closed) then
-        .ok ⟨[.reviewFindingClosed key], by simp⟩
+  | .closeReviewFinding _ key evidenceDigest repositorySnapshot =>
+      if !evidenceDigest.isEmpty && !repositorySnapshot.isEmpty &&
+          state.reviewFindings.any (fun finding =>
+            finding.key == key && finding.accepted && !finding.closed &&
+            state.claims.any (fun claim =>
+              claim.id == finding.review && claim.scope.any (fun scope =>
+                scope.repositorySnapshot != repositorySnapshot))) then
+        .ok ⟨[.reviewFindingClosed key evidenceDigest repositorySnapshot], by simp⟩
       else
         .error (.invalidTransition "only an accepted open finding may enter verification")
   | .verifyReviewFinding _ verification =>
@@ -322,11 +377,30 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           finding.key == verification.finding && finding.closed &&
           state.claims.any (fun claim =>
             claim.id == finding.review &&
-            Review.verificationExact finding claim verification)) &&
+            verification.claimFixed && !verification.adjudicated &&
+            !verification.accepted &&
+            verification.evidenceDigest == finding.closureEvidence &&
+            verification.scope.repositorySnapshot == finding.closureSnapshot &&
+            claim.scope.any (Review.sameContext verification.scope) &&
+            verification.verifier != claim.reviewer)) &&
           !state.findingVerifications.any (·.finding == verification.finding) then
         .ok ⟨[.findingVerified verification], by simp⟩
       else
         .error (.invalidTransition "finding verification must be independent and preserve the frozen scope")
+  | .adjudicateFindingVerification _ finding adjudicator =>
+      if state.findingVerifications.any (fun verification =>
+          verification.finding == finding && verification.claimFixed &&
+          !verification.adjudicated && !verification.accepted &&
+          state.reviewFindings.any (fun record =>
+            record.key == finding &&
+            state.claims.any (fun claim =>
+              claim.id == record.review &&
+              state.reviewPlans.any (fun plan =>
+                plan.id == claim.plan && plan.adjudicator == adjudicator &&
+                adjudicator != verification.verifier)))) then
+        .ok ⟨[.findingVerificationAdjudicated finding adjudicator], by simp⟩
+      else
+        .error (.invalidTransition "finding verification requires separate owner adjudication")
   | .recordUserCorrection _ correction =>
       if Design.correctionWellFormed correction && !correction.resolved &&
           !state.corrections.any (·.key == correction.key) then
@@ -349,27 +423,34 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       else
         .error (.invalidTransition "learning promotion requires an exact resolved correction and a new durable rule")
   | .recordEvidence _ evidence =>
-      if state.designs.isEmpty || Evidence.traceable evidence then
+      if Evidence.traceable evidence &&
+          state.obligations.any (fun obligation =>
+            obligation.work == evidence.work &&
+            obligation.key == evidence.obligation &&
+            Evidence.exactFor evidence obligation) then
         .ok ⟨[.evidenceRecorded evidence], by simp⟩
       else
-        .error (.invalidTransition "governed evidence requires requirement links, producer, and observation time")
+        .error (.invalidTransition "evidence requires requirement links, producer, and observation time")
   | .recordExternalOperation _ attempt =>
       if attempt.state == .prepared then
         .ok ⟨[.externalOperationRecorded attempt], by simp⟩
       else
         .error (.invalidTransition "external operation must begin prepared")
   | .recordObligation _ obligation =>
-      if state.designs.isEmpty || !obligation.requirements.isEmpty then
+      if !obligation.requirements.isEmpty &&
+          !obligation.expectedProducer.isEmpty &&
+          !obligation.expectedObservation.isEmpty &&
+          state.designs.any (fun version =>
+            version.id == obligation.design &&
+            version.revision == obligation.designRevision) then
         .ok ⟨[.obligationRecorded obligation], by simp⟩
       else
-        .error (.invalidTransition "governed obligations require explicit requirement links")
+        .error (.invalidTransition "obligations require explicit requirement links and an exact design version")
   | .completeWork _ target =>
       match Work.activeFor state.activations target with
       | none => .error (.invalidTransition "target work is not active")
       | some activation =>
-          if Policy.Completion.closeable target state.work state.activations
-              state.claims state.adjudications state.lifecycle
-              state.evidence state.obligations then
+          if completionReady target state then
             .ok ⟨[.workCompleted target activation.id], by simp⟩
           else
             .error (.invalidTransition "completion obligations remain")
@@ -468,17 +549,14 @@ theorem decide_complete_emits (expectedRevision : Revision) (target : WorkId) (s
   unfold decide at accepted
   simp only [Command.expectedRevision] at accepted
   split at accepted
-  · by_cases ready : Policy.Completion.closeable target state.work state.activations
-        state.claims state.adjudications state.lifecycle state.evidence state.obligations = true
+  · by_cases ready : completionReady target state = true
     · simp only [deriveEvents, active, ready, if_true] at accepted
       split at accepted
       · cases accepted
         rfl
       · contradiction
-    · have notReady : Policy.Completion.closeable target state.work state.activations
-          state.claims state.adjudications state.lifecycle state.evidence state.obligations = false := by
-        cases result : Policy.Completion.closeable target state.work state.activations
-            state.claims state.adjudications state.lifecycle state.evidence state.obligations with
+    · have notReady : completionReady target state = false := by
+        cases result : completionReady target state with
         | false => rfl
         | true => exact (ready result).elim
       simp [deriveEvents, active, notReady] at accepted
@@ -487,8 +565,7 @@ theorem decide_complete_emits (expectedRevision : Revision) (target : WorkId) (s
 theorem decide_complete_requires_closeable (target : WorkId) (state : State)
     {transaction : AcceptedTransaction}
     (accepted : decide (.completeWork state.revision target) state = .ok transaction) :
-    Policy.Completion.closeable target state.work state.activations
-      state.claims state.adjudications state.lifecycle state.evidence state.obligations = true := by
+    completionReady target state = true := by
   obtain ⟨derived, derivedBy, _⟩ :=
     decide_emits_only_derived_events (.completeWork state.revision target) state accepted
   simp only [deriveEvents] at derivedBy
@@ -501,15 +578,18 @@ theorem decide_complete_requires_closeable (target : WorkId) (state : State)
 theorem replay_completion_applicability_matches_policy (target : WorkId)
     (state : State) :
     completionApplicable target state =
-      Policy.Completion.closeable target state.work state.activations
-        state.claims state.adjudications state.lifecycle
-        state.evidence state.obligations := by
+      completionReady target state := by
   unfold completionApplicable completionObligationsReady
     completionObligationSatisfied completionRelatedWorkTerminal
     completionReviewsReady latestAcceptedCompletionReview
-    Policy.Completion.closeable Policy.Completion.obligationsReady
+    completionReady Policy.Completion.closeable Policy.Completion.obligationsReady
     Policy.Completion.obligationSatisfied Policy.Completion.authoritativeReady
     Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
+    Policy.Completion.traceReady Policy.Completion.implementationReviewReady
+    Policy.Completion.correctionsReady
+    Policy.Traceability.ready
+    Policy.Authority.scopeFindingsClosed Review.scopeReady
+    Review.scopeFindingsClosed
     Policy.Completion.latestAcceptedReviewClaim
   rfl
 

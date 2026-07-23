@@ -84,8 +84,7 @@ axiom close_work_emits_atomic_event (expectedRevision : Revision) (target : Work
 axiom decide_complete_requires_closeable (target : WorkId) (state : State)
     {transaction : Decide.AcceptedTransaction}
     (accepted : Decide.decide (.completeWork state.revision target) state = .ok transaction) :
-    Policy.Completion.closeable target state.work state.activations
-      state.claims state.adjudications state.lifecycle state.evidence state.obligations = true
+    Decide.completionReady target state = true
 
 axiom single_active_activation {activations : List Work.Activation}
     (valid : Work.AtMostOneActive activations) :
@@ -131,36 +130,49 @@ axiom adoption_is_atomic (transaction : Projection.AdoptionTransaction) :
 axiom completion_requires_current_obligations (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
     (accepted : Policy.Completion.closeable target work activations claims adjudications
-      lifecycle evidence obligations = true) :
+      reviewPlans findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     Policy.Completion.obligationsReady target evidence obligations = true
 
 axiom completion_requires_authoritative_lifecycle (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
     (accepted : Policy.Completion.closeable target work activations claims adjudications
-      lifecycle evidence obligations = true) :
+      reviewPlans findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     Policy.Completion.authoritativeReady target work claims adjudications lifecycle = true
 
 axiom completion_requires_active_target (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
     (accepted : Policy.Completion.closeable target work activations claims adjudications
-      lifecycle evidence obligations = true) :
+      reviewPlans findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     (Work.activeFor activations target).isSome = true
 
 axiom replay_completion_applicability_matches_policy (target : WorkId)
     (state : Replay.State) :
     Replay.completionApplicable target state =
-      Policy.Completion.closeable target state.work state.activations
-        state.claims state.adjudications state.lifecycle
-        state.evidence state.obligations
+      Decide.completionReady target state
 
 axiom exact_retry_returns_same_receipt
     (operation : OperationId) (payloadDigest : String)

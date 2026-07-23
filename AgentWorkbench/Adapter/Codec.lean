@@ -23,18 +23,22 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.WorkStatus
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ActivationStatus
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewClaim
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.OwnerDecision
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceKind
 
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.WorkUnit
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.ReadinessBasis
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.SuspensionContext
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Activation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Requirement
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.DesignVersion
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Approval
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.TraceItem
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Decomposition
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Correction
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.LearnedRule
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.FrozenScope
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Plan
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.AuthorityException
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Claim
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Adjudication
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Finding

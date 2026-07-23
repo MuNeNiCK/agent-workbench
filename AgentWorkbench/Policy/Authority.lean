@@ -17,8 +17,8 @@ def authority (state : ReviewState) : List ReviewId :=
 def recordClaim (state : ReviewState) (claim : Claim) : ReviewState :=
   { state with claims := state.claims ++ [claim] }
 
-def mayInvoke (plan : Plan) : Bool :=
-  independent plan
+def mayInvoke (plan : Plan) (exceptions : List AuthorityException) : Bool :=
+  independent plan || exceptions.any (exceptionExact plan)
 
 def mayAdjudicate (plan : Plan) (claim : Claim) (principal : String) : Bool :=
   scopeExact plan claim && principal == plan.adjudicator &&
@@ -30,6 +30,10 @@ def blockingFindingsClosed (review : ReviewId) (findings : List Finding)
     finding.review != review || !finding.blocking || !finding.accepted ||
       (finding.closed && verifications.any fun verification =>
         verification.finding == finding.key && verification.accepted)
+
+def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
+    (findings : List Finding) (verifications : List Verification) : Bool :=
+  Review.scopeFindingsClosed scope claims findings verifications
 
 theorem review_claim_has_no_authority (state : ReviewState) (claim : Claim) :
     authority (recordClaim state claim) = authority state :=

@@ -22,76 +22,53 @@ structure ManifestPolicy where
   forbiddenAxioms : Array String
   unsafeFfiModules : Array String
 
-def designModuleMapPath : System.FilePath :=
-  ".agent-workbench/designs/lean-first-core/05-building-blocks.md"
+def identityModules : Array String := #[
+  "AgentWorkbench.Domain.Identity",
+  "AgentWorkbench.Domain.Facts"]
 
-def designMapTokens (content : String) : Except String (List String) :=
-  let marker := "The initial module/interface map is normative:\n\n```text\n"
-  match content.splitOn marker with
-  | _ :: after :: _ =>
-      match after.splitOn "\n```" with
-      | block :: _ =>
-          .ok <| ((block.replace "\n" " ").replace "," " ").splitOn " " |>
-            List.filter (fun token => !token.isEmpty)
-      | _ => .error "normative module map closing fence is missing"
-  | _ => .error "normative module map opening marker is missing"
+def domainModules : Array String := #[
+  "AgentWorkbench.Domain.Work",
+  "AgentWorkbench.Domain.Design",
+  "AgentWorkbench.Domain.Review",
+  "AgentWorkbench.Domain.Evidence",
+  "AgentWorkbench.Domain.ExternalOperation"]
 
-def tokenSection (start stop : String) (tokens : List String) : List String :=
-  ((tokens.dropWhile (· != start)).drop 1).takeWhile (· != stop)
+def policyModules : Array String := #[
+  "AgentWorkbench.Policy.Traceability",
+  "AgentWorkbench.Policy.Authority",
+  "AgentWorkbench.Policy.Completion",
+  "AgentWorkbench.Policy.Update"]
 
-def isQualifiedDesignToken (token : String) : Bool :=
-  token.contains '.'
+def kernelModules : Array String := #[
+  "AgentWorkbench.Kernel.Replay",
+  "AgentWorkbench.Kernel.Decide",
+  "AgentWorkbench.Kernel.Gates",
+  "AgentWorkbench.Kernel.Resolver"]
 
-def qualifyDesignModule (token : String) : String :=
-  "AgentWorkbench." ++ token
-
-def resolveDesignImports (allModules l0 l1 l2 l3 : List String)
-    (tokens : List String) : List String :=
-  (tokens.flatMap fun token =>
-    if token = "L0" then l0
-    else if token = "L1" then l1
-    else if token = "L2" then l2
-    else if token = "L3" then l3
-    else
-      match allModules.find? (fun module => module.endsWith ("." ++ token)) with
-      | some module => [module]
-      | none => []).eraseDups
-
-partial def parseDesignArrowRules (allModules l0 l1 l2 l3 : List String) :
-    List String → Except String (Array ModuleRule)
-  | [] => .ok #[]
-  | module :: "->" :: rest => do
-      unless isQualifiedDesignToken module do
-        throw s!"invalid normative module token: {module}"
-      let imports := rest.takeWhile (fun token => !isQualifiedDesignToken token)
-      let remaining := rest.drop imports.length
-      let tail ← parseDesignArrowRules allModules l0 l1 l2 l3 remaining
-      return #[⟨qualifyDesignModule module,
-        (resolveDesignImports allModules l0 l1 l2 l3 imports).toArray⟩] ++ tail
-  | token :: _ => .error s!"invalid normative module rule near {token}"
-
-def parseDesignModuleRules (content : String) : Except String (Array ModuleRule) := do
-  let tokens ← designMapTokens content
-  let l0Tokens := tokenSection "L0" "L1" tokens
-  let l1Section := tokenSection "L1" "L2" tokens
-  let l2Section := tokenSection "L2" "L3" tokens
-  let l3Section := tokenSection "L3" "L4" tokens
-  let l4Section := tokenSection "L4" "L5" tokens
-  let l0 := (l0Tokens.filter isQualifiedDesignToken).map qualifyDesignModule
-  let l1 := ((l1Section.takeWhile (· != "->")).filter isQualifiedDesignToken).map
-    qualifyDesignModule
-  let l2 := (l2Section.filter isQualifiedDesignToken).map qualifyDesignModule
-  let l3 := (l3Section.filter isQualifiedDesignToken).map qualifyDesignModule
-  let l4 := (l4Section.filter isQualifiedDesignToken).map qualifyDesignModule
-  let allModules := l0 ++ l1 ++ l2 ++ l3 ++ l4
-  unless !l0.isEmpty && !l1.isEmpty && !l2.isEmpty && !l3.isEmpty && !l4.isEmpty do
-    throw "normative module map has an empty product layer"
-  let l0Rules := l0.toArray.map fun module => ⟨module, #[]⟩
-  let l1Rules := l1.toArray.map fun module => ⟨module, l0.toArray⟩
-  let l2Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l2Section
-  let l3Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l3Section
-  let l4Rules ← parseDesignArrowRules allModules l0 l1 l2 l3 l4Section
-  return l0Rules ++ l1Rules ++ l2Rules ++ l3Rules ++ l4Rules
+def productModuleRules : Array ModuleRule :=
+  let domainImports := identityModules
+  let policyImports := identityModules ++ domainModules
+  identityModules.map (⟨·, #[]⟩) ++
+    domainModules.map (⟨·, domainImports⟩) ++
+    #[
+      ⟨"AgentWorkbench.Policy.Traceability", policyImports⟩,
+      ⟨"AgentWorkbench.Policy.Authority", policyImports⟩,
+      ⟨"AgentWorkbench.Policy.Completion",
+        policyImports ++ #[
+          "AgentWorkbench.Policy.Traceability",
+          "AgentWorkbench.Policy.Authority"]⟩,
+      ⟨"AgentWorkbench.Policy.Update", policyImports⟩,
+      ⟨"AgentWorkbench.Kernel.Replay", identityModules ++ domainModules⟩,
+      ⟨"AgentWorkbench.Kernel.Decide",
+        identityModules ++ domainModules ++ policyModules ++
+          #["AgentWorkbench.Kernel.Replay"]⟩,
+      ⟨"AgentWorkbench.Kernel.Gates",
+        identityModules ++ domainModules ++ policyModules ++
+          #["AgentWorkbench.Kernel.Replay"]⟩,
+      ⟨"AgentWorkbench.Kernel.Resolver",
+        identityModules ++ domainModules ++ policyModules ++ kernelModules⟩,
+      ⟨"AgentWorkbench.Application.Service",
+        identityModules ++ domainModules ++ policyModules ++ kernelModules⟩]
 
 def theoremRules : Array TheoremRule := #[
   ⟨"AgentWorkbench.Kernel.Replay.replay_deterministic", "AgentWorkbench.Audit.Expected.replay_deterministic"⟩,
@@ -417,7 +394,7 @@ def auditDeclarations (env : Environment) : IO Unit := do
     fail "compiled CLI request path does not reach resolver action execution"
   unless declarationReaches env `AgentWorkbench.Application.Service.execute
       [`AgentWorkbench.Application.Service.executeAction] [] do
-    fail "resolver action execution does not reach governed mutation"
+    fail "resolver action execution does not reach an authoritative mutation"
   unless declarationReaches env `AgentWorkbench.Kernel.Decide.decide
       [`AgentWorkbench.Application.Service.execute] [] do
     fail "public Service.execute does not reach authoritative Decide.decide"
@@ -676,10 +653,7 @@ def auditRepresentativeRebuilds (designRules : Array ModuleRule) : IO Unit := do
       auditRebuildTrace lake project actualRules normativeRules case
 
 def main : IO Unit := do
-  let designMap ← IO.FS.readFile designModuleMapPath
-  let designRules ← match parseDesignModuleRules designMap with
-    | .ok rules => pure rules
-    | .error error => fail error
+  let designRules := productModuleRules
   let manifest ← IO.FS.readFile "proof-manifest.toml"
   let policy ← match validateManifestContent designRules manifest with
     | .error error => fail error

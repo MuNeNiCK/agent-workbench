@@ -9,7 +9,6 @@ open AgentWorkbench.Kernel
 open SQLite.Blob
 
 def schemaVersion : Nat := 3
-def legacySchemaVersion : Nat := 1
 def predecessorSchemaVersion : Nat := 2
 
 private def writerPath (path : System.FilePath) : System.FilePath :=
@@ -387,14 +386,6 @@ private def currentSchemaObjects : List (String × String) := [
   ("table", "projection_repairs"),
   ("table", "update_provenance")]
 
-private def legacySchemaObjects : List (String × String) := [
-  ("table", "artifacts"),
-  ("table", "events"),
-  ("table", "metadata"),
-  ("table", "operations"),
-  ("table", "projection"),
-  ("table", "projection_repairs")]
-
 private def normalizeSchemaSql (value : String) : String :=
   String.ofList <| value.toList.filter fun character => !character.isWhitespace
 
@@ -420,7 +411,7 @@ private def projectionDefinition := "CREATE TABLE projection (
   payload BLOB NOT NULL
 )"
 
-private def legacyProjectionRepairsDefinition := "CREATE TABLE projection_repairs (
+private def predecessorProjectionRepairsDefinition := "CREATE TABLE projection_repairs (
   observed_digest TEXT NOT NULL,
   head_revision TEXT NOT NULL,
   history_digest TEXT NOT NULL,
@@ -468,23 +459,6 @@ private def updateProvenanceDefinition := "CREATE TABLE update_provenance (
   backup_size TEXT NOT NULL
 )"
 
-private def originalEventsDefinition := "CREATE TABLE events (
-  revision INTEGER PRIMARY KEY CHECK (revision > 0),
-  payload BLOB NOT NULL
-)"
-
-private def originalOperationsDefinition := "CREATE TABLE operations (
-  operation_id TEXT PRIMARY KEY,
-  payload_digest TEXT NOT NULL,
-  result_digest TEXT NOT NULL,
-  receipt BLOB NOT NULL
-)"
-
-private def originalArtifactsDefinition := "CREATE TABLE artifacts (
-  digest TEXT PRIMARY KEY,
-  size TEXT NOT NULL
-)"
-
 private def definitionsMatch (db : _root_.SQLite)
     (definitions : List (String × String)) : IO Bool := do
   for (table, expected) in definitions do
@@ -527,81 +501,6 @@ def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
         ("update_provenance", updateProvenanceDefinition)])
   catch _ => return false
 
-inductive LegacyV1Layout
-  | originalEmpty
-  | predecessor
-deriving DecidableEq, Repr
-
-private def originalV1EmptyValid (db : _root_.SQLite) : IO Bool := do
-  try
-    for table in ["events", "operations", "artifacts"] do
-      let count ← db.prepare s!"SELECT count(*) FROM {table}"
-      unless ← count.step do return false
-      unless (← count.columnInt64 0).toInt = 0 do return false
-    let metadata ← readMetadataAt db legacySchemaVersion
-    let (ledgerId, headRevision, historyDigest) ← match metadata with
-      | .ok value => pure value
-      | .error _ => return false
-    let events ← match ← readEvents db with
-      | .ok value => pure value
-      | .error _ => return false
-    let projection ← match ← readProjection db with
-      | .ok value => pure value
-      | .error _ => return false
-    let store : Projection.Store := {
-      ledger := {
-        id := ledgerId
-        events := events
-        storedHead := headRevision
-        storedHistoryDigest := historyDigest }
-      active := some projection
-      staged := []
-      receipts := []
-      nextStage := ⟨1⟩ }
-    match Projection.inspect store with
-    | .fresh _ _ => return true
-    | _ => return false
-  catch _ => return false
-
-def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
-  try
-    unless (← applicationTables db) =
-        ["artifacts", "events", "metadata", "operations", "projection", "projection_repairs"] &&
-        (← applicationSchemaObjects db) = legacySchemaObjects &&
-        (← commonSchemaMatches db) && (← commonDefinitionsMatch db) &&
-        (← tableColumns db "projection_repairs") =
-          ["observed_digest", "head_revision", "history_digest", "adopted_digest"] do
-      return none
-    if (← tableColumns db "events") = ["revision", "payload"] &&
-        (← tableColumns db "operations") =
-          ["operation_id", "payload_digest", "result_digest", "receipt"] &&
-        (← tableColumns db "artifacts") = ["digest", "size"] &&
-        (← definitionsMatch db [
-          ("events", originalEventsDefinition),
-          ("operations", originalOperationsDefinition),
-          ("artifacts", originalArtifactsDefinition),
-          ("projection_repairs", legacyProjectionRepairsDefinition)]) &&
-        (← originalV1EmptyValid db) then
-      return some .originalEmpty
-    if (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
-        (← tableColumns db "operations") =
-          ["operation_id", "request_payload", "payload_digest", "result_digest",
-           "start_revision", "end_revision", "history_digest", "receipt"] &&
-        (← tableColumns db "artifacts") = ["digest", "size", "payload"] &&
-        (← definitionsMatch db [
-          ("events", currentEventsDefinition),
-          ("operations", currentOperationsDefinition),
-          ("artifacts", currentArtifactsDefinition),
-          ("projection_repairs", legacyProjectionRepairsDefinition)]) then
-      match ← loadFromAt db legacySchemaVersion with
-      | .ok _ => return some .predecessor
-      | .error _ => return none
-    return none
-  catch _ => return none
-
-def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
-  return (← legacyV1Layout? db) = some .originalEmpty
-
 def predecessorV2Supported (db : _root_.SQLite) : IO Bool := do
   try
     unless (← applicationSchemaObjects db) = currentSchemaObjects &&
@@ -612,7 +511,7 @@ def predecessorV2Supported (db : _root_.SQLite) : IO Bool := do
           ("events", currentEventsDefinition),
           ("operations", currentOperationsDefinition),
           ("artifacts", currentArtifactsDefinition),
-          ("projection_repairs", legacyProjectionRepairsDefinition),
+          ("projection_repairs", predecessorProjectionRepairsDefinition),
           ("update_provenance", updateProvenanceDefinition)]) do
       return false
     match ← loadFromAt db predecessorSchemaVersion with

@@ -33,7 +33,8 @@ deriving DecidableEq, Repr
 def resumableActivations (state : State) : List Domain.Work.Activation :=
   state.activations.filter fun activation =>
     Domain.Work.workIsOpen state.work activation.work &&
-      Domain.Work.resumable state.activations activation.id
+      Domain.Work.resumable state.activations activation.id &&
+      Replay.resumeCurrent activation.work activation.id state
 
 def Action.executable (inspection : Projection.Inspection) : Action → Bool
   | .repairProjection command =>
@@ -59,7 +60,8 @@ def Action.executable (inspection : Projection.Inspection) : Action → Bool
             Domain.Work.workIsOpen state.work work &&
             state.activations.any (fun candidate =>
               candidate.id == activation && candidate.work == work) &&
-            Domain.Work.resumable state.activations activation
+            Domain.Work.resumable state.activations activation &&
+            Replay.resumeCurrent work activation state
       | _, _ => false
 
 def candidateCurrentAction (point : Domain.Projection.LedgerPoint)

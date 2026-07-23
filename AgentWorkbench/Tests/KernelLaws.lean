@@ -15,13 +15,22 @@ def thirdActivation : Domain.Work.Activation :=
   { id := ⟨3⟩, work := ⟨3⟩, status := .active, readyToResume := false }
 
 def firstWork : Domain.Work.WorkUnit :=
-  { id := ⟨1⟩, status := .open }
+  { id := ⟨1⟩, status := .open, owner := "owner" }
 
 def secondWork : Domain.Work.WorkUnit :=
-  { id := ⟨2⟩, status := .open }
+  { id := ⟨2⟩, status := .open, owner := "owner" }
 
 def thirdWork : Domain.Work.WorkUnit :=
-  { id := ⟨3⟩, status := .open }
+  { id := ⟨3⟩, status := .open, owner := "owner" }
+
+def evidenceDesign : Domain.Design.DesignVersion :=
+  { id := ⟨1⟩
+    revision := ⟨1⟩
+    owner := "owner"
+    contentDigest := "sha256:kernel-law-design"
+    requirements := [{ key := "evidence-integrity", active := true }]
+    decisions := ["evidence binds an exact design version"]
+    validationGates := ["evidence-matrix"] }
 
 def suspensionContext : Domain.Work.SuspensionContext :=
   { reason := "interrupted"
@@ -30,10 +39,10 @@ def suspensionContext : Domain.Work.SuspensionContext :=
     resumeConditions := ["resume readiness confirmed"] }
 
 def parentWork : Domain.Work.WorkUnit :=
-  { id := ⟨4⟩, status := .open }
+  { id := ⟨4⟩, status := .open, owner := "owner" }
 
 def blockedRelatedWork : Domain.Work.WorkUnit :=
-  { id := ⟨5⟩, status := .open }
+  { id := ⟨5⟩, status := .open, owner := "owner" }
 
 def completionPlan : Domain.Lifecycle.CompletionPlan :=
   { work := firstWork.id
@@ -43,8 +52,8 @@ def completionPlan : Domain.Lifecycle.CompletionPlan :=
     phases := ["phase-1"]
     tasks := ["task-1", "task-after-validation"]
     checklists := ["checklist-1"]
-    reviews := [⟨1⟩]
-    findings := ["finding-1"]
+    reviews := [⟨3001⟩]
+    findings := ["blocking-review-finding"]
     validations := ["validation-1"]
     repositories := ["repository-1"]
     corrections := ["correction-1"]
@@ -60,15 +69,21 @@ def expect (condition : Bool) (message : String) : IO Unit :=
 
 def testEvidenceScopeSatisfaction : IO Unit := do
   let obligation : Domain.Evidence.Obligation := {
-    work := ⟨1⟩, key := "GATE-006", revision := ⟨7⟩
+    work := ⟨1⟩, key := "evidence-integrity", revision := ⟨7⟩
     commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
     repository := "main", snapshot := "commit:exact"
-    artifactDigest := "sha256:exact", current := true }
+    artifactDigest := "sha256:exact", current := true
+    requirements := ["evidence-integrity"], expectedProducer := "kernel-law-runner"
+    expectedObservation := "kernel-law-observation"
+    design := ⟨1⟩, designRevision := ⟨1⟩ }
   let good : Domain.Evidence.Evidence := {
-    id := ⟨1⟩, work := ⟨1⟩, obligation := "GATE-006", revision := ⟨7⟩
+    id := ⟨1⟩, work := ⟨1⟩, obligation := "evidence-integrity", revision := ⟨7⟩
     commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
     exitCode := 0, repository := "main", snapshot := "commit:exact"
-    artifactDigest := "sha256:exact", current := true }
+    artifactDigest := "sha256:exact", current := true
+    requirements := obligation.requirements, producer := obligation.expectedProducer
+    observedAt := "kernel-law-observation"
+    design := obligation.design, designRevision := obligation.designRevision }
   expect (Policy.Completion.obligationSatisfied [good] obligation)
     "exact successful evidence did not satisfy its obligation"
   let bad := [
@@ -128,6 +143,164 @@ def executeStore (command : Kernel.Decide.Command) (store : Kernel.Projection.St
   | .ok transaction => pure transaction.result
   | .error error => throw <| IO.userError s!"{message}: {repr error}"
 
+def contractScope (work : WorkId) (stage digest : String) :
+    Domain.Review.FrozenScope :=
+  { design := some evidenceDesign.id
+    work
+    repositorySnapshot := s!"snapshot-{work.value}"
+    artifactDigest := digest
+    stage }
+
+def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
+    IO Kernel.Projection.Store := do
+  let store ← executeStore (.importDesign store.ledger.storedHead evidenceDesign) store
+    "completion design import rejected"
+  let plan : Domain.Review.Plan :=
+    { id := ⟨1000⟩
+      owner := evidenceDesign.owner
+      reviewer := "design-reviewer"
+      adjudicator := evidenceDesign.owner
+      scope := contractScope work "design" evidenceDesign.contentDigest }
+  let store ← executeStore (.recordReviewPlan store.ledger.storedHead plan) store
+    "completion design review plan rejected"
+  let claim : Domain.Review.Claim :=
+    { id := ⟨1000⟩
+      plan := plan.id
+      work
+      epoch := ⟨0⟩
+      claim := .clean
+      reviewer := plan.reviewer
+      scope := some plan.scope }
+  let store ← executeStore (.recordReviewClaim store.ledger.storedHead claim) store
+    "completion design review claim rejected"
+  let store ← executeStore
+    (.recordReviewAdjudication store.ledger.storedHead
+      { review := claim.id, decision := .accepted, adjudicator := plan.adjudicator })
+    store "completion design review adjudication rejected"
+  executeStore (.approveDesign store.ledger.storedHead evidenceDesign.id) store
+    "completion design approval rejected"
+
+def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store) :
+    IO Kernel.Projection.Store := do
+  let decompositionDigest := s!"decomposition-{work.value}"
+  let decompositionPlan : Domain.Review.Plan :=
+    { id := ⟨2000 + work.value⟩
+      owner := evidenceDesign.owner
+      reviewer := s!"decomposition-reviewer-{work.value}"
+      adjudicator := evidenceDesign.owner
+      scope := contractScope work "decomposition" decompositionDigest }
+  let store ← executeStore
+    (.recordReviewPlan store.ledger.storedHead decompositionPlan) store
+    "decomposition review plan rejected"
+  let decompositionClaim : Domain.Review.Claim :=
+    { id := ⟨2000 + work.value⟩
+      plan := decompositionPlan.id
+      work
+      epoch := ⟨0⟩
+      claim := .clean
+      reviewer := decompositionPlan.reviewer
+      scope := some decompositionPlan.scope }
+  let store ← executeStore
+    (.recordReviewClaim store.ledger.storedHead decompositionClaim) store
+    "decomposition review claim rejected"
+  let store ← executeStore
+    (.recordReviewAdjudication store.ledger.storedHead
+      { review := decompositionClaim.id, decision := .accepted
+        adjudicator := decompositionPlan.adjudicator })
+    store "decomposition review adjudication rejected"
+  let decomposition : Domain.Design.Decomposition :=
+    { key := decompositionDigest
+      design := evidenceDesign.id
+      work
+      designRevision := evidenceDesign.revision
+      contentDigest := decompositionDigest
+      items := [{
+        key := s!"work-{work.value}"
+        requirements := ["evidence-integrity"]
+        implementationWork := ["kernel transitions"]
+        tasks := ["implement work contract"]
+        completionChecks := ["kernel laws"]
+        checklists := ["contract reviewed"]
+        validationGates := ["evidence-matrix"] }]
+      reviewer := decompositionPlan.reviewer
+      adjudicator := decompositionPlan.adjudicator
+      accepted := true }
+  let store ← executeStore
+    (.recordDecomposition store.ledger.storedHead decomposition) store
+    "work decomposition rejected"
+  let implementationPlan : Domain.Review.Plan :=
+    { id := ⟨3000 + work.value⟩
+      owner := evidenceDesign.owner
+      reviewer := s!"implementation-reviewer-{work.value}"
+      adjudicator := evidenceDesign.owner
+      scope := contractScope work "implementation" s!"implementation-{work.value}" }
+  let store ← executeStore
+    (.recordReviewPlan store.ledger.storedHead implementationPlan) store
+    "implementation review plan rejected"
+  let implementationClaim : Domain.Review.Claim :=
+    { id := ⟨3000 + work.value⟩
+      plan := implementationPlan.id
+      work
+      epoch := ⟨0⟩
+      claim := .clean
+      reviewer := implementationPlan.reviewer
+      scope := some implementationPlan.scope }
+  let store ← executeStore
+    (.recordReviewClaim store.ledger.storedHead implementationClaim) store
+    "implementation review claim rejected"
+  executeStore
+    (.recordReviewAdjudication store.ledger.storedHead
+      { review := implementationClaim.id, decision := .accepted
+        adjudicator := implementationPlan.adjudicator })
+    store "implementation review adjudication rejected"
+
+def recordReadinessEvidence (work : WorkId) (store : Kernel.Projection.Store) :
+    IO (Kernel.Projection.Store × Domain.Work.ReadinessBasis) := do
+  let obligation : Domain.Evidence.Obligation :=
+    { work
+      key := s!"readiness-{work.value}"
+      revision := store.ledger.storedHead
+      commandProfile := "kernel-laws"
+      invocation := ".lake/build/bin/kernel-laws"
+      repository := "main"
+      snapshot := s!"snapshot-{work.value}"
+      artifactDigest := s!"sha256:readiness-{work.value}"
+      current := true
+      requirements := ["evidence-integrity"]
+      expectedProducer := "kernel-law-runner"
+      expectedObservation := s!"observation-{work.value}"
+      design := evidenceDesign.id
+      designRevision := evidenceDesign.revision }
+  let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
+    "readiness obligation rejected"
+  let evidence : Domain.Evidence.Evidence :=
+    { id := ⟨1000 + work.value + store.ledger.storedHead.value⟩
+      work
+      obligation := obligation.key
+      revision := obligation.revision
+      commandProfile := obligation.commandProfile
+      invocation := obligation.invocation
+      exitCode := 0
+      repository := obligation.repository
+      snapshot := obligation.snapshot
+      artifactDigest := obligation.artifactDigest
+      current := true
+      requirements := obligation.requirements
+      producer := obligation.expectedProducer
+      observedAt := s!"observation-{work.value}"
+      design := obligation.design
+      designRevision := obligation.designRevision }
+  let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
+    "readiness evidence rejected"
+  let basis : Domain.Work.ReadinessBasis :=
+    { design := evidenceDesign.id
+      designRevision := evidenceDesign.revision
+      decompositionDigest := s!"decomposition-{work.value}"
+      repositorySnapshot := obligation.snapshot
+      evidenceRevision := evidence.revision
+      reviewPlan := ⟨3000 + work.value⟩ }
+  pure (store, basis)
+
 def executeResolverAction (action : Kernel.Resolver.Action)
     (store : Kernel.Projection.Store) (message : String) : IO Kernel.Projection.Store :=
   match Cli.Program.executeRequest (.action action) store with
@@ -163,21 +336,31 @@ def completeMinimalActiveWork (work : WorkId) (store : Kernel.Projection.Store) 
     { work, key, revision := store.ledger.storedHead
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
       repository := "main", snapshot := "fixture"
-      artifactDigest := s!"sha256:minimal-{work.value}", current := true }
+      artifactDigest := s!"sha256:minimal-{work.value}", current := true
+      requirements := ["evidence-integrity"]
+      expectedProducer := "kernel-law-runner"
+      expectedObservation := s!"completion-observation-{work.value}"
+      design := evidenceDesign.id
+      designRevision := evidenceDesign.revision }
   let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
     s!"minimal obligation rejected for {work.value}"
   let evidence : Domain.Evidence.Evidence :=
     { id := ⟨work.value⟩
       work
       obligation := key
-      revision := store.ledger.storedHead
+      revision := obligation.revision
       commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws"
       exitCode := 0
       repository := "main"
       snapshot := "fixture"
       artifactDigest := s!"sha256:minimal-{work.value}"
-      current := true }
+      current := true
+      requirements := obligation.requirements
+      producer := obligation.expectedProducer
+      observedAt := s!"completion-observation-{work.value}"
+      design := obligation.design
+      designRevision := obligation.designRevision }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
     s!"minimal evidence rejected for {work.value}"
   match Application.Service.complete store.ledger.storedHead work store with
@@ -190,27 +373,45 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
     (.initializeWork Application.Service.initialStore.ledger.storedHead
       secondWork secondActivation)
     Application.Service.initialStore "child initialization rejected"
+  let store ← installDesignContract secondWork.id store
+  let store ← bindWorkContract secondWork.id store
   let store ← completeMinimalActiveWork secondWork.id store
   let store ← executeStore (.registerWork store.ledger.storedHead thirdWork) store
     "dependency registration rejected"
+  let store ← bindWorkContract thirdWork.id store
+  let (store, thirdBasis) ← recordReadinessEvidence thirdWork.id store
+  let thirdContext : Domain.Work.SuspensionContext :=
+    { suspensionContext with basis := some thirdBasis }
   let suspendedThird : Domain.Work.Activation :=
     { id := thirdActivation.id, work := thirdActivation.work, status := .suspended
-      readyToResume := true, suspension := some suspensionContext }
+      readyToResume := false, suspension := some thirdContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead suspendedThird) store
     "dependency activation registration rejected"
+  let store ← executeStore
+    (.confirmResumeReadiness store.ledger.storedHead
+      thirdWork.id thirdActivation.id thirdBasis) store
+    "dependency readiness confirmation rejected"
   let store ← executeStore
     (.resumeWork store.ledger.storedHead thirdWork.id thirdActivation.id) store
     "dependency resume rejected"
   let store ← completeMinimalActiveWork thirdWork.id store
   let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
     "owner registration rejected"
+  let store ← bindWorkContract firstWork.id store
+  let (store, firstBasis) ← recordReadinessEvidence firstWork.id store
+  let firstContext : Domain.Work.SuspensionContext :=
+    { suspensionContext with basis := some firstBasis }
   let suspendedFirst : Domain.Work.Activation :=
     { id := firstActivation.id, work := firstActivation.work, status := .suspended
-      readyToResume := true, suspension := some suspensionContext }
+      readyToResume := false, suspension := some firstContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead suspendedFirst) store
     "owner activation registration rejected"
+  let store ← executeStore
+    (.confirmResumeReadiness store.ledger.storedHead
+      firstWork.id firstActivation.id firstBasis) store
+    "owner readiness confirmation rejected"
   let store ← executeStore
     (.resumeWork store.ledger.storedHead firstWork.id firstActivation.id) store
     "owner resume rejected"
@@ -220,9 +421,13 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
     else pure store
   let store ← executeStore (.registerWork store.ledger.storedHead parentWork) store
     "parent registration rejected"
+  let store ← bindWorkContract parentWork.id store
+  let (store, parentBasis) ← recordReadinessEvidence parentWork.id store
+  let parentContext : Domain.Work.SuspensionContext :=
+    { suspensionContext with basis := some parentBasis }
   let parentActivation : Domain.Work.Activation :=
     { id := ⟨4⟩, work := parentWork.id, status := .suspended
-      readyToResume := true, suspension := some suspensionContext }
+      readyToResume := false, suspension := some parentContext }
   let store ← executeStore
     (.registerSuspendedActivation store.ledger.storedHead parentActivation) store
     "parent activation registration rejected"
@@ -266,7 +471,8 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
         firstWork.id "checklist-1") store "checklist completion rejected"
     else pure store
   let store ← if missing != some .finding then
-      executeStore (.resolveFinding store.ledger.storedHead firstWork.id "finding-1")
+      executeStore (.resolveFinding store.ledger.storedHead firstWork.id
+        "blocking-review-finding")
         store "finding resolution rejected"
     else pure store
   let store ← if missing != some .correction then
@@ -287,11 +493,13 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     | none => throw <| IO.userError "completion lifecycle disappeared"
   let store ← if missing != some .review then
       let claim : Domain.Review.Claim :=
-        { id := ⟨10⟩, plan := ⟨1⟩, work := firstWork.id, epoch, claim := .clean }
+        { id := ⟨10⟩, plan := ⟨3001⟩, work := firstWork.id, epoch
+          claim := .clean, reviewer := "implementation-reviewer-1"
+          scope := some (contractScope firstWork.id "implementation" "implementation-1") }
       let claimed ← executeStore
         (.recordReviewClaim store.ledger.storedHead claim) store "review claim rejected"
       executeStore (.recordReviewAdjudication claimed.ledger.storedHead
-        { review := claim.id, decision := .accepted }) claimed
+        { review := claim.id, decision := .accepted, adjudicator := "owner" }) claimed
         "review adjudication rejected"
     else pure store
   let store ← if missing != some .validation then
@@ -302,15 +510,25 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
     { work := firstWork.id, key := "completion-proof",
       revision := store.ledger.storedHead, commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws", repository := "main"
-      snapshot := "fixture", artifactDigest := "proof:matrix", current := true }
+      snapshot := "fixture", artifactDigest := "proof:matrix", current := true
+      requirements := ["evidence-integrity"]
+      expectedProducer := "kernel-law-runner"
+      expectedObservation := "completion-matrix-observation"
+      design := evidenceDesign.id
+      designRevision := evidenceDesign.revision }
   let store ← executeStore (.recordObligation store.ledger.storedHead obligation) store
     "completion obligation rejected"
   let evidence : Domain.Evidence.Evidence :=
     { id := ⟨100⟩, work := firstWork.id, obligation := obligation.key,
-      revision := store.ledger.storedHead, commandProfile := "kernel-laws",
+      revision := obligation.revision, commandProfile := "kernel-laws",
       invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
       repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:matrix", current := true }
+      artifactDigest := "proof:matrix", current := true
+      requirements := obligation.requirements
+      producer := obligation.expectedProducer
+      observedAt := "completion-matrix-observation"
+      design := obligation.design
+      designRevision := obligation.designRevision }
   let store ← executeStore (.recordEvidence store.ledger.storedHead evidence) store
     "completion evidence rejected"
   pure store
@@ -341,6 +559,9 @@ def main : IO Unit := do
   testEvidenceScopeSatisfaction
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
+  expectRejectedNoEffect
+    (.initializeWork initial.revision { firstWork with owner := "" } firstActivation)
+    initial "work without an authoritative owner"
   let first ← match Kernel.Decide.decide
       (initializeWork initial firstWork firstActivation) initial with
     | .ok transaction => pure transaction.result.state
@@ -363,31 +584,51 @@ def main : IO Unit := do
   | .error .staleRevision => pure ()
   | _ => throw <| IO.userError "stale command must be rejected"
   expectRejectedNoEffect stale first "stale revision rejection"
-  let currentObligation : Domain.Evidence.Obligation :=
-    { work := firstWork.id, key := "proof", revision := ⟨1⟩
+  let unboundReviewPlan :=
+    { minimalCompletionPlan firstWork.id with reviews := [⟨99⟩] }
+  expectRejectedNoEffect
+    (.planCompletion first.revision unboundReviewPlan) first
+    "completion plan referencing no frozen review plan"
+  let unboundObligation : Domain.Evidence.Obligation :=
+    { work := firstWork.id, key := "proof", revision := first.revision
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
       repository := "main", snapshot := "fixture"
-      artifactDigest := "sha256:evidence", current := true }
+      artifactDigest := "sha256:evidence", current := true
+      requirements := ["evidence-integrity"], expectedProducer := "kernel-law-runner"
+      expectedObservation := "kernel-law-observation"
+      design := evidenceDesign.id, designRevision := evidenceDesign.revision }
+  expectRejectedNoEffect (.recordObligation first.revision unboundObligation) first
+    "obligation without an imported design"
+  let designed ← executeState (.importDesign first.revision evidenceDesign) first
+    "evidence design import rejected"
+  let currentObligation :=
+    { unboundObligation with revision := designed.revision }
   let obligated ← match Kernel.Decide.decide
-      (.recordObligation first.revision currentObligation) first with
+      (.recordObligation designed.revision currentObligation) designed with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let item : Domain.Evidence.Evidence :=
-    { id := ⟨1⟩, work := firstWork.id, obligation := "proof", revision := obligated.revision
+    { id := ⟨1⟩, work := firstWork.id, obligation := "proof"
+      revision := currentObligation.revision
       commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws"
       exitCode := 0, repository := "main", snapshot := "fixture"
-      artifactDigest := "sha256:evidence", current := true }
+      artifactDigest := "sha256:evidence", current := true
+      requirements := currentObligation.requirements
+      producer := currentObligation.expectedProducer
+      observedAt := "kernel-law-observation"
+      design := currentObligation.design
+      designRevision := currentObligation.designRevision }
   let evidenced ← match Kernel.Decide.decide
       (.recordEvidence obligated.revision item) obligated with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid evidence rejected: {repr error}"
   expect (evidenced.evidence.any fun recorded =>
-    recorded.current && recorded.revision == evidenced.revision)
-    "recorded current evidence must bind the resulting revision"
+    recorded.current && recorded.revision == currentObligation.revision)
+    "recorded evidence must retain its observed revision"
   expect (evidenced.obligations.any fun obligation =>
     obligation.work == firstWork.id && obligation.key == "proof" &&
-      obligation.current && obligation.revision == evidenced.revision)
-    "current evidence must atomically refresh its referenced obligation"
+      obligation.current && obligation.revision == currentObligation.revision)
+    "current evidence must retain its referenced obligation revision"
   expectRejectedNoEffect (.recordEvidence evidenced.revision item) evidenced
     "duplicate evidence identity"
   let malformedItem := { item with id := ⟨2⟩, artifactDigest := "" }
@@ -457,17 +698,21 @@ def main : IO Unit := do
     "owner attempted to close open related work"
   let plannedStore ← buildPlannedCompletionStore none
   let planned ← currentState plannedStore
-  let parentActivation : Domain.Work.Activation :=
-    { id := ⟨4⟩, work := parentWork.id, status := .suspended
-      readyToResume := true, suspension := some suspensionContext }
+  let parentActivation ← match planned.activations.find? (·.id == ⟨4⟩) with
+    | some activation => pure activation
+    | none => throw <| IO.userError "planned parent activation disappeared"
   expect (!(Policy.Completion.closeable firstWork.id planned.work planned.activations
-    planned.claims planned.adjudications planned.lifecycle
-    planned.evidence planned.obligations))
+    planned.claims planned.adjudications planned.reviewPlans
+    planned.reviewFindings planned.findingVerifications planned.lifecycle
+    planned.evidence planned.obligations planned.designs planned.designApprovals
+    planned.decompositions planned.corrections))
     "an authoritative plan must begin unready instead of self-attested complete"
   expect (Kernel.Replay.completionApplicable firstWork.id planned ==
     Policy.Completion.closeable firstWork.id planned.work planned.activations
-      planned.claims planned.adjudications planned.lifecycle
-      planned.evidence planned.obligations)
+      planned.claims planned.adjudications planned.reviewPlans
+      planned.reviewFindings planned.findingVerifications planned.lifecycle
+      planned.evidence planned.obligations planned.designs planned.designApprovals
+      planned.decompositions planned.corrections)
     "replay completion applicability diverged from authoritative policy"
   match Kernel.Replay.replay
       [.workCompleted firstWork.id firstActivation.id] planned with
@@ -489,7 +734,8 @@ def main : IO Unit := do
     (.completeChecklist taskDone.revision firstWork.id "checklist-1") taskDone
     "checklist completion rejected"
   let findingDone ← executeState
-    (.resolveFinding checklistDone.revision firstWork.id "finding-1") checklistDone
+    (.resolveFinding checklistDone.revision firstWork.id "blocking-review-finding")
+      checklistDone
     "finding resolution rejected"
   let correctionDone ← executeState
     (.resolveCorrection findingDone.revision firstWork.id "correction-1") findingDone
@@ -504,7 +750,9 @@ def main : IO Unit := do
     | some completion => pure completion.epoch
     | none => throw <| IO.userError "completion lifecycle disappeared"
   let claim : Domain.Review.Claim :=
-    { id := ⟨1⟩, plan := ⟨1⟩, work := firstWork.id, epoch, claim := .clean }
+    { id := ⟨1⟩, plan := ⟨3001⟩, work := firstWork.id, epoch
+      claim := .clean, reviewer := "implementation-reviewer-1"
+      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
   let claimed ← executeState
     (.recordReviewClaim repositoryDone.revision claim) repositoryDone
     "current scoped review claim rejected"
@@ -516,7 +764,7 @@ def main : IO Unit := do
     (.recordReviewAdjudication claimed.revision unknownAdjudication) claimed
     "adjudication without claim"
   let adjudication : Domain.Review.Adjudication :=
-    { review := claim.id, decision := .accepted }
+    { review := claim.id, decision := .accepted, adjudicator := "owner" }
   let adjudicated ← executeState
     (.recordReviewAdjudication claimed.revision adjudication) claimed
     "review adjudication rejected"
@@ -536,13 +784,15 @@ def main : IO Unit := do
     | some completion => pure completion.epoch
     | none => throw <| IO.userError "completion lifecycle disappeared after invalidation"
   let freshClaim : Domain.Review.Claim :=
-    { id := ⟨2⟩, plan := ⟨1⟩, work := firstWork.id,
-      epoch := refreshedEpoch, claim := .clean }
+    { id := ⟨2⟩, plan := ⟨3001⟩, work := firstWork.id,
+      epoch := refreshedEpoch, claim := .clean
+      reviewer := "implementation-reviewer-1"
+      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
   let freshlyClaimed ← executeState
     (.recordReviewClaim repositoryRefreshed.revision freshClaim) repositoryRefreshed
     "fresh scoped review claim rejected"
   let freshAdjudication : Domain.Review.Adjudication :=
-    { review := freshClaim.id, decision := .accepted }
+    { review := freshClaim.id, decision := .accepted, adjudicator := "owner" }
   let freshlyAdjudicated ← executeState
     (.recordReviewAdjudication freshlyClaimed.revision freshAdjudication) freshlyClaimed
     "fresh review adjudication rejected"
@@ -554,22 +804,34 @@ def main : IO Unit := do
     { work := firstWork.id, key := "completion-proof",
       revision := validated.revision, commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws", repository := "main"
-      snapshot := "fixture", artifactDigest := "proof:complete", current := true }
+      snapshot := "fixture", artifactDigest := "proof:complete", current := true
+      requirements := ["evidence-integrity"]
+      expectedProducer := "kernel-law-runner"
+      expectedObservation := "completion-observation"
+      design := evidenceDesign.id
+      designRevision := evidenceDesign.revision }
   let obligatedCompletion ← executeState
     (.recordObligation validated.revision completionObligation) validated
     "completion obligation rejected"
   let completionEvidence : Domain.Evidence.Evidence :=
     { id := ⟨100⟩, work := firstWork.id, obligation := completionObligation.key,
-      revision := obligatedCompletion.revision, commandProfile := "kernel-laws",
+      revision := completionObligation.revision, commandProfile := "kernel-laws",
       invocation := ".lake/build/bin/kernel-laws", exitCode := 0,
       repository := "main", snapshot := "fixture", artifactDigest := "proof:complete",
-      current := true }
+      current := true
+      requirements := completionObligation.requirements
+      producer := completionObligation.expectedProducer
+      observedAt := "completion-observation"
+      design := completionObligation.design
+      designRevision := completionObligation.designRevision }
   let completable ← executeState
     (.recordEvidence obligatedCompletion.revision completionEvidence) obligatedCompletion
     "completion evidence rejected"
   expect (Policy.Completion.closeable firstWork.id completable.work completable.activations
-    completable.claims completable.adjudications completable.lifecycle
-    completable.evidence completable.obligations)
+    completable.claims completable.adjudications completable.reviewPlans
+    completable.reviewFindings completable.findingVerifications completable.lifecycle
+    completable.evidence completable.obligations completable.designs
+    completable.designApprovals completable.decompositions completable.corrections)
     "authoritative current lifecycle records must allow completion"
   let completed ← match Kernel.Decide.closeWork completable.revision firstWork.id completable with
     | .ok transaction => pure transaction.result.state
@@ -821,57 +1083,88 @@ def main : IO Unit := do
       allReadyState.lifecycle firstWork.id with
     | some completion => pure completion.epoch
     | none => throw <| IO.userError "all-ready lifecycle disappeared"
+  let completionProof ← match allReadyState.obligations.find?
+      (fun obligation =>
+        obligation.work == firstWork.id && obligation.key == "completion-proof") with
+    | some obligation => pure obligation
+    | none => throw <| IO.userError "all-ready completion obligation disappeared"
   let findingsClaim : Domain.Review.Claim :=
-    { id := ⟨11⟩, plan := ⟨1⟩, work := firstWork.id,
-      epoch := allReadyEpoch, claim := .findings }
+    { id := ⟨11⟩, plan := ⟨3001⟩, work := firstWork.id,
+      epoch := allReadyEpoch, claim := .findings
+      reviewer := "implementation-reviewer-1"
+      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
   let findingsClaimed ← executeStore
     (.recordReviewClaim allReadyStore.ledger.storedHead findingsClaim) allReadyStore
     "current findings claim rejected"
   let findingsAdjudicated ← executeStore
     (.recordReviewAdjudication findingsClaimed.ledger.storedHead
-      { review := findingsClaim.id, decision := .accepted }) findingsClaimed
+      { review := findingsClaim.id, decision := .accepted, adjudicator := "owner" })
+    findingsClaimed
     "current findings adjudication rejected"
   let findingsEvidence : Domain.Evidence.Evidence :=
     { id := ⟨101⟩, work := firstWork.id, obligation := "completion-proof",
-      revision := findingsAdjudicated.ledger.storedHead,
-      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
-      exitCode := 0, repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:matrix", current := true }
+      revision := completionProof.revision,
+      commandProfile := completionProof.commandProfile
+      invocation := completionProof.invocation
+      exitCode := 0, repository := completionProof.repository
+      snapshot := completionProof.snapshot
+      artifactDigest := completionProof.artifactDigest, current := true
+      requirements := completionProof.requirements
+      producer := completionProof.expectedProducer
+      observedAt := completionProof.expectedObservation
+      design := completionProof.design
+      designRevision := completionProof.designRevision }
   let findingsRefreshed ← executeStore
     (.recordEvidence findingsAdjudicated.ledger.storedHead findingsEvidence)
     findingsAdjudicated "findings evidence refresh rejected"
   let findingsState ← currentState findingsRefreshed
   expect (!Policy.Completion.closeable firstWork.id findingsState.work
     findingsState.activations findingsState.claims findingsState.adjudications
-    findingsState.lifecycle findingsState.evidence findingsState.obligations)
+    findingsState.reviewPlans findingsState.reviewFindings
+    findingsState.findingVerifications findingsState.lifecycle findingsState.evidence
+    findingsState.obligations findingsState.designs findingsState.designApprovals
+    findingsState.decompositions findingsState.corrections)
     "later accepted findings claim did not dominate an earlier clean claim"
   match Application.Service.complete findingsRefreshed.ledger.storedHead firstWork.id findingsRefreshed with
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError <|
       "completion accepted refreshed evidence with a current findings review"
   let recoveryClaim : Domain.Review.Claim :=
-    { id := ⟨12⟩, plan := ⟨1⟩, work := firstWork.id,
-      epoch := allReadyEpoch, claim := .clean }
+    { id := ⟨12⟩, plan := ⟨3001⟩, work := firstWork.id,
+      epoch := allReadyEpoch, claim := .clean
+      reviewer := "implementation-reviewer-1"
+      scope := some (contractScope firstWork.id "implementation" "implementation-1") }
   let recoveryClaimed ← executeStore
     (.recordReviewClaim findingsRefreshed.ledger.storedHead recoveryClaim)
     findingsRefreshed "recovery clean claim rejected"
   let recoveryAdjudicated ← executeStore
     (.recordReviewAdjudication recoveryClaimed.ledger.storedHead
-      { review := recoveryClaim.id, decision := .accepted }) recoveryClaimed
+      { review := recoveryClaim.id, decision := .accepted, adjudicator := "owner" })
+    recoveryClaimed
     "recovery clean adjudication rejected"
   let recoveryEvidence : Domain.Evidence.Evidence :=
     { id := ⟨102⟩, work := firstWork.id, obligation := "completion-proof",
-      revision := recoveryAdjudicated.ledger.storedHead,
-      commandProfile := "kernel-laws", invocation := ".lake/build/bin/kernel-laws",
-      exitCode := 0, repository := "main", snapshot := "fixture",
-      artifactDigest := "proof:matrix", current := true }
+      revision := completionProof.revision
+      commandProfile := completionProof.commandProfile
+      invocation := completionProof.invocation
+      exitCode := 0, repository := completionProof.repository
+      snapshot := completionProof.snapshot
+      artifactDigest := completionProof.artifactDigest, current := true
+      requirements := completionProof.requirements
+      producer := completionProof.expectedProducer
+      observedAt := completionProof.expectedObservation
+      design := completionProof.design
+      designRevision := completionProof.designRevision }
   let recoveredStore ← executeStore
     (.recordEvidence recoveryAdjudicated.ledger.storedHead recoveryEvidence)
     recoveryAdjudicated "recovery evidence refresh rejected"
   let recoveredState ← currentState recoveredStore
   expect (Policy.Completion.closeable firstWork.id recoveredState.work
     recoveredState.activations recoveredState.claims recoveredState.adjudications
-    recoveredState.lifecycle recoveredState.evidence recoveredState.obligations)
+    recoveredState.reviewPlans recoveredState.reviewFindings
+    recoveredState.findingVerifications recoveredState.lifecycle recoveredState.evidence
+    recoveredState.obligations recoveredState.designs recoveredState.designApprovals
+    recoveredState.decompositions recoveredState.corrections)
     "later accepted clean claim did not restore review readiness"
   match Application.Service.complete recoveredStore.ledger.storedHead firstWork.id recoveredStore with
   | .ok _ => pure ()
@@ -880,7 +1173,12 @@ def main : IO Unit := do
     { work := firstWork.id, key := "unmet-proof",
       revision := allReadyStore.ledger.storedHead, commandProfile := "kernel-laws"
       invocation := ".lake/build/bin/kernel-laws", repository := "main"
-      snapshot := "fixture", artifactDigest := "proof:unmet", current := true }
+      snapshot := "fixture", artifactDigest := "proof:unmet", current := true
+      requirements := ["evidence-integrity"]
+      expectedProducer := "kernel-law-runner"
+      expectedObservation := "unmet-observation"
+      design := evidenceDesign.id
+      designRevision := evidenceDesign.revision }
   let withUnmetObligation ← executeStore
     (.recordObligation allReadyStore.ledger.storedHead unmetObligation) allReadyStore
     "unmet obligation setup rejected"
@@ -899,14 +1197,19 @@ def main : IO Unit := do
     { id := ⟨101⟩
       work := firstWork.id
       obligation := "completion-proof"
-      revision := staleCompletionRevision
-      commandProfile := "kernel-laws"
-      invocation := ".lake/build/bin/kernel-laws"
+      revision := completionProof.revision
+      commandProfile := completionProof.commandProfile
+      invocation := completionProof.invocation
       exitCode := 0
-      repository := "main"
-      snapshot := "fixture"
-      artifactDigest := "proof:matrix"
-      current := true }
+      repository := completionProof.repository
+      snapshot := completionProof.snapshot
+      artifactDigest := completionProof.artifactDigest
+      current := true
+      requirements := completionProof.requirements
+      producer := completionProof.expectedProducer
+      observedAt := completionProof.expectedObservation
+      design := completionProof.design
+      designRevision := completionProof.designRevision }
   let advancedReadyStore ← executeStore
     (.recordEvidence staleCompletionRevision refreshEvidence) allReadyStore
     "stale completion revision fixture rejected"
@@ -944,7 +1247,7 @@ def main : IO Unit := do
     "all-ready completion did not close the target activation"
   expect (afterCompletion.activations.any fun activation =>
       activation.work == parentWork.id && activation.status == .suspended &&
-        activation.readyToResume)
+        !activation.readyToResume)
     "completion resumed or lost the suspended parent"
   let completedStore := completedTransaction.result
   let mismatchStore ← executeStore
@@ -960,13 +1263,30 @@ def main : IO Unit := do
     "resume action accepted an activation belonging to another work"
   expectResolverActionRejected mismatchedResume mismatchStore
     "public resume accepted a mismatched work/activation binding"
-  match (Application.Service.resolve completedStore).value with
+  let (parentRefreshed, parentBasis) ←
+    recordReadinessEvidence parentWork.id mismatchStore
+  let parentState ← currentState parentRefreshed
+  let parentContext ← match parentState.activations.find? (·.id == parentActivation.id) with
+    | some activation =>
+        match activation.suspension with
+        | some context => pure { context with basis := some parentBasis }
+        | none => throw <| IO.userError "parent suspension context disappeared"
+    | none => throw <| IO.userError "parent activation disappeared"
+  let parentRevised ← executeStore
+    (.reviseSuspension parentRefreshed.ledger.storedHead
+      parentWork.id parentActivation.id parentContext)
+    parentRefreshed "parent readiness basis revision rejected"
+  let parentReady ← executeStore
+    (.confirmResumeReadiness parentRevised.ledger.storedHead
+      parentWork.id parentActivation.id parentBasis)
+    parentRevised "parent readiness confirmation rejected"
+  match (Application.Service.resolve parentReady).value with
   | .action action@(.resumeSuspendedWork _ work activation) =>
       expect (work == parentWork.id && activation == ⟨4⟩)
         "completion exposed the wrong suspended parent"
-      expect (action.executable (Kernel.Projection.inspect completedStore))
+      expect (action.executable (Kernel.Projection.inspect parentReady))
         "exposed parent resume action is not executable"
-      let resumedStore ← executeResolverAction action completedStore
+      let resumedStore ← executeResolverAction action parentReady
         "CLI resume action rejected"
       let resumedState ← currentState resumedStore
       expect (resumedState.activations.any fun candidate =>
@@ -975,7 +1295,7 @@ def main : IO Unit := do
         "resume action did not activate its exact suspended frame"
       expect (resumedStore.ledger.events.reverse.head? ==
         some (Kernel.Replay.Event.workResumed work activation))
-        "resume action did not append its exact governed event"
+        "resume action did not append its exact event"
       expectResolverActionRejected action resumedStore
         "resume action did not reject after ledger advancement"
   | _ => throw <| IO.userError "completion did not expose the suspended parent"

@@ -2,6 +2,8 @@ import AgentWorkbench.Domain.Work
 import AgentWorkbench.Domain.Design
 import AgentWorkbench.Domain.Review
 import AgentWorkbench.Domain.Evidence
+import AgentWorkbench.Policy.Traceability
+import AgentWorkbench.Policy.Authority
 
 namespace AgentWorkbench.Policy.Completion
 
@@ -51,47 +53,98 @@ def obligationsReady (target : WorkId) (evidence : List Evidence.Evidence)
   let owned := Evidence.forWork obligations target
   !owned.isEmpty && owned.all (obligationSatisfied evidence)
 
+def traceReady (target : WorkId) (designs : List Design.DesignVersion)
+    (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) : Bool :=
+  designs.any fun design =>
+    approvals.any fun approval =>
+      approval.design == design.id && decompositions.any fun decomposition =>
+        decomposition.work == target &&
+        Traceability.ready design approval decomposition
+
+def implementationReviewReady (target : WorkId) (plans : List Review.Plan)
+    (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (findings : List Review.Finding)
+    (verifications : List Review.Verification) : Bool :=
+  plans.any fun plan =>
+    plan.scope.work == target && plan.scope.stage == "implementation" &&
+    claims.any fun claim =>
+      Review.scopeExact plan claim && claim.claim == .clean &&
+      adjudications.any (fun decision =>
+        decision.review == claim.id && decision.decision == .accepted) &&
+      Authority.scopeFindingsClosed plan.scope claims findings verifications
+
+def correctionsReady (target : WorkId)
+    (decompositions : List Design.Decomposition)
+    (corrections : List Design.Correction) : Bool :=
+  let design := (decompositions.find? (·.work == target)).map (·.design)
+  !corrections.any fun correction =>
+    !correction.resolved && Design.correctionApplies correction target design
+
 def closeable (target : WorkId) (work : List Work.WorkUnit)
     (activations : List Work.Activation) (claims : List Review.Claim)
     (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
-    (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation) : Bool :=
+    (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition)
+    (corrections : List Design.Correction) : Bool :=
   obligationsReady target evidence obligations &&
   (Work.activeFor activations target).isSome &&
   Work.workIsOpen work target &&
-  authoritativeReady target work claims adjudications lifecycle
+  authoritativeReady target work claims adjudications lifecycle &&
+  traceReady target designs approvals decompositions &&
+  implementationReviewReady target reviewPlans claims adjudications findings verifications &&
+  correctionsReady target decompositions corrections
 
 theorem completion_requires_current_obligations (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
-    (accepted : closeable target work activations claims adjudications lifecycle
-      evidence obligations = true) :
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
+    (accepted : closeable target work activations claims adjudications reviewPlans
+      findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     obligationsReady target evidence obligations = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.1.1.1
+  exact accepted.1.1.1.1.1.1
 
 theorem completion_requires_authoritative_lifecycle (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
-    (accepted : closeable target work activations claims adjudications lifecycle
-      evidence obligations = true) :
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
+    (accepted : closeable target work activations claims adjudications reviewPlans
+      findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     authoritativeReady target work claims adjudications lifecycle = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.2
+  exact accepted.1.1.1.2
 
 theorem completion_requires_active_target (target : WorkId)
     (work : List Work.WorkUnit) (activations : List Work.Activation)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
+    (reviewPlans : List Review.Plan) (findings : List Review.Finding)
+    (verifications : List Review.Verification)
     (lifecycle : List Lifecycle.CompletionState)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
-    (accepted : closeable target work activations claims adjudications lifecycle
-      evidence obligations = true) :
+    (designs : List Design.DesignVersion) (approvals : List Design.Approval)
+    (decompositions : List Design.Decomposition) (corrections : List Design.Correction)
+    (accepted : closeable target work activations claims adjudications reviewPlans
+      findings verifications lifecycle evidence obligations designs approvals
+      decompositions corrections = true) :
     (Work.activeFor activations target).isSome = true := by
   simp only [closeable, Bool.and_eq_true] at accepted
-  exact accepted.1.1.2
+  exact accepted.1.1.1.1.1.2
 
 end AgentWorkbench.Policy.Completion

@@ -8,6 +8,16 @@ open AgentWorkbench.Domain
 structure WorkUnit where
   id : WorkId
   status : WorkStatus
+  owner : String := ""
+deriving DecidableEq, Repr
+
+structure ReadinessBasis where
+  design : DesignId
+  designRevision : Revision
+  decompositionDigest : String
+  repositorySnapshot : String
+  evidenceRevision : Revision
+  reviewPlan : ReviewPlanId
 deriving DecidableEq, Repr
 
 structure SuspensionContext where
@@ -15,6 +25,7 @@ structure SuspensionContext where
   returnPoint : String
   assumptions : List String
   resumeConditions : List String
+  basis : Option ReadinessBasis := none
 deriving DecidableEq, Repr
 
 def SuspensionContext.wellFormed (context : SuspensionContext) : Bool :=
@@ -23,12 +34,19 @@ def SuspensionContext.wellFormed (context : SuspensionContext) : Bool :=
   context.assumptions.all (fun assumption => !assumption.isEmpty) &&
   context.resumeConditions.all (fun condition => !condition.isEmpty)
 
+def SuspensionContext.readinessWellFormed (context : SuspensionContext) : Bool :=
+  context.wellFormed &&
+  context.basis.any (fun basis =>
+    !basis.decompositionDigest.isEmpty && !basis.repositorySnapshot.isEmpty)
+
 structure Activation where
   id : ActivationId
   work : WorkId
   status : ActivationStatus
   readyToResume : Bool
   suspension : Option SuspensionContext := none
+  parent : Option ActivationId := none
+  confirmedBasis : Option ReadinessBasis := none
 deriving DecidableEq, Repr
 
 def activeActivations (activations : List Activation) : List Activation :=
@@ -42,6 +60,9 @@ def UniqueWorkIds (work : List WorkUnit) : Prop :=
 
 def UniqueActivationIds (activations : List Activation) : Prop :=
   (activations.map (·.id)).Nodup
+
+def OwnersPresent (work : List WorkUnit) : Prop :=
+  (work.all fun unit => !unit.owner.isEmpty) = true
 
 def ActiveReferencesOpenWork (work : List WorkUnit) (activations : List Activation) : Prop :=
   (activations.all fun activation =>
@@ -60,6 +81,7 @@ def NonterminalActivationsReferenceOpenWork (work : List WorkUnit)
 def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop :=
   UniqueWorkIds work ∧
   UniqueActivationIds activations ∧
+  OwnersPresent work ∧
   AtMostOneActive activations ∧
   ActiveReferencesOpenWork work activations ∧
   ActivationsReferenceWork work activations ∧
@@ -104,18 +126,36 @@ def suspend (activations : List Activation) (id : ActivationId)
         { activation with
           status := .suspended
           readyToResume := false
-          suspension := some context }
+          suspension := some context
+          confirmedBasis := none }
       else activation
   else
     none
 
-def markResumeReady (activations : List Activation) (id : ActivationId) :
+def markResumeReady (activations : List Activation) (id : ActivationId)
+    (basis : ReadinessBasis) :
     Option (List Activation) :=
   if noActive activations && activations.any (fun activation =>
       activation.id == id && activation.status == .suspended &&
-        activation.suspension.any SuspensionContext.wellFormed) then
+        activation.suspension.any (fun context =>
+          context.wellFormed && context.basis == some basis)) then
     some <| activations.map fun activation =>
-      if activation.id == id then { activation with readyToResume := true }
+      if activation.id == id then
+        { activation with readyToResume := true, confirmedBasis := some basis }
+      else activation
+  else
+    none
+
+def reviseSuspension (activations : List Activation) (id : ActivationId)
+    (context : SuspensionContext) : Option (List Activation) :=
+  if context.readinessWellFormed && activations.any (fun activation =>
+      activation.id == id && activation.status == .suspended) then
+    some <| activations.map fun activation =>
+      if activation.id == id then
+        { activation with
+          suspension := some context
+          readyToResume := false
+          confirmedBasis := none }
       else activation
   else
     none
