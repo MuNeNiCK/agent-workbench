@@ -306,6 +306,26 @@ private def loadFromAt (db : _root_.SQLite) (expectedSchema : Nat) :
   match ← validateOperationJournal db ledger with
   | .ok () => pure ()
   | .error error => return .error error
+  let artifactRows ← db.prepare "SELECT digest, size, payload FROM artifacts ORDER BY digest"
+  let mut artifactDigests := []
+  while ← artifactRows.step do
+    let digest ← artifactRows.columnText 0
+    let size ← match parseNat "artifact size" (← artifactRows.columnText 1) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let payload ← artifactRows.columnBlob 2
+    unless payload.size = size && (← DurableFilesystem.digest payload) = digest do
+      return .error (.corrupt s!"artifact payload is not content-addressed at {digest}")
+    artifactDigests := digest :: artifactDigests
+  let requiredArtifacts := (events.filterMap fun
+    | .validationPassed _ _ digest => some digest
+    | .evidenceRecorded evidence => some evidence.artifactDigest
+    | .externalOperationRecorded attempt => some attempt.artifactDigest
+    | _ => none).filter (·.startsWith "sha3-256:") |>.eraseDups
+  unless requiredArtifacts.all artifactDigests.contains &&
+      artifactDigests.all requiredArtifacts.contains &&
+      artifactDigests.eraseDups.length = artifactDigests.length do
+    return .error (.corrupt "artifact table does not exactly match authoritative events")
   let projection ← match ← readProjection db with
     | .ok value => pure value
     | .error error => return .error error
@@ -321,6 +341,10 @@ private def loadFromAt (db : _root_.SQLite) (expectedSchema : Nat) :
 
 private def loadFrom (db : _root_.SQLite) : IO (Except OpenError Projection.Store) :=
   loadFromAt db schemaVersion
+
+def inspectFromAt (db : _root_.SQLite) (expectedSchema : Nat) :
+    IO (Except OpenError Projection.Store) :=
+  loadFromAt db expectedSchema
 
 def inspect (path : System.FilePath) : IO (Except OpenError Projection.Store) := do
   if !(← path.pathExists) then return .error .uninitialized
@@ -342,13 +366,46 @@ private def tableColumns (db : _root_.SQLite) (table : String) : IO (List String
     columns := (← statement.columnText 1) :: columns
   return columns.reverse
 
-def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
+private def applicationTables (db : _root_.SQLite) : IO (List String) := do
+  let statement ← db.prepare "
+    SELECT name FROM sqlite_schema
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    ORDER BY name"
+  let mut tables := []
+  while ← statement.step do
+    tables := (← statement.columnText 0) :: tables
+  return tables.reverse
+
+private def commonSchemaMatches (db : _root_.SQLite) : IO Bool := do
+  return (← tableColumns db "metadata") =
+      ["singleton", "schema_version", "ledger_id", "head_revision", "history_digest"] &&
+    (← tableColumns db "projection") =
+      ["singleton", "revision", "history_digest", "state_digest", "payload"] &&
+    (← tableColumns db "projection_repairs") =
+      ["observed_digest", "head_revision", "history_digest", "adopted_digest"]
+
+def currentSchemaSupported (db : _root_.SQLite) : IO Bool := do
   try
-    unless (← tableColumns db "events") = ["revision", "payload"] &&
-        (← tableColumns db "operations") =
-          ["operation_id", "payload_digest", "result_digest", "receipt"] &&
-        (← tableColumns db "artifacts") = ["digest", "size"] do
-      return false
+    return (← applicationTables db) =
+        ["artifacts", "events", "metadata", "operations", "projection",
+         "projection_repairs", "update_provenance"] &&
+      (← commonSchemaMatches db) &&
+      (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
+      (← tableColumns db "operations") =
+        ["operation_id", "request_payload", "payload_digest", "result_digest",
+         "start_revision", "end_revision", "history_digest", "receipt"] &&
+      (← tableColumns db "artifacts") = ["digest", "size", "payload"] &&
+      (← tableColumns db "update_provenance") =
+        ["singleton", "source_schema", "source_digest", "backup_digest", "backup_size"]
+  catch _ => return false
+
+inductive LegacyV1Layout
+  | originalEmpty
+  | predecessor
+deriving DecidableEq, Repr
+
+private def originalV1EmptyValid (db : _root_.SQLite) : IO Bool := do
+  try
     for table in ["events", "operations", "artifacts"] do
       let count ← db.prepare s!"SELECT count(*) FROM {table}"
       unless ← count.step do return false
@@ -377,6 +434,32 @@ def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
     | .fresh _ _ => return true
     | _ => return false
   catch _ => return false
+
+def legacyV1Layout? (db : _root_.SQLite) : IO (Option LegacyV1Layout) := do
+  try
+    unless (← applicationTables db) =
+        ["artifacts", "events", "metadata", "operations", "projection", "projection_repairs"] &&
+        (← commonSchemaMatches db) do
+      return none
+    if (← tableColumns db "events") = ["revision", "payload"] &&
+        (← tableColumns db "operations") =
+          ["operation_id", "payload_digest", "result_digest", "receipt"] &&
+        (← tableColumns db "artifacts") = ["digest", "size"] &&
+        (← originalV1EmptyValid db) then
+      return some .originalEmpty
+    if (← tableColumns db "events") = ["revision", "payload", "operation_id"] &&
+        (← tableColumns db "operations") =
+          ["operation_id", "request_payload", "payload_digest", "result_digest",
+           "start_revision", "end_revision", "history_digest", "receipt"] &&
+        (← tableColumns db "artifacts") = ["digest", "size", "payload"] then
+      match ← loadFromAt db legacySchemaVersion with
+      | .ok _ => return some .predecessor
+      | .error _ => return none
+    return none
+  catch _ => return none
+
+def legacyV1EmptySupported (db : _root_.SQLite) : IO Bool := do
+  return (← legacyV1Layout? db) = some .originalEmpty
 
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do
@@ -593,18 +676,24 @@ private def writeReceipt (db : _root_.SQLite) (receipt : Policy.Update.Receipt)
 
 private def writeArtifactRefs (db : _root_.SQLite) (root : System.FilePath)
     (references : List DurableFilesystem.ArtifactRef) : IO Unit := do
-  let statement ← db.prepare
-    "INSERT OR IGNORE INTO artifacts (digest, size, payload) VALUES (?, ?, ?)"
   for reference in references do
     let payload ← IO.FS.readBinFile (DurableFilesystem.objectPath root reference)
     unless payload.size = reference.size && (← DurableFilesystem.digest payload) = reference.digest do
       throw <| IO.userError s!"artifact changed after verification: {reference.digest}"
-    statement.bindText 1 reference.digest
-    statement.bindText 2 (toString reference.size)
-    statement.bindBlob 3 payload
-    statement.exec
-    statement.reset
-    statement.clearBindings
+    let existing ← db.prepare "SELECT size, payload FROM artifacts WHERE digest = ?"
+    existing.bindText 1 reference.digest
+    if ← existing.step then
+      let storedSize ← existing.columnText 0
+      let storedPayload ← existing.columnBlob 1
+      unless storedSize = toString reference.size && storedPayload = payload do
+        throw <| IO.userError s!"stored artifact conflicts with content address: {reference.digest}"
+    else
+      let insert ← db.prepare
+        "INSERT INTO artifacts (digest, size, payload) VALUES (?, ?, ?)"
+      insert.bindText 1 reference.digest
+      insert.bindText 2 (toString reference.size)
+      insert.bindBlob 3 payload
+      insert.exec
 
 private def canonicalPayload (command : Decide.Command)
     (artifacts : List DurableFilesystem.ArtifactRef) : ByteArray :=
