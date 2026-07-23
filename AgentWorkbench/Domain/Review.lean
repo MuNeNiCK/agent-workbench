@@ -116,9 +116,10 @@ def scopeFindingsClosed (scope : FrozenScope) (claims : List Claim)
     | none => false
     | some claim =>
         !claim.scope.any (sameContext scope) || !finding.blocking ||
-          !finding.accepted ||
-          (finding.closed && verifications.any fun verification =>
-            verificationExact finding claim verification)
+          (finding.adjudicated &&
+            (!finding.accepted ||
+              (finding.closed && verifications.any fun verification =>
+                verificationExact finding claim verification)))
 
 def scopeReady (plan : Plan) (claims : List Claim)
     (adjudications : List Adjudication) (findings : List Finding)

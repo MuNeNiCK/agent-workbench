@@ -308,6 +308,21 @@ def run : IO Unit := do
     state "resume readiness confirmation failed"
   expect (Kernel.Gates.resumeReadyState workTwo.id activationTwo.id state)
     "confirmed activation did not pass resume readiness"
+  let unadjudicatedBlockingFinding : Domain.Review.Finding :=
+    { key := "unadjudicated-resume-finding"
+      review := implementationClaim.id
+      blocking := true
+      invariant := "unadjudicated findings invalidate readiness"
+      remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
+      accepted := false
+      adjudicated := false
+      closed := false }
+  let unadjudicatedFindingState :=
+    { state with
+      reviewFindings := state.reviewFindings ++ [unadjudicatedBlockingFinding] }
+  expect (!Kernel.Replay.resumeCurrent
+    workTwo.id activationTwo.id unadjudicatedFindingState)
+    "an unadjudicated blocking finding did not invalidate resume readiness"
   let newerFindingsClaim :=
     { implementationClaim with id := ⟨99⟩, claim := ReviewClaim.findings }
   let unadjudicatedClaimState :=
