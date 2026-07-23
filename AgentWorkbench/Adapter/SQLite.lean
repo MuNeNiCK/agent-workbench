@@ -96,7 +96,8 @@ private def createSchema (db : _root_.SQLite) : IO Unit := do
     );
     CREATE TABLE artifacts (
       digest TEXT PRIMARY KEY,
-      size TEXT NOT NULL
+      size TEXT NOT NULL,
+      payload BLOB NOT NULL
     );
     CREATE TABLE projection_repairs (
       observed_digest TEXT NOT NULL,
@@ -328,13 +329,16 @@ def inspectAtSchema (path : System.FilePath) (expectedSchema : Nat) :
 
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do
-  let statement ← db.prepare "SELECT digest, size FROM artifacts ORDER BY digest"
+  let statement ← db.prepare "SELECT digest, size, payload FROM artifacts ORDER BY digest"
   let mut references := []
   while ← statement.step do
     let digest ← statement.columnText 0
     let size ← match parseNat "artifact size" (← statement.columnText 1) with
       | .ok value => pure value
       | .error error => return .error error
+    let payload ← statement.columnBlob 2
+    unless payload.size = size && (← DurableFilesystem.digest payload) = digest do
+      return .error (.corrupt s!"artifact payload is not content-addressed at {digest}")
     references := { digest, size } :: references
   return .ok references.reverse
 
@@ -536,13 +540,17 @@ private def writeReceipt (db : _root_.SQLite) (receipt : Policy.Update.Receipt)
   statement.bindBlob 8 (toBinary receipt)
   statement.exec
 
-private def writeArtifactRefs (db : _root_.SQLite)
+private def writeArtifactRefs (db : _root_.SQLite) (root : System.FilePath)
     (references : List DurableFilesystem.ArtifactRef) : IO Unit := do
   let statement ← db.prepare
-    "INSERT OR IGNORE INTO artifacts (digest, size) VALUES (?, ?)"
+    "INSERT OR IGNORE INTO artifacts (digest, size, payload) VALUES (?, ?, ?)"
   for reference in references do
+    let payload ← IO.FS.readBinFile (DurableFilesystem.objectPath root reference)
+    unless payload.size = reference.size && (← DurableFilesystem.digest payload) = reference.digest do
+      throw <| IO.userError s!"artifact changed after verification: {reference.digest}"
     statement.bindText 1 reference.digest
     statement.bindText 2 (toString reference.size)
+    statement.bindBlob 3 payload
     statement.exec
     statement.reset
     statement.clearBindings
@@ -559,6 +567,7 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
     (artifacts : List DurableFilesystem.ArtifactRef := [])
     (artifactRoot : Option System.FilePath := none)
     (beforeArtifactCommit : IO Unit := pure ())
+    (afterArtifactVerification : IO Unit := pure ())
     (afterJournalWrite : IO Unit := pure ()) :
     IO (Except MutationError MutationOutcome) := do
   if !(← path.pathExists) then return .error (.openError .uninitialized)
@@ -596,6 +605,7 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
             match ← DurableFilesystem.verify root reference with
             | .valid => pure ()
             | _ => return .error (.artifactInvalid reference.digest)
+        afterArtifactVerification
         let startRevision := store.ledger.events.length
         let endRevision := transaction.result.ledger.events.length
         let historyDigest := transaction.result.ledger.storedHistoryDigest.value
@@ -607,7 +617,8 @@ def mutateWithHook (path : System.FilePath) (operation : OperationId)
         appendEvents db operation startRevision transaction.accepted.events
         afterJournalWrite
         writeHead db transaction.result
-        writeArtifactRefs db artifacts
+        if !artifacts.isEmpty then
+          writeArtifactRefs db artifactRoot.get! artifacts
         return .ok { receipt, store := transaction.result, exactRetry := false }
 
 def mutate (path : System.FilePath) (operation : OperationId)

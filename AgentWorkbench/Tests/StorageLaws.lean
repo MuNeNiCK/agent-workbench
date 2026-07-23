@@ -94,7 +94,7 @@ def testCrashRollback (root : System.FilePath) : IO Unit := do
   Adapter.SQLite.initializeStore ledger
   expectFailure
     (Adapter.SQLite.mutateWithHook ledger ⟨"crash"⟩ ⟨0⟩
-      Application.Service.bootstrapCommand [] none (pure ())
+      Application.Service.bootstrapCommand [] none (pure ()) (pure ())
       (throw <| IO.userError "injected crash after journal write"))
     "injected transaction crash was reported as success"
   expect ((← load ledger).ledger.storedHead == ⟨0⟩)
@@ -102,7 +102,7 @@ def testCrashRollback (root : System.FilePath) : IO Unit := do
 
 def crashChild (ledger : System.FilePath) : IO Unit := do
   let _ ← Adapter.SQLite.mutateWithHook ledger ⟨"process-crash"⟩ ⟨0⟩
-    Application.Service.bootstrapCommand [] none (pure ()) (IO.Process.forceExit 86)
+    Application.Service.bootstrapCommand [] none (pure ()) (pure ()) (IO.Process.forceExit 86)
   throw <| IO.userError "crash failpoint returned"
 
 def testProcessCrashRecovery (root : System.FilePath) : IO Unit := do
@@ -283,7 +283,8 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
     ("deleted", "DELETE FROM artifacts"),
     ("altered", "UPDATE artifacts SET digest='sha3-256:substituted'"),
     ("size", "UPDATE artifacts SET size='999'"),
-    ("extra", "INSERT INTO artifacts (digest,size) VALUES ('sha3-256:extra','1')")]
+    ("payload", "UPDATE artifacts SET payload=x'00'"),
+    ("extra", "INSERT INTO artifacts (digest,size,payload) VALUES ('sha3-256:extra','1',x'00')")]
   for (name, sql) in corruptions do
     let ledger := root / s!"artifact-table-{name}.sqlite3"
     let artifactRoot := root / s!"artifact-table-{name}"
@@ -312,14 +313,13 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let reference ← Adapter.DurableFilesystem.stage raceRoot "race artifact".toUTF8
   let attempt : Domain.ExternalOperation.Attempt := {
     operation := ⟨"artifact-race"⟩, artifactDigest := reference.digest, state := .prepared }
-  let result ← Adapter.SQLite.mutateWithHook raceLedger ⟨"artifact-race"⟩
-    initialized.store.ledger.storedHead
-    (.recordExternalOperation initialized.store.ledger.storedHead attempt)
-    [reference] (some raceRoot)
-    (IO.FS.removeFile (Adapter.DurableFilesystem.objectPath raceRoot reference))
-  match result with
-  | .error (.artifactInvalid _) => pure ()
-  | other => throw <| IO.userError s!"artifact verification race committed: {repr other}"
+  expectFailure
+    (Adapter.SQLite.mutateWithHook raceLedger ⟨"artifact-race"⟩
+      initialized.store.ledger.storedHead
+      (.recordExternalOperation initialized.store.ledger.storedHead attempt)
+      [reference] (some raceRoot) (pure ())
+      (IO.FS.removeFile (Adapter.DurableFilesystem.objectPath raceRoot reference)))
+    "artifact deletion after verification committed"
   expect ((← load raceLedger).ledger.storedHead == initialized.store.ledger.storedHead)
     "artifact race advanced the authoritative ledger"
 
