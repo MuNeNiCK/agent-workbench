@@ -378,13 +378,18 @@ def validateMutationSurfaces (actual : Array String) : Except String Unit := do
 def forbiddenPublicMarkers : Array String := #[
   "R" ++ "EQ-",
   "G" ++ "ATE-",
-  "governed",
-  "legacy",
+  "gover" ++ "ned",
+  "leg" ++ "acy",
   ".agent-" ++ "workbench"
 ]
 
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
+
+def validateTrackedProductContent (path content : String) : Except String Unit := do
+  for marker in forbiddenPublicMarkers do
+    if content.contains marker then
+      throw s!"tracked product surface {path} contains private planning marker {marker}"
 
 def auditRepositoryInventory : IO Unit := do
   let output ← IO.Process.output { cmd := "git", args := #["ls-files"] }
@@ -414,11 +419,24 @@ def auditPublicProductSurfaces : IO Unit := do
   for marker in forbiddenPublicMarkers do
     unless contentHasMarker s!"known private value: {marker}" forbiddenPublicMarkers do
       fail s!"negative public-marker fixture was not rejected for {marker}"
-  for path in publicProductPaths do
-    let content ← IO.FS.readFile path
+  let artifactClassFixtures := #[
+    "AgentWorkbench/Domain/Work.lean",
+    "AgentWorkbench/Tests/WorkflowLaws.lean",
+    "AgentWorkbench/Audit/Main.lean",
+    "lakefile.lean",
+    "proof-manifest.toml",
+    ".gitignore"
+  ]
+  for path in artifactClassFixtures do
     for marker in forbiddenPublicMarkers do
-      if content.contains marker then
-        fail s!"public product surface {path} contains private planning marker {marker}"
+      if (validateTrackedProductContent path
+          s!"ordinary content\nprivate value: {marker}\n").isOk then
+        fail s!"negative tracked artifact fixture was accepted for {path}"
+  for path in expectedTrackedPaths do
+    let content ← IO.FS.readFile path
+    match validateTrackedProductContent path content with
+    | .error error => fail error
+    | .ok _ => pure ()
 
 def auditPublicDefinitions (env : Environment) : IO Unit := do
   let expectedModules := expectedPublicDefinitions.map (·.module)
@@ -970,20 +988,96 @@ def auditResponseOutput : IO Unit := do
           | .ok response =>
               checkOutput "bootstrap action response" response.output
 
+inductive ManagedProjectStage
+  | build
+  | test
+  | audit
+  | cli
+  | workflow
+deriving DecidableEq, Repr
+
+structure ManagedProjectCommand where
+  stage : ManagedProjectStage
+  command : String
+  args : Array String
+deriving DecidableEq, Repr
+
+structure ManagedProjectObservation where
+  stage : ManagedProjectStage
+  exitCode : Int
+  stdout : String
+  stderr : String
+deriving DecidableEq, Repr
+
 structure ManagedProjectFixture where
   name : String
+  language : String
+  buildSystem : String
+  validationTool : String
   publicFiles : Array (String × String)
+  commands : Array ManagedProjectCommand
+  behavior : ManagedProjectCommand
   privateIdentity : String
 
+def cMakefile : String :=
+  ".PHONY: build test audit\n" ++
+  "build:\n\tmkdir -p build\n\t$(CC) -std=c11 -Wall -Wextra -Werror -o build/app src/main.c\n" ++
+  "test: build\n\ttest \"$$(./build/app)\" = \"c-project-ok\"\n\t@printf 'c-test-ok\\n'\n" ++
+  "audit:\n\t$(CC) -std=c11 -Wall -Wextra -Werror -fsyntax-only src/main.c\n\t@printf 'c-audit-ok\\n'\n"
+
+def pythonBuild : String :=
+  "import compileall\n" ++
+  "if not compileall.compile_dir('src', quiet=1):\n" ++
+  "    raise SystemExit(1)\n" ++
+  "print('python-build-ok')\n"
+
+def pythonTest : String :=
+  "from src.app import project_result\n" ++
+  "assert project_result() == 'python-project-ok'\n" ++
+  "print('python-test-ok')\n"
+
 def managedProjectFixtures : Array ManagedProjectFixture := #[
-  ⟨"lean-source",
-    #[("src/Main.lean", "def projectResult : Nat := 42\n"),
-      ("lakefile.lean", "import Lake\n")],
-    "source-project-private-identity"⟩,
-  ⟨"documentation",
-    #[("docs/guide.md", "# Independent project\n\nPublic documentation.\n"),
-      ("project.toml", "name = \"documentation-project\"\n")],
-    "documentation-project-private-identity"⟩
+  {
+    name := "c-make-project"
+    language := "C"
+    buildSystem := "Make"
+    validationTool := "native executable assertion"
+    publicFiles := #[
+      ("src/main.c",
+        "#include <stdio.h>\nint main(void) { puts(\"c-project-ok\"); return 0; }\n"),
+      ("Makefile", cMakefile),
+      ("README.md",
+        "# C project\n\nBuild: `make build`\nTest: `make test`\nAudit: `make audit`\n")]
+    commands := #[
+      ⟨.build, "make", #["build"]⟩,
+      ⟨.test, "make", #["test"]⟩,
+      ⟨.audit, "make", #["audit"]⟩]
+    behavior := ⟨.test, "./build/app", #[]⟩
+    privateIdentity := "c-project-private-identity"
+  },
+  {
+    name := "python-project"
+    language := "Python"
+    buildSystem := "compileall build program"
+    validationTool := "Python assertion runner"
+    publicFiles := #[
+      ("src/__init__.py", ""),
+      ("src/app.py",
+        "def project_result():\n    return 'python-project-ok'\n\n" ++
+        "if __name__ == '__main__':\n    print(project_result())\n"),
+      ("build.py", pythonBuild),
+      ("test_project.py", pythonTest),
+      ("README.md",
+        "# Python project\n\nBuild: `python3 build.py`\n" ++
+        "Test: `python3 test_project.py`\n" ++
+        "Audit: `python3 -m py_compile src/app.py test_project.py`\n")]
+    commands := #[
+      ⟨.build, "python3", #["build.py"]⟩,
+      ⟨.test, "python3", #["test_project.py"]⟩,
+      ⟨.audit, "python3", #["-m", "py_compile", "src/app.py", "test_project.py"]⟩]
+    behavior := ⟨.test, "python3", #["src/app.py"]⟩
+    privateIdentity := "python-project-private-identity"
+  }
 ]
 
 def writeFixtureFiles (project : System.FilePath)
@@ -1000,7 +1094,146 @@ def readFixtureFiles (project : System.FilePath)
     result := result.push (relative, ← IO.FS.readFile (project / relative))
   pure result
 
-def runManagedProjectFixture (binary root : System.FilePath)
+def observeManagedCommand (project : System.FilePath)
+    (command : ManagedProjectCommand) : IO ManagedProjectObservation := do
+  let output ← IO.Process.output {
+    cmd := command.command, args := command.args, cwd := some project }
+  pure {
+    stage := command.stage
+    exitCode := Int.ofNat output.exitCode.toNat
+    stdout := output.stdout
+    stderr := output.stderr
+  }
+
+def observeManagedProject (binary workflow project : System.FilePath)
+    (fixture : ManagedProjectFixture) : IO (Array ManagedProjectObservation) := do
+  let mut observations := #[]
+  for command in fixture.commands do
+    observations := observations.push (← observeManagedCommand project command)
+  observations := observations.push (← observeManagedCommand project fixture.behavior)
+  observations := observations.push (← observeManagedCommand project
+    ⟨.cli, binary.toString, #[]⟩)
+  observations := observations.push (← observeManagedCommand project
+    ⟨.workflow, workflow.toString, #[]⟩)
+  pure observations
+
+def requiredManagedStages : Array ManagedProjectStage :=
+  #[.build, .test, .audit, .cli, .workflow]
+
+def validateManagedFixtureSet
+    (fixtures : Array ManagedProjectFixture) : Except String Unit := do
+  unless fixtures.size = 2 do
+    throw "managed-project acceptance requires exactly two fixtures"
+  let some first := fixtures[0]? | throw "first managed-project fixture is missing"
+  let some second := fixtures[1]? | throw "second managed-project fixture is missing"
+  unless first.language != second.language &&
+      first.buildSystem != second.buildSystem &&
+      first.validationTool != second.validationTool do
+    throw "managed-project fixtures do not use unrelated language and toolchain identities"
+  let firstTools := (first.commands.map (·.command)).push first.behavior.command
+  let secondTools := (second.commands.map (·.command)).push second.behavior.command
+  unless firstTools.all fun tool => !secondTools.contains tool do
+    throw "managed-project fixtures share executable project toolchains"
+  for fixture in fixtures do
+    unless fixture.commands.map (·.stage) = #[.build, .test, .audit] do
+      throw s!"managed-project fixture {fixture.name} lacks documented build, test, or audit execution"
+
+def validateManagedProjectResult (fixture : ManagedProjectFixture)
+    (beforeFiles afterFiles : Array (String × String))
+    (before after : Array ManagedProjectObservation)
+    (privateState movedState : System.FilePath) : Except String Unit := do
+  unless beforeFiles = afterFiles do
+    throw s!"managed-project fixture {fixture.name} changed public project bytes"
+  unless before = after do
+    throw s!"managed-project fixture {fixture.name} depends on private state presence"
+  unless requiredManagedStages.all fun stage =>
+      before.any (·.stage == stage) do
+    throw s!"managed-project fixture {fixture.name} omitted a required workflow stage"
+  for observation in before do
+    unless observation.exitCode = 0 do
+      throw s!"managed-project fixture {fixture.name} failed during {repr observation.stage}"
+  let privateMarkers := forbiddenPublicMarkers ++
+    #[fixture.privateIdentity, privateState.toString, movedState.toString]
+  for observation in before do
+    if contentHasMarker observation.stdout privateMarkers ||
+        contentHasMarker observation.stderr privateMarkers then
+      throw s!"managed-project fixture {fixture.name} exposed private identity or path"
+
+def recordManagedObservations (fixture : ManagedProjectFixture)
+    (observations : Array ManagedProjectObservation) : IO Unit := do
+  let transaction ← match Application.Service.execute
+      Application.Service.bootstrapCommand Application.Service.initialStore with
+    | .error error =>
+        fail s!"managed-project fixture {fixture.name} could not initialize typed workflow: {repr error}"
+    | .ok transaction => pure transaction
+  let mut store := transaction.result
+  for (observation, index) in observations.zipIdx do
+    let attempt : Domain.ExternalOperation.Attempt := {
+      operation := ⟨s!"{fixture.name}-{repr observation.stage}-{index}"⟩
+      artifactDigest := s!"exit:{observation.exitCode};stdout:{observation.stdout.length};stderr:{observation.stderr.length}"
+      state := .prepared
+    }
+    store ← match Application.Service.execute
+        (.recordExternalOperation store.ledger.storedHead attempt) store with
+      | .error error =>
+          fail s!"managed-project fixture {fixture.name} typed observation was rejected: {repr error}"
+      | .ok transaction => pure transaction.result
+  let inspection := (Application.Service.status store).value
+  let state ← match inspection.currentState? with
+    | none => fail s!"managed-project fixture {fixture.name} lost its current workflow state"
+    | some state => pure state
+  unless state.externalOperations.length = observations.size do
+    fail s!"managed-project fixture {fixture.name} did not persist every typed observation"
+
+def auditManagedProjectNegativeFixtures : IO Unit := do
+  match validateManagedFixtureSet managedProjectFixtures with
+  | .error error => fail error
+  | .ok _ => pure ()
+  let first ← match managedProjectFixtures[0]? with
+    | some fixture => pure fixture
+    | none => fail "first managed-project negative fixture is missing"
+  let coupled := managedProjectFixtures.mapIdx fun index fixture =>
+    if index = 1 then
+      { fixture with
+        language := first.language
+        buildSystem := first.buildSystem
+        validationTool := first.validationTool
+        commands := first.commands
+        behavior := first.behavior }
+    else fixture
+  if (validateManagedFixtureSet coupled).isOk then
+    fail "coupled managed-project toolchain fixture was accepted"
+  let fixture := first
+  let files := fixture.publicFiles
+  let privateState := System.FilePath.mk (".private-" ++ "state")
+  let movedState := System.FilePath.mk "moved-private-state"
+  let observations : Array ManagedProjectObservation := requiredManagedStages.map fun stage =>
+    { stage, exitCode := 0, stdout := "", stderr := "" }
+  if (validateManagedProjectResult fixture files files
+      (observations.filter (·.stage != .workflow))
+      (observations.filter (·.stage != .workflow))
+      privateState movedState).isOk then
+    fail "missing managed-project workflow stage fixture was accepted"
+  if (validateManagedProjectResult fixture files
+      (files.push ("changed", "bytes")) observations observations
+      privateState movedState).isOk then
+    fail "altered managed-project bytes fixture was accepted"
+  let changedObservations := observations.map fun observation =>
+    if observation.stage == .test then
+      { observation with stdout := "state-dependent" }
+    else observation
+  if (validateManagedProjectResult fixture files files observations
+      changedObservations privateState movedState).isOk then
+    fail "private-state-dependent managed-project behavior fixture was accepted"
+  let leaked := observations.map fun observation =>
+    if observation.stage == .cli then
+      { observation with stdout := fixture.privateIdentity }
+    else observation
+  if (validateManagedProjectResult fixture files files leaked leaked
+      privateState movedState).isOk then
+    fail "managed-project identity leak fixture was accepted"
+
+def runManagedProjectFixture (binary workflow root : System.FilePath)
     (fixture : ManagedProjectFixture) : IO Unit := do
   let project := root / fixture.name
   IO.FS.createDirAll project
@@ -1009,32 +1242,29 @@ def runManagedProjectFixture (binary root : System.FilePath)
   IO.FS.createDirAll privateState
   IO.FS.writeFile (privateState / "identity") fixture.privateIdentity
   let beforeFiles ← readFixtureFiles project fixture.publicFiles
-  let before ← IO.Process.output { cmd := binary.toString, cwd := some project }
-  unless before.exitCode = 0 do
-    fail s!"managed-project fixture {fixture.name} failed with private state present: {before.stderr}"
+  let before ← observeManagedProject binary workflow project fixture
   let movedState := root / s!"{fixture.name}-private-state"
   IO.FS.rename privateState movedState
-  let after ← IO.Process.output { cmd := binary.toString, cwd := some project }
-  unless after.exitCode = 0 do
-    fail s!"managed-project fixture {fixture.name} failed after private state moved: {after.stderr}"
+  let after ← observeManagedProject binary workflow project fixture
   let afterFiles ← readFixtureFiles project fixture.publicFiles
-  unless beforeFiles = afterFiles do
-    fail s!"managed-project fixture {fixture.name} changed public project bytes"
-  unless before.stdout = after.stdout && before.stderr = after.stderr do
-    fail s!"managed-project fixture {fixture.name} depends on private state presence"
-  let privateMarkers := forbiddenPublicMarkers ++
-    #[fixture.privateIdentity, privateState.toString, movedState.toString]
-  if contentHasMarker before.stdout privateMarkers ||
-      contentHasMarker before.stderr privateMarkers then
-    fail s!"managed-project fixture {fixture.name} exposed private identity or path"
+  match validateManagedProjectResult fixture beforeFiles afterFiles before after
+      privateState movedState with
+  | .error error => fail error
+  | .ok _ => pure ()
+  recordManagedObservations fixture before
 
 def auditManagedProjectIndependence : IO Unit := do
-  let binary := (← IO.currentDir) / ".lake" / "build" / "bin" / "agent-workbench"
+  auditManagedProjectNegativeFixtures
+  let buildBin := (← IO.currentDir) / ".lake" / "build" / "bin"
+  let binary := buildBin / "agent-workbench"
+  let workflow := buildBin / "workflow-laws"
   unless ← binary.pathExists do
     fail s!"compiled CLI is absent: {binary}"
+  unless ← workflow.pathExists do
+    fail s!"compiled workflow validation is absent: {workflow}"
   IO.FS.withTempDir fun root => do
     for fixture in managedProjectFixtures do
-      runManagedProjectFixture binary root fixture
+      runManagedProjectFixture binary workflow root fixture
 
 def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := designRules ++ #[
   ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
