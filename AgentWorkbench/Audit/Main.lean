@@ -22,6 +22,11 @@ structure ManifestPolicy where
   forbiddenAxioms : Array String
   unsafeFfiModules : Array String
 
+structure PublicDefinitionInventory where
+  path : String
+  definitions : Array String
+deriving DecidableEq
+
 def identityModules : Array String := #[
   "AgentWorkbench.Domain.Identity",
   "AgentWorkbench.Domain.Facts"]
@@ -116,11 +121,209 @@ def expectedSourceAuthorityPaths : Array String := #[
   "AgentWorkbench/Audit/Main.lean"
 ]
 
+def expectedTrackedPaths : Array String := #[
+  ".gitignore",
+  "AgentWorkbench.lean",
+  "AgentWorkbench/Adapter/Codec.lean",
+  "AgentWorkbench/Adapter/DurableFilesystem.lean",
+  "AgentWorkbench/Adapter/SQLite.lean",
+  "AgentWorkbench/Adapter/Update.lean",
+  "AgentWorkbench/Application/Service.lean",
+  "AgentWorkbench/Audit/Expected.lean",
+  "AgentWorkbench/Audit/Main.lean",
+  "AgentWorkbench/Cli/Program.lean",
+  "AgentWorkbench/Domain/Design.lean",
+  "AgentWorkbench/Domain/Evidence.lean",
+  "AgentWorkbench/Domain/ExternalOperation.lean",
+  "AgentWorkbench/Domain/Facts.lean",
+  "AgentWorkbench/Domain/Identity.lean",
+  "AgentWorkbench/Domain/Review.lean",
+  "AgentWorkbench/Domain/Work.lean",
+  "AgentWorkbench/Kernel/Decide.lean",
+  "AgentWorkbench/Kernel/Gates.lean",
+  "AgentWorkbench/Kernel/Replay.lean",
+  "AgentWorkbench/Kernel/Resolver.lean",
+  "AgentWorkbench/Policy/Authority.lean",
+  "AgentWorkbench/Policy/Completion.lean",
+  "AgentWorkbench/Policy/Traceability.lean",
+  "AgentWorkbench/Policy/Update.lean",
+  "AgentWorkbench/Tests/KernelLaws.lean",
+  "AgentWorkbench/Tests/StorageLaws.lean",
+  "AgentWorkbench/Tests/WorkflowLaws.lean",
+  "Main.lean",
+  "bindings/durable_filesystem.c",
+  "lake-manifest.json",
+  "lakefile.lean",
+  "lean-toolchain",
+  "proof-manifest.toml"
+]
+
+def verificationAndBoundaryPaths : Array String := #[
+  ".gitignore",
+  "AgentWorkbench/Audit/Expected.lean",
+  "AgentWorkbench/Audit/Main.lean",
+  "AgentWorkbench/Tests/KernelLaws.lean",
+  "AgentWorkbench/Tests/StorageLaws.lean",
+  "AgentWorkbench/Tests/WorkflowLaws.lean",
+  "proof-manifest.toml"
+]
+
+def publicProductPaths : Array String :=
+  expectedTrackedPaths.filter fun path => !verificationAndBoundaryPaths.contains path
+
+def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
+  ⟨"AgentWorkbench/Adapter/SQLite.lean", #[
+    "schemaVersion", "predecessorSchemaVersion", "withWriterLock", "initializeStore",
+    "inspectFromAt", "currentSchemaSupported", "predecessorV2Supported", "artifactRoot",
+    "inspect", "inspectAtSchema", "inspectWithArtifacts", "diagnose",
+    "repairProjectionWithLockHook", "repairProjectionWithHook", "repairProjection",
+    "mutateWithLockHook", "mutateWithHook", "mutate"]⟩,
+  ⟨"AgentWorkbench/Adapter/Update.lean", #[
+    "inspect", "applyWithLockHook", "applyWithHook", "apply",
+    "restoreWithLockHook", "restoreWithHook", "restore"]⟩,
+  ⟨"AgentWorkbench/Application/Service.lean", #[
+    "initialStore", "bootstrapCommandAt", "bootstrapCommand", "projectionFor",
+    "execute", "complete", "status", "queryValidity", "queryGate", "resolve",
+    "repairProjection", "executeRecovery", "executeAction", "executeRequest"]⟩,
+  ⟨"AgentWorkbench/Cli/Program.lean", #[
+    "executeRequest", "executeBootstrap", "run"]⟩
+]
+
+def expectedMutationSurfaces : Array String := #[
+  "AgentWorkbench.Adapter.SQLite.initializeStore",
+  "AgentWorkbench.Adapter.SQLite.repairProjectionWithLockHook",
+  "AgentWorkbench.Adapter.SQLite.repairProjectionWithHook",
+  "AgentWorkbench.Adapter.SQLite.repairProjection",
+  "AgentWorkbench.Adapter.SQLite.mutateWithLockHook",
+  "AgentWorkbench.Adapter.SQLite.mutateWithHook",
+  "AgentWorkbench.Adapter.SQLite.mutate",
+  "AgentWorkbench.Adapter.Update.applyWithLockHook",
+  "AgentWorkbench.Adapter.Update.applyWithHook",
+  "AgentWorkbench.Adapter.Update.apply",
+  "AgentWorkbench.Adapter.Update.restoreWithLockHook",
+  "AgentWorkbench.Adapter.Update.restoreWithHook",
+  "AgentWorkbench.Adapter.Update.restore",
+  "AgentWorkbench.Application.Service.execute",
+  "AgentWorkbench.Application.Service.complete",
+  "AgentWorkbench.Application.Service.repairProjection",
+  "AgentWorkbench.Application.Service.executeRecovery",
+  "AgentWorkbench.Application.Service.executeAction",
+  "AgentWorkbench.Application.Service.executeRequest",
+  "AgentWorkbench.Cli.Program.executeRequest",
+  "AgentWorkbench.Cli.Program.executeBootstrap",
+  "AgentWorkbench.Cli.Program.run"
+]
+
 def expectedCliEntrypoint : String :=
   "import AgentWorkbench.Cli.Program\n\ndef main : IO Unit :=\n  AgentWorkbench.Cli.Program.run\n"
 
 def fail (message : String) : IO α :=
   throw <| IO.userError s!"verified-core audit failed: {message}"
+
+def lines (content : String) : Array String :=
+  (content.splitOn "\n").toArray
+
+def validateTrackedPaths (actual : Array String) : Except String Unit := do
+  unless actual = expectedTrackedPaths do
+    throw "tracked repository paths differ from the exhaustive inventory"
+
+def publicDefinitionNames (content : String) : Array String :=
+  (lines content).filterMap fun line =>
+    if line.startsWith "def " then
+      (line.drop 4).toString.splitOn " " |>.head?
+    else
+      none
+
+def validatePublicDefinitions
+    (actual : Array PublicDefinitionInventory) : Except String Unit := do
+  unless actual = expectedPublicDefinitions do
+    throw "public definition surfaces differ from the exhaustive inventory"
+
+def mutationSurfacesFrom
+  (inventories : Array PublicDefinitionInventory) : Array String :=
+  inventories.flatMap fun inventory =>
+    let moduleName :=
+      if inventory.path = "AgentWorkbench/Adapter/SQLite.lean" then
+        "AgentWorkbench.Adapter.SQLite"
+      else if inventory.path = "AgentWorkbench/Adapter/Update.lean" then
+        "AgentWorkbench.Adapter.Update"
+      else if inventory.path = "AgentWorkbench/Application/Service.lean" then
+        "AgentWorkbench.Application.Service"
+      else
+        "AgentWorkbench.Cli.Program"
+    inventory.definitions.filterMap fun name =>
+      let mutates :=
+        if moduleName = "AgentWorkbench.Adapter.SQLite" then
+          name = "initializeStore" || name.startsWith "repairProjection" ||
+            name.startsWith "mutate"
+        else if moduleName = "AgentWorkbench.Adapter.Update" then
+          name.startsWith "apply" || name.startsWith "restore"
+        else if moduleName = "AgentWorkbench.Application.Service" then
+          #["execute", "complete", "repairProjection", "executeRecovery",
+            "executeAction", "executeRequest"].contains name
+        else
+          true
+      if mutates then some s!"{moduleName}.{name}" else none
+
+def validateMutationSurfaces (actual : Array String) : Except String Unit := do
+  unless actual = expectedMutationSurfaces do
+    throw "mutation and update surfaces differ from the exhaustive inventory"
+
+def forbiddenPublicMarkers : Array String := #[
+  "R" ++ "EQ-",
+  "G" ++ "ATE-",
+  "governed",
+  "legacy",
+  ".agent-" ++ "workbench"
+]
+
+def contentHasMarker (content : String) (markers : Array String) : Bool :=
+  markers.any fun marker => content.contains marker
+
+def auditRepositoryInventory : IO Unit := do
+  let output ← IO.Process.output { cmd := "git", args := #["ls-files"] }
+  unless output.exitCode = 0 do
+    fail s!"tracked path inventory command failed: {output.stderr}"
+  let actual := lines output.stdout |>.filter (· != "")
+  match validateTrackedPaths actual with
+  | .error error => fail error
+  | .ok _ => pure ()
+  unless expectedTrackedPaths.all fun path =>
+      publicProductPaths.contains path || verificationAndBoundaryPaths.contains path do
+    fail "tracked path inventory contains an unclassified path"
+  unless publicProductPaths.all fun path => !verificationAndBoundaryPaths.contains path do
+    fail "public and verification path inventories overlap"
+  let unregistered := actual.push "unregistered-product-surface.lean"
+  if (validateTrackedPaths unregistered).isOk then
+    fail "negative unregistered tracked-path fixture was accepted"
+
+def auditPublicProductSurfaces : IO Unit := do
+  for path in publicProductPaths do
+    let content ← IO.FS.readFile path
+    for marker in forbiddenPublicMarkers do
+      if content.contains marker then
+        fail s!"public product surface {path} contains private planning marker {marker}"
+  let mut actualDefinitions := #[]
+  for expected in expectedPublicDefinitions do
+    actualDefinitions := actualDefinitions.push
+      ⟨expected.path, publicDefinitionNames (← IO.FS.readFile expected.path)⟩
+  match validatePublicDefinitions actualDefinitions with
+  | .error error => fail error
+  | .ok _ => pure ()
+  let mutationSurfaces := mutationSurfacesFrom actualDefinitions
+  match validateMutationSurfaces mutationSurfaces with
+  | .error error => fail error
+  | .ok _ => pure ()
+  let alteredDefinitions := actualDefinitions.map fun inventory =>
+    if inventory.path = "AgentWorkbench/Adapter/SQLite.lean" then
+      { inventory with definitions := inventory.definitions.push "alternateMutation" }
+    else inventory
+  if (validatePublicDefinitions alteredDefinitions).isOk then
+    fail "negative unregistered public-definition fixture was accepted"
+  let alteredMutations := mutationSurfaces.push
+    "AgentWorkbench.Adapter.SQLite.alternateMutation"
+  if (validateMutationSurfaces alteredMutations).isOk then
+    fail "negative unregistered mutation-surface fixture was accepted"
 
 def parseEntries (key : String) : List String → Array String → Except String (Array String)
   | [], _ => .error s!"unterminated manifest array: {key}"
@@ -481,6 +684,97 @@ def auditCliMutation : IO Unit := do
       unless (Application.Service.queryValidity transaction.result).value = .pass do
         fail "CLI mutation result is not valid"
 
+def auditResponseOutput : IO Unit := do
+  let initial := Application.Service.initialStore
+  let requests : Array Application.Service.Request := #[
+    .status,
+    .next,
+    .gate .validState
+  ]
+  for request in requests do
+    match Application.Service.executeRequest request initial with
+    | .error error => fail s!"public response fixture was rejected: {error}"
+    | .ok response =>
+        if contentHasMarker response.output forbiddenPublicMarkers then
+          fail s!"public response exposes a private planning marker: {response.output}"
+  match Cli.Program.executeBootstrap with
+  | .error error => fail s!"public action fixture bootstrap was rejected: {repr error}"
+  | .ok transaction =>
+      match (Application.Service.resolve transaction.result).value with
+      | .blocked blocker => fail s!"public action fixture was blocked: {repr blocker}"
+      | .action action =>
+          match Application.Service.executeRequest (.action action) transaction.result with
+          | .error error => fail s!"public action fixture was rejected: {error}"
+          | .ok response =>
+              if contentHasMarker response.output forbiddenPublicMarkers then
+                fail s!"public action response exposes a private planning marker: {response.output}"
+
+structure ManagedProjectFixture where
+  name : String
+  publicFiles : Array (String × String)
+  privateIdentity : String
+
+def managedProjectFixtures : Array ManagedProjectFixture := #[
+  ⟨"lean-source",
+    #[("src/Main.lean", "def projectResult : Nat := 42\n"),
+      ("lakefile.lean", "import Lake\n")],
+    "source-project-private-identity"⟩,
+  ⟨"documentation",
+    #[("docs/guide.md", "# Independent project\n\nPublic documentation.\n"),
+      ("project.toml", "name = \"documentation-project\"\n")],
+    "documentation-project-private-identity"⟩
+]
+
+def writeFixtureFiles (project : System.FilePath)
+    (files : Array (String × String)) : IO Unit := do
+  for (relative, content) in files do
+    let path := project / relative
+    if let some parent := path.parent then IO.FS.createDirAll parent
+    IO.FS.writeFile path content
+
+def readFixtureFiles (project : System.FilePath)
+    (files : Array (String × String)) : IO (Array (String × String)) := do
+  let mut result := #[]
+  for (relative, _) in files do
+    result := result.push (relative, ← IO.FS.readFile (project / relative))
+  pure result
+
+def runManagedProjectFixture (binary root : System.FilePath)
+    (fixture : ManagedProjectFixture) : IO Unit := do
+  let project := root / fixture.name
+  IO.FS.createDirAll project
+  writeFixtureFiles project fixture.publicFiles
+  let privateState := project / (".agent-" ++ "workbench")
+  IO.FS.createDirAll privateState
+  IO.FS.writeFile (privateState / "identity") fixture.privateIdentity
+  let beforeFiles ← readFixtureFiles project fixture.publicFiles
+  let before ← IO.Process.output { cmd := binary.toString, cwd := some project }
+  unless before.exitCode = 0 do
+    fail s!"managed-project fixture {fixture.name} failed with private state present: {before.stderr}"
+  let movedState := root / s!"{fixture.name}-private-state"
+  IO.FS.rename privateState movedState
+  let after ← IO.Process.output { cmd := binary.toString, cwd := some project }
+  unless after.exitCode = 0 do
+    fail s!"managed-project fixture {fixture.name} failed after private state moved: {after.stderr}"
+  let afterFiles ← readFixtureFiles project fixture.publicFiles
+  unless beforeFiles = afterFiles do
+    fail s!"managed-project fixture {fixture.name} changed public project bytes"
+  unless before.stdout = after.stdout && before.stderr = after.stderr do
+    fail s!"managed-project fixture {fixture.name} depends on private state presence"
+  let privateMarkers := forbiddenPublicMarkers ++
+    #[fixture.privateIdentity, privateState.toString, movedState.toString]
+  if contentHasMarker before.stdout privateMarkers ||
+      contentHasMarker before.stderr privateMarkers then
+    fail s!"managed-project fixture {fixture.name} exposed private identity or path"
+
+def auditManagedProjectIndependence : IO Unit := do
+  let binary := (← IO.currentDir) / ".lake" / "build" / "bin" / "agent-workbench"
+  unless ← binary.pathExists do
+    fail s!"compiled CLI is absent: {binary}"
+  IO.FS.withTempDir fun root => do
+    for fixture in managedProjectFixtures do
+      runManagedProjectFixture binary root fixture
+
 def traceModuleRules (designRules : Array ModuleRule) : Array ModuleRule := designRules ++ #[
   ⟨"AgentWorkbench", #["AgentWorkbench.Application.Service"]⟩,
   ⟨"AgentWorkbench.Cli.Program", #["AgentWorkbench.Application.Service"]⟩,
@@ -654,6 +948,8 @@ def auditRepresentativeRebuilds (designRules : Array ModuleRule) : IO Unit := do
 
 def main : IO Unit := do
   let designRules := productModuleRules
+  auditRepositoryInventory
+  auditPublicProductSurfaces
   let manifest ← IO.FS.readFile "proof-manifest.toml"
   let policy ← match validateManifestContent designRules manifest with
     | .error error => fail error
@@ -668,6 +964,8 @@ def main : IO Unit := do
   auditTheorems env
   auditDeclarations env
   auditCliMutation
+  auditResponseOutput
+  auditManagedProjectIndependence
   auditRepresentativeRebuilds designRules
   IO.println "verified-core audit: pass"
 
