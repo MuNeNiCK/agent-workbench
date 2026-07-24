@@ -114,6 +114,12 @@ printf 'agent-workbench 0.2.0\n'
 set -eu
 tag="$1"
 out="$2"
+if [ -n "${FAKE_ASSEMBLY_BARRIER_DIR:-}" ]; then
+  mkdir -p "$FAKE_ASSEMBLY_BARRIER_DIR"
+  printf '%s\n' "$$" >> "$FAKE_ASSEMBLY_BARRIER_DIR/calls"
+  : > "$FAKE_ASSEMBLY_BARRIER_DIR/started"
+  while [ ! -e "$FAKE_ASSEMBLY_BARRIER_DIR/release" ]; do sleep 0.01; done
+fi
 mkdir -p "$out"
 printf binary > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
 printf skill > "$out/agent-workbench-${tag}-skill.tar.gz"

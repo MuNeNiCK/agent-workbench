@@ -13,6 +13,16 @@ pub(super) struct AttemptGuard {
     _file: File,
 }
 
+pub(super) fn acquire_assembly_guard(root: &Path, idempotency_key: &str) -> Result<AttemptGuard> {
+    acquire_guard(
+        root,
+        digest_parts(
+            b"agent-workbench/release-assembly-lock/v1\0",
+            &[idempotency_key.as_bytes()],
+        ),
+    )
+}
+
 impl Attempt {
     pub(super) fn completed(self) -> Result<ReleaseTransitionOutcome> {
         match self {
@@ -56,10 +66,16 @@ fn acquire_attempt_guard(
     candidate: &str,
     idempotency_key: &str,
 ) -> Result<AttemptGuard> {
-    let identity = digest_parts(
-        b"agent-workbench/release-attempt-lock/v1\0",
-        &[candidate.as_bytes(), idempotency_key.as_bytes()],
-    );
+    acquire_guard(
+        root,
+        digest_parts(
+            b"agent-workbench/release-attempt-lock/v1\0",
+            &[candidate.as_bytes(), idempotency_key.as_bytes()],
+        ),
+    )
+}
+
+fn acquire_guard(root: &Path, identity: String) -> Result<AttemptGuard> {
     let directory = root
         .join(crate::db::LEDGER_DIR)
         .join("release-attempt-locks");

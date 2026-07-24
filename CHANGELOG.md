@@ -1,5 +1,12 @@
 # Release history
 
+## v0.1.32 — 2026-07-25
+
+- Serialize identical concurrent release assembly requests so one process
+  cannot remove another process's shared staging directory.
+- Restore missing local candidate assets through an exact assembly retry after
+  an interrupted post-commit directory publication.
+
 ## v0.1.31 — 2026-07-25
 
 - Preserve completed derivation repair inside an active aggregate checklist

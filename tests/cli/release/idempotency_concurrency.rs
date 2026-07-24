@@ -220,3 +220,48 @@ fn identical_concurrent_release_requests_converge_without_repeating_effects() {
     assert_eq!(call_count(&publish_barrier.join("calls")), 1);
     assert!(Path::new(&gh_state).join("release.json").exists());
 }
+
+#[test]
+fn identical_concurrent_assembly_preserves_the_shared_staging_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let commit = release_source(root.path());
+    let work = init_release_project(root.path(), &commit);
+    let barrier_root = tempfile::tempdir().unwrap();
+    let barrier = barrier_root.path().join("assembly");
+    let barrier_value = barrier.to_string_lossy().into_owned();
+    let args = [
+        "operator",
+        "release",
+        "candidate",
+        "assemble",
+        "--work",
+        &work.work_unit_id,
+        "--version",
+        "0.2.0",
+        "--commit",
+        &commit,
+        "--expected-current",
+        "absent",
+        "--idempotency-key",
+        "same-concurrent-assembly",
+    ];
+    let envs = [("FAKE_ASSEMBLY_BARRIER_DIR", barrier_value.as_str())];
+    let first = spawn_aw(root.path(), &args, &envs);
+    wait_for(&barrier.join("started"));
+    let second = spawn_aw(root.path(), &args, &envs);
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(call_count(&barrier.join("calls")), 1);
+    fs::write(barrier.join("release"), "continue").unwrap();
+
+    let first = first.wait_with_output().unwrap();
+    let second = second.wait_with_output().unwrap();
+    assert_same_exact_result(&first, &second);
+    let output = String::from_utf8(first.stdout).unwrap();
+    let candidate = field(&output, "candidate");
+    assert!(
+        root.path()
+            .join(".agent-workbench/release-candidates")
+            .join(candidate)
+            .is_dir()
+    );
+}

@@ -22,6 +22,7 @@ pub fn operator_assemble_release(
         input.work_unit_id,
         &input.reviewed_commit,
     )?;
+    let _assembly_guard = acquire_assembly_guard(root, &input.idempotency_key)?;
 
     let staging = staging_dir(root, &input.idempotency_key);
     if staging.exists() {

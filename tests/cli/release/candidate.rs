@@ -26,6 +26,30 @@ fn operator_candidate_assembles_and_reinspects_only_bound_local_bytes() {
     assert_eq!(field(&assembled, "work_unit_id"), work.work_unit_id);
     assert!(assembled.contains("next: agent-workbench operator release candidate inspect"));
     let candidate = field(&assembled, "candidate");
+    let candidate_directory = temp
+        .path()
+        .join(".agent-workbench/release-candidates")
+        .join(candidate);
+    fs::remove_dir_all(&candidate_directory).unwrap();
+    let recovered = ok(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-one",
+        ],
+    );
+    assert!(recovered.contains("already_applied: true"));
+    assert!(candidate_directory.is_dir());
     let status = ok(temp.path(), &["status"]);
     assert!(status.contains(&format!("owner: release_candidate:{candidate}")));
     assert!(status.contains("owner_state: assembled"));
