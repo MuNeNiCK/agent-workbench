@@ -464,6 +464,52 @@ def privateIdentifierLabelFixtures : Array PrivateIdentifierFixture :=
         ⟨label ++ "=", label ++ "=91"⟩)
     #[]
 
+def repositoryInstanceLabels : Array String := #[
+  "phase",
+  "finding",
+  "work" ++ "_unit",
+  "task",
+  "checklist",
+  "review" ++ "_run",
+  "repository" ++ "_snapshot"
+]
+
+def repositoryInstanceSeparators : Array String := #[":", "="]
+
+def repositoryInstanceFixtures : Array PrivateIdentifierFixture :=
+  repositoryInstanceLabels.foldl
+    (fun fixtures label =>
+      repositoryInstanceSeparators.foldl
+        (fun fixtures separator =>
+          fixtures.push
+            ⟨label ++ separator, label ++ separator ++ "91"⟩)
+        fixtures)
+    #[]
+
+def opaqueHandlePrefixes : Array String := #[
+  "decision" ++ "_",
+  "plan" ++ "_review" ++ "_"
+]
+
+def opaqueHandleFixtures : Array PrivateIdentifierFixture :=
+  opaqueHandlePrefixes.map fun handlePrefix =>
+    ⟨handlePrefix, handlePrefix ++ "0123456789abcdef0123456789abcdef"⟩
+
+def reportedPrivateIdentifierFixtures : Array PrivateIdentifierFixture := #[
+  ⟨"phase" ++ "=", "phase" ++ "=9"⟩,
+  ⟨"finding" ++ "=", "finding" ++ "=91"⟩,
+  ⟨"work" ++ "_unit" ++ "=", "work" ++ "_unit" ++ "=3"⟩,
+  ⟨"task" ++ "=", "task" ++ "=27"⟩,
+  ⟨"checklist" ++ "=", "checklist" ++ "=8"⟩,
+  ⟨"review" ++ "_run" ++ "=", "review" ++ "_run" ++ "=168"⟩,
+  ⟨"repository" ++ "_snapshot" ++ "=",
+    "repository" ++ "_snapshot" ++ "=57"⟩,
+  ⟨"decision" ++ "_",
+    "decision" ++ "_0123456789abcdef0123456789abcdef"⟩,
+  ⟨"plan" ++ "_review" ++ "_",
+    "plan" ++ "_review" ++ "_0123456789abcdef0123456789abcdef"⟩
+]
+
 def privateRecipeFixtures : Array PrivateIdentifierFixture := #[
   ⟨"R" ++ "EQ-", "R" ++ "EQ-104"⟩,
   ⟨"G" ++ "ATE-", "G" ++ "ATE-22"⟩,
@@ -493,10 +539,34 @@ def privateRecipeFixtures : Array PrivateIdentifierFixture := #[
 ]
 
 def privateIdentifierFixtures : Array PrivateIdentifierFixture :=
-  privateRecipeFixtures ++ privateIdentifierLabelFixtures
+  privateRecipeFixtures ++ privateIdentifierLabelFixtures ++
+    repositoryInstanceFixtures ++ opaqueHandleFixtures ++
+    reportedPrivateIdentifierFixtures
 
 def forbiddenPublicMarkers : Array String :=
   privateIdentifierFixtures.map (·.marker)
+
+def validatePublicOutputGeneratorInventory : Except String Unit := do
+  let expectedLabels := #[
+    "phase",
+    "finding",
+    "work" ++ "_unit",
+    "task",
+    "checklist",
+    "review" ++ "_run",
+    "repository" ++ "_snapshot"
+  ]
+  let expectedSeparators := #[":", "="]
+  let expectedOpaquePrefixes := #[
+    "decision" ++ "_",
+    "plan" ++ "_review" ++ "_"
+  ]
+  unless repositoryInstanceLabels = expectedLabels do
+    throw "repository-instance output labels differ from the exhaustive inventory"
+  unless repositoryInstanceSeparators = expectedSeparators do
+    throw "repository-instance output separators differ from the exhaustive inventory"
+  unless opaqueHandlePrefixes = expectedOpaquePrefixes do
+    throw "opaque output handle prefixes differ from the exhaustive inventory"
 
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
@@ -531,6 +601,9 @@ def auditRepositoryInventory : IO Unit := do
     fail "negative unregistered tracked-path fixture was accepted"
 
 def auditPublicProductSurfaces : IO Unit := do
+  match validatePublicOutputGeneratorInventory with
+  | .error error => fail error
+  | .ok _ => pure ()
   for fixture in privateIdentifierFixtures do
     unless contentHasMarker fixture.value forbiddenPublicMarkers do
       fail s!"negative private-identifier fixture was not rejected for {fixture.value}"
