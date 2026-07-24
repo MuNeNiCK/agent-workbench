@@ -571,6 +571,7 @@ def validatePublicOutputGeneratorInventory : Except String Unit := do
 def expectedPublicOutputGenerators : Array String := #[
   "AgentWorkbench.Application.Service.actionErrorOutput",
   "AgentWorkbench.Application.Service.actionOutput",
+  "AgentWorkbench.Application.Service.executeAction",
   "AgentWorkbench.Application.Service.executeRequest",
   "AgentWorkbench.Application.Service.gateOutput",
   "AgentWorkbench.Application.Service.inspectionOutput",
@@ -578,12 +579,6 @@ def expectedPublicOutputGenerators : Array String := #[
   "AgentWorkbench.Application.Service.renderDecision",
   "AgentWorkbench.Application.Service.resolutionOutput"
 ]
-
-def isPublicOutputGenerator (declaration : String) : Bool :=
-  declaration.endsWith "Output" ||
-    declaration = "AgentWorkbench.Application.Service.executeRequest" ||
-    declaration = "AgentWorkbench.Application.Service.renderBootstrap" ||
-    declaration = "AgentWorkbench.Application.Service.renderDecision"
 
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
@@ -909,6 +904,15 @@ def declarationDependencies (info : ConstantInfo) : List Name :=
   | .ctorInfo value => used value.type
   | .recInfo value => used value.type
 
+partial def declarationResultType : Expr → Expr
+  | .forallE _ _ body _ => declarationResultType body
+  | result => result
+
+def hasPublicOutputType (info : ConstantInfo) : Bool :=
+  let dependencies := (declarationResultType info.type).getUsedConstants.toList
+  dependencies.contains ``String ||
+    dependencies.contains `AgentWorkbench.Application.Service.Response
+
 def declarationValue? : ConstantInfo → Option Expr
   | .defnInfo value => some value.value
   | .thmInfo value => some value.value
@@ -941,7 +945,11 @@ partial def declarationReaches (env : Environment) (target : Name) :
 
 def auditPublicOutputGenerators (env : Environment) : IO Unit := do
   let actual := (publicDefinitionsInModule env
-    "AgentWorkbench.Application.Service").filter isPublicOutputGenerator
+    "AgentWorkbench.Application.Service").filter fun declaration =>
+      !declaration.startsWith "AgentWorkbench.Application.Service.Response." &&
+        match env.find? declaration.toName with
+        | some info => hasPublicOutputType info
+        | none => false
   unless actual = expectedPublicOutputGenerators do
     fail s!"compiled public output generators differ from the exhaustive inventory: {repr actual}"
   let publicRoots := [
