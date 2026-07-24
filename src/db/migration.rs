@@ -901,6 +901,15 @@ pub(crate) fn install_storage_generation_26(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn install_storage_generation_27(conn: &Connection) -> Result<()> {
+    ensure_closure_lifecycle_schema(conn)?;
+    conn.execute(
+        "insert or ignore into schema_migrations(version,applied_at) values(27,current_timestamp)",
+        [],
+    )?;
+    Ok(())
+}
+
 fn normalize_review_invocation_storage(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "review_agent_invocations")? {
         return Ok(());
@@ -2754,6 +2763,7 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         install_storage_generation_24(conn)?;
         install_storage_generation_25(conn)?;
         install_storage_generation_26(conn)?;
+        install_storage_generation_27(conn)?;
     }
     if current_version >= 15 {
         conn.execute_batch(GENERATION_15_APPLICATION_LINK_SQL)?;
@@ -2769,6 +2779,7 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         install_storage_generation_24(conn)?;
         install_storage_generation_25(conn)?;
         install_storage_generation_26(conn)?;
+        install_storage_generation_27(conn)?;
     }
 
     normalize_decomposition_plan_heads(conn)

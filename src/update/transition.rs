@@ -225,6 +225,9 @@ const GENERATION_25: StateDescriptor = StateDescriptor {
 const GENERATION_26: StateDescriptor = StateDescriptor {
     key: "full-storage-with-sealed-finding-targets",
 };
+const GENERATION_27: StateDescriptor = StateDescriptor {
+    key: "full-storage-with-source-correction-contracts",
+};
 const CURRENT_REPAIR_SOURCE: StateDescriptor = StateDescriptor {
     key: "current-storage-with-registered-repair",
 };
@@ -371,7 +374,7 @@ pub(crate) fn classify_update_route_with_validated_registry(
     if generation == crate::db::SCHEMA_VERSION {
         let pending = crate::db::pending_update_change_set(conn)?;
         if pending.is_empty() {
-            validate_current_generation_26(conn)?;
+            validate_current_generation_27(conn)?;
             return Ok(UpdateRoute::Current);
         }
         if pending.iter().any(is_unrepairable_current_change) {
@@ -384,6 +387,7 @@ pub(crate) fn classify_update_route_with_validated_registry(
     }
     let context = TransitionContext { root };
     for (source_generation, observer) in [
+        (26, observe_generation_26 as ObserveSource),
         (25, observe_generation_25 as ObserveSource),
         (24, observe_generation_24 as ObserveSource),
         (23, observe_generation_23 as ObserveSource),
@@ -1181,6 +1185,11 @@ fn validate_current_generation_26(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn validate_current_generation_27(conn: &Connection) -> Result<()> {
+    validate_current_generation_26(conn)?;
+    validate_close_ready_correction_trigger_behavior(conn)
+}
+
 fn validate_review_inventory_migration_schema(conn: &Connection) -> Result<()> {
     for (table, tokens) in [
         (
@@ -1734,6 +1743,41 @@ fn validate_opaque_correction_trigger_behavior(conn: &Connection) -> Result<()> 
     )
 }
 
+fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result<()> {
+    let correction = schema_object_sql(conn, "trigger", "trg_correction_token_links_insert")?;
+    let probe = Connection::open_in_memory()?;
+    probe.execute_batch(
+        r#"
+        create table closures(id integer,project_id integer,finding_id integer,status text);
+        create table findings(id integer,review_run_id integer,status text,classification text);
+        create table review_runs(id integer,review_plan_id integer);
+        create table review_plans(id integer,required integer,stage text,review_type text);
+        create table checklists(id integer);
+        create table work_phases(id integer);
+        create table work_phase_dependencies(id integer);
+        create table correction_tokens(
+          id integer primary key,project_id integer,closure_id integer,token_ordinal integer,
+          token_kind text,operation text,target text,pre_state text,pre_hash text,
+          status text,created_at text,applied_at text
+        );
+        insert into review_plans values(1,1,'close-ready','design_implementation_diff');
+        insert into review_runs values(1,1);
+        insert into findings values(1,1,'open','valid');
+        insert into closures values(1,1,1,'registered');
+        "#,
+    )?;
+    probe.execute_batch(&correction)?;
+    probe
+        .execute(
+            "insert into correction_tokens values(1,1,1,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp,null)",
+            [],
+        )
+        .context(
+            "correction trigger rejected a source correction for a required close-ready design review",
+        )?;
+    Ok(())
+}
+
 fn schema_object_sql(conn: &Connection, object_type: &str, name: &str) -> Result<String> {
     conn.query_row(
         "select sql from sqlite_schema where type=?1 and name=?2",
@@ -1907,13 +1951,13 @@ fn validate_transition_registry() -> Result<()> {
     for source_generation in supported_storage_generations() {
         let path = registered_storage_path(source_generation)?;
         if source_generation != crate::db::SCHEMA_VERSION
-            && path.last().map(|edge| edge.target.key) != Some(GENERATION_26.key)
+            && path.last().map(|edge| edge.target.key) != Some(GENERATION_27.key)
         {
             bail!("storage transition registry does not form a complete adjacent path");
         }
     }
     let repair_path = registered_storage_path_from_descriptor(GENERATION_13_REPAIR_SOURCE.key)?;
-    if repair_path.last().map(|edge| edge.target.key) != Some(GENERATION_26.key) {
+    if repair_path.last().map(|edge| edge.target.key) != Some(GENERATION_27.key) {
         bail!("registered core repair does not compose to the current target");
     }
     Ok(())
@@ -1946,6 +1990,7 @@ pub(crate) fn registered_storage_edges() -> Vec<TransitionEdge> {
         generation_23_to_24_edge(),
         generation_24_to_25_edge(),
         generation_25_to_26_edge(),
+        generation_26_to_27_edge(),
     ]);
     edges
 }
@@ -1966,6 +2011,7 @@ pub(crate) fn registered_storage_path(source_generation: i64) -> Result<Vec<Tran
         24 => GENERATION_24.key,
         25 => GENERATION_25.key,
         26 => GENERATION_26.key,
+        27 => GENERATION_27.key,
         generation => historical_descriptor(generation)
             .map(|descriptor| descriptor.key)
             .context("storage header has no registered source descriptor")?,
@@ -1982,7 +2028,7 @@ fn registered_storage_path_from_descriptor(source_key: &str) -> Result<Vec<Trans
     states.sort_by_key(|state| state.key);
     states.dedup_by_key(|state| state.key);
     Ok(
-        resolve_path(&states, &edges, source_key, GENERATION_26.key)?
+        resolve_path(&states, &edges, source_key, GENERATION_27.key)?
             .into_iter()
             .copied()
             .collect(),
@@ -2353,5 +2399,16 @@ pub(crate) fn generation_25_to_26_edge() -> TransitionEdge {
         observe_source: observe_generation_25,
         apply: apply_generation_26,
         validate_target: validate_generation_26,
+    }
+}
+
+pub(crate) fn generation_26_to_27_edge() -> TransitionEdge {
+    TransitionEdge {
+        key: "install-source-correction-contracts",
+        source: GENERATION_26,
+        target: GENERATION_27,
+        observe_source: observe_generation_26,
+        apply: apply_generation_27,
+        validate_target: validate_generation_27,
     }
 }

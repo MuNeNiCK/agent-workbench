@@ -108,6 +108,218 @@ fn typed_close_ready_contract_routes_to_source_correction() {
 }
 
 #[test]
+fn generation_26_adopter_can_add_and_supersede_close_ready_source_corrections_after_update() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(
+        temp.path(),
+        "replace remediation with source correction",
+        None,
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "design_implementation_diff",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("the registered remediation needs a source correction"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_implementation_drift",
+            severity: "high",
+            description: "replace the implementation remediation contract",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    let source_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "design_implementation_drift",
+            severity: "high",
+            description: "register the source correction directly",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    classify_finding(temp.path(), source_finding.finding_id, "valid").unwrap();
+    let original = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "the implementation follows the current design",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("repair the implementation"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("independent verification"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let ledger = default_ledger_path(temp.path());
+    let conn = open_ledger(&ledger).unwrap();
+    conn.execute(
+        "update closures set affected_surfaces='transition:design-decompose:80/1' where id=?1",
+        [original.closure_id],
+    )
+    .unwrap();
+    let trigger: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let current_clause = "and f.status='open' and f.classification='valid'\n            )";
+    let legacy_clause = "and f.status='open' and f.classification='valid'\n                  and not (p.required=1 and p.stage='close-ready'\n                           and p.review_type in ('implementation_review','design_implementation_diff'))\n            )";
+    let legacy_trigger = trigger.replacen(current_clause, legacy_clause, 1);
+    assert_ne!(legacy_trigger, trigger);
+    conn.execute_batch("drop trigger trg_correction_token_links_insert;")
+        .unwrap();
+    conn.execute_batch(&legacy_trigger).unwrap();
+    conn.execute("delete from schema_migrations where version=27", [])
+        .unwrap();
+    drop(conn);
+
+    let legacy = rusqlite::Connection::open(&ledger).unwrap();
+    let blocked = legacy
+        .execute(
+            "insert into correction_tokens(project_id,closure_id,token_ordinal,token_kind,operation,target,pre_state,pre_hash,status,created_at) values(1,?1,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp)",
+            [original.closure_id],
+        )
+        .unwrap_err();
+    match blocked {
+        rusqlite::Error::SqliteFailure(code, _) => assert_eq!(code.extended_code, 1811),
+        other => panic!("unexpected legacy trigger error: {other}"),
+    }
+    drop(legacy);
+
+    let inspection = crate::inspect_update(temp.path()).unwrap();
+    assert_eq!(inspection.status, "ready_to_apply");
+    crate::apply_update_operation(
+        temp.path(),
+        &inspection.inspection_handle,
+        &inspection.current_identity,
+        "install-source-correction-contracts",
+    )
+    .unwrap();
+    assert_eq!(
+        crate::inspect_update(temp.path()).unwrap().status,
+        "current"
+    );
+
+    let added = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: source_finding.finding_id,
+            design_invariant: "the corrected design owns the decomposition",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("transition:design-decompose:80/1"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("decompose the corrected approved design"),
+            tests_or_gates: Some("implementation-ready"),
+            verification_plan: Some("independent source-correction verification"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    assert!(added.closure_id > original.closure_id);
+
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-owner"),
+            summary: "replace the remediation with the required source correction",
+            scope: Some("work-unit:1"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let replacement = supersede_closure(
+        temp.path(),
+        ClosureSupersession {
+            closure_id: original.closure_id,
+            new_closure: NewClosure {
+                finding_id: finding.finding_id,
+                design_invariant: "the corrected design owns the decomposition",
+                design_citations: None,
+                implementation_evidence: None,
+                affected_surfaces: Some("transition:design-decompose:80/1"),
+                same_invariant_search: None,
+                other_violations_found: None,
+                fix_plan: Some("decompose the corrected approved design"),
+                tests_or_gates: Some("implementation-ready"),
+                verification_plan: Some("independent source-correction verification"),
+                closed_by_commit: None,
+            },
+            reason: "the finding requires a source correction rather than code remediation",
+            authority_event_id: authority.authority_event_id,
+        },
+    )
+    .unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let token: (String, String, String) = conn
+        .query_row(
+            "select token_kind,operation,target from correction_tokens where closure_id=?1",
+            [replacement.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        token,
+        (
+            "transition".to_string(),
+            "design-decompose".to_string(),
+            "80/1".to_string()
+        )
+    );
+}
+
+#[test]
 fn remediation_batch_excludes_typed_correction_but_keeps_nonterminal_acceptance() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

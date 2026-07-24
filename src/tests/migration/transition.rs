@@ -458,7 +458,7 @@ fn generation_25_public_update_backfills_seals_and_normalizes_legacy_finding_inv
         drop trigger trg_repository_snapshot_release_attempt_insert;
         drop trigger trg_repository_snapshot_release_attempt_update;
         drop trigger trg_repository_snapshot_release_attempt_delete;
-        delete from schema_migrations where version=26;
+        delete from schema_migrations where version>=26;
         update review_runs set new_findings_count=2 where status='completed';
         "#,
     )
@@ -618,7 +618,7 @@ fn generation_25_public_update_completes_a_stranded_visible_finding_inventory() 
         drop trigger trg_repository_snapshot_release_attempt_insert;
         drop trigger trg_repository_snapshot_release_attempt_update;
         drop trigger trg_repository_snapshot_release_attempt_delete;
-        delete from schema_migrations where version=26;
+        delete from schema_migrations where version>=26;
         "#,
     )
     .unwrap();

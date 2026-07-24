@@ -1488,3 +1488,54 @@ pub(super) fn validate_generation_26(
         .context("source conservation observation is missing")?;
     conservation::verify_product_facts(conn, snapshot)
 }
+
+pub(super) fn observe_generation_26(
+    conn: &Connection,
+    context: &TransitionContext<'_>,
+) -> Result<SourceObservation> {
+    if full_generation(conn)? != 26 {
+        bail!("source storage generation is not 26");
+    }
+    validate_current_generation_26(conn)?;
+    let conservation = conservation::capture_product_facts(conn, &["schema_migrations"])?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-workbench/storage-source/v1\0");
+    hasher.update(26_i64.to_be_bytes());
+    hasher.update(context.root.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+    hasher.update(conservation.digest.as_bytes());
+    Ok(SourceObservation {
+        descriptor_key: GENERATION_26.key.to_string(),
+        revision: format!("{:x}", hasher.finalize()),
+        historical_source: None,
+        conservation: Some(conservation),
+        plans: Vec::new(),
+        derived_bundle_count: 0,
+        decomposition_projection: None,
+        reconciliation_balance: None,
+    })
+}
+
+pub(super) fn apply_generation_27(
+    conn: &Connection,
+    _source: &SourceObservation,
+    _context: &TransitionContext<'_>,
+) -> Result<()> {
+    crate::db::install_storage_generation_27(conn)
+}
+
+pub(super) fn validate_generation_27(
+    conn: &Connection,
+    source: &SourceObservation,
+    _context: &TransitionContext<'_>,
+) -> Result<()> {
+    if full_generation(conn)? != 27 {
+        bail!("target storage generation is not the declared successor");
+    }
+    validate_current_generation_27(conn)?;
+    let snapshot = source
+        .conservation
+        .as_ref()
+        .context("source conservation observation is missing")?;
+    conservation::verify_product_facts(conn, snapshot)
+}
