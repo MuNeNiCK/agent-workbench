@@ -156,8 +156,28 @@ fn typed_close_ready_contract_routes_to_source_correction() {
         "agent-workbench closure transition apply {} --token 1 --evidence <evidence-ref>",
         closure.closure_id
     );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id,title,status,started_at) values ((select id from projects limit 1),'unrelated owner','open',current_timestamp)",
+        [],
+    )
+    .unwrap();
+    let unrelated_work = conn.last_insert_rowid();
+    drop(conn);
     for rejected in [
         suspend_work(temp.path(), "must not bypass correction", "resume").unwrap_err(),
+        interrupt_work(
+            temp.path(),
+            "must not bypass correction",
+            "active correction remains selected",
+        )
+        .unwrap_err(),
+        block_work(
+            temp.path(),
+            Some(unrelated_work),
+            "different owner must not bypass correction",
+        )
+        .unwrap_err(),
         ready_closure(
             temp.path(),
             ClosureReady {

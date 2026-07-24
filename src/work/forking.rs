@@ -416,7 +416,7 @@ pub(super) fn ensure_work_mutation_allowed(
             }
             _ => false,
         };
-        if unrelated_owner {
+        if unrelated_owner && blocker.kind != "source_correction" {
             return Ok(());
         }
         let selected = selected_owner_action.is_some_and(|(work_unit_id, command)| {
