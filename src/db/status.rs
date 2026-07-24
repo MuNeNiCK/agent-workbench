@@ -455,16 +455,7 @@ pub(super) fn current_source_corrections(conn: &Connection) -> Result<Vec<Source
         let pending_operation = row.get::<_, Option<String>>(12)?;
         let next_action = if let (Some(token), Some(operation)) = (pending_token, pending_operation)
         {
-            let runtime = match operation.as_str() {
-                "task-accept-out-of-scope" | "phase-dependency-accept" => {
-                    " --authority <authority-event-id>"
-                }
-                "phase-dependency-satisfy" => " --evidence <evidence-ref>",
-                _ => "",
-            };
-            format!(
-                "agent-workbench closure transition apply {closure_id} --token {token}{runtime}"
-            )
+            correction_transition_command(closure_id, token, &operation)
         } else {
             format!(
                 "apply only the typed file correction contract, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""
@@ -634,19 +625,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             },
         )
         .optional()?;
-    let active_source_correction_finding: Option<i64> = conn
-        .query_row(
-            r#"
-        select f.id from correction_sessions s
-        join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
-        join closures c on c.id = s.closure_id and c.status = 'registered'
-        where s.project_id = ?1 and s.status = 'active'
-        order by s.id limit 1
-        "#,
-            params![project_id],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let active_source_correction = current_source_corrections(conn)?.into_iter().next();
     let mut review_blocker = conn
         .query_row(
             r#"
@@ -979,12 +958,15 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
         };
     }
     if review_blocker.as_ref().is_some_and(|blocker| {
-        blocker.finding_id == active_source_correction_finding
-            && !review_action_must_precede_correction(&blocker.next_action)
+        active_source_correction.is_none()
+            || blocker.finding_id
+                != active_source_correction
+                    .as_ref()
+                    .map(|correction| correction.finding_id)
+            || blocker
+                .next_action
+                .starts_with("agent-workbench review plan waive")
     }) {
-        review_blocker = None;
-    }
-    if review_blocker.is_some() {
         return Ok(review_blocker);
     }
     if let Some((finding_id, closure_id, work_unit_id, work_status, plan_status, dependencies)) =
@@ -1024,8 +1006,20 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             next_action,
         }));
     }
-    if active_source_correction_finding.is_some() {
-        return Ok(None);
+    if let Some(correction) = active_source_correction {
+        return Ok(Some(PhaseBlocker {
+            kind: "source_correction".to_string(),
+            review_plan_id: Some(correction.review_plan_id),
+            work_unit_id: Some(correction.work_unit_id),
+            review_type: None,
+            stage: None,
+            review_run_id: None,
+            finding_id: Some(correction.finding_id),
+            severity: Some("high".to_string()),
+            classification: Some("valid".to_string()),
+            description: correction.description,
+            next_action: correction.next_action,
+        }));
     }
 
     conn.query_row(

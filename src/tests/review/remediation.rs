@@ -152,6 +152,37 @@ fn typed_close_ready_contract_routes_to_source_correction() {
                 closure.closure_id
             )
     }));
+    let selected_command = format!(
+        "agent-workbench closure transition apply {} --token 1 --evidence <evidence-ref>",
+        closure.closure_id
+    );
+    for rejected in [
+        suspend_work(temp.path(), "must not bypass correction", "resume").unwrap_err(),
+        ready_closure(
+            temp.path(),
+            ClosureReady {
+                closure_id: closure.closure_id,
+                implementation_evidence: "premature",
+                tests_or_gates: "not run",
+                closed_by_commit: None,
+            },
+        )
+        .unwrap_err(),
+    ] {
+        assert!(rejected.to_string().contains(&selected_command));
+    }
+    assert!(
+        apply_correction_transition(
+            temp.path(),
+            closure.closure_id,
+            2,
+            None,
+            Some("test:wrong-token"),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("registered correction transition token not found")
+    );
     apply_correction_transition(
         temp.path(),
         closure.closure_id,

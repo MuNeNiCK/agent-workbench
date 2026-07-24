@@ -170,7 +170,7 @@ fn open_required_review_finding_blocks_next_action() {
         suspend_work(temp.path(), "must not bypass source correction", "resume")
             .unwrap_err()
             .to_string()
-            .contains("source_correction")
+            .contains(&format!("closure ready {}", noneligible_closure.closure_id))
     );
     assert!(
         create_phase(
@@ -187,11 +187,18 @@ fn open_required_review_finding_blocks_next_action() {
         )
         .unwrap_err()
         .to_string()
-        .contains("closure transition apply")
+        .contains(&format!("closure ready {}", noneligible_closure.closure_id))
     );
     std::fs::write(temp.path().join("docs/design-fix.md"), "corrected design").unwrap();
     let correcting = project_status(temp.path()).unwrap();
     assert!(correcting.phase_blocker.is_none());
+    assert_eq!(
+        correcting.source_corrections[0].next_action,
+        format!(
+            "apply only the typed file correction contract, then agent-workbench closure ready {} --evidence \"<evidence>\" --tests \"<tests>\"",
+            noneligible_closure.closure_id
+        )
+    );
     assert_eq!(correcting.source_corrections.len(), 1);
     let attempt = ready_closure(
         temp.path(),

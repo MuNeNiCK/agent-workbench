@@ -48,7 +48,11 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
         } else {
             false
         };
-        let selected_source_correction: bool = if blocker.kind == "required_review_finding" {
+        let selected_source_correction: bool = if blocker.kind == "source_correction"
+            && blocker
+                .next_action
+                .contains(&format!("closure ready {}", input.closure_id))
+        {
             tx.query_row(
                 r#"
                 select exists(
@@ -442,7 +446,11 @@ pub fn supersede_closure(
         let selected_active_correction = blocker.next_action.starts_with(&format!(
             "agent-workbench closure transition apply {} --token ",
             input.closure_id
-        ));
+        )) || blocker.kind == "source_correction"
+            && blocker.finding_id == Some(finding_id)
+            && blocker
+                .next_action
+                .contains(&format!("closure ready {}", input.closure_id));
         let selected_contract_action = blocker
             .next_action
             .starts_with("agent-workbench closure supersede")
@@ -722,6 +730,9 @@ pub(super) fn ensure_review_finding_target(
     if let Some(blocker) = current_phase_blocker(conn)? {
         let same_selected_finding =
             blocker.kind == "required_review_finding" && blocker.finding_id == Some(finding_id);
+        let same_selected_correction = blocker.kind == "source_correction"
+            && operation == "closure supersede"
+            && blocker.finding_id == Some(finding_id);
         let same_owner_stale_recovery = if blocker.kind == "stale_design"
             && matches!(operation, "closure add" | "closure supersede")
         {
@@ -737,7 +748,7 @@ pub(super) fn ensure_review_finding_target(
         } else {
             false
         };
-        if !same_selected_finding && !same_owner_stale_recovery {
+        if !same_selected_finding && !same_selected_correction && !same_owner_stale_recovery {
             bail!(
                 "{operation} is not allowed under the selected resolver action; next: {}",
                 blocker.next_action

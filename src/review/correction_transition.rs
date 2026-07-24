@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::db::{current_phase_blocker, open_existing_project, project_id};
+use crate::db::{
+    correction_transition_command, current_phase_blocker, open_existing_project, project_id,
+};
 
 use super::{closure::*, correction_contract::*, correction_state::*, *};
 
@@ -57,15 +59,18 @@ pub fn apply_correction_transition(
         bail!("stale {kind}:{id} is the selected transition");
     }
     if let Some(blocker) = current_phase_blocker(&tx)? {
-        let exact_stale_apply = format!(
-            "agent-workbench closure transition apply {closure_id} --token {token_ordinal}"
-        );
+        let exact_apply =
+            correction_transition_command(closure_id, token_ordinal, operation.as_str());
+        let selected_source_correction = blocker.kind == "source_correction"
+            && blocker.finding_id == Some(finding_id)
+            && blocker.next_action == exact_apply;
         let design_recovery = blocker.kind == "stale_design" && design_recovery;
-        if !(design_recovery
+        if !(selected_source_correction
+            || design_recovery
             || blocker.kind == "stale_design"
                 && declared_stale
                 && matches_selected_stale
-                && blocker.next_action == exact_stale_apply)
+                && blocker.next_action == exact_apply)
         {
             bail!(
                 "closure transition apply is not the selected action; next: {}",

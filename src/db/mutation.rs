@@ -26,6 +26,23 @@ pub(super) fn review_action_must_precede_correction(action: &str) -> bool {
         && !action.starts_with("agent-workbench closure correction-begin")
 }
 
+pub(crate) fn correction_transition_command(
+    closure_id: i64,
+    token_ordinal: i64,
+    operation: &str,
+) -> String {
+    let runtime = match operation {
+        "task-accept-out-of-scope" | "phase-dependency-accept" => {
+            " --authority <authority-event-id>"
+        }
+        "phase-dependency-satisfy" => " --evidence <evidence-ref>",
+        _ => "",
+    };
+    format!(
+        "agent-workbench closure transition apply {closure_id} --token {token_ordinal}{runtime}"
+    )
+}
+
 pub(super) struct FindingActionState<'a> {
     pub(super) finding_id: i64,
     pub(super) review_plan_id: i64,
