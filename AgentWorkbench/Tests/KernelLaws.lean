@@ -774,6 +774,108 @@ def main : IO Unit := do
   let bypassedOperation := { attempt with operation := ⟨"publish-3"⟩, state := .succeeded }
   expectRejectedNoEffect (.recordExternalOperation first.revision bypassedOperation) first
     "external operation lifecycle bypass"
+  let directCompletion := {
+    attempt with
+    state := .succeeded
+    observation := some {
+      identity := "remote-object-1"
+      artifactDigest := some attempt.artifactDigest } }
+  expectRejectedNoEffect
+    (.advanceExternalOperation externalized.revision directCompletion) externalized
+    "external operation completed before dispatch"
+  let dispatched := { attempt with state := .dispatched }
+  let dispatchedState ← executeState
+    (.advanceExternalOperation externalized.revision dispatched) externalized
+    "prepared external operation did not enter dispatch"
+  expect (Domain.ExternalOperation.requiresReconciliation dispatched)
+    "dispatched external operation did not require reconciliation"
+  expectRejectedNoEffect
+    (.advanceExternalOperation dispatchedState.revision dispatched) dispatchedState
+    "external operation repeated dispatch without reconciliation"
+  let uncertain := { attempt with state := .uncertain }
+  let uncertainState ← executeState
+    (.advanceExternalOperation dispatchedState.revision uncertain) dispatchedState
+    "uncertain external operation outcome was rejected"
+  expect (Domain.ExternalOperation.requiresReconciliation uncertain)
+    "uncertain external operation did not require reconciliation"
+  let wrongObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "remote-object-1"
+    artifactDigest := some "sha256:different" }
+  let wrongCompletion := {
+    attempt with state := .succeeded, observation := some wrongObservation }
+  expectRejectedNoEffect
+    (.advanceExternalOperation uncertainState.revision wrongCompletion) uncertainState
+    "mismatched remote observation completed an external operation"
+  let conflict := {
+    attempt with state := .conflict, observation := some wrongObservation }
+  let conflictState ← executeState
+    (.advanceExternalOperation uncertainState.revision conflict) uncertainState
+    "conflicting immutable observation was not retained"
+  let abandoned := {
+    conflict with
+    state := .failed
+    disposition := some "abort without replacing the conflicting remote object" }
+  let abandonedState ← executeState
+    (.advanceExternalOperation conflictState.revision abandoned) conflictState
+    "explicit conflict disposition was rejected"
+  expect (abandonedState.externalOperations.any fun current =>
+    current == abandoned)
+    "explicit conflict disposition did not persist"
+
+  let retryAttempt := { attempt with operation := ⟨"publish-retry"⟩ }
+  let retryPrepared ← executeState
+    (.recordExternalOperation abandonedState.revision retryAttempt) abandonedState
+    "retry fixture intent was rejected"
+  let retryDispatched := { retryAttempt with state := .dispatched }
+  let retryDispatchedState ← executeState
+    (.advanceExternalOperation retryPrepared.revision retryDispatched) retryPrepared
+    "retry fixture dispatch was rejected"
+  let absentObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "remote-snapshot-absent"
+    artifactDigest := none }
+  let retryable := {
+    retryAttempt with state := .retryable, observation := some absentObservation }
+  let retryableState ← executeState
+    (.advanceExternalOperation retryDispatchedState.revision retryable)
+    retryDispatchedState "absent reconciliation did not authorize retry"
+  let redispatched := { retryAttempt with state := .dispatched }
+  let redispatchedState ← executeState
+    (.advanceExternalOperation retryableState.revision redispatched) retryableState
+    "authorized retry did not enter dispatch"
+  let exactObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "remote-object-2"
+    artifactDigest := some retryAttempt.artifactDigest }
+  let succeeded := {
+    retryAttempt with state := .succeeded, observation := some exactObservation }
+  let succeededState ← executeState
+    (.advanceExternalOperation redispatchedState.revision succeeded)
+    redispatchedState "matching immutable observation did not complete"
+  expectRejectedNoEffect
+    (.advanceExternalOperation succeededState.revision redispatched) succeededState
+    "terminal external operation was retried"
+
+  let privateArtifacts : List Domain.ExternalOperation.PrivateArtifact := [
+    { kind := .ledger, digest := "sha256:ledger" },
+    { kind := .evidence, digest := "sha256:evidence" },
+    { kind := .review, digest := "sha256:review" },
+    { kind := .correction, digest := "sha256:correction" },
+    { kind := .backup, digest := "sha256:backup" },
+    { kind := .design, digest := "sha256:design" }]
+  expect (Domain.ExternalOperation.selectForExport
+      { purpose := "", artifacts := [] } privateArtifacts).isEmpty
+    "private artifacts were exported without a specific purpose"
+  let selected : Domain.ExternalOperation.PrivateArtifact :=
+    { kind := .evidence, digest := "sha256:evidence" }
+  let sameClassUnselected : Domain.ExternalOperation.PrivateArtifact :=
+    { kind := .evidence, digest := "sha256:other-evidence" }
+  let available := privateArtifacts ++ [sameClassUnselected]
+  let selection : Domain.ExternalOperation.ExportSelection :=
+    { purpose := "share one verification receipt", artifacts := [selected] }
+  expect (Domain.ExternalOperation.selectForExport selection available == [selected])
+    "positive export selection included an unselected private artifact"
+  expect (Domain.ExternalOperation.selectForExport
+      { selection with artifacts := [selected, selected] } available).isEmpty
+    "ambiguous duplicate export selection was accepted"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
   let suspended : Domain.Work.Activation :=

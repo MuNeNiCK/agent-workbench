@@ -221,8 +221,8 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
     "b5b306e9c1b39870e21da40a656fbff93b2dc6a9424a8d3d96b00ae188c085af",
   expectedInventory "AgentWorkbench.Domain.Evidence" 0 emptyDeclarationDigest 57
     "05c872cf356dba7255a93a74fb8797e2c6ee243e6991fe427862f9f46395173c",
-  expectedInventory "AgentWorkbench.Domain.ExternalOperation" 0 emptyDeclarationDigest 14
-    "89222c46d2865ab19f3f9b228d05fb1db48f7a90275b8520c1becabe3fc19470",
+  expectedInventory "AgentWorkbench.Domain.ExternalOperation" 0 emptyDeclarationDigest 55
+    "5460ed55eabf067e9505b077b54d83e86954da18f4df19ea2609216288baa069",
   expectedInventory "AgentWorkbench.Policy.Traceability" 0 emptyDeclarationDigest 13
     "058989c9b6a12ed1432a59d7f49d3e605ec7c51571b6d6a99d153567374bb2ed",
   expectedInventory "AgentWorkbench.Policy.Authority" 0 emptyDeclarationDigest 12
@@ -242,8 +242,8 @@ def expectedPublicDefinitions : Array PublicDefinitionInventory := #[
   expectedInventory "AgentWorkbench.Application.Service" 6
     "4ecaa9b6807063d57cfc6049a335a876b1dd7d6056aa1375af468084f93ad36c" 23
     "9e1fa50367bd5ce24382e8682add73441d48f52866affc869408a52663bc2963",
-  expectedInventory "AgentWorkbench.Adapter.Codec" 0 emptyDeclarationDigest 280
-    "9bc6a54a6e6110a12d2f57e83c160e95092f57da9cc9e82777b2bd9173077721",
+  expectedInventory "AgentWorkbench.Adapter.Codec" 0 emptyDeclarationDigest 284
+    "cffb5f5dc387432d6dc4e963ce5687a143a359e06303a08a6d0f3fa94ca21049",
   expectedInventory "AgentWorkbench.Adapter.DurableFilesystem" 2
     "70c5d35673c2a7de0f0e5f5eae9a6756a048170609126747b6358de604ec4736" 21
     "95dfd9064de24675f4de9689d55d3bc9129255419231bbc7939606fde2445157",

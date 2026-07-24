@@ -207,6 +207,7 @@ inductive Event
   | correctionPromoted (rule : Design.LearnedRule)
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
+  | externalOperationAdvanced (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
   | workCompleted (work : WorkId) (activation : ActivationId)
 deriving DecidableEq, Repr
@@ -337,6 +338,10 @@ private def applyUnchecked (event : Event) (state : State) : State :=
         evidence := state.evidence ++ [{ item with current := true }] }
   | .externalOperationRecorded attempt =>
       { invalidated with externalOperations := state.externalOperations ++ [attempt] }
+  | .externalOperationAdvanced attempt =>
+      { invalidated with
+        externalOperations := state.externalOperations.map fun current =>
+          if current.operation == attempt.operation then attempt else current }
   | .obligationRecorded obligation =>
       let obligations := invalidated.obligations.map fun existing =>
         if existing.work == obligation.work && existing.key == obligation.key then
@@ -814,9 +819,12 @@ def eventApplicable (event : Event) (state : State) : Bool :=
         obligation.work == item.work && obligation.key == item.obligation &&
         Evidence.exactFor item obligation)
   | .externalOperationRecorded attempt =>
-      attempt.state == .prepared && !attempt.operation.value.isEmpty &&
-      !attempt.artifactDigest.isEmpty &&
+      attempt.state == .prepared && attempt.wellFormed &&
       !state.externalOperations.any (·.operation == attempt.operation)
+  | .externalOperationAdvanced attempt =>
+      state.externalOperations.any fun current =>
+        current.operation == attempt.operation &&
+          ExternalOperation.transitionAllowed current attempt
   | .obligationRecorded obligation =>
       !obligation.key.isEmpty && !obligation.commandProfile.isEmpty &&
       !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&

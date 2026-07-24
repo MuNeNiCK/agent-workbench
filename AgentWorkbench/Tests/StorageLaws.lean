@@ -851,6 +851,75 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
     successfulState.findingVerifications)
     "fresh SQLite reconstruction did not authorize the latest verified attempt"
 
+def testExternalOperationReconciliation (root : System.FilePath) : IO Unit := do
+  let ledger := root / "external-operation.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let initialized ← bootstrap ledger
+  let intent : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"publish-artifact"⟩
+    artifactDigest := "proof:release-artifact"
+    state := .prepared }
+  let prepared ← mutate ledger "publish-artifact-intent"
+    initialized.store.ledger.storedHead.value
+    (.recordExternalOperation initialized.store.ledger.storedHead intent)
+  let beforeDispatch ← load ledger
+  let preparedState ← match (Application.Service.status beforeDispatch).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "prepared external intent was not recoverable"
+  expect (preparedState.externalOperations == [intent])
+    "external intent and attempt identity were not durable before dispatch"
+
+  let dispatched := { intent with state := .dispatched }
+  let dispatchRecorded ← mutate ledger "publish-artifact-dispatch"
+    prepared.store.ledger.storedHead.value
+    (.advanceExternalOperation prepared.store.ledger.storedHead dispatched)
+  let afterDispatch ← load ledger
+  let dispatchedState ← match
+      (Application.Service.status afterDispatch).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "dispatched external intent was not recoverable"
+  expect (dispatchedState.externalOperations == [dispatched] &&
+      Domain.ExternalOperation.requiresReconciliation dispatched)
+    "interrupted dispatch did not recover as reconciliation-required"
+
+  let exactObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "immutable-remote-object"
+    artifactDigest := some intent.artifactDigest }
+  let succeeded := {
+    intent with state := .succeeded, observation := some exactObservation }
+  let reconciled ← mutate ledger "publish-artifact-reconcile"
+    dispatchRecorded.store.ledger.storedHead.value
+    (.advanceExternalOperation dispatchRecorded.store.ledger.storedHead succeeded)
+  let recovered ← load ledger
+  let recoveredState ← match
+      (Application.Service.status recovered).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "reconciled external operation was not recoverable"
+  expect (recoveredState.externalOperations == [succeeded])
+    "matching immutable observation did not durably complete the operation"
+  match ← Adapter.SQLite.mutate ledger ⟨"publish-artifact-reconcile"⟩
+      dispatchRecorded.store.ledger.storedHead
+      (.advanceExternalOperation dispatchRecorded.store.ledger.storedHead succeeded) with
+  | .ok retry =>
+      expect (retry.exactRetry && retry.receipt == reconciled.receipt)
+        "exact reconciliation retry did not return its canonical receipt"
+  | .error error =>
+      throw <| IO.userError s!"exact reconciliation retry failed: {repr error}"
+  let conflictingObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "immutable-remote-object"
+    artifactDigest := some "proof:different-artifact" }
+  let conflicting := {
+    intent with state := .conflict, observation := some conflictingObservation }
+  match ← Adapter.SQLite.mutate ledger ⟨"publish-artifact-reconcile"⟩
+      dispatchRecorded.store.ledger.storedHead
+      (.advanceExternalOperation dispatchRecorded.store.ledger.storedHead conflicting) with
+  | .error .operationConflict => pure ()
+  | other =>
+      throw <| IO.userError
+        s!"changed reconciliation observation reused an attempt identity: {repr other}"
+  expect ((← load ledger) == recovered)
+    "conflicting reconciliation retry changed the completed ledger"
+
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
     ("deleted", "DELETE FROM artifacts"),
@@ -1563,6 +1632,7 @@ def main (args : List String) : IO Unit :=
     testRelativeReplacement root
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
+    testExternalOperationReconciliation root
     testCorrectionPersistence root
     testReviewPurposePersistence root
     testFindingAttemptPersistence root

@@ -62,6 +62,8 @@ inductive Command
   | recordEvidence (expectedRevision : Revision) (evidence : Evidence.Evidence)
   | recordExternalOperation (expectedRevision : Revision)
       (attempt : ExternalOperation.Attempt)
+  | advanceExternalOperation (expectedRevision : Revision)
+      (attempt : ExternalOperation.Attempt)
   | recordObligation (expectedRevision : Revision) (obligation : Evidence.Obligation)
   | completeWork (expectedRevision : Revision) (target : WorkId)
 deriving DecidableEq, Repr
@@ -101,6 +103,7 @@ def Command.expectedRevision : Command → Revision
   | .promoteCorrection revision _
   | .recordEvidence revision _
   | .recordExternalOperation revision _
+  | .advanceExternalOperation revision _
   | .recordObligation revision _
   | .completeWork revision _ => revision
 
@@ -426,10 +429,23 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       else
         .error (.invalidTransition "evidence requires requirement links, producer, and observation time")
   | .recordExternalOperation _ attempt =>
-      if attempt.state == .prepared then
+      if attempt.state == .prepared && attempt.wellFormed &&
+          !state.externalOperations.any (·.operation == attempt.operation) then
         .ok ⟨[.externalOperationRecorded attempt], by simp⟩
       else
-        .error (.invalidTransition "external operation must begin prepared")
+        .error (.invalidTransition
+          "external operation must begin as one new well-formed prepared intent")
+  | .advanceExternalOperation _ attempt =>
+      match state.externalOperations.find? (·.operation == attempt.operation) with
+      | some current =>
+          if ExternalOperation.transitionAllowed current attempt then
+            .ok ⟨[.externalOperationAdvanced attempt], by simp⟩
+          else
+            .error (.invalidTransition
+              "external operation transition is not allowed")
+      | none =>
+          .error (.invalidTransition
+            "external operation intent must be committed before dispatch")
   | .recordObligation _ obligation =>
       if !obligation.requirements.isEmpty &&
           !obligation.expectedProducer.isEmpty &&
