@@ -1,6 +1,6 @@
 # Release history
 
-## v0.1.31 — 2026-07-24
+## v0.1.31 — 2026-07-25
 
 - Preserve completed derivation repair inside an active aggregate checklist
   when the target checklist item and its task are both closed.
