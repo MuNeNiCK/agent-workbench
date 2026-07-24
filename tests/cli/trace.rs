@@ -7,8 +7,7 @@ fn field<'a>(output: &'a str, name: &str) -> &'a str {
         .unwrap()
 }
 
-#[test]
-fn public_cli_rebinds_a_completed_derivation_under_its_closure() {
+fn exercise_public_cli_completed_derivation_rebind(close_aggregate_checklist: bool) {
     let temp = tempfile::tempdir().unwrap();
     ok(temp.path(), &["init"]);
     let started = ok(
@@ -353,7 +352,9 @@ slices:
         temp.path(),
         &["checklist", "item", "close", &second_item_id.to_string()],
     );
-    ok(temp.path(), &["checklist", "close", &checklist_id]);
+    if close_aggregate_checklist {
+        ok(temp.path(), &["checklist", "close", &checklist_id]);
+    }
     ok(temp.path(), &["task", "close", &task_id]);
     let repair_plan = ok(
         temp.path(),
@@ -521,4 +522,14 @@ slices:
     let listed = ok(temp.path(), &["finding", "list", "--status", "open"]);
     assert!(listed.contains(&format!("{} [run={} ", finding_id, repair_run_id)));
     assert!(listed.contains(&format!("current_decision_handle: {}", decision_handle)));
+}
+
+#[test]
+fn public_cli_rebinds_a_completed_derivation_under_its_closure() {
+    exercise_public_cli_completed_derivation_rebind(true);
+}
+
+#[test]
+fn public_cli_rebinds_a_completed_derivation_inside_an_active_aggregate() {
+    exercise_public_cli_completed_derivation_rebind(false);
 }

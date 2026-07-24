@@ -218,7 +218,6 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
                 )
         );
     };
-    assert_lifecycle_rejected();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
         "update checklists set status='closed' where id=?1",
@@ -259,7 +258,7 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
     assert_lifecycle_rejected();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
-        "update checklists set status='closed' where id=?1",
+        "update checklists set status='active' where id=?1",
         [first.checklist_id],
     )
     .unwrap();

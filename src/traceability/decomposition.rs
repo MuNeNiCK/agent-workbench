@@ -200,8 +200,13 @@ pub fn rebind_task_derivation(
           and checklist.design_version_id=?5
           and (
             (checklist.status='active'
-              and item.status='open'
-              and exists(select 1 from tasks where id=?3 and status='open'))
+              and (
+                (item.status='open'
+                  and exists(select 1 from tasks where id=?3 and status='open'))
+                or
+                (item.status='closed'
+                  and exists(select 1 from tasks where id=?3 and status='closed'))
+              ))
             or
             (checklist.status='closed'
               and item.status='closed'
