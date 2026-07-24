@@ -197,12 +197,14 @@ pub fn rebind_task_derivation(
         join checklists checklist on checklist.id=item.checklist_id
         where item.id=?1 and item.project_id=?2 and item.task_id=?3
           and checklist.project_id=?2 and checklist.work_unit_id=?4
-          and checklist.design_version_id=?5 and checklist.status='active'
+          and checklist.design_version_id=?5
           and (
-            (item.status in ('open','blocked')
+            (checklist.status='active'
+              and item.status in ('open','blocked')
               and exists(select 1 from tasks where id=?3 and status in ('open','blocked')))
             or
-            (item.status='closed'
+            (checklist.status in ('active','closed')
+              and item.status='closed'
               and exists(select 1 from tasks where id=?3 and status='closed'))
           )
         "#,

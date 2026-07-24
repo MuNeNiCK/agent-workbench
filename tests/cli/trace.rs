@@ -1,10 +1,9 @@
 use super::*;
 use agent_workbench::{
-    AdjudicationInput, DesignPackageImport, DesignVersionApproval, NewClosure, NewDesignPackage,
-    NewReviewPlan, NewReviewRun, NewTask, NewTaskDerivation, add_closure, add_review_plan,
-    add_review_run, add_task, approve_design_version, decide_finding, default_ledger_path,
+    DesignPackageImport, DesignVersionApproval, NewDesignPackage, NewReviewPlan, NewReviewRun,
+    NewTask, NewTaskDerivation, add_review_plan, add_review_run, add_task, approve_design_version,
     derive_task_from_requirement, import_design_package, init_design_package, init_project,
-    remediate_work, start_work,
+    start_work,
 };
 
 #[test]
@@ -135,18 +134,103 @@ Observe the aggregate behavior.
         },
     )
     .unwrap();
-    let conn = rusqlite::Connection::open(default_ledger_path(temp.path())).unwrap();
-    conn.execute(
-        "update checklist_items set status='closed' where task_id=?1",
-        [task.task_id],
-    )
-    .unwrap();
-    conn.execute(
-        "update tasks set status='closed' where id=?1",
-        [task.task_id],
-    )
-    .unwrap();
-    drop(conn);
+    for requirement in ["REQ-001", "REQ-002"] {
+        let selected = ok(
+            temp.path(),
+            &[
+                "gate",
+                "select",
+                "--design",
+                &design.design_version_id.to_string(),
+                "--template",
+                "GATE-001",
+                "--requirement",
+                requirement,
+                "--task",
+                &task.task_id.to_string(),
+                "--command",
+                "public-test-validation",
+            ],
+        );
+        let gate_id = selected
+            .lines()
+            .find_map(|line| line.strip_prefix("validation_gate_id: "))
+            .unwrap();
+        ok(
+            temp.path(),
+            &[
+                "gate",
+                "record",
+                "--gate",
+                gate_id,
+                "--result",
+                "pass",
+                "--command",
+                "public-test-validation",
+            ],
+        );
+        ok(
+            temp.path(),
+            &[
+                "evidence",
+                "add",
+                "--task",
+                &task.task_id.to_string(),
+                "--design",
+                &design.design_version_id.to_string(),
+                "--requirement",
+                requirement,
+                "--type",
+                "commit",
+                "--commit",
+                "public-test-commit",
+            ],
+        );
+        ok(
+            temp.path(),
+            &[
+                "coverage",
+                "add",
+                "--design",
+                &design.design_version_id.to_string(),
+                "--requirement",
+                requirement,
+                "--task",
+                &task.task_id.to_string(),
+                "--status",
+                "covered",
+                "--requirement-text",
+                "the public route establishes this requirement",
+                "--runtime",
+                "public test runtime",
+                "--tests-or-gates",
+                "GATE-001 passed",
+            ],
+        );
+    }
+    ok(
+        temp.path(),
+        &[
+            "checklist",
+            "item",
+            "close",
+            &first.checklist_item_id.to_string(),
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "checklist",
+            "item",
+            "close",
+            &second.checklist_item_id.to_string(),
+        ],
+    );
+    ok(
+        temp.path(),
+        &["checklist", "close", &first.checklist_id.to_string()],
+    );
+    ok(temp.path(), &["task", "close", &task.task_id.to_string()]);
     let plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
@@ -215,44 +299,61 @@ Observe the aggregate behavior.
         .unwrap()
         .parse::<i64>()
         .unwrap();
-    let accepted = decide_finding(
+    let accepted = ok(
         temp.path(),
-        finding_id,
-        AdjudicationInput {
-            decision: "accepted",
-            reason: "accept the exact requirement and task target",
-            expected_current: "pending",
-        },
-    )
-    .unwrap();
+        &[
+            "finding",
+            "decide",
+            &finding_id.to_string(),
+            "--decision",
+            "accepted",
+            "--reason",
+            "accept the exact requirement and task target",
+            "--expected-current",
+            "pending",
+        ],
+    );
+    let decision_handle = accepted
+        .lines()
+        .find_map(|line| line.strip_prefix("decision_handle: "))
+        .unwrap();
     let target_inventory = ok(temp.path(), &["finding", "list", "--status", "open"]);
     assert!(target_inventory.contains(&format!(
         "targets: requirement={},task={};requirement={},task={}",
         first_requirement_id, task.task_id, second_requirement_id, task.task_id
     )));
-    let closure = add_closure(
+    let closure = ok(
         temp.path(),
-        NewClosure {
-            finding_id,
-            design_invariant: "each requirement names its establishing boundary",
-            design_citations: None,
-            implementation_evidence: None,
-            affected_surfaces: Some("managed trace derivation"),
-            same_invariant_search: None,
-            other_violations_found: None,
-            fix_plan: Some("rebind only the selected derivation"),
-            tests_or_gates: Some("exact derivation list"),
-            verification_plan: Some("independent trace review"),
-            closed_by_commit: None,
-        },
-    )
-    .unwrap();
-    remediate_work(temp.path(), finding_id).unwrap();
+        &[
+            "closure",
+            "add",
+            "--finding",
+            &finding_id.to_string(),
+            "--invariant",
+            "each requirement names its establishing boundary",
+            "--surfaces",
+            "managed trace derivation",
+            "--fix-plan",
+            "rebind only the selected derivation",
+            "--tests",
+            "exact derivation list",
+            "--verification",
+            "independent trace review",
+        ],
+    );
+    let closure_id = closure
+        .lines()
+        .find_map(|line| line.strip_prefix("closure_id: "))
+        .unwrap()
+        .to_string();
+    ok(
+        temp.path(),
+        &["work", "remediate", "--finding", &finding_id.to_string()],
+    );
 
     let design_id = design.design_version_id.to_string();
     let task_id = task.task_id.to_string();
     let item_id = first.checklist_item_id.to_string();
-    let closure_id = closure.closure_id.to_string();
     let args = [
         "trace",
         "derivation",
@@ -290,7 +391,7 @@ Observe the aggregate behavior.
             "--reason",
             "must not discard an applied public rebind",
             "--expected-current",
-            &accepted.decision_handle,
+            decision_handle,
         ],
     );
     assert!(!rejected.status.success());
@@ -300,8 +401,5 @@ Observe the aggregate behavior.
     );
     let listed = ok(temp.path(), &["finding", "list", "--status", "open"]);
     assert!(listed.contains(&format!("{} [run={} ", finding_id, run.review_run_id)));
-    assert!(listed.contains(&format!(
-        "current_decision_handle: {}",
-        accepted.decision_handle
-    )));
+    assert!(listed.contains(&format!("current_decision_handle: {}", decision_handle)));
 }
