@@ -375,33 +375,61 @@ def validateMutationSurfaces (actual : Array String) : Except String Unit := do
   unless actual = expectedMutationSurfaces.qsort (· < ·) do
     throw s!"mutation and update surfaces differ from the exhaustive inventory: {repr actual}"
 
-def forbiddenPublicMarkers : Array String := #[
-  "R" ++ "EQ-",
-  "G" ++ "ATE-",
-  "D" ++ "EC-",
-  "gover" ++ "ned",
-  "leg" ++ "acy",
-  ".agent-" ++ "workbench",
-  "decision" ++ "_",
-  "phase" ++ ":",
-  "phase" ++ "_id=",
-  "finding" ++ ":",
-  "finding" ++ "_id=",
-  "review-" ++ "run:",
-  "review" ++ "_run_id=",
-  "review" ++ "_plan_id=",
-  "review-" ++ "context:",
-  "design" ++ "_review",
-  "design" ++ "_task_decomposition",
-  "design" ++ "_implementation_diff",
-  "implementation" ++ "_review",
-  "work" ++ "_unit_id=",
-  "design" ++ "_version_id=",
-  "repository" ++ "_snapshot_id=",
-  "closure" ++ "_id=",
-  "task" ++ "_id=",
-  "checklist" ++ "_id="
+structure PrivateIdentifierFixture where
+  marker : String
+  value : String
+
+def privateIdentifierFixtures : Array PrivateIdentifierFixture := #[
+  ⟨"R" ++ "EQ-", "R" ++ "EQ-104"⟩,
+  ⟨"G" ++ "ATE-", "G" ++ "ATE-22"⟩,
+  ⟨"D" ++ "EC-", "D" ++ "EC-91"⟩,
+  ⟨"gover" ++ "ned", "gover" ++ "ned-branch"⟩,
+  ⟨"leg" ++ "acy", "leg" ++ "acy-compatibility-route"⟩,
+  ⟨".agent-" ++ "workbench", ".agent-" ++ "workbench/ledger.sqlite"⟩,
+  ⟨"decision" ++ "_id=", "decision" ++ "_id=91"⟩,
+  ⟨"decision" ++ "_id:", "decision" ++ "_id:91"⟩,
+  ⟨"phase" ++ ":", "phase" ++ ":3"⟩,
+  ⟨"phase" ++ "_id=", "phase" ++ "_id=3"⟩,
+  ⟨"phase" ++ "_id:", "phase" ++ "_id:3"⟩,
+  ⟨"finding" ++ ":", "finding" ++ ":91"⟩,
+  ⟨"finding" ++ "_id=", "finding" ++ "_id=91"⟩,
+  ⟨"finding" ++ "_id:", "finding" ++ "_id:91"⟩,
+  ⟨"review-" ++ "run:", "review-" ++ "run:168"⟩,
+  ⟨"review" ++ "_run_id=", "review" ++ "_run_id=168"⟩,
+  ⟨"review" ++ "_run_id:", "review" ++ "_run_id:168"⟩,
+  ⟨"review-" ++ "plan:", "review-" ++ "plan:47"⟩,
+  ⟨"review" ++ "_plan_id=", "review" ++ "_plan_id=47"⟩,
+  ⟨"review" ++ "_plan_id:", "review" ++ "_plan_id:47"⟩,
+  ⟨"review-" ++ "context:", "review-" ++ "context:design-implementation-diff"⟩,
+  ⟨"design" ++ "_review", "design" ++ "_review"⟩,
+  ⟨"design" ++ "_task_decomposition", "design" ++ "_task_decomposition"⟩,
+  ⟨"design" ++ "_implementation_diff", "design" ++ "_implementation_diff"⟩,
+  ⟨"implementation" ++ "_review", "implementation" ++ "_review"⟩,
+  ⟨"work-" ++ "unit:", "work-" ++ "unit:3"⟩,
+  ⟨"work" ++ "_unit_id=", "work" ++ "_unit_id=3"⟩,
+  ⟨"work" ++ "_unit_id:", "work" ++ "_unit_id:3"⟩,
+  ⟨"design-" ++ "version:", "design-" ++ "version:14"⟩,
+  ⟨"design" ++ "_version_id=", "design" ++ "_version_id=14"⟩,
+  ⟨"design" ++ "_version_id:", "design" ++ "_version_id:14"⟩,
+  ⟨"repository-" ++ "snapshot:", "repository-" ++ "snapshot:64"⟩,
+  ⟨"repository" ++ "_snapshot_id=", "repository" ++ "_snapshot_id=64"⟩,
+  ⟨"repository" ++ "_snapshot_id:", "repository" ++ "_snapshot_id:64"⟩,
+  ⟨"closure" ++ ":", "closure" ++ ":112"⟩,
+  ⟨"closure" ++ "_id=", "closure" ++ "_id=112"⟩,
+  ⟨"closure" ++ "_id:", "closure" ++ "_id:112"⟩,
+  ⟨"task" ++ ":", "task" ++ ":27"⟩,
+  ⟨"task" ++ "_id=", "task" ++ "_id=27"⟩,
+  ⟨"task" ++ "_id:", "task" ++ "_id:27"⟩,
+  ⟨"checklist" ++ ":", "checklist" ++ ":8"⟩,
+  ⟨"checklist" ++ "_id=", "checklist" ++ "_id=8"⟩,
+  ⟨"checklist" ++ "_id:", "checklist" ++ "_id:8"⟩,
+  ⟨"validation-" ++ "run:", "validation-" ++ "run:19"⟩,
+  ⟨"validation" ++ "_run_id=", "validation" ++ "_run_id=19"⟩,
+  ⟨"validation" ++ "_run_id:", "validation" ++ "_run_id:19"⟩
 ]
+
+def forbiddenPublicMarkers : Array String :=
+  privateIdentifierFixtures.map (·.marker)
 
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
@@ -436,9 +464,9 @@ def auditRepositoryInventory : IO Unit := do
     fail "negative unregistered tracked-path fixture was accepted"
 
 def auditPublicProductSurfaces : IO Unit := do
-  for marker in forbiddenPublicMarkers do
-    unless contentHasMarker s!"known private value: {marker}" forbiddenPublicMarkers do
-      fail s!"negative public-marker fixture was not rejected for {marker}"
+  for fixture in privateIdentifierFixtures do
+    unless contentHasMarker fixture.value forbiddenPublicMarkers do
+      fail s!"negative private-identifier fixture was not rejected for {fixture.value}"
   let ordinaryProductLanguage := #[
     "a decision records an accepted product outcome",
     "a phase groups coherent work",
@@ -446,10 +474,9 @@ def auditPublicProductSurfaces : IO Unit := do
     "a review checks the completed product boundary"
   ]
   for path in expectedTrackedPaths do
-    for marker in forbiddenPublicMarkers do
-      if (validateTrackedProductContent path
-          s!"ordinary content\nprivate value: {marker}\n").isOk then
-        fail s!"negative tracked artifact fixture was accepted for {path}"
+    for fixture in privateIdentifierFixtures do
+      if (validateTrackedProductContent path fixture.value).isOk then
+        fail s!"negative tracked artifact fixture {fixture.value} was accepted for {path}"
     for content in ordinaryProductLanguage do
       if !(validateTrackedProductContent path content).isOk then
         fail s!"ordinary product language was rejected for {path}: {content}"
