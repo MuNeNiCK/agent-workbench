@@ -27,15 +27,26 @@ pub fn list_findings_filtered(
     let mut stmt = conn.prepare(
         r#"
         select f.id, f.review_run_id, f.finding_type, f.severity, f.description,
-               f.classification, f.status, epoch.epoch_number, decision.decision_handle
+               f.classification, f.status, epoch.epoch_number,
+               case when f.status='closed' then terminal_decision.decision_handle else (
+                 select current_decision.decision_handle
+                 from owner_decisions current_decision
+                 where current_decision.project_id=f.project_id
+                   and current_decision.owner_ref='work_unit:'||p.work_unit_id
+                   and current_decision.target_ref='finding:'||f.id
+                   and current_decision.decision_family='finding'
+                 order by current_decision.id desc limit 1
+               ) end
         from findings f
+        join review_runs r on r.id=f.review_run_id
+        join review_plans p on p.id=r.review_plan_id
         left join finding_decision_epochs epoch on epoch.id=(
           select terminal.id from finding_decision_epochs terminal
           where terminal.project_id=f.project_id and terminal.finding_id=f.id
             and terminal.status='terminal'
           order by terminal.epoch_number desc limit 1
         )
-        left join owner_decisions decision on decision.id=epoch.terminal_decision_id
+        left join owner_decisions terminal_decision on terminal_decision.id=epoch.terminal_decision_id
         where f.project_id = ?1
           and (?2 is null or f.status = ?2)
           and (?3 is null or f.review_run_id = ?3)

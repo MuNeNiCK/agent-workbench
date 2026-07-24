@@ -917,6 +917,21 @@ fn finding_classification_is_durable_and_review_requiredness_preserves_presence(
     assert!(classified.contains("status: open"));
     let replayed = ok(temp.path(), &classify);
     assert!(replayed.contains("classification_result: existing"));
+    let accepted = ok(
+        temp.path(),
+        &[
+            "finding",
+            "decide",
+            &finding_id,
+            "--decision",
+            "accepted",
+            "--reason",
+            "owner accepts the finding for remediation",
+            "--expected-current",
+            "pending",
+        ],
+    );
+    let accepted_handle = cli_value(&accepted, "decision_handle");
 
     let forbidden = aw(
         temp.path(),
@@ -998,6 +1013,7 @@ fn finding_classification_is_durable_and_review_requiredness_preserves_presence(
         &["finding", "list", "--run", &run.review_run_id.to_string()],
     );
     assert!(filtered.contains("classification must be durable"));
+    assert!(filtered.contains(&format!("current_decision_handle: {accepted_handle}")));
     assert!(!filtered.contains("finding from another run"));
 }
 

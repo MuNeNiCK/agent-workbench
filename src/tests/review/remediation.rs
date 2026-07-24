@@ -1482,6 +1482,33 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
         )
         .unwrap();
     assert_eq!(recovered, ("open".into(), "superseded".into()));
+    drop(conn);
+    let reconsidered = decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "accept the reopened finding",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_findings(temp.path(), Some("open")).unwrap()[0]
+            .current_decision_handle
+            .as_deref(),
+        Some(reconsidered.decision_handle.as_str())
+    );
+    decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "needs_evidence",
+            reason: "use the current handle projected by finding list",
+            expected_current: &reconsidered.decision_handle,
+        },
+    )
+    .unwrap();
 }
 
 #[test]

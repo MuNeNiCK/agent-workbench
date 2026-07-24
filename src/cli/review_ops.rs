@@ -602,6 +602,9 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                     record.status,
                     record.description
                 );
+                if let Some(handle) = record.current_decision_handle.as_deref() {
+                    println!("current_decision_handle: {handle}");
+                }
                 if record.status == "closed"
                     && let (Some(epoch), Some(handle)) = (
                         record.terminal_epoch,
