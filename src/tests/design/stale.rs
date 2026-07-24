@@ -349,12 +349,12 @@ fn stale_close_disposes_selected_validation_gate() {
         apply_correction_transition(temp.path(), correction_closure.closure_id, 7, None, None)
             .unwrap();
     assert!(!transition.idempotent);
-    assert!(
+    let replayed =
         apply_correction_transition(temp.path(), correction_closure.closure_id, 7, None, None)
-            .unwrap_err()
-            .to_string()
-            .contains("selected transition")
-    );
+            .unwrap();
+    assert!(replayed.idempotent);
+    assert_eq!(replayed.application_id, transition.application_id);
+    assert_eq!(replayed.result_ref, transition.result_ref);
     let stale = list_stale_records(temp.path()).unwrap();
     assert!(!stale.iter().any(|record| {
         record.record_type == "validation_gate" && record.id == gate.validation_gate_id
