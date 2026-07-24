@@ -221,6 +221,76 @@ fn assembly_rejects_an_open_work_even_when_its_close_ready_gate_passes() {
 }
 
 #[test]
+fn assembly_accepts_the_same_waived_review_plans_as_close_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let commit = release_source(temp.path());
+    let work = init_open_release_project(temp.path(), &commit);
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            &work.work_unit_id,
+            "--type",
+            "general",
+            "--stage",
+            "close-ready",
+            "--required",
+        ],
+    );
+    let plan = field(&plan, "review_plan_id");
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "waive",
+            plan,
+            "--reason",
+            "a separate accepted review supplies the release boundary",
+        ],
+    );
+    let ready = ok(
+        temp.path(),
+        &["gate", "close-ready", &work.work_unit_id, "--dry-run"],
+    );
+    assert!(ready.contains("result: pass"), "{ready}");
+    ok(
+        temp.path(),
+        &[
+            "work",
+            "close",
+            &work.work_unit_id,
+            "--summary",
+            "release boundary is complete",
+        ],
+    );
+
+    let assembled = ok(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-with-waived-review",
+        ],
+    );
+    assert!(assembled.contains("state: assembled"), "{assembled}");
+}
+
+#[test]
 fn unrelated_work_review_state_does_not_block_assembly_or_revalidation() {
     let temp = tempfile::tempdir().unwrap();
     let commit = release_source(temp.path());

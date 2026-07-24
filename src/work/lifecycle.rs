@@ -624,7 +624,14 @@ fn release_work_review_state(
             select
               (select count(*) from review_plans
                where project_id=?1 and work_unit_id=?2 and required=1
-                 and status not in ('clean','accepted_exception','not_required')),
+                 and status not in ('clean','accepted_exception','not_required')
+                 and not exists (
+                   select 1 from acceptance_records acceptance
+                   where acceptance.target_type='review_plan'
+                     and acceptance.review_plan_id=review_plans.id
+                     and acceptance.status='approved'
+                     and acceptance.acceptance_type in ('explicit_exception','stale_accepted')
+                 )),
               (select count(*) from review_runs run
                join review_plans plan on plan.id=run.review_plan_id
                where run.project_id=?1 and plan.work_unit_id=?2
