@@ -12,6 +12,12 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     )
     .unwrap();
     let unrelated_work = conn.last_insert_rowid();
+    conn.execute(
+        "insert into work_units(project_id,title,status,started_at) values ((select id from projects limit 1),'bare third owner','open',current_timestamp)",
+        [],
+    )
+    .unwrap();
+    let third_work = conn.last_insert_rowid();
     drop(conn);
     let unrelated_plan = add_review_plan(
         temp.path(),
@@ -61,7 +67,13 @@ fn typed_close_ready_contract_routes_to_source_correction() {
         },
     )
     .unwrap();
-    classify_finding(temp.path(), unrelated_finding.finding_id, "invalid").unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update findings set classification='invalid' where id=?1",
+        [unrelated_finding.finding_id],
+    )
+    .unwrap();
+    drop(conn);
     let prerequisite = create_phase(
         temp.path(),
         NewWorkPhase {
@@ -220,12 +232,28 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     )
     .unwrap();
     drop(conn);
+    let urgent_status = project_status(temp.path()).unwrap();
+    let urgent_action = format!(
+        "agent-workbench finding classify {} --classification valid|invalid|design_conflict|needs_evidence",
+        unrelated_finding.finding_id
+    );
+    assert_eq!(urgent_status.owner_actions.len(), 3);
+    assert!(
+        urgent_status
+            .owner_actions
+            .iter()
+            .all(|owner| owner.next_action == urgent_action)
+    );
+    classify_finding(temp.path(), unrelated_finding.finding_id, "invalid").unwrap();
     let unrelated_status = project_status_for(temp.path(), Some(unrelated_work)).unwrap();
     assert_eq!(unrelated_status.owner_actions.len(), 1);
     assert_eq!(
         unrelated_status.owner_actions[0].next_action,
         selected_command
     );
+    let third_status = project_status_for(temp.path(), Some(third_work)).unwrap();
+    assert_eq!(third_status.owner_actions.len(), 1);
+    assert_eq!(third_status.owner_actions[0].next_action, selected_command);
     for rejected in [
         suspend_work(temp.path(), "must not bypass correction", "resume").unwrap_err(),
         interrupt_work(

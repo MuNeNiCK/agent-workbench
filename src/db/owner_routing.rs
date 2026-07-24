@@ -30,24 +30,17 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
         .into_iter()
         .map(|(owner_id, title, work_status)| {
             let review_blocker = owner_review_blocker(conn, owner_id)?;
+            if !corrections.is_empty()
+                && let Some(selected) = globally_selected.as_ref()
+                && selected.kind != "source_correction"
+            {
+                return Ok(owner_action_from_blocker(
+                    owner_id,
+                    title,
+                    selected.clone(),
+                ));
+            }
             if let Some(correction) = corrections.first() {
-                if review_blocker
-                    .as_ref()
-                    .is_some_and(|blocker| {
-                        review_action_must_precede_correction(&blocker.next_action)
-                            && globally_selected
-                                .as_ref()
-                                .is_some_and(|selected| {
-                                    selected.next_action == blocker.next_action
-                                })
-                    })
-                {
-                    return Ok(owner_action_from_blocker(
-                        owner_id,
-                        title,
-                        review_blocker.expect("urgent review blocker"),
-                    ));
-                }
                 return Ok(OwnerAction {
                     owner_type: "work_unit".to_string(),
                     owner_id,
