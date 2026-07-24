@@ -378,9 +378,29 @@ def validateMutationSurfaces (actual : Array String) : Except String Unit := do
 def forbiddenPublicMarkers : Array String := #[
   "R" ++ "EQ-",
   "G" ++ "ATE-",
+  "D" ++ "EC-",
   "gover" ++ "ned",
   "leg" ++ "acy",
-  ".agent-" ++ "workbench"
+  ".agent-" ++ "workbench",
+  "decision" ++ "_",
+  "phase" ++ ":",
+  "phase" ++ "_id=",
+  "finding" ++ ":",
+  "finding" ++ "_id=",
+  "review-" ++ "run:",
+  "review" ++ "_run_id=",
+  "review" ++ "_plan_id=",
+  "review-" ++ "context:",
+  "design" ++ "_review",
+  "design" ++ "_task_decomposition",
+  "design" ++ "_implementation_diff",
+  "implementation" ++ "_review",
+  "work" ++ "_unit_id=",
+  "design" ++ "_version_id=",
+  "repository" ++ "_snapshot_id=",
+  "closure" ++ "_id=",
+  "task" ++ "_id=",
+  "checklist" ++ "_id="
 ]
 
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
@@ -419,19 +439,20 @@ def auditPublicProductSurfaces : IO Unit := do
   for marker in forbiddenPublicMarkers do
     unless contentHasMarker s!"known private value: {marker}" forbiddenPublicMarkers do
       fail s!"negative public-marker fixture was not rejected for {marker}"
-  let artifactClassFixtures := #[
-    "AgentWorkbench/Domain/Work.lean",
-    "AgentWorkbench/Tests/WorkflowLaws.lean",
-    "AgentWorkbench/Audit/Main.lean",
-    "lakefile.lean",
-    "proof-manifest.toml",
-    ".gitignore"
+  let ordinaryProductLanguage := #[
+    "a decision records an accepted product outcome",
+    "a phase groups coherent work",
+    "a finding describes an observed product defect",
+    "a review checks the completed product boundary"
   ]
-  for path in artifactClassFixtures do
+  for path in expectedTrackedPaths do
     for marker in forbiddenPublicMarkers do
       if (validateTrackedProductContent path
           s!"ordinary content\nprivate value: {marker}\n").isOk then
         fail s!"negative tracked artifact fixture was accepted for {path}"
+    for content in ordinaryProductLanguage do
+      if !(validateTrackedProductContent path content).isOk then
+        fail s!"ordinary product language was rejected for {path}: {content}"
   for path in expectedTrackedPaths do
     let content ← IO.FS.readFile path
     match validateTrackedProductContent path content with
