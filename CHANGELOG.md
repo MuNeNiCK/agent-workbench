@@ -1,5 +1,15 @@
 # Release history
 
+## v0.1.29 — 2026-07-24
+
+- Keep source-correction guidance executable through the public CLI, including
+  migrated adopter, closure supersession, and cross-design reconciliation
+  routes.
+- Enforce active correction exclusivity across every work owner even when
+  stale recovery or required-review actions mask the selected resolver state.
+- Preserve exact transition ordering, runtime-value matching, and idempotent
+  replay without weakening correction lifecycle guards.
+
 ## v0.1.28 — 2026-07-24
 
 - Migrate existing generation 26 projects to the corrected source-correction
