@@ -593,6 +593,186 @@ fn remediation_cli_exposes_ready_supersede_disposition_and_typed_result() {
 }
 
 #[test]
+fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "migrated source correction routes", None).unwrap();
+    let plan = |review_type| {
+        add_review_plan(
+            temp.path(),
+            NewReviewPlan {
+                work_unit_id: work.work_unit_id,
+                design_version_id: None,
+                review_type,
+                required: true,
+                stage: "close-ready",
+                scope: None,
+                clean_condition: None,
+                stop_condition: None,
+                review_policy_id: None,
+                review_scope_id: None,
+            },
+        )
+        .unwrap()
+    };
+    let finding = |review_plan_id, finding_type, description| {
+        let run = add_review_run(
+            temp.path(),
+            NewReviewRun {
+                review_plan_id,
+                run_type: "fresh",
+                run_purpose: "new_unbiased_review",
+                target_ref: Some("work_unit:1"),
+                prompt_deviations: None,
+                result_summary: Some(description),
+                new_findings_count: 1,
+                carried_findings_checked: 0,
+                clean_run: false,
+                status: "completed",
+                agent_label: None,
+                external_agent_id: None,
+                review_provenance: "self_recorded",
+                review_provenance_ref: None,
+            },
+        )
+        .unwrap();
+        let finding = add_finding(
+            temp.path(),
+            NewFinding {
+                review_run_id: run.review_run_id,
+                finding_type,
+                severity: "high",
+                description,
+                design_requirement_id: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+        finding
+    };
+    let supersede_finding = finding(
+        plan("design_implementation_diff").review_plan_id,
+        "design_implementation_drift",
+        "replace the registered remediation through the public CLI",
+    );
+    let add_finding_record = finding(
+        plan("implementation_review").review_plan_id,
+        "implementation_finding",
+        "register the source correction through the public CLI",
+    );
+    let original = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: supersede_finding.finding_id,
+            design_invariant: "the implementation follows the current design",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("repair the implementation"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("independent verification"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let authority = add_authority_event(
+        temp.path(),
+        NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("test-owner"),
+            summary: "replace the remediation with a source correction",
+            scope: Some("work-unit:1"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+
+    let ledger = temp.path().join(".agent-workbench/ledger.sqlite");
+    let conn = rusqlite::Connection::open(&ledger).unwrap();
+    let trigger: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type='trigger' and name='trg_correction_token_links_insert'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let current_clause = "and f.status='open' and f.classification='valid'\n            )";
+    let legacy_clause = "and f.status='open' and f.classification='valid'\n                  and not (p.required=1 and p.stage='close-ready'\n                           and p.review_type in ('implementation_review','design_implementation_diff'))\n            )";
+    let legacy_trigger = trigger.replacen(current_clause, legacy_clause, 1);
+    assert_ne!(legacy_trigger, trigger);
+    conn.execute_batch("drop trigger trg_correction_token_links_insert;")
+        .unwrap();
+    conn.execute_batch(&legacy_trigger).unwrap();
+    conn.execute("delete from schema_migrations where version=27", [])
+        .unwrap();
+    drop(conn);
+
+    let inspection = ok(temp.path(), &["update", "inspect"]);
+    assert!(inspection.contains("update_status: ready_to_apply"));
+    ok(
+        temp.path(),
+        &[
+            "update",
+            "apply",
+            cli_value(&inspection, "inspection_handle"),
+            "--expected-current",
+            cli_value(&inspection, "current_identity"),
+            "--idempotency-key",
+            "migrate-source-correction-contracts",
+        ],
+    );
+    assert!(ok(temp.path(), &["update", "inspect"]).contains("update_status: current"));
+
+    let added = ok(
+        temp.path(),
+        &[
+            "closure",
+            "add",
+            "--finding",
+            &add_finding_record.finding_id.to_string(),
+            "--invariant",
+            "the corrected design owns the decomposition",
+            "--surfaces",
+            "transition:design-decompose:80/1",
+            "--fix-plan",
+            "decompose the corrected approved design",
+            "--tests",
+            "implementation-ready",
+            "--verification",
+            "independent source-correction verification",
+        ],
+    );
+    assert!(added.contains("added closure"));
+
+    let superseded = ok(
+        temp.path(),
+        &[
+            "closure",
+            "supersede",
+            &original.closure_id.to_string(),
+            "--invariant",
+            "the corrected design owns the decomposition",
+            "--surfaces",
+            "transition:design-decompose:80/1",
+            "--fix-plan",
+            "decompose the corrected approved design",
+            "--tests",
+            "implementation-ready",
+            "--verification",
+            "independent source-correction verification",
+            "--reason",
+            "the finding requires source correction rather than code remediation",
+            "--authority",
+            &authority.authority_event_id.to_string(),
+        ],
+    );
+    assert!(superseded.contains("superseded closure"));
+}
+
+#[test]
 fn remediation_cli_keeps_the_same_canonical_finding_after_unblock() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

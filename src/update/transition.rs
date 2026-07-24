@@ -1760,10 +1760,12 @@ fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result
           token_kind text,operation text,target text,pre_state text,pre_hash text,
           status text,created_at text,applied_at text
         );
-        insert into review_plans values(1,1,'close-ready','design_implementation_diff');
-        insert into review_runs values(1,1);
-        insert into findings values(1,1,'open','valid');
-        insert into closures values(1,1,1,'registered');
+        insert into review_plans values
+          (1,1,'close-ready','design_implementation_diff'),
+          (2,1,'close-ready','implementation_review');
+        insert into review_runs values(1,1),(2,2);
+        insert into findings values(1,1,'open','valid'),(2,2,'open','valid');
+        insert into closures values(1,1,1,'registered'),(2,1,2,'registered');
         "#,
     )?;
     probe.execute_batch(&correction)?;
@@ -1774,6 +1776,14 @@ fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result
         )
         .context(
             "correction trigger rejected a source correction for a required close-ready design review",
+        )?;
+    probe
+        .execute(
+            "insert into correction_tokens values(2,1,2,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp,null)",
+            [],
+        )
+        .context(
+            "correction trigger rejected a source correction for a required close-ready implementation review",
         )?;
     Ok(())
 }
