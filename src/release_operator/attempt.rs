@@ -344,29 +344,26 @@ pub(super) fn conflict_observations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
     fn assembly_guard_serializes_one_staging_resource() {
         let root = tempfile::tempdir().unwrap();
         let first = acquire_assembly_guard(root.path(), "staging-resource").unwrap();
-        let second_root = root.path().to_path_buf();
-        let (acquired_tx, acquired_rx) = mpsc::channel();
-        let second = thread::spawn(move || {
-            let guard = acquire_assembly_guard(&second_root, "staging-resource").unwrap();
-            acquired_tx.send(()).unwrap();
-            guard
-        });
-
-        assert!(
-            acquired_rx
-                .recv_timeout(Duration::from_millis(200))
-                .is_err()
+        let lock_path = root
+            .path()
+            .join(crate::db::LEDGER_DIR)
+            .join("release-attempt-locks")
+            .join("assembly-staging-resource.lock");
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        assert_eq!(
+            contender.try_lock_exclusive().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
         );
         drop(first);
-        acquired_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        drop(second.join().unwrap());
+        contender.try_lock_exclusive().unwrap();
     }
 }
