@@ -1,5 +1,16 @@
 # Release history
 
+## v0.1.27 — 2026-07-24
+
+- Preserve exact multi-target review findings and keep legacy single-target
+  callers idempotent.
+- Freeze reviewed work, repository state, and release targets until an
+  explicit reconciliation or supersession invalidates the affected review.
+- Make review-target invalidation transactional and expose public recovery
+  paths for completed work.
+- Audit generation 26 migrations and retained trigger bodies so upgrades
+  cannot silently omit release-integrity guards.
+
 ## v0.1.26 — 2026-07-24
 
 - Add an audited public path to rebind a completed task derivation to the
