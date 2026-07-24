@@ -5,6 +5,63 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "typed close-ready correction", None).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "insert into work_units(project_id,title,status,started_at) values ((select id from projects limit 1),'unrelated owner','open',current_timestamp)",
+        [],
+    )
+    .unwrap();
+    let unrelated_work = conn.last_insert_rowid();
+    drop(conn);
+    let unrelated_plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: unrelated_work,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let unrelated_run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: unrelated_plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:2"),
+            prompt_deviations: None,
+            result_summary: Some("unrelated owner finding"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    let unrelated_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: unrelated_run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "unrelated owner review action",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), unrelated_finding.finding_id, "invalid").unwrap();
     let prerequisite = create_phase(
         temp.path(),
         NewWorkPhase {
@@ -158,11 +215,10 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     );
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
-        "insert into work_units(project_id,title,status,started_at) values ((select id from projects limit 1),'unrelated owner','open',current_timestamp)",
-        [],
+        "update findings set classification='unclassified' where id=?1",
+        [unrelated_finding.finding_id],
     )
     .unwrap();
-    let unrelated_work = conn.last_insert_rowid();
     drop(conn);
     let unrelated_status = project_status_for(temp.path(), Some(unrelated_work)).unwrap();
     assert_eq!(unrelated_status.owner_actions.len(), 1);

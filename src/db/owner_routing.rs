@@ -11,6 +11,7 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
     let project_id = project_id(conn)?;
     let remediations = current_finding_remediations(conn)?;
     let corrections = current_source_corrections(conn)?;
+    let globally_selected = super::status::current_phase_blocker(conn)?;
     let active_owner = active_activation(conn)?.map(|activation| activation.work_unit_id);
     let mut stmt = conn.prepare(
         "select id, title, status from work_units where project_id=?1 and status in ('open','blocked') order by id",
@@ -34,6 +35,11 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
                     .as_ref()
                     .is_some_and(|blocker| {
                         review_action_must_precede_correction(&blocker.next_action)
+                            && globally_selected
+                                .as_ref()
+                                .is_some_and(|selected| {
+                                    selected.next_action == blocker.next_action
+                                })
                     })
                 {
                     return Ok(owner_action_from_blocker(
