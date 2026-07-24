@@ -393,10 +393,10 @@ pub(super) fn staging_dir(root: &Path, idempotency_key: &str) -> PathBuf {
         .join("release-candidates")
         .join(format!(
             "staging-{}",
-            short_identity(&digest_parts(
+            digest_parts(
                 b"agent-workbench/release-staging/v1\0",
                 &[idempotency_key.as_bytes()]
-            ))
+            )
         ))
 }
 

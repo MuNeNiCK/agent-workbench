@@ -121,7 +121,11 @@ if [ -n "${FAKE_ASSEMBLY_BARRIER_DIR:-}" ]; then
   while [ ! -e "$FAKE_ASSEMBLY_BARRIER_DIR/release" ]; do sleep 0.01; done
 fi
 mkdir -p "$out"
-printf binary > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
+if [ -n "${FAKE_ASSEMBLY_ASSET_DRIFT:-}" ]; then
+  printf binary-drift > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
+else
+  printf binary > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
+fi
 printf skill > "$out/agent-workbench-${tag}-skill.tar.gz"
 printf docs > "$out/agent-workbench-${tag}-docs.tar.gz"
 printf source > "$out/agent-workbench-${tag}-source.tar.gz"
@@ -133,6 +137,9 @@ printf metadata > "$out/agent-workbench-${tag}-release-metadata.txt"
   "agent-workbench-${tag}-source.tar.gz" \
   "agent-workbench-${tag}-release-metadata.txt" \
   > "agent-workbench-${tag}-checksums.txt")
+if [ -n "${FAKE_ASSEMBLY_REMOVE_BINARY_AFTER_BUILD:-}" ]; then
+  rm -f "$PWD/target/release/agent-workbench"
+fi
 "#,
     );
     git(root, &["init", "-q"]);

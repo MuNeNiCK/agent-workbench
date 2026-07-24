@@ -1,5 +1,13 @@
 use super::*;
 
+fn staging_directory_count(root: &Path) -> usize {
+    fs::read_dir(root.join(".agent-workbench/release-candidates"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("staging-"))
+        .count()
+}
+
 #[test]
 fn operator_candidate_assembles_and_reinspects_only_bound_local_bytes() {
     let temp = tempfile::tempdir().unwrap();
@@ -176,6 +184,80 @@ fn operator_candidate_assembles_and_reinspects_only_bound_local_bytes() {
     assert!(verified.contains("next: agent-workbench status"));
     let terminal_status = ok(temp.path(), &["status"]);
     assert!(!terminal_status.contains(&format!("owner: release_candidate:{candidate}")));
+}
+
+#[test]
+fn failed_release_assembly_removes_every_owned_staging_directory() {
+    let subject_root = tempfile::tempdir().unwrap();
+    let subject_commit = release_source(subject_root.path());
+    let subject_work = init_release_project(subject_root.path(), &subject_commit);
+    let subject_failure = aw_env(
+        subject_root.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &subject_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &subject_commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "subject-failure-cleanup",
+        ],
+        &[("FAKE_ASSEMBLY_REMOVE_BINARY_AFTER_BUILD", "1")],
+    );
+    assert!(!subject_failure.status.success());
+    assert_eq!(staging_directory_count(subject_root.path()), 0);
+
+    let mismatch_root = tempfile::tempdir().unwrap();
+    let mismatch_commit = release_source(mismatch_root.path());
+    let mismatch_work = init_release_project(mismatch_root.path(), &mismatch_commit);
+    ok(
+        mismatch_root.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &mismatch_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &mismatch_commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "mismatch-cleanup",
+        ],
+    );
+    let mismatch_failure = aw_env(
+        mismatch_root.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &mismatch_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &mismatch_commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "mismatch-cleanup",
+        ],
+        &[("FAKE_ASSEMBLY_ASSET_DRIFT", "1")],
+    );
+    assert!(!mismatch_failure.status.success());
+    assert_eq!(staging_directory_count(mismatch_root.path()), 0);
 }
 
 #[test]

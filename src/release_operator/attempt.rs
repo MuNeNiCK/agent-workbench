@@ -13,14 +13,8 @@ pub(super) struct AttemptGuard {
     _file: File,
 }
 
-pub(super) fn acquire_assembly_guard(root: &Path, idempotency_key: &str) -> Result<AttemptGuard> {
-    acquire_guard(
-        root,
-        digest_parts(
-            b"agent-workbench/release-assembly-lock/v1\0",
-            &[idempotency_key.as_bytes()],
-        ),
-    )
+pub(super) fn acquire_assembly_guard(root: &Path, staging_identity: &str) -> Result<AttemptGuard> {
+    acquire_guard(root, format!("assembly-{staging_identity}"))
 }
 
 impl Attempt {

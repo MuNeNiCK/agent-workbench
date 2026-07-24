@@ -1,5 +1,13 @@
 use super::super::*;
 
+struct StagingCleanup(PathBuf);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn operator_assemble_release(
     root: &Path,
     input: OperatorReleaseAssemble,
@@ -22,9 +30,14 @@ pub fn operator_assemble_release(
         input.work_unit_id,
         &input.reviewed_commit,
     )?;
-    let _assembly_guard = acquire_assembly_guard(root, &input.idempotency_key)?;
 
     let staging = staging_dir(root, &input.idempotency_key);
+    signal_assembly_contender_for_test(&staging)?;
+    let staging_identity = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("release staging identity is unavailable")?;
+    let _assembly_guard = acquire_assembly_guard(root, staging_identity)?;
     if staging.exists() {
         fs::remove_dir_all(&staging).with_context(|| {
             format!(
@@ -34,17 +47,14 @@ pub fn operator_assemble_release(
         })?;
     }
     fs::create_dir_all(&staging)?;
-    let build = run(
+    let _staging_cleanup = StagingCleanup(staging.clone());
+    run(
         Command::new(root.join("scripts/build-release-assets.sh"))
             .current_dir(root)
             .arg(&tag)
             .arg(&staging),
         "release asset assembly",
-    );
-    if let Err(error) = build {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
+    )?;
     let subjects = assembled_subjects(root, &staging, &tag, &commit)?;
     let outcome = assemble_release_candidate(
         root,
@@ -55,14 +65,7 @@ pub fn operator_assemble_release(
             idempotency_key: input.idempotency_key,
             subjects,
         },
-    );
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-    };
+    )?;
     let candidate_dir = candidate_dir(root, &outcome.candidate_handle);
     if candidate_dir.exists() {
         ensure_equal_directories(&staging, &candidate_dir)?;
@@ -71,4 +74,21 @@ pub fn operator_assemble_release(
         fs::rename(&staging, &candidate_dir)?;
     }
     Ok(outcome)
+}
+
+fn signal_assembly_contender_for_test(staging: &Path) -> Result<()> {
+    let Some(directory) = std::env::var_os("AGENT_WORKBENCH_TEST_ASSEMBLY_CONTENDER_DIR") else {
+        return Ok(());
+    };
+    let directory = PathBuf::from(directory);
+    fs::create_dir_all(&directory)?;
+    let identity = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("release staging identity is unavailable")?;
+    fs::write(
+        directory.join(format!("{}-{identity}.ready", std::process::id())),
+        [],
+    )?;
+    Ok(())
 }
