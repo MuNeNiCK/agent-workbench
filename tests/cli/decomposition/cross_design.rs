@@ -72,9 +72,9 @@ Observe the public behavior.
         NewReviewPlan {
             work_unit_id: work_id,
             design_version_id: Some(predecessor.design_version_id),
-            review_type: "design_task_decomposition",
+            review_type: "design_implementation_diff",
             required: true,
-            stage: "implementation-ready",
+            stage: "close-ready",
             scope: None,
             clean_condition: None,
             stop_condition: None,
@@ -90,7 +90,7 @@ Observe the public behavior.
             run_type: "fresh",
             run_purpose: "new_unbiased_review",
             target_ref: Some(&format!(
-                "review-context:design-task-decomposition:design={}:work={work_id}",
+                "review-context:design-implementation-diff:design={}:work={work_id}",
                 predecessor.design_version_id
             )),
             prompt_deviations: None,
@@ -110,7 +110,7 @@ Observe the public behavior.
         temp.path(),
         NewFinding {
             review_run_id: source_run.review_run_id,
-            finding_type: "design_task_gap",
+            finding_type: "design_implementation_drift",
             severity: "high",
             description: "publish the successor decomposition and reconcile it",
             design_requirement_id: None,
@@ -253,16 +253,10 @@ Observe the public behavior.
         )),
         "unexpected next after correction begin: {next_after}"
     );
-    let decomposed = ok(
+    let decomposed = run_printed_command(
         temp.path(),
-        &[
-            "closure",
-            "transition",
-            "apply",
-            &closure_id,
-            "--token",
-            "1",
-        ],
+        &next_after,
+        "agent-workbench closure transition apply",
     );
     assert!(decomposed.contains("result_ref: checklist:"));
     let reconciled = ok(

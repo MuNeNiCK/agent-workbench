@@ -5,6 +5,42 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "typed close-ready correction", None).unwrap();
+    let prerequisite = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "prerequisite",
+            title: "Prerequisite",
+            kind: "implementation",
+            order: 1,
+            reason: Some("required correction input"),
+        },
+    )
+    .unwrap();
+    let dependent = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "dependent",
+            title: "Dependent",
+            kind: "implementation",
+            order: 2,
+            reason: Some("requires correction evidence"),
+        },
+    )
+    .unwrap();
+    let dependency = add_phase_dependency(
+        temp.path(),
+        NewPhaseDependency {
+            from_phase_id: prerequisite.phase_id,
+            to_phase_id: dependent.phase_id,
+            dependency_type: "blocks",
+            reason: "the correction provides prerequisite evidence",
+        },
+    )
+    .unwrap();
     let plan = add_review_plan(
         temp.path(),
         NewReviewPlan {
@@ -61,7 +97,10 @@ fn typed_close_ready_contract_routes_to_source_correction() {
             design_invariant: "typed contracts select source correction",
             design_citations: None,
             implementation_evidence: None,
-            affected_surfaces: Some("docs:create:docs/fix.md"),
+            affected_surfaces: Some(&format!(
+                "transition:phase-dependency-satisfy:{}",
+                dependency.dependency_id
+            )),
             same_invariant_search: None,
             other_violations_found: None,
             fix_plan: Some("create the declared Markdown file"),
@@ -105,6 +144,22 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     );
     let correction = begin_correction(temp.path(), closure.closure_id).unwrap();
     assert_eq!(correction.token_count, 1);
+    let selected = project_status(temp.path()).unwrap();
+    assert!(selected.owner_actions.iter().any(|action| {
+        action.next_action
+            == format!(
+                "agent-workbench closure transition apply {} --token 1 --evidence <evidence-ref>",
+                closure.closure_id
+            )
+    }));
+    apply_correction_transition(
+        temp.path(),
+        closure.closure_id,
+        1,
+        None,
+        Some("test:prerequisite-observed"),
+    )
+    .unwrap();
 }
 
 #[test]

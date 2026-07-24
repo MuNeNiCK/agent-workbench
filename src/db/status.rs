@@ -634,18 +634,19 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             },
         )
         .optional()?;
-    let active_source_correction: bool = conn.query_row(
-        r#"
-        select exists(
-            select 1 from correction_sessions s
-            join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
-            join closures c on c.id = s.closure_id and c.status = 'registered'
-            where s.project_id = ?1 and s.status = 'active'
-        )
+    let active_source_correction_finding: Option<i64> = conn
+        .query_row(
+            r#"
+        select f.id from correction_sessions s
+        join findings f on f.id = s.finding_id and f.status = 'open' and f.classification = 'valid'
+        join closures c on c.id = s.closure_id and c.status = 'registered'
+        where s.project_id = ?1 and s.status = 'active'
+        order by s.id limit 1
         "#,
-        params![project_id],
-        |row| row.get(0),
-    )?;
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     let mut review_blocker = conn
         .query_row(
             r#"
@@ -977,6 +978,12 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                 .unwrap_or_else(|| format!("agent-workbench work remediate --finding {finding_id}"))
         };
     }
+    if review_blocker.as_ref().is_some_and(|blocker| {
+        blocker.finding_id == active_source_correction_finding
+            && !review_action_must_precede_correction(&blocker.next_action)
+    }) {
+        review_blocker = None;
+    }
     if review_blocker.is_some() {
         return Ok(review_blocker);
     }
@@ -1017,7 +1024,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             next_action,
         }));
     }
-    if active_source_correction {
+    if active_source_correction_finding.is_some() {
         return Ok(None);
     }
 

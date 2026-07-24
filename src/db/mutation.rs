@@ -21,6 +21,11 @@ pub(crate) fn ensure_unscoped_mutation_allowed(conn: &Connection, operation: &st
     Ok(())
 }
 
+pub(super) fn review_action_must_precede_correction(action: &str) -> bool {
+    !action.starts_with("agent-workbench work remediate")
+        && !action.starts_with("agent-workbench closure correction-begin")
+}
+
 pub(super) struct FindingActionState<'a> {
     pub(super) finding_id: i64,
     pub(super) review_plan_id: i64,

@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::status::{current_finding_remediations, current_source_corrections};
 use super::{
     FindingActionState, OwnerAction, PhaseBlocker, active_activation, finding_next_action,
-    project_id,
+    project_id, review_action_must_precede_correction,
 };
 
 pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction>> {
@@ -35,7 +35,9 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
             {
                 if review_blocker
                     .as_ref()
-                    .is_some_and(|blocker| review_action_is_urgent(&blocker.next_action))
+                    .is_some_and(|blocker| {
+                        review_action_must_precede_correction(&blocker.next_action)
+                    })
                 {
                     return Ok(owner_action_from_blocker(
                         owner_id,
@@ -87,7 +89,9 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
             }
             if review_blocker
                 .as_ref()
-                .is_some_and(|blocker| review_action_is_urgent(&blocker.next_action))
+                .is_some_and(|blocker| {
+                    review_action_must_precede_correction(&blocker.next_action)
+                })
             {
                 return Ok(owner_action_from_blocker(
                     owner_id,
@@ -674,9 +678,4 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
 
 fn action_is_schedulable(action: &str) -> bool {
     action.contains("agent-workbench ")
-}
-
-fn review_action_is_urgent(action: &str) -> bool {
-    !action.starts_with("agent-workbench work remediate")
-        && !action.starts_with("agent-workbench closure correction-begin")
 }
