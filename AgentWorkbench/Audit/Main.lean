@@ -568,6 +568,23 @@ def validatePublicOutputGeneratorInventory : Except String Unit := do
   unless opaqueHandlePrefixes = expectedOpaquePrefixes do
     throw "opaque output handle prefixes differ from the exhaustive inventory"
 
+def expectedPublicOutputGenerators : Array String := #[
+  "AgentWorkbench.Application.Service.actionErrorOutput",
+  "AgentWorkbench.Application.Service.actionOutput",
+  "AgentWorkbench.Application.Service.executeRequest",
+  "AgentWorkbench.Application.Service.gateOutput",
+  "AgentWorkbench.Application.Service.inspectionOutput",
+  "AgentWorkbench.Application.Service.renderBootstrap",
+  "AgentWorkbench.Application.Service.renderDecision",
+  "AgentWorkbench.Application.Service.resolutionOutput"
+]
+
+def isPublicOutputGenerator (declaration : String) : Bool :=
+  declaration.endsWith "Output" ||
+    declaration = "AgentWorkbench.Application.Service.executeRequest" ||
+    declaration = "AgentWorkbench.Application.Service.renderBootstrap" ||
+    declaration = "AgentWorkbench.Application.Service.renderDecision"
+
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
 
@@ -922,7 +939,26 @@ partial def declarationReaches (env : Environment) (target : Name) :
         | some info =>
             declarationReaches env target (declarationDependencies info ++ rest) (name :: visited)
 
+def auditPublicOutputGenerators (env : Environment) : IO Unit := do
+  let actual := (publicDefinitionsInModule env
+    "AgentWorkbench.Application.Service").filter isPublicOutputGenerator
+  unless actual = expectedPublicOutputGenerators do
+    fail s!"compiled public output generators differ from the exhaustive inventory: {repr actual}"
+  let publicRoots := [
+    `AgentWorkbench.Cli.Program.executeRequest,
+    `AgentWorkbench.Cli.Program.renderDecision,
+    `AgentWorkbench.Cli.Program.renderBootstrap,
+    `AgentWorkbench.Cli.Program.run
+  ]
+  for generator in expectedPublicOutputGenerators do
+    let generatorName := generator.toName
+    unless (env.find? generatorName).isSome do
+      fail s!"compiled public output generator is missing: {generator}"
+    unless declarationReaches env generatorName publicRoots [] do
+      fail s!"compiled public output generator is not reachable from a public CLI renderer: {generator}"
+
 def auditDeclarations (env : Environment) : IO Unit := do
+  auditPublicOutputGenerators env
   for (name, info) in env.constants.toList do
     let rendered := name.toString
     if rendered.startsWith "AgentWorkbench." &&
