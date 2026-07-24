@@ -244,6 +244,22 @@ fn typed_close_ready_contract_routes_to_source_correction() {
             .iter()
             .all(|owner| owner.next_action == urgent_action)
     );
+    for rejected in [
+        interrupt_work(
+            temp.path(),
+            "must not bypass masked correction",
+            "urgent review remains selected",
+        )
+        .unwrap_err(),
+        block_work(
+            temp.path(),
+            Some(third_work),
+            "third owner must not bypass masked correction",
+        )
+        .unwrap_err(),
+    ] {
+        assert!(rejected.to_string().contains(&urgent_action));
+    }
     classify_finding(temp.path(), unrelated_finding.finding_id, "invalid").unwrap();
     let unrelated_status = project_status_for(temp.path(), Some(unrelated_work)).unwrap();
     assert_eq!(unrelated_status.owner_actions.len(), 1);

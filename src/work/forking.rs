@@ -407,6 +407,11 @@ pub(super) fn ensure_work_mutation_allowed(
             "{operation} is blocked by requested release attempt for {candidate}; next: agent-workbench operator release candidate inspect"
         );
     }
+    let active_source_correction: bool = conn.query_row(
+        "select exists(select 1 from correction_sessions where status='active')",
+        [],
+        |row| row.get(0),
+    )?;
     if let Some(blocker) = current_phase_blocker(conn)? {
         let unrelated_owner = match (blocker.work_unit_id, selected_owner_action) {
             (Some(_), None) => true,
@@ -416,7 +421,7 @@ pub(super) fn ensure_work_mutation_allowed(
             }
             _ => false,
         };
-        if unrelated_owner && blocker.kind != "source_correction" {
+        if unrelated_owner && !active_source_correction {
             return Ok(());
         }
         let selected = selected_owner_action.is_some_and(|(work_unit_id, command)| {

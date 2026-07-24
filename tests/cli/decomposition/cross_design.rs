@@ -259,6 +259,17 @@ Observe the public behavior.
         "agent-workbench closure transition apply",
     );
     assert!(decomposed.contains("result_ref: checklist:"));
+    let blocked = aw(
+        temp.path(),
+        &[
+            "work",
+            "block",
+            &work_id.to_string(),
+            "--reason",
+            "must not bypass active design recovery",
+        ],
+    );
+    assert!(!blocked.status.success());
     let next_reconcile = ok(temp.path(), &["next", "--work", &work_id.to_string()]);
     assert!(
         next_reconcile.contains(&format!(
