@@ -32,7 +32,7 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
             let review_blocker = owner_review_blocker(conn, owner_id)?;
             if !corrections.is_empty()
                 && let Some(selected) = globally_selected.as_ref()
-                && selected.kind != "source_correction"
+                && selected.kind == "required_review_finding"
             {
                 return Ok(owner_action_from_blocker(
                     owner_id,
