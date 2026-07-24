@@ -229,8 +229,6 @@ fn identical_concurrent_assembly_preserves_the_shared_staging_directory() {
     let barrier_root = tempfile::tempdir().unwrap();
     let barrier = barrier_root.path().join("assembly");
     let barrier_value = barrier.to_string_lossy().into_owned();
-    let contender_root = tempfile::tempdir().unwrap();
-    let contender_value = contender_root.path().to_string_lossy().into_owned();
     let args = [
         "operator",
         "release",
@@ -247,25 +245,10 @@ fn identical_concurrent_assembly_preserves_the_shared_staging_directory() {
         "--idempotency-key",
         "same-concurrent-assembly",
     ];
-    let envs = [
-        ("FAKE_ASSEMBLY_BARRIER_DIR", barrier_value.as_str()),
-        (
-            "AGENT_WORKBENCH_TEST_ASSEMBLY_CONTENDER_DIR",
-            contender_value.as_str(),
-        ),
-    ];
+    let envs = [("FAKE_ASSEMBLY_BARRIER_DIR", barrier_value.as_str())];
     let first = spawn_aw(root.path(), &args, &envs);
     wait_for(&barrier.join("started"));
     let second = spawn_aw(root.path(), &args, &envs);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while fs::read_dir(contender_root.path()).unwrap().count() < 2 {
-        assert!(
-            Instant::now() < deadline,
-            "second assembly process did not reach the shared lock"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(call_count(&barrier.join("calls")), 1);
     fs::write(barrier.join("release"), "continue").unwrap();
 
     let first = first.wait_with_output().unwrap();

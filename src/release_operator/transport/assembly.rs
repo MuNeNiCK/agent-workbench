@@ -32,7 +32,6 @@ pub fn operator_assemble_release(
     )?;
 
     let staging = staging_dir(root, &input.idempotency_key);
-    signal_assembly_contender_for_test(&staging)?;
     let staging_identity = staging
         .file_name()
         .and_then(|name| name.to_str())
@@ -74,21 +73,4 @@ pub fn operator_assemble_release(
         fs::rename(&staging, &candidate_dir)?;
     }
     Ok(outcome)
-}
-
-fn signal_assembly_contender_for_test(staging: &Path) -> Result<()> {
-    let Some(directory) = std::env::var_os("AGENT_WORKBENCH_TEST_ASSEMBLY_CONTENDER_DIR") else {
-        return Ok(());
-    };
-    let directory = PathBuf::from(directory);
-    fs::create_dir_all(&directory)?;
-    let identity = staging
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("release staging identity is unavailable")?;
-    fs::write(
-        directory.join(format!("{}-{identity}.ready", std::process::id())),
-        [],
-    )?;
-    Ok(())
 }

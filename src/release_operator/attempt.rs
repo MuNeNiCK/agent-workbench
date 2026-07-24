@@ -84,6 +84,36 @@ fn acquire_guard(root: &Path, identity: String) -> Result<AttemptGuard> {
     Ok(AttemptGuard { _file: file })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn assembly_guard_serializes_one_staging_resource() {
+        let root = tempfile::tempdir().unwrap();
+        let first = acquire_assembly_guard(root.path(), "staging-resource").unwrap();
+        let second_root = root.path().to_path_buf();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            let guard = acquire_assembly_guard(&second_root, "staging-resource").unwrap();
+            acquired_tx.send(()).unwrap();
+            guard
+        });
+
+        assert!(
+            acquired_rx
+                .recv_timeout(Duration::from_millis(200))
+                .is_err()
+        );
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        drop(second.join().unwrap());
+    }
+}
+
 pub(super) fn inspection_outcome(
     inspection: &ReleaseInspection,
     already_applied: bool,
