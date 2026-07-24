@@ -1,5 +1,12 @@
 # Release history
 
+## v0.1.28 — 2026-07-24
+
+- Migrate existing generation 26 projects to the corrected source-correction
+  trigger contract instead of treating them as current.
+- Verify that required close-ready design findings accept typed source
+  corrections after update, including closure creation and supersession.
+
 ## v0.1.27 — 2026-07-24
 
 - Preserve exact multi-target review findings and keep legacy single-target
