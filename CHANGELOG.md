@@ -1,5 +1,13 @@
 # Release history
 
+## v0.1.30 — 2026-07-24
+
+- Expose design-requirement identities through the public requirement inventory
+  so requirement-scoped findings and derivation repairs can be completed
+  without private state access.
+- Exercise the complete public route from requirement discovery through
+  finding targeting and completed derivation rebind.
+
 ## v0.1.29 — 2026-07-24
 
 - Keep source-correction guidance executable through the public CLI, including
