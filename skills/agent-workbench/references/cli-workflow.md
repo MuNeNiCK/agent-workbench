@@ -66,6 +66,9 @@ authority.
    `agent-workbench checklist list`,
    `agent-workbench requirement list --design <design-version-id>`, and
    `agent-workbench stale list`.
+   The requirement inventory's numeric `[id=...]` value is the operand for
+   `finding add --design-requirement <id>` when an exact design-derived record
+   must be repaired; pair it with the affected `--task <task-id>`.
    If stale records appear, resolve the design mismatch, or explicitly record a
    disposition with
    `agent-workbench stale accept <record-type> <id> --reason "<reason>"` or

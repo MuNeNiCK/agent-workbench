@@ -374,11 +374,14 @@ from current managed project state.
   and `trace derive-task` for explicit manual links or corrections; neither
   bypasses approval, exact-Plan review, owner adjudication, or implementation readiness.
 - When a valid close-ready finding identifies only an incorrect checklist
-  boundary on an existing completed task derivation, enter the printed
-  implementation remediation and use `trace derivation rebind --design
+  boundary on an existing completed task derivation, first obtain the numeric
+  requirement ID from `requirement list --design <design-version-id>` and add
+  the finding with the exact `--design-requirement <id> --task <task-id>`
+  target pair. Enter the printed implementation remediation and use `trace derivation rebind --design
   <design> --requirement <key> --task <task> --checklist-item <item> --closure
   <closure> --reason "<reason>"`. Do not reopen the task, create a duplicate
-  derivation, or use the completion-text revision option for this case.
+  derivation, use a targetless finding, or use the completion-text revision
+  option for this case.
 - A source-correction closure may carry a generated checklist across an
   approved successor design with an earlier `design-decompose:<design>/<work>`
   transition followed by

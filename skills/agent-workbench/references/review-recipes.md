@@ -85,6 +85,12 @@ agent-workbench finding decide <finding-id> --decision accepted --reason "<reaso
 agent-workbench closure add --finding <finding-id> --invariant "<what must now hold>" --surfaces "<affected surfaces>" --fix-plan "<fix>" --tests "<tests>" --verification "<resume review>"
 ```
 
+If the remediation will mutate an existing design-derived record, register its
+exact typed target when adding the finding. Obtain the numeric requirement ID
+from `requirement list --design <design-version-id>`, then add each intended
+requirement/task pair with `--design-requirement <id> --task <task-id>`.
+Targetless findings do not authorize derivation rebinds.
+
 For an eligible close-ready implementation finding, closure registration opens
 scoped remediation while the finding remains open:
 
