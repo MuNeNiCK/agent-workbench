@@ -48,6 +48,11 @@ pub fn list_findings_filtered(
         )
         left join owner_decisions terminal_decision on terminal_decision.id=epoch.terminal_decision_id
         where f.project_id = ?1
+          and r.status = 'completed'
+          and (
+            select count(*) from findings inventory
+            where inventory.review_run_id=r.id
+          )=r.new_findings_count
           and (?2 is null or f.status = ?2)
           and (?3 is null or f.review_run_id = ?3)
         order by f.id
@@ -70,6 +75,36 @@ pub fn list_findings_filtered(
         },
     )?;
     collect_rows(rows)
+}
+
+pub fn list_finding_targets(root: &Path, finding_id: i64) -> Result<Vec<FindingTargetRecord>> {
+    let conn = open_existing_project(root)?;
+    let project_id = project_id(&conn)?;
+    let mut statement = conn.prepare(
+        r#"
+        select target.ordinal,target.design_requirement_id,target.task_id
+        from finding_targets target
+        join findings finding on finding.id=target.finding_id
+        join review_runs run on run.id=finding.review_run_id
+        where target.project_id=?1 and target.finding_id=?2
+          and run.status='completed'
+          and (
+            select count(*) from findings inventory
+            where inventory.review_run_id=run.id
+          )=run.new_findings_count
+        order by target.ordinal
+        "#,
+    )?;
+    let targets = statement
+        .query_map(params![project_id, finding_id], |row| {
+            Ok(FindingTargetRecord {
+                ordinal: row.get(0)?,
+                design_requirement_id: row.get(1)?,
+                task_id: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(targets)
 }
 
 pub(crate) fn refresh_plan_for_run(

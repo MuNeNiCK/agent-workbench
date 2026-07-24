@@ -316,6 +316,140 @@ create table if not exists findings (
     created_at text not null
 );
 
+create table if not exists finding_targets (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    finding_id integer not null references findings(id) on delete cascade,
+    ordinal integer not null check(ordinal > 0),
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    created_at text not null,
+    check(design_requirement_id is not null or task_id is not null),
+    unique(finding_id, ordinal),
+    unique(finding_id, design_requirement_id, task_id)
+);
+
+create table if not exists review_result_draft_item_targets (
+    id integer primary key,
+    project_id integer not null references projects(id) on delete cascade,
+    draft_item_id integer not null references review_result_draft_items(id) on delete cascade,
+    ordinal integer not null check(ordinal > 0),
+    design_requirement_id integer references design_requirements(id),
+    task_id integer references tasks(id),
+    created_at text not null,
+    check(design_requirement_id is not null or task_id is not null),
+    unique(draft_item_id, ordinal),
+    unique(draft_item_id, design_requirement_id, task_id)
+);
+
+create table if not exists finding_target_seals (
+    finding_id integer primary key references findings(id) on delete cascade,
+    project_id integer not null references projects(id) on delete cascade,
+    target_count integer not null check(target_count >= 0),
+    created_at text not null
+);
+
+create table if not exists review_result_draft_item_target_seals (
+    draft_item_id integer primary key references review_result_draft_items(id) on delete cascade,
+    project_id integer not null references projects(id) on delete cascade,
+    target_count integer not null check(target_count >= 0),
+    created_at text not null
+);
+
+create unique index if not exists idx_finding_target_requirement_only
+on finding_targets(finding_id,design_requirement_id)
+where task_id is null;
+create unique index if not exists idx_finding_target_task_only
+on finding_targets(finding_id,task_id)
+where design_requirement_id is null;
+create unique index if not exists idx_draft_finding_target_requirement_only
+on review_result_draft_item_targets(draft_item_id,design_requirement_id)
+where task_id is null;
+create unique index if not exists idx_draft_finding_target_task_only
+on review_result_draft_item_targets(draft_item_id,task_id)
+where design_requirement_id is null;
+
+drop trigger if exists trg_finding_target_insert_after_seal;
+drop trigger if exists trg_review_result_draft_item_target_insert_after_seal;
+
+insert or ignore into finding_targets(
+    project_id,finding_id,ordinal,design_requirement_id,task_id,created_at
+)
+select project_id,id,1,design_requirement_id,task_id,created_at
+from findings
+where design_requirement_id is not null or task_id is not null;
+
+insert or ignore into review_result_draft_item_targets(
+    project_id,draft_item_id,ordinal,design_requirement_id,task_id,created_at
+)
+select project_id,id,1,design_requirement_id,task_id,created_at
+from review_result_draft_items
+where design_requirement_id is not null or task_id is not null;
+
+insert or ignore into finding_target_seals(finding_id,project_id,target_count,created_at)
+select finding.id,finding.project_id,count(target.id),finding.created_at
+from findings finding
+left join finding_targets target on target.finding_id=finding.id
+group by finding.id;
+
+insert or ignore into review_result_draft_item_target_seals(
+    draft_item_id,project_id,target_count,created_at
+)
+select item.id,item.project_id,count(target.id),item.created_at
+from review_result_draft_items item
+left join review_result_draft_item_targets target on target.draft_item_id=item.id
+group by item.id;
+
+create trigger if not exists trg_finding_target_insert_after_seal
+before insert on finding_targets
+when exists(select 1 from finding_target_seals seal where seal.finding_id=new.finding_id)
+  and not exists(
+    select 1 from finding_targets target
+    where target.finding_id=new.finding_id
+      and target.ordinal=new.ordinal
+      and target.design_requirement_id is new.design_requirement_id
+      and target.task_id is new.task_id
+  )
+begin select raise(abort,'finding target set is sealed'); end;
+create trigger if not exists trg_review_result_draft_item_target_insert_after_seal
+before insert on review_result_draft_item_targets
+when exists(
+  select 1 from review_result_draft_item_target_seals seal
+  where seal.draft_item_id=new.draft_item_id
+)
+  and not exists(
+    select 1 from review_result_draft_item_targets target
+    where target.draft_item_id=new.draft_item_id
+      and target.ordinal=new.ordinal
+      and target.design_requirement_id is new.design_requirement_id
+      and target.task_id is new.task_id
+  )
+begin select raise(abort,'draft finding target set is sealed'); end;
+create trigger if not exists trg_finding_target_seal_immutable_update
+before update on finding_target_seals
+begin select raise(abort,'finding target seals are append-only'); end;
+create trigger if not exists trg_finding_target_seal_immutable_delete
+before delete on finding_target_seals
+begin select raise(abort,'finding target seals are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_target_seal_immutable_update
+before update on review_result_draft_item_target_seals
+begin select raise(abort,'draft finding target seals are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_target_seal_immutable_delete
+before delete on review_result_draft_item_target_seals
+begin select raise(abort,'draft finding target seals are append-only'); end;
+create trigger if not exists trg_finding_target_immutable_update
+before update on finding_targets
+begin select raise(abort,'finding targets are append-only'); end;
+create trigger if not exists trg_finding_target_immutable_delete
+before delete on finding_targets
+begin select raise(abort,'finding targets are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_target_immutable_update
+before update on review_result_draft_item_targets
+begin select raise(abort,'review result draft item targets are append-only'); end;
+create trigger if not exists trg_review_result_draft_item_target_immutable_delete
+before delete on review_result_draft_item_targets
+begin select raise(abort,'review result draft item targets are append-only'); end;
+
 create table if not exists review_adjudication_decisions (
     id integer primary key, project_id integer not null references projects(id) on delete cascade,
     owner_decision_id integer not null unique references owner_decisions(id),

@@ -36,6 +36,44 @@ fn retain_core_storage_only(conn: &rusqlite::Connection) {
         drop table if exists decomposition_plan_ingress_identities;
         drop trigger if exists trg_finding_verification_project_insert;
         drop trigger if exists trg_finding_verification_project_update;
+        drop trigger if exists trg_review_plan_release_attempt_insert;
+        drop trigger if exists trg_review_plan_release_attempt_update;
+        drop trigger if exists trg_review_plan_target_release_attempt_insert;
+        drop trigger if exists trg_review_plan_target_release_attempt_update;
+        drop trigger if exists trg_review_plan_target_release_attempt_delete;
+        drop trigger if exists trg_phase_review_target_release_attempt_insert;
+        drop trigger if exists trg_phase_review_target_release_attempt_update;
+        drop trigger if exists trg_phase_review_target_release_attempt_delete;
+        drop trigger if exists trg_review_run_release_attempt_insert;
+        drop trigger if exists trg_review_run_release_attempt_update;
+        drop trigger if exists trg_review_invocation_release_attempt_insert;
+        drop trigger if exists trg_review_invocation_release_attempt_update;
+        drop trigger if exists trg_review_result_release_attempt_insert;
+        drop trigger if exists trg_review_result_release_attempt_update;
+        drop trigger if exists trg_finding_release_attempt_insert;
+        drop trigger if exists trg_finding_release_attempt_update;
+        drop trigger if exists trg_closure_release_attempt_insert;
+        drop trigger if exists trg_closure_release_attempt_update;
+        drop trigger if exists trg_remediation_binding_release_attempt_insert;
+        drop trigger if exists trg_work_unit_release_attempt_insert;
+        drop trigger if exists trg_work_unit_release_attempt_update;
+        drop trigger if exists trg_work_unit_release_attempt_delete;
+        drop trigger if exists trg_work_activation_release_attempt_insert;
+        drop trigger if exists trg_work_activation_release_attempt_update;
+        drop trigger if exists trg_work_activation_release_attempt_delete;
+        drop trigger if exists trg_repository_release_attempt_insert;
+        drop trigger if exists trg_repository_release_attempt_update;
+        drop trigger if exists trg_repository_release_attempt_delete;
+        drop trigger if exists trg_repository_snapshot_release_attempt_insert;
+        drop trigger if exists trg_repository_snapshot_release_attempt_update;
+        drop trigger if exists trg_repository_snapshot_release_attempt_delete;
+        drop table if exists review_result_draft_item_target_seals;
+        drop table if exists finding_target_seals;
+        drop table if exists review_result_draft_item_targets;
+        drop table if exists finding_targets;
+        drop table if exists review_invocation_completion_migrations;
+        drop table if exists review_run_completion_migrations;
+        drop table if exists review_run_finding_count_migrations;
         drop table if exists finding_design_recoveries;
         drop table if exists decomposition_reconciliation_results;
         drop table if exists decomposition_migration_sources;
@@ -80,7 +118,6 @@ fn retain_core_storage_only(conn: &rusqlite::Connection) {
         "#,
     )
     .unwrap();
-    conn.execute_batch(crate::db::REVIEW_INTEGRITY_SQL).unwrap();
     conn.pragma_update(None, "foreign_keys", foreign_keys != 0)
         .unwrap();
 }

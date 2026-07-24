@@ -17,10 +17,19 @@ pub fn inspect_release_candidate(root: &Path, candidate_handle: &str) -> Result<
         .with_context(|| format!("release candidate not found: {candidate_handle}"))?;
     let current = load_current(&conn, project_id, candidate_handle)?;
     let pending = pending_attempt(&conn, current.candidate_id)?;
-    let next_action = pending.as_ref().map_or_else(
-        || next_action(candidate_handle, &current),
-        |(action, key, _)| interrupted_next_action(&current, action, key),
-    );
+    let next_action = match pending.as_ref() {
+        Some((_, key, _))
+            if revalidate_release_work_boundary(&conn, project_id, root, current.candidate_id)
+                .is_err() =>
+        {
+            format!(
+                "agent-workbench operator release reconcile {} --expected-current {} --idempotency-key {key}-reconcile",
+                current.candidate_handle, current.revision_handle
+            )
+        }
+        Some((action, key, _)) => interrupted_next_action(&current, action, key),
+        None => next_action(candidate_handle, &current),
+    };
     let recover_completed_withdrawal = current.action == "reconcile"
         && current.reason.as_deref().is_some_and(|reason| {
             reason == "external step absent" || reason.starts_with("withdrawal notice conflicts")

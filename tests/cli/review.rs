@@ -1470,17 +1470,78 @@ fn external_review_orchestration_is_project_local_atomic_and_replayable() {
             "finding-one",
         ],
     );
+    let under = aw(
+        temp.path(),
+        &[
+            "review",
+            "result",
+            "complete",
+            cli_value(&stage, "stage_handle"),
+            "--expected-findings",
+            "2",
+            "--summary",
+            "under-counted inventory",
+            "--expected-current",
+            cli_value(&finding, "version_handle"),
+            "--invocation-current",
+            "running",
+            "--idempotency-key",
+            "complete-stage-under",
+        ],
+    );
+    assert!(!under.status.success());
+    assert!(String::from_utf8_lossy(&under.stderr).contains("inventory count changed"));
+    let second_finding = ok(
+        temp.path(),
+        &[
+            "review",
+            "result",
+            "finding-add",
+            cli_value(&stage, "stage_handle"),
+            "--type",
+            "implementation_finding",
+            "--severity",
+            "medium",
+            "--description",
+            "second atomic external finding",
+            "--expected-current",
+            cli_value(&finding, "version_handle"),
+            "--idempotency-key",
+            "finding-two",
+        ],
+    );
+    let over = aw(
+        temp.path(),
+        &[
+            "review",
+            "result",
+            "complete",
+            cli_value(&stage, "stage_handle"),
+            "--expected-findings",
+            "1",
+            "--summary",
+            "over-counted inventory",
+            "--expected-current",
+            cli_value(&second_finding, "version_handle"),
+            "--invocation-current",
+            "running",
+            "--idempotency-key",
+            "complete-stage-over",
+        ],
+    );
+    assert!(!over.status.success());
+    assert!(String::from_utf8_lossy(&over.stderr).contains("inventory count changed"));
     let completed_args = [
         "review",
         "result",
         "complete",
         cli_value(&stage, "stage_handle"),
         "--expected-findings",
-        "1",
+        "2",
         "--summary",
         "one external finding",
         "--expected-current",
-        cli_value(&finding, "version_handle"),
+        cli_value(&second_finding, "version_handle"),
         "--invocation-current",
         "running",
         "--idempotency-key",
@@ -1495,7 +1556,7 @@ fn external_review_orchestration_is_project_local_atomic_and_replayable() {
     );
     assert!(completed_replay.contains("already_applied: true"));
     let findings = list_findings(temp.path(), Some("open")).unwrap();
-    assert_eq!(findings.len(), 1);
+    assert_eq!(findings.len(), 2);
     assert_eq!(findings[0].description, "atomic external finding");
 
     let clean_invocation = request_external_invocation(
@@ -1634,6 +1695,83 @@ fn external_review_orchestration_is_project_local_atomic_and_replayable() {
         assert!(ended.contains(&format!("invocation_state: {expected}")));
         assert!(replayed.contains("already_applied: true"));
     }
+}
+
+#[test]
+fn finding_add_preserves_single_sided_target_compatibility() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "single-sided finding target", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            work_unit_id: Some(work.work_unit_id),
+            title: "target task",
+            priority: "medium",
+            source: "user",
+            details: None,
+            completion_condition: Some("reviewed"),
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "general",
+            required: false,
+            stage: "resume-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("one task-only finding"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    ok(
+        temp.path(),
+        &[
+            "finding",
+            "add",
+            "--run",
+            &run.review_run_id.to_string(),
+            "--type",
+            "process_finding",
+            "--severity",
+            "medium",
+            "--description",
+            "task-only target remains representable",
+            "--task",
+            &task.task_id.to_string(),
+        ],
+    );
+    let listed = ok(temp.path(), &["finding", "list", "--status", "open"]);
+    assert!(
+        listed.contains(&format!("targets: requirement=-,task={}", task.task_id)),
+        "{listed}"
+    );
 }
 
 fn cli_value<'a>(output: &'a str, key: &str) -> &'a str {

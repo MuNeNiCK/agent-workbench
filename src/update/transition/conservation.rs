@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 pub(crate) struct ConservationSnapshot {
     tables: Vec<TableProjection>,
     text_mutations: Vec<DeclaredTextMutation>,
+    integer_mutations: Vec<DeclaredIntegerMutation>,
     pub(super) digest: String,
 }
 
@@ -17,6 +18,16 @@ pub(crate) struct DeclaredTextMutation {
     pub(crate) column: String,
     pub(crate) before: String,
     pub(crate) after: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeclaredIntegerMutation {
+    pub(crate) table: String,
+    pub(crate) key_column: String,
+    pub(crate) key_value: i64,
+    pub(crate) column: String,
+    pub(crate) before: i64,
+    pub(crate) after: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,10 +58,11 @@ pub(super) fn capture_product_facts(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let digest = digest_projections(conn, &tables, &[])?;
+    let digest = digest_projections(conn, &tables, &[], &[])?;
     Ok(ConservationSnapshot {
         tables,
         text_mutations: Vec::new(),
+        integer_mutations: Vec::new(),
         digest,
     })
 }
@@ -60,9 +72,20 @@ pub(super) fn capture_product_facts_with_text_mutations(
     excluded_tables: &[&str],
     text_mutations: Vec<DeclaredTextMutation>,
 ) -> Result<ConservationSnapshot> {
+    capture_product_facts_with_mutations(conn, excluded_tables, text_mutations, Vec::new())
+}
+
+pub(super) fn capture_product_facts_with_mutations(
+    conn: &Connection,
+    excluded_tables: &[&str],
+    text_mutations: Vec<DeclaredTextMutation>,
+    integer_mutations: Vec<DeclaredIntegerMutation>,
+) -> Result<ConservationSnapshot> {
     let mut snapshot = capture_product_facts(conn, excluded_tables)?;
     validate_declared_text_mutations(conn, &snapshot.tables, &text_mutations, false)?;
+    validate_declared_integer_mutations(conn, &snapshot.tables, &integer_mutations, false)?;
     snapshot.text_mutations = text_mutations;
+    snapshot.integer_mutations = integer_mutations;
     Ok(snapshot)
 }
 
@@ -81,17 +104,24 @@ pub(super) fn capture_named_product_facts(
             Err(error) => Some(Err(error)),
         })
         .collect::<Result<Vec<_>>>()?;
-    let digest = digest_projections(conn, &tables, &[])?;
+    let digest = digest_projections(conn, &tables, &[], &[])?;
     Ok(ConservationSnapshot {
         tables,
         text_mutations: Vec::new(),
+        integer_mutations: Vec::new(),
         digest,
     })
 }
 
 pub(super) fn verify_product_facts(conn: &Connection, source: &ConservationSnapshot) -> Result<()> {
     validate_declared_text_mutations(conn, &source.tables, &source.text_mutations, true)?;
-    let target = digest_projections(conn, &source.tables, &source.text_mutations)?;
+    validate_declared_integer_mutations(conn, &source.tables, &source.integer_mutations, true)?;
+    let target = digest_projections(
+        conn,
+        &source.tables,
+        &source.text_mutations,
+        &source.integer_mutations,
+    )?;
     if target != source.digest {
         bail!("transition did not conserve an unaffected product fact");
     }
@@ -118,13 +148,14 @@ fn digest_tables(conn: &Connection, tables: &[String]) -> Result<String> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    digest_projections(conn, &projections, &[])
+    digest_projections(conn, &projections, &[], &[])
 }
 
 fn digest_projections(
     conn: &Connection,
     tables: &[TableProjection],
     text_mutations: &[DeclaredTextMutation],
+    integer_mutations: &[DeclaredIntegerMutation],
 ) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"agent-workbench/conserved-product-facts/v1\0");
@@ -174,39 +205,63 @@ fn digest_projections(
                         })
                 })
                 .collect::<Vec<_>>();
+            let row_integer_mutations = integer_mutations
+                .iter()
+                .filter(|mutation| mutation.table == table.name)
+                .filter(|mutation| {
+                    table
+                        .columns
+                        .iter()
+                        .position(|column| column == &mutation.key_column)
+                        .and_then(|index| row.get_ref(index).ok())
+                        .is_some_and(|value| {
+                            matches!(value, ValueRef::Integer(actual) if actual == mutation.key_value)
+                        })
+                })
+                .collect::<Vec<_>>();
             hasher.update(b"row\0");
             for index in 0..column_count {
                 let normalized = row_mutations
                     .iter()
                     .find(|mutation| mutation.column == table.columns[index]);
+                let normalized_integer = row_integer_mutations
+                    .iter()
+                    .find(|mutation| mutation.column == table.columns[index]);
                 let value = row.get_ref(index)?;
-                match (value, normalized) {
-                    (ValueRef::Text(_), Some(mutation)) => {
+                match (value, normalized, normalized_integer) {
+                    (ValueRef::Text(_), Some(mutation), None) => {
                         hasher.update(b"text\0");
                         hasher.update((mutation.before.len() as u64).to_be_bytes());
                         hasher.update(mutation.before.as_bytes());
                     }
-                    (ValueRef::Null, None) => hasher.update(b"null\0"),
-                    (ValueRef::Integer(value), None) => {
+                    (ValueRef::Integer(_), None, Some(mutation)) => {
+                        hasher.update(b"integer\0");
+                        hasher.update(mutation.before.to_be_bytes());
+                    }
+                    (ValueRef::Null, None, None) => hasher.update(b"null\0"),
+                    (ValueRef::Integer(value), None, None) => {
                         hasher.update(b"integer\0");
                         hasher.update(value.to_be_bytes());
                     }
-                    (ValueRef::Real(value), None) => {
+                    (ValueRef::Real(value), None, None) => {
                         hasher.update(b"real\0");
                         hasher.update(value.to_bits().to_be_bytes());
                     }
-                    (ValueRef::Text(value), None) => {
+                    (ValueRef::Text(value), None, None) => {
                         hasher.update(b"text\0");
                         hasher.update((value.len() as u64).to_be_bytes());
                         hasher.update(value);
                     }
-                    (ValueRef::Blob(value), None) => {
+                    (ValueRef::Blob(value), None, None) => {
                         hasher.update(b"blob\0");
                         hasher.update((value.len() as u64).to_be_bytes());
                         hasher.update(value);
                     }
-                    (_, Some(_)) => {
+                    (_, Some(_), _) => {
                         bail!("declared text mutation does not target a text value")
+                    }
+                    (_, _, Some(_)) => {
+                        bail!("declared integer mutation does not target an integer value")
                     }
                     #[allow(unreachable_patterns)]
                     _ => unreachable!(),
@@ -216,6 +271,54 @@ fn digest_projections(
         }
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn validate_declared_integer_mutations(
+    conn: &Connection,
+    tables: &[TableProjection],
+    mutations: &[DeclaredIntegerMutation],
+    target: bool,
+) -> Result<()> {
+    for (index, mutation) in mutations.iter().enumerate() {
+        if mutations[..index].iter().any(|candidate| {
+            candidate.table == mutation.table
+                && candidate.key_column == mutation.key_column
+                && candidate.key_value == mutation.key_value
+                && candidate.column == mutation.column
+        }) {
+            bail!("declared semantic mutation is duplicated");
+        }
+        let table = tables
+            .iter()
+            .find(|table| table.name == mutation.table)
+            .ok_or_else(|| {
+                anyhow::anyhow!("declared semantic mutation targets an excluded table")
+            })?;
+        if !table.columns.contains(&mutation.key_column)
+            || !table.columns.contains(&mutation.column)
+        {
+            bail!("declared semantic mutation targets an unavailable field");
+        }
+        let query = format!(
+            "select {} from {} where {}=?1",
+            quote_identifier(&mutation.column),
+            quote_identifier(&mutation.table),
+            quote_identifier(&mutation.key_column)
+        );
+        let values = conn
+            .prepare(&query)?
+            .query_map([mutation.key_value], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let expected = if target {
+            mutation.after
+        } else {
+            mutation.before
+        };
+        if values.len() != 1 || values[0] != expected {
+            bail!("declared semantic mutation does not match its exact stored value");
+        }
+    }
+    Ok(())
 }
 
 fn validate_declared_text_mutations(

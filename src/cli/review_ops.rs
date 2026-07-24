@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use super::args::*;
 use agent_workbench::*;
@@ -120,19 +120,43 @@ pub(crate) fn handle_review(root: &Path, command: ReviewCommand) -> Result<()> {
                         idempotency_key: &args.idempotency_key,
                     },
                 )?,
-                ReviewResultCommand::FindingAdd(args) => add_result_finding(
-                    root,
-                    AddResultFindingRequest {
-                        stage_handle: &args.stage_handle,
-                        finding_type: &args.finding_type,
-                        severity: &args.severity,
-                        description: &args.description,
-                        requirement: args.requirement,
-                        task: args.task,
-                        expected_current: &args.expected_current,
-                        idempotency_key: &args.idempotency_key,
-                    },
-                )?,
+                ReviewResultCommand::FindingAdd(args) => {
+                    if !args.requirement.is_empty()
+                        && !args.task.is_empty()
+                        && args.requirement.len() != args.task.len()
+                    {
+                        bail!("each --requirement must have one matching --task");
+                    }
+                    let targets = finding_targets(&args.requirement, &args.task);
+                    if args.requirement.len() <= 1 && args.task.len() <= 1 {
+                        add_result_finding(
+                            root,
+                            AddResultFindingRequest {
+                                stage_handle: &args.stage_handle,
+                                finding_type: &args.finding_type,
+                                severity: &args.severity,
+                                description: &args.description,
+                                requirement: args.requirement.first().copied(),
+                                task: args.task.first().copied(),
+                                expected_current: &args.expected_current,
+                                idempotency_key: &args.idempotency_key,
+                            },
+                        )?
+                    } else {
+                        add_result_finding_with_targets(
+                            root,
+                            AddResultFindingWithTargetsRequest {
+                                stage_handle: &args.stage_handle,
+                                finding_type: &args.finding_type,
+                                severity: &args.severity,
+                                description: &args.description,
+                                targets: &targets,
+                                expected_current: &args.expected_current,
+                                idempotency_key: &args.idempotency_key,
+                            },
+                        )?
+                    }
+                }
                 ReviewResultCommand::Complete(args) => complete_result_stage(
                     root,
                     CompleteResultStageRequest {
@@ -528,16 +552,24 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
             println!("decision_handle: {}", outcome.decision_handle);
         }
         FindingCommand::Add(args) => {
-            let outcome = add_finding(
+            if !args.design_requirement.is_empty()
+                && !args.task.is_empty()
+                && args.design_requirement.len() != args.task.len()
+            {
+                bail!("each --design-requirement must have one matching --task");
+            }
+            let targets = finding_targets(&args.design_requirement, &args.task);
+            let outcome = add_finding_with_targets(
                 root,
                 NewFinding {
                     review_run_id: args.run,
                     finding_type: &args.finding_type,
                     severity: &args.severity,
                     description: &args.description,
-                    design_requirement_id: args.design_requirement,
-                    task_id: args.task,
+                    design_requirement_id: None,
+                    task_id: None,
                 },
+                &targets,
             )?;
             println!("added finding");
             println!("finding_id: {}", outcome.finding_id);
@@ -602,6 +634,25 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
                     record.status,
                     record.description
                 );
+                let targets = list_finding_targets(root, record.id)?;
+                if !targets.is_empty() {
+                    println!(
+                        "targets: {}",
+                        targets
+                            .iter()
+                            .map(|target| format!(
+                                "requirement={},task={}",
+                                target
+                                    .design_requirement_id
+                                    .map_or_else(|| "-".to_string(), |value| value.to_string()),
+                                target
+                                    .task_id
+                                    .map_or_else(|| "-".to_string(), |value| value.to_string())
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(";")
+                    );
+                }
                 if let Some(handle) = record.current_decision_handle.as_deref() {
                     println!("current_decision_handle: {handle}");
                 }
@@ -688,6 +739,35 @@ pub(crate) fn handle_finding(root: &Path, command: FindingCommand) -> Result<()>
         }
     }
     Ok(())
+}
+
+fn finding_targets(requirements: &[i64], tasks: &[i64]) -> Vec<FindingTargetInput> {
+    if tasks.is_empty() {
+        return requirements
+            .iter()
+            .map(|&design_requirement_id| FindingTargetInput {
+                design_requirement_id: Some(design_requirement_id),
+                task_id: None,
+            })
+            .collect();
+    }
+    if requirements.is_empty() {
+        return tasks
+            .iter()
+            .map(|&task_id| FindingTargetInput {
+                design_requirement_id: None,
+                task_id: Some(task_id),
+            })
+            .collect();
+    }
+    requirements
+        .iter()
+        .zip(tasks)
+        .map(|(&design_requirement_id, &task_id)| FindingTargetInput {
+            design_requirement_id: Some(design_requirement_id),
+            task_id: Some(task_id),
+        })
+        .collect()
 }
 
 pub(crate) fn handle_verification(root: &Path, command: VerificationCommand) -> Result<()> {

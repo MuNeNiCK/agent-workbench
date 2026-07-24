@@ -389,6 +389,24 @@ pub(super) fn ensure_work_mutation_allowed(
     operation: &str,
     selected_owner_action: Option<(i64, &str)>,
 ) -> Result<()> {
+    let requested_release: Option<String> = conn
+        .query_row(
+            r#"
+            select candidate.candidate_handle
+            from release_candidate_attempts attempt
+            join release_candidates candidate on candidate.id=attempt.release_candidate_id
+            where attempt.project_id=candidate.project_id and attempt.status='requested'
+            order by attempt.id limit 1
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(candidate) = requested_release {
+        bail!(
+            "{operation} is blocked by requested release attempt for {candidate}; next: agent-workbench operator release candidate inspect"
+        );
+    }
     if let Some(blocker) = current_phase_blocker(conn)? {
         let unrelated_owner = match (blocker.work_unit_id, selected_owner_action) {
             (Some(_), None) => true,

@@ -59,6 +59,13 @@ fn release_work(root: &Path, reviewed_commit: &str) -> i64 {
             .result,
         "pass"
     );
+    crate::close_work(
+        root,
+        Some(work.work_unit_id),
+        "release boundary qualification is complete",
+        Some(reviewed_commit),
+    )
+    .unwrap();
     work.work_unit_id
 }
 
@@ -70,6 +77,104 @@ fn newly_initialized_storage_is_the_registered_current_generation() {
     assert_eq!(
         classify_update_route(&conn, temp.path()).unwrap(),
         UpdateRoute::Current
+    );
+}
+
+#[test]
+fn current_generation_rejects_a_missing_finding_target_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch("drop trigger trg_finding_target_immutable_delete;")
+        .unwrap();
+
+    let error = classify_update_route(&conn, temp.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("registered trigger trg_finding_target_immutable_delete is missing")
+    );
+}
+
+#[test]
+fn current_generation_rejects_a_weakened_finding_target_project_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_finding_target_project_insert;
+        create trigger trg_finding_target_project_insert
+        before insert on finding_targets
+        when new.project_id != (
+          select project_id from findings where id=new.finding_id
+        )
+        begin
+          select raise(abort, 'finding target project_id must match referenced rows');
+        end;
+        "#,
+    )
+    .unwrap();
+
+    let error = classify_update_route(&conn, temp.path()).unwrap_err();
+    let error = error.to_string();
+    assert!(
+        error.contains("does not enforce required structure"),
+        "{error}"
+    );
+}
+
+#[test]
+fn current_generation_rejects_a_parentless_task_target_guard_hole() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_finding_target_project_insert;
+        create trigger trg_finding_target_project_insert
+        before insert on finding_targets
+        for each row
+        when new.project_id != (select project_id from findings where id=new.finding_id)
+          or (new.design_requirement_id is not null
+              and new.project_id != (select project_id from design_requirements where id=new.design_requirement_id))
+          or (new.task_id is not null and new.project_id != (
+              select work.project_id from tasks task
+              join work_units work on work.id=task.work_unit_id
+              where task.id=new.task_id
+          ))
+        begin
+            select raise(abort, 'finding target project_id must match referenced rows');
+        end;
+        "#,
+    )
+    .unwrap();
+
+    let error = classify_update_route(&conn, temp.path()).unwrap_err();
+    let error = error.to_string();
+    assert!(error.contains("new.project_id != coalesce(("), "{error}");
+}
+
+#[test]
+fn current_generation_rejects_a_weakened_migration_audit_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute_batch(
+        r#"
+        drop trigger trg_review_run_completion_migration_immutable_delete;
+        create trigger trg_review_run_completion_migration_immutable_delete
+        before delete on review_run_completion_migrations
+        begin select 1; end;
+        "#,
+    )
+    .unwrap();
+
+    let error = classify_update_route(&conn, temp.path()).unwrap_err();
+    let error = error.to_string();
+    assert!(
+        error.contains("review run completion migrations are append-only"),
+        "{error}"
     );
 }
 
@@ -265,6 +370,357 @@ fn current_storage_repairs_the_missing_plan_ingress_contract_through_update() {
 }
 
 #[test]
+fn generation_25_public_update_backfills_seals_and_normalizes_legacy_finding_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = crate::start_work(temp.path(), "sealed target migration", None).unwrap();
+    let task = crate::add_task(
+        temp.path(),
+        crate::NewTask {
+            title: "preserve one legacy finding target",
+            priority: "high",
+            source: "user",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("the exact scalar target is sealed"),
+        },
+    )
+    .unwrap();
+    let plan = crate::add_review_plan(
+        temp.path(),
+        crate::NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "general",
+            required: true,
+            stage: "implementation-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = crate::add_review_run(
+        temp.path(),
+        crate::NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("one legacy scalar target"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: Some("migration-reviewer"),
+            external_agent_id: Some("migration-reviewer-1"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:generation-25"),
+        },
+    )
+    .unwrap();
+    let finding = crate::add_finding(
+        temp.path(),
+        crate::NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "medium",
+            description: "retain the exact task target",
+            design_requirement_id: None,
+            task_id: Some(task.task_id),
+        },
+    )
+    .unwrap();
+
+    let ledger = default_ledger_path(temp.path());
+    let conn = open_ledger(&ledger).unwrap();
+    conn.execute_batch(
+        r#"
+        drop table review_result_draft_item_target_seals;
+        drop table finding_target_seals;
+        drop table review_result_draft_item_targets;
+        drop table finding_targets;
+        drop table review_invocation_completion_migrations;
+        drop table review_run_completion_migrations;
+        drop table review_run_finding_count_migrations;
+        drop trigger trg_work_unit_release_attempt_insert;
+        drop trigger trg_work_unit_release_attempt_update;
+        drop trigger trg_work_unit_release_attempt_delete;
+        drop trigger trg_work_activation_release_attempt_insert;
+        drop trigger trg_work_activation_release_attempt_update;
+        drop trigger trg_work_activation_release_attempt_delete;
+        drop trigger trg_repository_release_attempt_insert;
+        drop trigger trg_repository_release_attempt_update;
+        drop trigger trg_repository_release_attempt_delete;
+        drop trigger trg_repository_snapshot_release_attempt_insert;
+        drop trigger trg_repository_snapshot_release_attempt_update;
+        drop trigger trg_repository_snapshot_release_attempt_delete;
+        delete from schema_migrations where version=26;
+        update review_runs set new_findings_count=2 where status='completed';
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        classify_update_route(&conn, temp.path()).unwrap(),
+        UpdateRoute::RegisteredPath {
+            source_generation: 25,
+            ..
+        }
+    ));
+    drop(conn);
+
+    let inspection = crate::inspect_update(temp.path()).unwrap();
+    assert_eq!(inspection.status, "ready_to_apply");
+    let applied = crate::apply_update_operation(
+        temp.path(),
+        &inspection.inspection_handle,
+        &inspection.current_identity,
+        "seal-generation-25-finding-targets",
+    )
+    .unwrap();
+    let replayed = crate::apply_update_operation(
+        temp.path(),
+        &inspection.inspection_handle,
+        &inspection.current_identity,
+        "seal-generation-25-finding-targets",
+    )
+    .unwrap();
+    assert!(replayed.already_applied);
+    assert_eq!(replayed.operation_handle, applied.operation_handle);
+    assert_eq!(
+        crate::inspect_update(temp.path()).unwrap().status,
+        "current"
+    );
+
+    let conn = open_ledger(&ledger).unwrap();
+    let target: (i64, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "select ordinal,design_requirement_id,task_id from finding_targets where finding_id=?1",
+            [finding.finding_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(target, (1, None, Some(task.task_id)));
+    let seal: (i64, i64) = conn
+        .query_row(
+            "select project_id,target_count from finding_target_seals where finding_id=?1",
+            [finding.finding_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let project_id: i64 = conn
+        .query_row(
+            "select project_id from findings where id=?1",
+            [finding.finding_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seal, (project_id, 1));
+    let normalized: i64 = conn
+        .query_row(
+            "select new_findings_count from review_runs where id=?1",
+            [run.review_run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(normalized, 1);
+    let migration: (i64, i64, i64, i64) = conn
+        .query_row(
+            r#"
+            select project_id,source_generation,declared_count,actual_count
+            from review_run_finding_count_migrations
+            where review_run_id=?1
+            "#,
+            [run.review_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(migration, (project_id, 25, 2, 1));
+}
+
+#[test]
+fn generation_25_public_update_completes_a_stranded_visible_finding_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = crate::start_work(temp.path(), "stranded review migration", None).unwrap();
+    let plan = crate::add_review_plan(
+        temp.path(),
+        crate::NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "general",
+            required: true,
+            stage: "implementation-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = crate::add_review_run(
+        temp.path(),
+        crate::NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: None,
+            prompt_deviations: None,
+            result_summary: Some("one stranded finding"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: Some("migration-reviewer"),
+            external_agent_id: Some("migration-reviewer-2"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:nonterminal-generation-25"),
+        },
+    )
+    .unwrap();
+    let finding = crate::add_finding(
+        temp.path(),
+        crate::NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "this finding must become visible after update",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+
+    let ledger = default_ledger_path(temp.path());
+    let conn = open_ledger(&ledger).unwrap();
+    conn.execute_batch(
+        r#"
+        drop table review_result_draft_item_target_seals;
+        drop table finding_target_seals;
+        drop table review_result_draft_item_targets;
+        drop table finding_targets;
+        drop table review_invocation_completion_migrations;
+        drop table review_run_completion_migrations;
+        drop table review_run_finding_count_migrations;
+        drop trigger trg_work_unit_release_attempt_insert;
+        drop trigger trg_work_unit_release_attempt_update;
+        drop trigger trg_work_unit_release_attempt_delete;
+        drop trigger trg_work_activation_release_attempt_insert;
+        drop trigger trg_work_activation_release_attempt_update;
+        drop trigger trg_work_activation_release_attempt_delete;
+        drop trigger trg_repository_release_attempt_insert;
+        drop trigger trg_repository_release_attempt_update;
+        drop trigger trg_repository_release_attempt_delete;
+        drop trigger trg_repository_snapshot_release_attempt_insert;
+        drop trigger trg_repository_snapshot_release_attempt_update;
+        drop trigger trg_repository_snapshot_release_attempt_delete;
+        delete from schema_migrations where version=26;
+        "#,
+    )
+    .unwrap();
+    conn.execute(
+        "update review_runs set status='running' where id=?1",
+        [run.review_run_id],
+    )
+    .unwrap();
+    let project_id: i64 = conn
+        .query_row(
+            "select project_id from review_runs where id=?1",
+            [run.review_run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        r#"
+        insert into review_agent_invocations(
+            project_id,review_plan_id,review_run_id,run_type,status,started_at
+        ) values(?1,?2,?3,'fresh','running',current_timestamp)
+        "#,
+        params![project_id, plan.review_plan_id, run.review_run_id],
+    )
+    .unwrap();
+    let invocation_id = conn.last_insert_rowid();
+    drop(conn);
+
+    let inspection = crate::inspect_update(temp.path()).unwrap();
+    assert_eq!(inspection.status, "ready_to_apply");
+    crate::apply_update_operation(
+        temp.path(),
+        &inspection.inspection_handle,
+        &inspection.current_identity,
+        "complete-stranded-generation-25-review",
+    )
+    .unwrap();
+
+    let conn = open_ledger(&ledger).unwrap();
+    let statuses: (String, String, i64) = conn
+        .query_row(
+            r#"
+            select run.status,invocation.status,run.new_findings_count
+            from review_runs run
+            join review_agent_invocations invocation
+              on invocation.review_run_id=run.id
+            where run.id=?1 and invocation.id=?2
+            "#,
+            params![run.review_run_id, invocation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(statuses, ("completed".into(), "completed".into(), 1));
+    let run_evidence: (String, i64, i64) = conn
+        .query_row(
+            r#"
+            select source_status,declared_count,actual_count
+            from review_run_completion_migrations
+            where review_run_id=?1
+            "#,
+            [run.review_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(run_evidence, ("running".into(), 1, 1));
+    let invocation_evidence: String = conn
+        .query_row(
+            r#"
+            select source_status
+            from review_invocation_completion_migrations
+            where invocation_id=?1
+            "#,
+            [invocation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(invocation_evidence, "running");
+    let pending: (i64, i64) = conn
+        .query_row(
+            r#"
+            select
+              (select count(*) from review_runs
+               where project_id=?1 and status in ('requested','running')),
+              (select count(*) from review_agent_invocations
+               where project_id=?1 and status in ('requested','running'))
+            "#,
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(pending, (0, 0));
+    drop(conn);
+
+    assert!(
+        crate::list_findings(temp.path(), Some("open"))
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == finding.finding_id)
+    );
+    crate::classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+}
+
+#[test]
 fn current_storage_extends_the_finding_type_domain_only_through_update() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
@@ -294,7 +750,7 @@ fn current_storage_extends_the_finding_type_domain_only_through_update() {
             target_ref: None,
             prompt_deviations: None,
             result_summary: Some("legacy finding"),
-            new_findings_count: 1,
+            new_findings_count: 2,
             carried_findings_checked: 0,
             clean_run: false,
             status: "completed",
@@ -363,10 +819,6 @@ fn current_storage_extends_the_finding_type_domain_only_through_update() {
         crate::inspect_update(temp.path()).unwrap().status,
         "current"
     );
-    assert_eq!(
-        crate::list_findings(temp.path(), Some("open")).unwrap()[0].id,
-        legacy.finding_id
-    );
     let common = crate::add_finding(
         temp.path(),
         crate::NewFinding {
@@ -380,6 +832,12 @@ fn current_storage_extends_the_finding_type_domain_only_through_update() {
     )
     .unwrap();
     assert!(common.finding_id > legacy.finding_id);
+    assert!(
+        crate::list_findings(temp.path(), Some("open"))
+            .unwrap()
+            .iter()
+            .any(|finding| finding.id == legacy.finding_id)
+    );
 }
 const TARGET: StateDescriptor = StateDescriptor {
     key: "target-contract",
@@ -1535,6 +1993,300 @@ fn valid_release_candidate_mutation_keeps_the_storage_current() {
     assert_eq!(
         classify_update_route(&conn, temp.path()).unwrap(),
         UpdateRoute::Current
+    );
+}
+
+#[test]
+fn requested_release_attempt_freezes_its_selected_work_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::init_project(temp.path()).unwrap();
+    let work_unit_id = release_work(temp.path(), "reviewed-commit");
+    let review_plan = crate::add_review_plan(
+        temp.path(),
+        crate::NewReviewPlan {
+            work_unit_id,
+            design_version_id: None,
+            review_type: "general",
+            required: false,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let candidate = crate::release::assemble_release_candidate(
+        temp.path(),
+        crate::release::NewReleaseCandidate {
+            work_unit_id: Some(work_unit_id),
+            version: "0.2.0".to_string(),
+            reviewed_commit: "reviewed-commit".to_string(),
+            idempotency_key: "assemble-boundary-race".to_string(),
+            subjects: release_subjects(),
+        },
+    )
+    .unwrap();
+    let attempt = crate::release::start_release_attempt(
+        temp.path(),
+        &candidate.candidate_handle,
+        &candidate.current_revision,
+        "inspect",
+        "inspect-boundary-race",
+        "requested-observation",
+    )
+    .unwrap();
+    let crate::release::ReleaseAttemptStart::Ready { attempt_id, .. } = attempt else {
+        panic!("fresh release attempt must be ready");
+    };
+    let inspection =
+        crate::release::inspect_release_candidate(temp.path(), &candidate.candidate_handle)
+            .unwrap();
+    let observations = inspection
+        .subjects
+        .iter()
+        .filter(|subject| matches!(subject.kind.as_str(), "local" | "asset"))
+        .map(|subject| crate::release::ReleaseObservation {
+            name: subject.name.clone(),
+            identity: subject.expected_identity.clone(),
+        })
+        .collect();
+    let verified = crate::release::verify_release_locally(
+        temp.path(),
+        &candidate.candidate_handle,
+        &candidate.current_revision,
+        "inspect-boundary-race",
+        observations,
+    )
+    .unwrap();
+    let authority = crate::add_authority_event(
+        temp.path(),
+        crate::NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("release-boundary-race"),
+            summary: "invalidate the selected work closure during publication",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let reopen_error = crate::reopen_work(
+        temp.path(),
+        crate::WorkReopen {
+            work_unit_id,
+            reason: "the release qualification no longer holds",
+            reason_type: "closure_invalid",
+            authority_event_id: Some(authority.authority_event_id),
+            acceptance_record_id: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        reopen_error
+            .to_string()
+            .contains("blocked by requested release attempt")
+    );
+    let snapshot_error = crate::add_repository_snapshot(
+        temp.path(),
+        crate::NewRepositorySnapshot {
+            repository: "release-source",
+            work_unit_activation_id: None,
+            head_sha: Some("changed-during-publication"),
+            branch: Some("main"),
+            status_summary: Some("clean"),
+            is_clean: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        snapshot_error
+            .to_string()
+            .contains("release boundary mutation blocked by requested release attempt")
+    );
+    let target_error = crate::add_review_plan_target(
+        temp.path(),
+        crate::NewReviewPlanTarget {
+            review_plan_id: review_plan.review_plan_id,
+            target_type: "file",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            phase_id: None,
+            repository_snapshot_id: None,
+            file_path: Some("src/unreviewed.rs"),
+            symbol: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        target_error
+            .to_string()
+            .contains("review mutation blocked by requested release attempt")
+    );
+    assert_eq!(
+        crate::list_review_plan_targets(temp.path(), review_plan.review_plan_id)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    crate::release::finish_release_attempt(
+        temp.path(),
+        &candidate.candidate_handle,
+        attempt_id,
+        "requested-observation",
+        &verified,
+        false,
+    )
+    .unwrap();
+
+    let conn = crate::db::open_ledger(&crate::db::default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select status from release_candidate_attempts where id=?1",
+            [attempt_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "completed"
+    );
+    assert_eq!(
+        conn.query_row(
+            "select revision_handle from release_candidate_revisions where head_state='current'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        verified.current_revision
+    );
+}
+
+#[test]
+fn release_reconcile_recovers_when_an_unfrozen_boundary_row_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::init_project(temp.path()).unwrap();
+    let work_unit_id = release_work(temp.path(), "reviewed-commit");
+    let candidate = crate::release::assemble_release_candidate(
+        temp.path(),
+        crate::release::NewReleaseCandidate {
+            work_unit_id: Some(work_unit_id),
+            version: "0.2.0".to_string(),
+            reviewed_commit: "reviewed-commit".to_string(),
+            idempotency_key: "assemble-reconcile-boundary-race".to_string(),
+            subjects: release_subjects(),
+        },
+    )
+    .unwrap();
+    crate::release::start_release_attempt(
+        temp.path(),
+        &candidate.candidate_handle,
+        &candidate.current_revision,
+        "inspect",
+        "inspect-reconcile-boundary-race",
+        "requested-observation",
+    )
+    .unwrap();
+    let boundary_task = crate::add_task(
+        temp.path(),
+        crate::NewTask {
+            title: "invalidate the release boundary",
+            priority: "high",
+            source: "user",
+            work_unit_id: Some(work_unit_id),
+            details: None,
+            completion_condition: Some("the release is qualified again"),
+        },
+    )
+    .unwrap();
+    let transition_error = crate::release::verify_release_locally(
+        temp.path(),
+        &candidate.candidate_handle,
+        &candidate.current_revision,
+        "inspect-reconcile-boundary-race",
+        vec![],
+    )
+    .unwrap_err();
+    assert!(
+        transition_error
+            .to_string()
+            .contains("is not close-ready for reviewed commit")
+    );
+
+    let inspection =
+        crate::release::inspect_release_candidate(temp.path(), &candidate.candidate_handle)
+            .unwrap();
+    assert!(
+        inspection
+            .next_action
+            .contains(" operator release reconcile ")
+    );
+    let reconciled = crate::release_operator::operator_reconcile_release(
+        temp.path(),
+        crate::release_operator::OperatorReleaseMutation {
+            candidate: candidate.candidate_handle.clone(),
+            expected_current: candidate.current_revision.clone(),
+            idempotency_key: "reconcile-boundary-race".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(reconciled.state, "assembled");
+    crate::close_task(temp.path(), boundary_task.task_id, Some("reviewed-commit")).unwrap();
+    let successor = crate::release::assemble_release_candidate(
+        temp.path(),
+        crate::release::NewReleaseCandidate {
+            work_unit_id: Some(work_unit_id),
+            version: "0.2.1".to_string(),
+            reviewed_commit: "reviewed-commit".to_string(),
+            idempotency_key: "assemble-boundary-race-successor".to_string(),
+            subjects: release_subjects(),
+        },
+    )
+    .unwrap();
+    let authority = crate::add_authority_event(
+        temp.path(),
+        crate::NewAuthorityEvent {
+            event_type: "user_instruction",
+            source: Some("release-boundary-race"),
+            summary: "replace the invalidated release candidate",
+            scope: Some("project"),
+            precedence: 100,
+        },
+    )
+    .unwrap();
+    let superseded = crate::operator_supersede_release(
+        temp.path(),
+        crate::OperatorReleaseSupersession {
+            candidate: candidate.candidate_handle.clone(),
+            successor: successor.candidate_handle,
+            expected_current: reconciled.current_revision,
+            idempotency_key: "supersede-boundary-race".to_string(),
+            authority_event_id: authority.authority_event_id,
+            reason: "the reviewed work boundary changed".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(superseded.state, "superseded");
+
+    let conn = crate::db::open_ledger(&crate::db::default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from release_candidate_attempts where status='requested'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "select count(*) from release_candidate_attempts where status='completed'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
     );
 }
 

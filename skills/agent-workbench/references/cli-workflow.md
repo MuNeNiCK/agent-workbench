@@ -210,8 +210,12 @@ the supported CLI.
 
 ## Publish a Release
 
-After the release work is closed and the reviewed commit is checked out cleanly,
-start the operator-owned lifecycle:
+After the release work is closed, its activation is completed, and the reviewed
+commit is checked out cleanly, start the operator-owned lifecycle. Assembly and
+every candidate revalidation reject unresolved open findings, findings awaiting
+verification, pending review runs or invocations, staged review results, and
+incomplete required review plans, inconsistent completed review inventories,
+and incomplete closure or remediation state anywhere in the managed project:
 
 ```sh
 agent-workbench operator release candidate assemble --work <work-unit-id> --version <semver> --commit <reviewed-commit> --expected-current absent --idempotency-key <key>

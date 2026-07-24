@@ -652,7 +652,13 @@ pub fn render_finding_fix_context(
                    c.design_invariant, c.affected_surfaces, c.fix_plan,
                    c.verification_plan, c.tests_or_gates, a.attempt_number,
                    a.implementation_evidence, a.tests_or_gates,
-                   a.closed_by_commit, a.review_run_high_watermark
+                   a.closed_by_commit, a.review_run_high_watermark,
+                   (select group_concat(
+                      'requirement='||coalesce(target.design_requirement_id,'-')||
+                      ',task='||coalesce(target.task_id,'-'),
+                      ';'
+                    ) from finding_targets target
+                    where target.finding_id=f.id)
             from closure_attempts a
             join closures c on c.id = a.closure_id
             join findings f on f.id = c.finding_id
@@ -683,12 +689,13 @@ pub fn render_finding_fix_context(
             rusqlite::params![finding_id, closure_id, attempt_id, project_id],
             |row| {
                 Ok(format!(
-                    "review_context: finding-fix\ncontext_ref: {context_ref}\nfinding_id: {finding_id}\nclosure_id: {closure_id}\nattempt_id: {attempt_id}\nreview_plan_id: {}\nreview_type: {}\nstage: {}\nseverity: {}\ndescription: {}\ninvariant: {}\naffected_surfaces: {}\nfix_plan: {}\nverification_plan: {}\ncontract_tests_or_gates: {}\nattempt_number: {}\nimplementation_evidence: {}\nattempt_tests_or_gates: {}\ncommit: {}\nreview_run_high_watermark: {}\n",
+                    "review_context: finding-fix\ncontext_ref: {context_ref}\nfinding_id: {finding_id}\nclosure_id: {closure_id}\nattempt_id: {attempt_id}\nreview_plan_id: {}\nreview_type: {}\nstage: {}\nseverity: {}\ndescription: {}\ntargets: {}\ninvariant: {}\naffected_surfaces: {}\nfix_plan: {}\nverification_plan: {}\ncontract_tests_or_gates: {}\nattempt_number: {}\nimplementation_evidence: {}\nattempt_tests_or_gates: {}\ncommit: {}\nreview_run_high_watermark: {}\n",
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "-".to_string()),
                     row.get::<_, String>(5)?,
                     row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "-".to_string()),
                     row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "-".to_string()),

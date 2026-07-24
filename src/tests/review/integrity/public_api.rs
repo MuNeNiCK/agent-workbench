@@ -111,3 +111,226 @@ fn public_review_api_requires_explicit_typed_finding_result() {
         "{incomplete_external}"
     );
 }
+
+#[test]
+fn compatibility_finding_inventory_is_published_only_at_the_declared_count() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "atomic compatibility findings", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("two findings"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        list_review_runs(temp.path(), Some(plan.review_plan_id)).unwrap()[0].status,
+        "running"
+    );
+    assert!(list_findings(temp.path(), Some("open")).unwrap().is_empty());
+
+    let first = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "first",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    assert!(list_findings(temp.path(), Some("open")).unwrap().is_empty());
+    let unpublished = decide_finding(
+        temp.path(),
+        first.finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "must remain hidden",
+            expected_current: "pending",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        unpublished
+            .to_string()
+            .contains("completed review finding inventory")
+    );
+    let generic_unpublished = adjudicate_owner(
+        temp.path(),
+        "finding",
+        first.finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "generic entry point must also remain hidden",
+            expected_current: "pending",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        generic_unpublished
+            .to_string()
+            .contains("completed review finding inventory")
+    );
+
+    add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "medium",
+            description: "second",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_runs(temp.path(), Some(plan.review_plan_id)).unwrap()[0].status,
+        "completed"
+    );
+    assert_eq!(list_findings(temp.path(), Some("open")).unwrap().len(), 2);
+
+    let over = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "low",
+            description: "third",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        over.to_string()
+            .contains("would exceed declared new_findings_count 2")
+    );
+}
+
+#[test]
+fn requested_compatibility_inventory_starts_on_its_first_finding() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "requested compatibility findings", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("two requested findings"),
+            new_findings_count: 2,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "requested",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+
+    add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "first",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "select status from review_runs where id=?1",
+            [run.review_run_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "running"
+    );
+    assert_eq!(
+        conn.query_row(
+            "select status from review_agent_invocations where review_run_id=?1",
+            [run.review_run_id],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "running"
+    );
+    drop(conn);
+
+    add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "medium",
+            description: "second",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_runs(temp.path(), Some(plan.review_plan_id)).unwrap()[0].status,
+        "completed"
+    );
+    assert_eq!(list_findings(temp.path(), Some("open")).unwrap().len(), 2);
+}

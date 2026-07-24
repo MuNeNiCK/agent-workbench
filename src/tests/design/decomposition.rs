@@ -188,6 +188,21 @@ fn mediated_design_decomposition_records_complete_owned_alias_graph() {
         .contains("closure transition apply")
     );
     apply_correction_transition(temp.path(), closure.closure_id, 1, None, None).unwrap();
+    let rejected = decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "rejected",
+            reason: "must not discard an applied correction transition",
+            expected_current: "pending",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("finding_has_active_remediation_effects")
+    );
     apply_correction_transition(temp.path(), closure.closure_id, 2, None, None).unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let (project_id, requirement_id, checklist_id): (i64, i64, i64) = conn

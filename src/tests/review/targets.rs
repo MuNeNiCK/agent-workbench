@@ -143,6 +143,189 @@ fn review_plan_targets_can_drive_typed_review_run_targets() {
 }
 
 #[test]
+fn adding_a_generic_target_reopens_a_clean_review_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "target invalidates clean review", None).unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!("work_unit:{}", work.work_unit_id)),
+            prompt_deviations: None,
+            result_summary: Some("original scope is clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("fresh-reviewer"),
+            external_agent_id: Some("fresh-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:original-scope"),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_plans(temp.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == plan.review_plan_id)
+            .unwrap()
+            .status,
+        "clean"
+    );
+
+    add_review_plan_target(
+        temp.path(),
+        NewReviewPlanTarget {
+            review_plan_id: plan.review_plan_id,
+            target_type: "file",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            phase_id: None,
+            repository_snapshot_id: None,
+            file_path: Some("src/new-scope.rs"),
+            symbol: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_plans(temp.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == plan.review_plan_id)
+            .unwrap()
+            .status,
+        "open"
+    );
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("file:src/new-scope.rs"),
+            prompt_deviations: None,
+            result_summary: None,
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "requested",
+            agent_label: None,
+            external_agent_id: None,
+            review_provenance: "self_recorded",
+            review_provenance_ref: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_plans(temp.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == plan.review_plan_id)
+            .unwrap()
+            .status,
+        "open"
+    );
+}
+
+#[test]
+fn adding_a_phase_target_through_the_phase_api_reopens_a_clean_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "phase target invalidates clean review", None).unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "new-phase-scope",
+            title: "New Phase Scope",
+            kind: "milestone",
+            order: 1,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&format!("work_unit:{}", work.work_unit_id)),
+            prompt_deviations: None,
+            result_summary: Some("original scope is clean"),
+            new_findings_count: 0,
+            carried_findings_checked: 0,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("fresh-reviewer"),
+            external_agent_id: Some("fresh-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review-output:before-phase-target"),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_review_plans(temp.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == plan.review_plan_id)
+            .unwrap()
+            .status,
+        "clean"
+    );
+
+    add_phase_review_target(temp.path(), plan.review_plan_id, phase.phase_id).unwrap();
+    assert_eq!(
+        list_review_plans(temp.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == plan.review_plan_id)
+            .unwrap()
+            .status,
+        "open"
+    );
+}
+
+#[test]
 fn phase_targeted_plan_uses_its_phase_review_context() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

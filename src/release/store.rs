@@ -155,6 +155,9 @@ where
         }
         stale_revision(candidate_handle, &current.revision_handle)?;
     }
+    if !matches!(action, "reconcile" | "withdraw" | "supersede") {
+        revalidate_release_work_boundary(&tx, project_id, root, current.candidate_id)?;
+    }
     let (state, stage, reason) = mutate(&mut current)?;
     let applied = insert_revision(
         &tx,

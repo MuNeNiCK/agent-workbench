@@ -19,9 +19,6 @@ pub(crate) use adjudication_migration::{
     insert_shared_member_for_first_root as insert_shared_migration_member_for_first_root,
     validate_schema11_invalid_combinations,
 };
-#[cfg(test)]
-pub(crate) use schema::REVIEW_INTEGRITY_SQL;
-
 use std::path::PathBuf;
 
 pub const LEDGER_DIR: &str = ".agent-workbench";
@@ -30,7 +27,7 @@ pub const DESIGN_DIR: &str = "designs";
 pub const EXPORT_DIR: &str = "exports";
 pub const LOG_DIR: &str = "logs";
 pub(crate) const CORE_SCHEMA_VERSION: i64 = 13;
-pub(crate) const SCHEMA_VERSION: i64 = 25;
+pub(crate) const SCHEMA_VERSION: i64 = 26;
 
 pub(crate) use migration::*;
 pub(crate) use mutation::*;

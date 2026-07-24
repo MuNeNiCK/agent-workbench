@@ -203,6 +203,12 @@ pub struct NewFinding<'a> {
     pub task_id: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingTargetInput {
+    pub design_requirement_id: Option<i64>,
+    pub task_id: Option<i64>,
+}
+
 pub struct NewClosure<'a> {
     pub finding_id: i64,
     pub design_invariant: &'a str,
@@ -450,6 +456,13 @@ pub struct FindingRecord {
     pub status: String,
     pub terminal_epoch: Option<i64>,
     pub current_decision_handle: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindingTargetRecord {
+    pub ordinal: i64,
+    pub design_requirement_id: Option<i64>,
+    pub task_id: Option<i64>,
 }
 
 pub struct FindingListFilter<'a> {

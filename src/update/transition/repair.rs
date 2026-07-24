@@ -132,6 +132,13 @@ pub(super) fn is_unrepairable_current_change(change: &crate::db::PendingUpdateCh
                     | "release_candidate_subject_revisions"
                     | "release_candidate_attempts"
                     | "release_candidate_boundaries"
+                    | "finding_targets"
+                    | "review_result_draft_item_targets"
+                    | "finding_target_seals"
+                    | "review_result_draft_item_target_seals"
+                    | "review_run_finding_count_migrations"
+                    | "review_run_completion_migrations"
+                    | "review_invocation_completion_migrations"
                     | "decomposition_plans"
                     | "decomposition_slices"
                     | "decomposition_slice_dependencies"
@@ -163,6 +170,13 @@ pub(super) fn is_later_generation_change(change: &crate::db::PendingUpdateChange
                 | "release_candidate_subject_revisions"
                 | "release_candidate_attempts"
                 | "release_candidate_boundaries"
+                | "finding_targets"
+                | "review_result_draft_item_targets"
+                | "finding_target_seals"
+                | "review_result_draft_item_target_seals"
+                | "review_run_finding_count_migrations"
+                | "review_run_completion_migrations"
+                | "review_invocation_completion_migrations"
                 | "decomposition_plans"
                 | "decomposition_plan_ingress_identities"
                 | "decomposition_slices"
@@ -209,7 +223,8 @@ pub(super) fn is_later_generation_change(change: &crate::db::PendingUpdateChange
         crate::db::PendingUpdateChange::StructuralProfile(
             crate::db::StructuralProfile::CurrentTasksView
             | crate::db::StructuralProfile::CurrentTaskValidationGatesView
-            | crate::db::StructuralProfile::KptLifecycle,
+            | crate::db::StructuralProfile::KptLifecycle
+            | crate::db::StructuralProfile::FindingVerificationPlanReplacement,
         ) => true,
         _ => false,
     }

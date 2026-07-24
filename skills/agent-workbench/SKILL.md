@@ -435,6 +435,10 @@ from current managed project state.
   run `retry` only when reconciliation selected it. Never delete or overwrite a
   remote tag or asset to escape a conflict. Build scripts and observer CI do
   not establish release completion.
+- Run the entire release lifecycle in the same managed project root and ledger
+  that recorded the implementation, findings, verification, and close-ready
+  boundary. Never initialize or reconstruct replacement Workbench state in a
+  clone, worktree, or temporary directory to qualify or publish a release.
 - When asking a review agent whether the project is complete, include the skill
   package itself in the review scope. A project is not complete if the CLI and
   tests match the design but the installed skill cannot guide a fresh coding

@@ -164,16 +164,20 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
         },
     )
     .unwrap();
-    let finding = add_finding(
+    let finding = add_finding_with_targets(
         temp.path(),
         NewFinding {
             review_run_id: run.review_run_id,
             finding_type: "design_implementation_drift",
             severity: "high",
             description: "rebind the completed derivation",
+            design_requirement_id: None,
+            task_id: None,
+        },
+        &[FindingTargetInput {
             design_requirement_id: Some(second.design_requirement_id),
             task_id: Some(task.task_id),
-        },
+        }],
     )
     .unwrap();
     classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
@@ -195,6 +199,22 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
     )
     .unwrap();
     remediate_work(temp.path(), finding.finding_id).unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let sealed = conn.execute(
+        "insert into finding_targets(project_id,finding_id,ordinal,design_requirement_id,task_id,created_at) select project_id,id,2,?1,null,current_timestamp from findings where id=?2",
+        params![
+            second.design_requirement_id,
+            finding.finding_id
+        ],
+    );
+    assert!(
+        sealed
+            .unwrap_err()
+            .to_string()
+            .contains("target set is sealed")
+    );
+    drop(conn);
 
     let wrong_requirement = rebind_task_derivation(
         temp.path(),
@@ -271,6 +291,62 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
         "from checklist item {} to checklist item {}",
         second.checklist_item_id, first.checklist_item_id
     )));
+    drop(conn);
+
+    let rejected = decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "rejected",
+            reason: "must not discard an applied trace repair",
+            expected_current: "pending",
+        },
+    )
+    .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("finding_has_active_remediation_effects")
+    );
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let preserved: (String, String, String, i64, i64) = conn
+        .query_row(
+            r#"
+            select f.classification,f.status,c.status,d.checklist_item_id,
+                   count(event.id)
+            from findings f
+            join closures c on c.finding_id=f.id
+            join task_derivations d on d.id=?2
+            left join authority_events event
+              on event.project_id=f.project_id
+             and event.source='trace derivation rebind'
+             and event.status='active'
+             and event.text_or_summary like
+               'closure ' || c.id || ' rebinds task derivation %'
+            where f.id=?1
+            "#,
+            params![finding.finding_id, second.task_derivation_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        preserved,
+        (
+            "valid".into(),
+            "open".into(),
+            "registered".into(),
+            first.checklist_item_id,
+            1
+        )
+    );
 }
 
 #[test]

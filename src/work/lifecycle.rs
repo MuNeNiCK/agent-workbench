@@ -535,6 +535,7 @@ pub(crate) fn resolve_release_work_boundary(
     requested_work: Option<i64>,
     reviewed_commit: &str,
 ) -> Result<ReleaseWorkBoundary> {
+    ensure_release_project_ready(conn, project)?;
     if let Some(work_unit_id) = requested_work {
         return release_work_boundary_for(conn, project, root, work_unit_id, reviewed_commit)?
             .with_context(|| {
@@ -577,6 +578,84 @@ pub(crate) fn resolve_release_work_boundary(
     }
 }
 
+fn ensure_release_project_ready(conn: &Connection, project: i64) -> Result<()> {
+    let (
+        pending_review_plans,
+        pending_review_runs,
+        pending_review_invocations,
+        staging_review_results,
+        inconsistent_completed_runs,
+        open_findings,
+        awaiting_verification,
+        incomplete_closures,
+        active_remediations,
+    ) = conn.query_row(
+        r#"
+            select
+              (select count(*) from review_plans
+               where project_id=?1 and required=1
+                 and status not in ('clean','accepted_exception','not_required')),
+              (select count(*) from review_runs
+               where project_id=?1 and status in ('requested','running')),
+              (select count(*) from review_agent_invocations
+               where project_id=?1 and status in ('requested','running')),
+              (select count(*) from review_result_drafts
+               where project_id=?1 and status='staging'),
+              (select count(*) from review_runs run
+               where run.project_id=?1 and run.status='completed'
+                 and run.new_findings_count != (
+                   select count(*) from findings inventory
+                   where inventory.review_run_id=run.id
+                 )),
+              (select count(*) from findings
+               where project_id=?1 and status='open'),
+              (select count(*) from findings
+               where project_id=?1 and lifecycle_state='awaiting_verification'),
+              (select count(*) from closures
+               where project_id=?1 and status not in ('verified','superseded')),
+              (select count(*) from finding_remediation_bindings binding
+               join work_unit_activations activation
+                 on activation.id=binding.work_unit_activation_id
+                and activation.project_id=binding.project_id
+               join closures closure
+                 on closure.id=binding.closure_id
+                and closure.project_id=binding.project_id
+               where binding.project_id=?1
+                 and activation.status in ('active','suspended')
+                 and closure.status not in ('verified','superseded'))
+            "#,
+        params![project],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        },
+    )?;
+    if pending_review_plans > 0
+        || pending_review_runs > 0
+        || pending_review_invocations > 0
+        || staging_review_results > 0
+        || inconsistent_completed_runs > 0
+        || open_findings > 0
+        || awaiting_verification > 0
+        || incomplete_closures > 0
+        || active_remediations > 0
+    {
+        bail!(
+            "release blocked by unresolved project review state: pending_review_plans={pending_review_plans}, pending_review_runs={pending_review_runs}, pending_review_invocations={pending_review_invocations}, staging_review_results={staging_review_results}, inconsistent_completed_runs={inconsistent_completed_runs}, open_findings={open_findings}, awaiting_verification={awaiting_verification}, incomplete_closures={incomplete_closures}, active_remediations={active_remediations}; next: agent-workbench status"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_release_work_boundary_for_root(
     root: &Path,
     requested_work: Option<i64>,
@@ -605,7 +684,6 @@ fn release_work_boundary_for(
         return Ok(None);
     };
     let activation = match status.as_str() {
-        "open" => current_activation_for_work(conn, project, work_unit_id)?,
         "closed" => conn
             .query_row(
                 r#"

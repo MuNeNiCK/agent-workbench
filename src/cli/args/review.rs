@@ -153,9 +153,9 @@ pub(crate) struct ReviewResultFindingAddArgs {
     #[arg(long)]
     pub(crate) description: String,
     #[arg(long)]
-    pub(crate) requirement: Option<i64>,
+    pub(crate) requirement: Vec<i64>,
     #[arg(long)]
-    pub(crate) task: Option<i64>,
+    pub(crate) task: Vec<i64>,
     #[arg(long)]
     pub(crate) expected_current: String,
     #[arg(long)]
@@ -494,9 +494,9 @@ pub(crate) struct FindingAddArgs {
     #[arg(long)]
     pub(crate) description: String,
     #[arg(long)]
-    pub(crate) design_requirement: Option<i64>,
+    pub(crate) design_requirement: Vec<i64>,
     #[arg(long)]
-    pub(crate) task: Option<i64>,
+    pub(crate) task: Vec<i64>,
 }
 
 #[derive(Debug, Args)]

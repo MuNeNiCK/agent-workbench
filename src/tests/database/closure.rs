@@ -238,7 +238,7 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
     )
     .unwrap();
     let add_eligible_finding = |description| {
-        let finding = add_finding(
+        add_finding(
             temp.path(),
             NewFinding {
                 review_run_id: source.review_run_id,
@@ -249,9 +249,16 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
                 task_id: None,
             },
         )
-        .unwrap();
+        .unwrap()
+    };
+    let multiple_finding = add_eligible_finding("multiple legacy closures");
+    let out_of_scope_history = add_eligible_finding("unauthorized out-of-scope history");
+    let verified_history = add_eligible_finding("multiple verified legacy closures");
+    for finding in [&multiple_finding, &out_of_scope_history, &verified_history] {
         classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
-        let closure = add_closure(
+    }
+    let add_eligible_closure = |finding: &FindingOutcome| {
+        add_closure(
             temp.path(),
             NewClosure {
                 finding_id: finding.finding_id,
@@ -267,14 +274,11 @@ fn v6_closure_normalization_handles_multiple_incomplete_noneligible_and_unauthor
                 closed_by_commit: None,
             },
         )
-        .unwrap();
-        (finding, closure)
+        .unwrap()
     };
-    let (multiple_finding, older_closure) = add_eligible_finding("multiple legacy closures");
-    let (out_of_scope_history, history_closure) =
-        add_eligible_finding("unauthorized out-of-scope history");
-    let (verified_history, verified_older_closure) =
-        add_eligible_finding("multiple verified legacy closures");
+    let older_closure = add_eligible_closure(&multiple_finding);
+    let history_closure = add_eligible_closure(&out_of_scope_history);
+    let verified_older_closure = add_eligible_closure(&verified_history);
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     conn.execute(
         "insert into closures(project_id, finding_id, design_invariant, status, created_at) values (1, ?1, 'latest incomplete closure', 'registered', current_timestamp)",

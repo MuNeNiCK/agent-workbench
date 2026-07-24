@@ -190,6 +190,293 @@ fn assembly_requires_one_close_ready_work_and_publishes_nothing_on_zero_matches(
 }
 
 #[test]
+fn assembly_rejects_an_open_work_even_when_its_close_ready_gate_passes() {
+    let temp = tempfile::tempdir().unwrap();
+    let commit = release_source(temp.path());
+    let work = init_open_release_project(temp.path(), &commit);
+
+    let rejected = aw(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-open-work",
+        ],
+    );
+    assert!(!rejected.status.success());
+    let error = String::from_utf8_lossy(&rejected.stderr);
+    assert!(error.contains("is not close-ready"), "{error}");
+    assert!(!ok(temp.path(), &["status"]).contains("owner: release_candidate:"));
+}
+
+#[test]
+fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
+    let temp = tempfile::tempdir().unwrap();
+    let commit = release_source(temp.path());
+    let release_work = init_release_project(temp.path(), &commit);
+    let assembled = ok(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &release_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-before-project-finding",
+        ],
+    );
+    let candidate = field(&assembled, "candidate").to_string();
+    let revision = field(&assembled, "current_revision").to_string();
+
+    let started = ok(temp.path(), &["work", "start", "separate review owner"]);
+    let finding_work = field(&started, "work_unit_id").to_string();
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            &finding_work,
+            "--type",
+            "general",
+            "--stage",
+            "resume-ready",
+        ],
+    );
+    let plan = field(&plan, "review_plan_id").to_string();
+    let run = ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            &plan,
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--new-findings",
+            "1",
+            "--summary",
+            "separate work has an unresolved release blocker",
+        ],
+    );
+    let run = field(&run, "review_run_id").to_string();
+    let pending_review_rejected = aw(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &release_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-during-project-review",
+        ],
+    );
+    assert!(!pending_review_rejected.status.success());
+    let error = String::from_utf8_lossy(&pending_review_rejected.stderr);
+    assert!(error.contains("pending_review_runs=1"), "{error}");
+    assert!(error.contains("pending_review_invocations=1"), "{error}");
+    let pending_inspect_rejected = aw(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "inspect",
+            &candidate,
+            "--expected-current",
+            &revision,
+            "--idempotency-key",
+            "inspect-during-project-review",
+        ],
+    );
+    assert!(!pending_inspect_rejected.status.success());
+    let error = String::from_utf8_lossy(&pending_inspect_rejected.stderr);
+    assert!(error.contains("pending_review_runs=1"), "{error}");
+
+    let finding = ok(
+        temp.path(),
+        &[
+            "finding",
+            "add",
+            "--run",
+            &run,
+            "--type",
+            "process_finding",
+            "--severity",
+            "high",
+            "--description",
+            "project release state is unresolved",
+        ],
+    );
+    let finding = field(&finding, "finding_id").to_string();
+    ok(
+        temp.path(),
+        &["finding", "classify", &finding, "--classification", "valid"],
+    );
+
+    let assemble_rejected = aw(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &release_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-after-project-finding",
+        ],
+    );
+    assert!(!assemble_rejected.status.success());
+    let error = String::from_utf8_lossy(&assemble_rejected.stderr);
+    assert!(error.contains("unresolved project review state"), "{error}");
+    assert!(error.contains("open_findings=1"), "{error}");
+
+    let inspect_rejected = aw(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "inspect",
+            &candidate,
+            "--expected-current",
+            &revision,
+            "--idempotency-key",
+            "inspect-after-project-finding",
+        ],
+    );
+    assert!(!inspect_rejected.status.success());
+    let error = String::from_utf8_lossy(&inspect_rejected.stderr);
+    assert!(error.contains("unresolved project review state"), "{error}");
+    assert!(error.contains("open_findings=1"), "{error}");
+}
+
+#[test]
+fn requested_release_attempt_freezes_project_review_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let commit = release_source(temp.path());
+    let release_work = init_release_project(temp.path(), &commit);
+    let assembled = ok(
+        temp.path(),
+        &[
+            "operator",
+            "release",
+            "candidate",
+            "assemble",
+            "--work",
+            &release_work.work_unit_id,
+            "--version",
+            "0.2.0",
+            "--commit",
+            &commit,
+            "--expected-current",
+            "absent",
+            "--idempotency-key",
+            "assemble-before-review-freeze",
+        ],
+    );
+    let candidate = field(&assembled, "candidate");
+    let revision = field(&assembled, "current_revision");
+    let started = ok(temp.path(), &["work", "start", "review mutation contender"]);
+    let work = field(&started, "work_unit_id");
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            work,
+            "--type",
+            "general",
+            "--stage",
+            "resume-ready",
+        ],
+    );
+    let plan = field(&plan, "review_plan_id");
+
+    let conn =
+        rusqlite::Connection::open(agent_workbench::default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"
+        insert into release_candidate_attempts(
+          project_id,release_candidate_id,action,idempotency_key,expected_current,
+          payload_identity,requested_identity,status,created_at
+        )
+        select project_id,id,'publish-source','freeze-review',?2,
+               'payload','requested','requested',current_timestamp
+        from release_candidates where candidate_handle=?1
+        "#,
+        rusqlite::params![candidate, revision],
+    )
+    .unwrap();
+    drop(conn);
+
+    let rejected = aw(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            plan,
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--new-findings",
+            "0",
+            "--clean",
+            "--summary",
+            "must not race external publication",
+        ],
+    );
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("review mutation blocked by requested release attempt")
+    );
+}
+
+#[test]
 fn candidate_transition_rejects_a_changed_close_ready_source_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let commit = release_source(temp.path());
@@ -251,12 +538,6 @@ fn candidate_transition_rejects_a_changed_close_ready_source_boundary() {
             "same",
         ],
     );
-    let still_ready = ok(
-        temp.path(),
-        &["gate", "close-ready", &work.work_unit_id, "--dry-run"],
-    );
-    assert!(still_ready.contains("result: pass"), "{still_ready}");
-
     let rejected = aw(
         temp.path(),
         &[
@@ -284,16 +565,6 @@ fn omitted_work_rejects_multiple_eligible_closed_owners_and_explicit_work_resolv
     let temp = tempfile::tempdir().unwrap();
     let commit = release_source(temp.path());
     let first = init_release_project(temp.path(), &commit);
-    ok(
-        temp.path(),
-        &[
-            "work",
-            "close",
-            &first.work_unit_id,
-            "--summary",
-            "first release boundary is complete",
-        ],
-    );
 
     let started = ok(
         temp.path(),

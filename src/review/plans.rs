@@ -516,9 +516,10 @@ pub fn add_review_plan_target(
     input: NewReviewPlanTarget<'_>,
 ) -> Result<ReviewPlanTargetOutcome> {
     validate_review_target_shape(&input)?;
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    conn.query_row(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    tx.query_row(
         "select 1 from review_plans where id = ?1 and project_id = ?2",
         params![input.review_plan_id, project_id],
         |_| Ok(()),
@@ -527,19 +528,19 @@ pub fn add_review_plan_target(
     .context("review plan not found")?;
     if input.target_type == "phase" {
         let phase_id = input.phase_id.context("phase target requires phase id")?;
-        let plan_work_unit_id: i64 = conn.query_row(
+        let plan_work_unit_id: i64 = tx.query_row(
             "select work_unit_id from review_plans where id = ?1 and project_id = ?2",
             params![input.review_plan_id, project_id],
             |row| row.get(0),
         )?;
-        conn.query_row(
+        tx.query_row(
             "select 1 from work_phases where id = ?1 and project_id = ?2 and work_unit_id = ?3",
             params![phase_id, project_id, plan_work_unit_id],
             |_| Ok(()),
         )
         .optional()?
         .context("phase target not found for review plan work unit")?;
-        conn.execute(
+        tx.execute(
             r#"
             insert into work_phase_review_targets(
                 project_id, review_plan_id, phase_id, created_at
@@ -548,15 +549,25 @@ pub fn add_review_plan_target(
             "#,
             params![project_id, input.review_plan_id, phase_id],
         )?;
-        conn.execute(
-            "update review_plans set status='open' where id=?1 and project_id=?2 and status='clean'",
+        let target_id = tx.last_insert_rowid();
+        tx.execute(
+            r#"
+            update review_plans
+            set status=case when status='clean' then 'open' else status end,
+                fresh_review_after_run_id=max(
+                  fresh_review_after_run_id,
+                  coalesce((select max(id) from review_runs where review_plan_id=?1),0)
+                )
+            where id=?1 and project_id=?2
+            "#,
             params![input.review_plan_id, project_id],
         )?;
+        tx.commit()?;
         return Ok(ReviewPlanTargetOutcome {
-            review_plan_target_id: conn.last_insert_rowid(),
+            review_plan_target_id: target_id,
         });
     }
-    conn.execute(
+    tx.execute(
         r#"
         insert into review_plan_targets(
             review_plan_id, target_type, design_version_id, design_requirement_id,
@@ -576,8 +587,22 @@ pub fn add_review_plan_target(
             input.symbol,
         ],
     )?;
+    let target_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        update review_plans
+        set status=case when status='clean' then 'open' else status end,
+            fresh_review_after_run_id=max(
+              fresh_review_after_run_id,
+              coalesce((select max(id) from review_runs where review_plan_id=?1),0)
+            )
+        where id=?1 and project_id=?2
+        "#,
+        params![input.review_plan_id, project_id],
+    )?;
+    tx.commit()?;
     Ok(ReviewPlanTargetOutcome {
-        review_plan_target_id: conn.last_insert_rowid(),
+        review_plan_target_id: target_id,
     })
 }
 
@@ -607,6 +632,14 @@ pub fn add_review_run_with_finding_result(
     {
         bail!("new findings are disabled for resume review by policy");
     }
+    // The compatibility API publishes a run before its findings are supplied
+    // through `add_finding`. Keep a positive completed claim non-terminal until
+    // that inventory reaches the declared count.
+    let stored_status = if input.status == "completed" && input.new_findings_count > 0 {
+        "running"
+    } else {
+        input.status
+    };
 
     tx.execute(
         r#"
@@ -641,14 +674,14 @@ pub fn add_review_run_with_finding_result(
             input.new_findings_count,
             input.carried_findings_checked,
             bool_to_i64(input.clean_run),
-            input.status,
+            stored_status,
             input.review_provenance,
             input.review_provenance_ref,
             finding_fix_result,
         ],
     )?;
     let review_run_id = tx.last_insert_rowid();
-    let invocation_status = match input.status {
+    let invocation_status = match stored_status {
         "completed" => "completed",
         "failed" => "failed",
         "cancelled" => "cancelled",

@@ -113,6 +113,61 @@ begin
     select raise(abort, 'finding project_id must match referenced rows');
 end;
 
+create trigger if not exists trg_finding_target_project_insert
+before insert on finding_targets
+for each row
+when new.project_id != (select project_id from findings where id=new.finding_id)
+  or (new.design_requirement_id is not null
+      and new.project_id != (select project_id from design_requirements where id=new.design_requirement_id))
+  or (new.task_id is not null and new.project_id != coalesce((
+      select work.project_id from tasks task
+      join work_units work on work.id=task.work_unit_id
+      where task.id=new.task_id
+  ), (select id from projects order by id limit 1)))
+begin
+    select raise(abort, 'finding target project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_review_result_draft_item_target_project_insert
+before insert on review_result_draft_item_targets
+for each row
+when new.project_id != (select project_id from review_result_draft_items where id=new.draft_item_id)
+  or (new.design_requirement_id is not null
+      and new.project_id != (select project_id from design_requirements where id=new.design_requirement_id))
+  or (new.task_id is not null and new.project_id != coalesce((
+      select work.project_id from tasks task
+      join work_units work on work.id=task.work_unit_id
+      where task.id=new.task_id
+  ), (select id from projects order by id limit 1)))
+begin
+    select raise(abort, 'draft finding target project_id must match referenced rows');
+end;
+
+create trigger if not exists trg_finding_target_seal_insert
+before insert on finding_target_seals
+for each row
+when new.project_id != (select project_id from findings where id=new.finding_id)
+  or new.target_count != (
+      select count(*) from finding_targets target where target.finding_id=new.finding_id
+  )
+begin
+    select raise(abort, 'finding target seal must match the complete target set');
+end;
+
+create trigger if not exists trg_review_result_draft_item_target_seal_insert
+before insert on review_result_draft_item_target_seals
+for each row
+when new.project_id != (
+      select project_id from review_result_draft_items where id=new.draft_item_id
+    )
+  or new.target_count != (
+      select count(*) from review_result_draft_item_targets target
+      where target.draft_item_id=new.draft_item_id
+  )
+begin
+    select raise(abort, 'draft finding target seal must match the complete target set');
+end;
+
 create trigger if not exists trg_finding_clean_run_insert
 before insert on findings
 for each row

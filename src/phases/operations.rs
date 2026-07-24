@@ -1010,24 +1010,38 @@ pub fn add_phase_review_target(
     review_plan_id: i64,
     phase_id: i64,
 ) -> Result<PhaseReviewTargetOutcome> {
-    let conn = open_existing_project(root)?;
-    let project_id = project_id(&conn)?;
-    let phase = load_phase(&conn, project_id, phase_id)?;
-    conn.query_row(
+    let mut conn = open_existing_project(root)?;
+    let tx = conn.transaction()?;
+    let project_id = project_id(&tx)?;
+    let phase = load_phase(&tx, project_id, phase_id)?;
+    tx.query_row(
         "select 1 from review_plans where id = ?1 and project_id = ?2 and work_unit_id = ?3",
         params![review_plan_id, project_id, phase.work_unit_id],
         |_| Ok(()),
     )
     .optional()?
     .context("review plan not found for phase work unit")?;
-    conn.execute(
+    tx.execute(
         r#"
         insert into work_phase_review_targets(project_id, review_plan_id, phase_id, created_at)
         values (?1, ?2, ?3, current_timestamp)
         "#,
         params![project_id, review_plan_id, phase_id],
     )?;
-    let review_plan_target_id = conn.last_insert_rowid();
+    let review_plan_target_id = tx.last_insert_rowid();
+    tx.execute(
+        r#"
+        update review_plans
+        set status=case when status='clean' then 'open' else status end,
+            fresh_review_after_run_id=max(
+              fresh_review_after_run_id,
+              coalesce((select max(id) from review_runs where review_plan_id=?1),0)
+            )
+        where id=?1 and project_id=?2
+        "#,
+        params![review_plan_id, project_id],
+    )?;
+    tx.commit()?;
     Ok(PhaseReviewTargetOutcome {
         review_plan_target_id,
     })

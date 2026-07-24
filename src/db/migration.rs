@@ -479,6 +479,428 @@ pub(crate) fn install_storage_generation_25(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn install_storage_generation_26(conn: &Connection) -> Result<()> {
+    let mut requires_target_backfill = false;
+    for table in [
+        "finding_targets",
+        "review_result_draft_item_targets",
+        "finding_target_seals",
+        "review_result_draft_item_target_seals",
+    ] {
+        requires_target_backfill |= !table_exists(conn, table)?;
+    }
+    conn.execute_batch(
+        r#"
+        create table if not exists review_run_finding_count_migrations (
+            review_run_id integer primary key references review_runs(id),
+            project_id integer not null references projects(id) on delete cascade,
+            source_generation integer not null check(source_generation=25),
+            declared_count integer not null check(declared_count>=0),
+            actual_count integer not null check(actual_count>=0),
+            created_at text not null,
+            check(declared_count!=actual_count)
+        );
+        create table if not exists review_run_completion_migrations (
+            review_run_id integer primary key references review_runs(id),
+            project_id integer not null references projects(id) on delete cascade,
+            source_generation integer not null check(source_generation=25),
+            source_status text not null check(source_status in ('requested','running')),
+            declared_count integer not null check(declared_count>=0),
+            actual_count integer not null check(actual_count>0 and actual_count>=declared_count),
+            created_at text not null
+        );
+        create table if not exists review_invocation_completion_migrations (
+            invocation_id integer primary key references review_agent_invocations(id),
+            project_id integer not null references projects(id) on delete cascade,
+            review_run_id integer not null references review_run_completion_migrations(review_run_id),
+            source_generation integer not null check(source_generation=25),
+            source_status text not null check(source_status in ('requested','running')),
+            created_at text not null
+        );
+        create trigger if not exists trg_review_run_finding_count_migration_insert
+        before insert on review_run_finding_count_migrations
+        for each row
+        when new.project_id!=(select project_id from review_runs where id=new.review_run_id)
+          or new.actual_count!=(
+              select count(*) from findings where review_run_id=new.review_run_id
+          )
+          or new.declared_count!=(
+              select new_findings_count from review_runs where id=new.review_run_id
+          )
+        begin
+            select raise(abort,'review finding count migration must preserve the exact source declaration');
+        end;
+        create trigger if not exists trg_review_run_finding_count_migration_immutable_update
+        before update on review_run_finding_count_migrations
+        begin select raise(abort,'review finding count migrations are append-only'); end;
+        create trigger if not exists trg_review_run_finding_count_migration_immutable_delete
+        before delete on review_run_finding_count_migrations
+        begin select raise(abort,'review finding count migrations are append-only'); end;
+        create trigger if not exists trg_review_run_completion_migration_insert
+        before insert on review_run_completion_migrations
+        for each row
+        when new.project_id!=(select project_id from review_runs where id=new.review_run_id)
+          or new.source_status!=(
+              select status from review_runs where id=new.review_run_id
+          )
+          or new.declared_count!=(
+              select new_findings_count from review_runs where id=new.review_run_id
+          )
+          or new.actual_count!=(
+              select count(*) from findings where review_run_id=new.review_run_id
+          )
+        begin
+            select raise(abort,'review run completion migration must preserve the exact source state');
+        end;
+        create trigger if not exists trg_review_run_completion_migration_immutable_update
+        before update on review_run_completion_migrations
+        begin select raise(abort,'review run completion migrations are append-only'); end;
+        create trigger if not exists trg_review_run_completion_migration_immutable_delete
+        before delete on review_run_completion_migrations
+        begin select raise(abort,'review run completion migrations are append-only'); end;
+        create trigger if not exists trg_review_invocation_completion_migration_insert
+        before insert on review_invocation_completion_migrations
+        for each row
+        when new.project_id!=(
+              select project_id from review_agent_invocations where id=new.invocation_id
+          )
+          or new.review_run_id!=(
+              select review_run_id from review_agent_invocations where id=new.invocation_id
+          )
+          or new.source_status!=(
+              select status from review_agent_invocations where id=new.invocation_id
+          )
+        begin
+            select raise(abort,'review invocation completion migration must preserve the exact source state');
+        end;
+        create trigger if not exists trg_review_invocation_completion_migration_immutable_update
+        before update on review_invocation_completion_migrations
+        begin select raise(abort,'review invocation completion migrations are append-only'); end;
+        create trigger if not exists trg_review_invocation_completion_migration_immutable_delete
+        before delete on review_invocation_completion_migrations
+        begin select raise(abort,'review invocation completion migrations are append-only'); end;
+
+        insert or ignore into review_run_completion_migrations(
+            review_run_id,project_id,source_generation,source_status,
+            declared_count,actual_count,created_at
+        )
+        select run.id,run.project_id,25,run.status,
+               run.new_findings_count,count(finding.id),current_timestamp
+        from review_runs run
+        left join findings finding on finding.review_run_id=run.id
+        where run.status in ('requested','running')
+        group by run.id
+        having count(finding.id)>0
+           and count(finding.id)>=run.new_findings_count;
+
+        insert or ignore into review_invocation_completion_migrations(
+            invocation_id,project_id,review_run_id,source_generation,source_status,created_at
+        )
+        select invocation.id,invocation.project_id,invocation.review_run_id,
+               25,invocation.status,current_timestamp
+        from review_agent_invocations invocation
+        join review_run_completion_migrations migration
+          on migration.review_run_id=invocation.review_run_id
+        where invocation.status in ('requested','running');
+
+        insert or ignore into review_run_finding_count_migrations(
+            review_run_id,project_id,source_generation,declared_count,actual_count,created_at
+        )
+        select run.id,run.project_id,25,run.new_findings_count,count(finding.id),current_timestamp
+        from review_runs run
+        left join findings finding on finding.review_run_id=run.id
+        where run.status='completed'
+           or exists(
+               select 1 from review_run_completion_migrations completion
+               where completion.review_run_id=run.id
+           )
+        group by run.id
+        having run.new_findings_count!=count(finding.id);
+
+        update review_runs
+        set new_findings_count=(
+            select migration.actual_count
+            from review_run_finding_count_migrations migration
+            where migration.review_run_id=review_runs.id
+        )
+        where exists(
+            select 1
+            from review_run_finding_count_migrations migration
+            where migration.review_run_id=review_runs.id
+              and review_runs.new_findings_count=migration.declared_count
+        );
+
+        update review_agent_invocations
+        set status='completed'
+        where exists(
+            select 1
+            from review_invocation_completion_migrations migration
+            where migration.invocation_id=review_agent_invocations.id
+              and review_agent_invocations.status=migration.source_status
+        );
+
+        update review_runs
+        set status='completed'
+        where exists(
+            select 1
+            from review_run_completion_migrations migration
+            where migration.review_run_id=review_runs.id
+              and review_runs.status=migration.source_status
+              and review_runs.new_findings_count=migration.actual_count
+        );
+        "#,
+    )?;
+    if requires_target_backfill {
+        execute_schema_batches(conn)?;
+    }
+    conn.execute_batch(
+        r#"
+        create trigger if not exists trg_review_plan_release_attempt_insert
+        before insert on review_plans
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_plan_release_attempt_update
+        before update on review_plans
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_plan_target_release_attempt_insert
+        before insert on review_plan_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=(
+            select project_id from review_plans where id=new.review_plan_id
+          ) and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_plan_target_release_attempt_update
+        before update on review_plan_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (
+            select project_id from review_plans
+            where id in (old.review_plan_id,new.review_plan_id)
+          ) and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_plan_target_release_attempt_delete
+        before delete on review_plan_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=(
+            select project_id from review_plans where id=old.review_plan_id
+          ) and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_phase_review_target_release_attempt_insert
+        before insert on work_phase_review_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_phase_review_target_release_attempt_update
+        before update on work_phase_review_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (old.project_id,new.project_id) and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_phase_review_target_release_attempt_delete
+        before delete on work_phase_review_targets
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=old.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_run_release_attempt_insert
+        before insert on review_runs
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_run_release_attempt_update
+        before update on review_runs
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_invocation_release_attempt_insert
+        before insert on review_agent_invocations
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_invocation_release_attempt_update
+        before update on review_agent_invocations
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_result_release_attempt_insert
+        before insert on review_result_drafts
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_review_result_release_attempt_update
+        before update on review_result_drafts
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_finding_release_attempt_insert
+        before insert on findings
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_finding_release_attempt_update
+        before update on findings
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_closure_release_attempt_insert
+        before insert on closures
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_closure_release_attempt_update
+        before update on closures
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'review mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_remediation_binding_release_attempt_insert
+        before insert on finding_remediation_bindings
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin
+          select raise(abort, 'review mutation blocked by requested release attempt');
+        end;
+
+        create trigger if not exists trg_work_unit_release_attempt_insert
+        before insert on work_units
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_work_unit_release_attempt_update
+        before update on work_units
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (old.project_id,new.project_id) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_work_unit_release_attempt_delete
+        before delete on work_units
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=old.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+
+        create trigger if not exists trg_work_activation_release_attempt_insert
+        before insert on work_unit_activations
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_work_activation_release_attempt_update
+        before update on work_unit_activations
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (old.project_id,new.project_id) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_work_activation_release_attempt_delete
+        before delete on work_unit_activations
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=old.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+
+        create trigger if not exists trg_repository_release_attempt_insert
+        before insert on repositories
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=new.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_repository_release_attempt_update
+        before update on repositories
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (old.project_id,new.project_id) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_repository_release_attempt_delete
+        before delete on repositories
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=old.project_id and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+
+        create trigger if not exists trg_repository_snapshot_release_attempt_insert
+        before insert on repository_snapshots
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=(
+            select project_id from repositories where id=new.repository_id
+          ) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_repository_snapshot_release_attempt_update
+        before update on repository_snapshots
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id in (
+            select project_id from repositories
+            where id in (old.repository_id,new.repository_id)
+          ) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        create trigger if not exists trg_repository_snapshot_release_attempt_delete
+        before delete on repository_snapshots
+        when exists(
+          select 1 from release_candidate_attempts
+          where project_id=(
+            select project_id from repositories where id=old.repository_id
+          ) and status='requested'
+        )
+        begin select raise(abort, 'release boundary mutation blocked by requested release attempt'); end;
+        "#,
+    )?;
+    conn.execute(
+        "insert or ignore into schema_migrations(version,applied_at) values(26,current_timestamp)",
+        [],
+    )?;
+    Ok(())
+}
+
 fn normalize_review_invocation_storage(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "review_agent_invocations")? {
         return Ok(());
@@ -494,6 +916,9 @@ fn normalize_review_invocation_storage(conn: &Connection) -> Result<()> {
     if !has_retired_authority {
         return Ok(());
     }
+    conn.execute_batch(
+        "drop trigger if exists trg_review_invocation_completion_migration_insert;",
+    )?;
     conn.execute_batch(
         r#"
         create table review_agent_invocations_without_retired_authority (
@@ -1204,6 +1629,13 @@ fn schema_profile_update_changes(conn: &Connection) -> Result<Vec<PendingUpdateC
         "review_invocation_events",
         "review_result_drafts",
         "review_result_draft_items",
+        "finding_targets",
+        "review_result_draft_item_targets",
+        "finding_target_seals",
+        "review_result_draft_item_target_seals",
+        "review_run_finding_count_migrations",
+        "review_run_completion_migrations",
+        "review_invocation_completion_migrations",
         "review_result_draft_events",
         "legacy_claim_audits",
         "legacy_review_acceptance_migrations",
@@ -2321,6 +2753,7 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         install_storage_generation_23(conn)?;
         install_storage_generation_24(conn)?;
         install_storage_generation_25(conn)?;
+        install_storage_generation_26(conn)?;
     }
     if current_version >= 15 {
         conn.execute_batch(GENERATION_15_APPLICATION_LINK_SQL)?;
@@ -2335,6 +2768,7 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         install_storage_generation_23(conn)?;
         install_storage_generation_24(conn)?;
         install_storage_generation_25(conn)?;
+        install_storage_generation_26(conn)?;
     }
 
     normalize_decomposition_plan_heads(conn)

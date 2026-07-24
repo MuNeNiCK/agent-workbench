@@ -174,7 +174,14 @@ pub(super) fn observe_generation_13(
         .filter(|change| !is_later_generation_change(change))
         .collect::<Vec<_>>();
     if !pending_base_changes.is_empty() {
-        bail!("source has not reached the deployed core structural descriptor");
+        bail!(
+            "source has not reached the deployed core structural descriptor: {}",
+            pending_base_changes
+                .iter()
+                .map(crate::db::PendingUpdateChange::identity)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     let mut exclusions = vec!["schema_migrations"];
     exclusions.extend_from_slice(GENERATION_14_TABLES);
@@ -1338,6 +1345,143 @@ pub(super) fn validate_generation_25(
         bail!("target storage generation is not the declared successor");
     }
     validate_current_generation_25(conn)?;
+    let snapshot = source
+        .conservation
+        .as_ref()
+        .context("source conservation observation is missing")?;
+    conservation::verify_product_facts(conn, snapshot)
+}
+
+pub(super) fn observe_generation_25(
+    conn: &Connection,
+    context: &TransitionContext<'_>,
+) -> Result<SourceObservation> {
+    if full_generation(conn)? != 25 {
+        bail!("source storage generation is not 25");
+    }
+    validate_current_generation_25(conn)?;
+    let count_mutations = conn
+        .prepare(
+            r#"
+            select run.id,run.new_findings_count,count(finding.id)
+            from review_runs run
+            left join findings finding on finding.review_run_id=run.id
+            where run.status='completed'
+               or run.status in ('requested','running')
+            group by run.id
+            having run.new_findings_count!=count(finding.id)
+               and (
+                   run.status='completed'
+                   or (
+                       run.status in ('requested','running')
+                       and count(finding.id)>0
+                       and count(finding.id)>=run.new_findings_count
+                   )
+               )
+            order by run.id
+            "#,
+        )?
+        .query_map([], |row| {
+            Ok(conservation::DeclaredIntegerMutation {
+                table: "review_runs".to_string(),
+                key_column: "id".to_string(),
+                key_value: row.get(0)?,
+                column: "new_findings_count".to_string(),
+                before: row.get(1)?,
+                after: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut status_mutations = conn
+        .prepare(
+            r#"
+            select run.id,run.status
+            from review_runs run
+            where run.status in ('requested','running')
+              and (select count(*) from findings where review_run_id=run.id)>0
+              and (select count(*) from findings where review_run_id=run.id)
+                    >=run.new_findings_count
+            order by run.id
+            "#,
+        )?
+        .query_map([], |row| {
+            Ok(conservation::DeclaredTextMutation {
+                table: "review_runs".to_string(),
+                key_column: "id".to_string(),
+                key_value: row.get(0)?,
+                column: "status".to_string(),
+                before: row.get(1)?,
+                after: "completed".to_string(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let invocation_status_mutations = conn
+        .prepare(
+            r#"
+            select invocation.id,invocation.status
+            from review_agent_invocations invocation
+            join review_runs run on run.id=invocation.review_run_id
+            where invocation.status in ('requested','running')
+              and run.status in ('requested','running')
+              and (select count(*) from findings where review_run_id=run.id)>0
+              and (select count(*) from findings where review_run_id=run.id)
+                    >=run.new_findings_count
+            order by invocation.id
+            "#,
+        )?
+        .query_map([], |row| {
+            Ok(conservation::DeclaredTextMutation {
+                table: "review_agent_invocations".to_string(),
+                key_column: "id".to_string(),
+                key_value: row.get(0)?,
+                column: "status".to_string(),
+                before: row.get(1)?,
+                after: "completed".to_string(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    status_mutations.extend(invocation_status_mutations);
+    let conservation = conservation::capture_product_facts_with_mutations(
+        conn,
+        &["schema_migrations"],
+        status_mutations,
+        count_mutations,
+    )?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-workbench/storage-source/v1\0");
+    hasher.update(25_i64.to_be_bytes());
+    hasher.update(context.root.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+    hasher.update(conservation.digest.as_bytes());
+    Ok(SourceObservation {
+        descriptor_key: GENERATION_25.key.to_string(),
+        revision: format!("{:x}", hasher.finalize()),
+        historical_source: None,
+        conservation: Some(conservation),
+        plans: Vec::new(),
+        derived_bundle_count: 0,
+        decomposition_projection: None,
+        reconciliation_balance: None,
+    })
+}
+
+pub(super) fn apply_generation_26(
+    conn: &Connection,
+    _source: &SourceObservation,
+    _context: &TransitionContext<'_>,
+) -> Result<()> {
+    crate::db::install_storage_generation_26(conn)
+}
+
+pub(super) fn validate_generation_26(
+    conn: &Connection,
+    source: &SourceObservation,
+    _context: &TransitionContext<'_>,
+) -> Result<()> {
+    if full_generation(conn)? != 26 {
+        bail!("target storage generation is not the declared successor");
+    }
+    validate_current_generation_26(conn)?;
     let snapshot = source
         .conservation
         .as_ref()

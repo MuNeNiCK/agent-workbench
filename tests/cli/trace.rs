@@ -1,10 +1,10 @@
 use super::*;
 use agent_workbench::{
-    DesignPackageImport, DesignVersionApproval, NewClosure, NewDesignPackage, NewFinding,
-    NewReviewPlan, NewReviewRun, NewTask, NewTaskDerivation, add_closure, add_finding,
-    add_review_plan, add_review_run, add_task, approve_design_version, classify_finding,
-    default_ledger_path, derive_task_from_requirement, import_design_package, init_design_package,
-    init_project, remediate_work, start_work,
+    AdjudicationInput, DesignPackageImport, DesignVersionApproval, NewClosure, NewDesignPackage,
+    NewReviewPlan, NewReviewRun, NewTask, NewTaskDerivation, add_closure, add_review_plan,
+    add_review_run, add_task, approve_design_version, decide_finding, default_ledger_path,
+    derive_task_from_requirement, import_design_package, init_design_package, init_project,
+    remediate_work, start_work,
 };
 
 #[test]
@@ -166,23 +166,54 @@ Observe the aggregate behavior.
         },
     )
     .unwrap();
-    let finding = add_finding(
+    let added_finding = ok(
         temp.path(),
-        NewFinding {
-            review_run_id: run.review_run_id,
-            finding_type: "design_implementation_drift",
-            severity: "high",
-            description: "rebind the completed derivation",
-            design_requirement_id: None,
-            task_id: Some(task.task_id),
+        &[
+            "finding",
+            "add",
+            "--run",
+            &run.review_run_id.to_string(),
+            "--type",
+            "design_implementation_drift",
+            "--severity",
+            "high",
+            "--description",
+            "rebind the completed derivation",
+            "--design-requirement",
+            &first.design_requirement_id.to_string(),
+            "--task",
+            &task.task_id.to_string(),
+            "--design-requirement",
+            &second.design_requirement_id.to_string(),
+            "--task",
+            &task.task_id.to_string(),
+        ],
+    );
+    let finding_id = added_finding
+        .lines()
+        .find_map(|line| line.strip_prefix("finding_id: "))
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let accepted = decide_finding(
+        temp.path(),
+        finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "accept the exact requirement and task target",
+            expected_current: "pending",
         },
     )
     .unwrap();
-    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let target_inventory = ok(temp.path(), &["finding", "list", "--status", "open"]);
+    assert!(target_inventory.contains(&format!(
+        "targets: requirement={},task={};requirement={},task={}",
+        first.design_requirement_id, task.task_id, second.design_requirement_id, task.task_id
+    )));
     let closure = add_closure(
         temp.path(),
         NewClosure {
-            finding_id: finding.finding_id,
+            finding_id,
             design_invariant: "each requirement names its establishing boundary",
             design_citations: None,
             implementation_evidence: None,
@@ -196,7 +227,7 @@ Observe the aggregate behavior.
         },
     )
     .unwrap();
-    remediate_work(temp.path(), finding.finding_id).unwrap();
+    remediate_work(temp.path(), finding_id).unwrap();
 
     let design_id = design.design_version_id.to_string();
     let task_id = task.task_id.to_string();
@@ -226,4 +257,31 @@ Observe the aggregate behavior.
     )));
     assert!(rebound.contains("idempotent: false"));
     assert!(ok(temp.path(), &args).contains("idempotent: true"));
+
+    let finding_id_text = finding_id.to_string();
+    let rejected = aw(
+        temp.path(),
+        &[
+            "finding",
+            "decide",
+            &finding_id_text,
+            "--decision",
+            "rejected",
+            "--reason",
+            "must not discard an applied public rebind",
+            "--expected-current",
+            &accepted.decision_handle,
+        ],
+    );
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("finding_has_active_remediation_effects")
+    );
+    let listed = ok(temp.path(), &["finding", "list", "--status", "open"]);
+    assert!(listed.contains(&format!("{} [run={} ", finding_id, run.review_run_id)));
+    assert!(listed.contains(&format!(
+        "current_decision_handle: {}",
+        accepted.decision_handle
+    )));
 }

@@ -151,6 +151,21 @@ struct ReleaseWork {
 }
 
 fn init_release_project(root: &Path, commit: &str) -> ReleaseWork {
+    let work = init_open_release_project(root, commit);
+    ok(
+        root,
+        &[
+            "work",
+            "close",
+            &work.work_unit_id,
+            "--summary",
+            "release boundary is complete",
+        ],
+    );
+    work
+}
+
+fn init_open_release_project(root: &Path, commit: &str) -> ReleaseWork {
     ok(root, &["init"]);
     let started = ok(root, &["work", "start", "release qualification"]);
     let work_unit_id = field(&started, "work_unit_id").to_string();
@@ -250,11 +265,6 @@ fn advance_release_work(root: &Path, work: &mut ReleaseWork, commit: &str) {
         ],
     );
     work.snapshot_id = current;
-    let ready = ok(
-        root,
-        &["gate", "close-ready", &work.work_unit_id, "--dry-run"],
-    );
-    assert!(ready.contains("result: pass"), "{ready}");
 }
 
 #[test]

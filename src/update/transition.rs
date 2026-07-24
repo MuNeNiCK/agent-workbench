@@ -222,6 +222,9 @@ const GENERATION_24: StateDescriptor = StateDescriptor {
 const GENERATION_25: StateDescriptor = StateDescriptor {
     key: "full-storage-with-project-local-owner-decisions",
 };
+const GENERATION_26: StateDescriptor = StateDescriptor {
+    key: "full-storage-with-sealed-finding-targets",
+};
 const CURRENT_REPAIR_SOURCE: StateDescriptor = StateDescriptor {
     key: "current-storage-with-registered-repair",
 };
@@ -368,7 +371,7 @@ pub(crate) fn classify_update_route_with_validated_registry(
     if generation == crate::db::SCHEMA_VERSION {
         let pending = crate::db::pending_update_change_set(conn)?;
         if pending.is_empty() {
-            validate_current_generation_24(conn)?;
+            validate_current_generation_26(conn)?;
             return Ok(UpdateRoute::Current);
         }
         if pending.iter().any(is_unrepairable_current_change) {
@@ -381,6 +384,8 @@ pub(crate) fn classify_update_route_with_validated_registry(
     }
     let context = TransitionContext { root };
     for (source_generation, observer) in [
+        (25, observe_generation_25 as ObserveSource),
+        (24, observe_generation_24 as ObserveSource),
         (23, observe_generation_23 as ObserveSource),
         (22, observe_generation_22 as ObserveSource),
         (21, observe_generation_21 as ObserveSource),
@@ -824,6 +829,683 @@ fn validate_current_generation_25(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn validate_current_generation_26(conn: &Connection) -> Result<()> {
+    validate_current_generation_25(conn)?;
+    for table in [
+        "finding_targets",
+        "review_result_draft_item_targets",
+        "finding_target_seals",
+        "review_result_draft_item_target_seals",
+        "review_run_finding_count_migrations",
+        "review_run_completion_migrations",
+        "review_invocation_completion_migrations",
+    ] {
+        if !table_exists(conn, table)? {
+            bail!("current storage is missing a sealed finding target relation: {table}");
+        }
+    }
+    validate_sealed_finding_target_schema(conn)?;
+    validate_review_inventory_migration_schema(conn)?;
+    let incomplete_findings: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from findings finding
+        left join finding_target_seals seal on seal.finding_id=finding.id
+        where seal.finding_id is null
+           or seal.project_id!=finding.project_id
+           or seal.target_count!=(
+               select count(*) from finding_targets target
+               where target.finding_id=finding.id
+           )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if incomplete_findings != 0 {
+        bail!("current storage has {incomplete_findings} findings without complete target seals");
+    }
+    let incomplete_draft_items: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_result_draft_items item
+        left join review_result_draft_item_target_seals seal
+          on seal.draft_item_id=item.id
+        where seal.draft_item_id is null
+           or seal.project_id!=item.project_id
+           or seal.target_count!=(
+               select count(*) from review_result_draft_item_targets target
+               where target.draft_item_id=item.id
+           )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if incomplete_draft_items != 0 {
+        bail!(
+            "current storage has {incomplete_draft_items} draft findings without complete target seals"
+        );
+    }
+    let inconsistent_completed_runs: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_runs run
+        where run.status='completed'
+          and run.new_findings_count!=(
+              select count(*) from findings finding where finding.review_run_id=run.id
+          )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if inconsistent_completed_runs != 0 {
+        bail!(
+            "current storage has {inconsistent_completed_runs} completed review runs with incomplete finding inventories"
+        );
+    }
+    let invalid_count_migrations: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_run_finding_count_migrations migration
+        left join review_runs run on run.id=migration.review_run_id
+        where run.id is null
+           or migration.project_id!=run.project_id
+           or migration.source_generation!=25
+           or migration.declared_count=migration.actual_count
+           or migration.actual_count!=run.new_findings_count
+           or migration.actual_count!=(
+               select count(*) from findings finding
+               where finding.review_run_id=migration.review_run_id
+           )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_count_migrations != 0 {
+        bail!(
+            "current storage has {invalid_count_migrations} invalid review finding count migration records"
+        );
+    }
+    let invalid_run_completions: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_run_completion_migrations migration
+        left join review_runs run on run.id=migration.review_run_id
+        where run.id is null
+           or migration.project_id!=run.project_id
+           or migration.source_generation!=25
+           or migration.source_status not in ('requested','running')
+           or migration.actual_count<=0
+           or migration.actual_count<migration.declared_count
+           or run.status!='completed'
+           or run.new_findings_count!=migration.actual_count
+           or migration.actual_count!=(
+               select count(*) from findings finding
+               where finding.review_run_id=migration.review_run_id
+           )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_run_completions != 0 {
+        bail!(
+            "current storage has {invalid_run_completions} invalid review run completion migration records"
+        );
+    }
+    let invalid_invocation_completions: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_invocation_completion_migrations migration
+        left join review_agent_invocations invocation
+          on invocation.id=migration.invocation_id
+        left join review_run_completion_migrations run_migration
+          on run_migration.review_run_id=migration.review_run_id
+        where invocation.id is null
+           or run_migration.review_run_id is null
+           or migration.project_id!=invocation.project_id
+           or migration.review_run_id!=invocation.review_run_id
+           or migration.source_generation!=25
+           or migration.source_status not in ('requested','running')
+           or invocation.status!='completed'
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_invocation_completions != 0 {
+        bail!(
+            "current storage has {invalid_invocation_completions} invalid review invocation completion migration records"
+        );
+    }
+    let stranded_nonterminal_runs: i64 = conn.query_row(
+        r#"
+        select count(*)
+        from review_runs run
+        where run.status in ('requested','running')
+          and (select count(*) from findings finding where finding.review_run_id=run.id)>0
+          and (select count(*) from findings finding where finding.review_run_id=run.id)
+                >=run.new_findings_count
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    if stranded_nonterminal_runs != 0 {
+        bail!(
+            "current storage has {stranded_nonterminal_runs} nonterminal review runs with complete finding inventories"
+        );
+    }
+    for (trigger, target) in [
+        (
+            "trg_review_plan_release_attempt_insert",
+            "before insert on review_plans",
+        ),
+        (
+            "trg_review_plan_release_attempt_update",
+            "before update on review_plans",
+        ),
+        (
+            "trg_review_run_release_attempt_insert",
+            "before insert on review_runs",
+        ),
+        (
+            "trg_review_run_release_attempt_update",
+            "before update on review_runs",
+        ),
+        (
+            "trg_review_invocation_release_attempt_insert",
+            "before insert on review_agent_invocations",
+        ),
+        (
+            "trg_review_invocation_release_attempt_update",
+            "before update on review_agent_invocations",
+        ),
+        (
+            "trg_review_result_release_attempt_insert",
+            "before insert on review_result_drafts",
+        ),
+        (
+            "trg_review_result_release_attempt_update",
+            "before update on review_result_drafts",
+        ),
+        (
+            "trg_finding_release_attempt_insert",
+            "before insert on findings",
+        ),
+        (
+            "trg_finding_release_attempt_update",
+            "before update on findings",
+        ),
+        (
+            "trg_closure_release_attempt_insert",
+            "before insert on closures",
+        ),
+        (
+            "trg_closure_release_attempt_update",
+            "before update on closures",
+        ),
+        (
+            "trg_remediation_binding_release_attempt_insert",
+            "before insert on finding_remediation_bindings",
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens(
+            "review release-attempt guard",
+            &sql,
+            &[
+                target,
+                "select 1 from release_candidate_attempts",
+                "project_id=new.project_id and status='requested'",
+                "review mutation blocked by requested release attempt",
+            ],
+        )?;
+    }
+    for (trigger, operation, project_scope) in [
+        (
+            "trg_review_plan_target_release_attempt_insert",
+            "before insert on review_plan_targets",
+            "select project_id from review_plans where id=new.review_plan_id",
+        ),
+        (
+            "trg_review_plan_target_release_attempt_update",
+            "before update on review_plan_targets",
+            "where id in (old.review_plan_id,new.review_plan_id)",
+        ),
+        (
+            "trg_review_plan_target_release_attempt_delete",
+            "before delete on review_plan_targets",
+            "select project_id from review_plans where id=old.review_plan_id",
+        ),
+        (
+            "trg_phase_review_target_release_attempt_insert",
+            "before insert on work_phase_review_targets",
+            "project_id=new.project_id and status='requested'",
+        ),
+        (
+            "trg_phase_review_target_release_attempt_update",
+            "before update on work_phase_review_targets",
+            "project_id in (old.project_id,new.project_id) and status='requested'",
+        ),
+        (
+            "trg_phase_review_target_release_attempt_delete",
+            "before delete on work_phase_review_targets",
+            "project_id=old.project_id and status='requested'",
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens(
+            "review target release-attempt guard",
+            &sql,
+            &[
+                operation,
+                "select 1 from release_candidate_attempts",
+                project_scope,
+                "status='requested'",
+                "review mutation blocked by requested release attempt",
+            ],
+        )?;
+    }
+    for (trigger, operation, project_scope) in [
+        (
+            "trg_work_unit_release_attempt_insert",
+            "before insert on work_units",
+            "project_id=new.project_id and status='requested'",
+        ),
+        (
+            "trg_work_unit_release_attempt_update",
+            "before update on work_units",
+            "project_id in (old.project_id,new.project_id) and status='requested'",
+        ),
+        (
+            "trg_work_unit_release_attempt_delete",
+            "before delete on work_units",
+            "project_id=old.project_id and status='requested'",
+        ),
+        (
+            "trg_work_activation_release_attempt_insert",
+            "before insert on work_unit_activations",
+            "project_id=new.project_id and status='requested'",
+        ),
+        (
+            "trg_work_activation_release_attempt_update",
+            "before update on work_unit_activations",
+            "project_id in (old.project_id,new.project_id) and status='requested'",
+        ),
+        (
+            "trg_work_activation_release_attempt_delete",
+            "before delete on work_unit_activations",
+            "project_id=old.project_id and status='requested'",
+        ),
+        (
+            "trg_repository_release_attempt_insert",
+            "before insert on repositories",
+            "project_id=new.project_id and status='requested'",
+        ),
+        (
+            "trg_repository_release_attempt_update",
+            "before update on repositories",
+            "project_id in (old.project_id,new.project_id) and status='requested'",
+        ),
+        (
+            "trg_repository_release_attempt_delete",
+            "before delete on repositories",
+            "project_id=old.project_id and status='requested'",
+        ),
+        (
+            "trg_repository_snapshot_release_attempt_insert",
+            "before insert on repository_snapshots",
+            "select project_id from repositories where id=new.repository_id",
+        ),
+        (
+            "trg_repository_snapshot_release_attempt_update",
+            "before update on repository_snapshots",
+            "where id in (old.repository_id,new.repository_id)",
+        ),
+        (
+            "trg_repository_snapshot_release_attempt_delete",
+            "before delete on repository_snapshots",
+            "select project_id from repositories where id=old.repository_id",
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens(
+            "release boundary freeze guard",
+            &sql,
+            &[
+                operation,
+                "select 1 from release_candidate_attempts",
+                project_scope,
+                "status='requested'",
+                "release boundary mutation blocked by requested release attempt",
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_review_inventory_migration_schema(conn: &Connection) -> Result<()> {
+    for (table, tokens) in [
+        (
+            "review_run_finding_count_migrations",
+            &[
+                "review_run_id integer primary key",
+                "source_generation integer not null check(source_generation=25)",
+                "declared_count integer not null check(declared_count>=0)",
+                "actual_count integer not null check(actual_count>=0)",
+                "check(declared_count!=actual_count)",
+            ][..],
+        ),
+        (
+            "review_run_completion_migrations",
+            &[
+                "review_run_id integer primary key",
+                "source_generation integer not null check(source_generation=25)",
+                "source_status text not null check(source_status in ('requested','running'))",
+                "actual_count integer not null check(actual_count>0 and actual_count>=declared_count)",
+            ][..],
+        ),
+        (
+            "review_invocation_completion_migrations",
+            &[
+                "invocation_id integer primary key",
+                "review_run_id integer not null references review_run_completion_migrations(review_run_id)",
+                "source_generation integer not null check(source_generation=25)",
+                "source_status text not null check(source_status in ('requested','running'))",
+            ][..],
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "table", table)?;
+        require_sql_tokens("review inventory migration audit table", &sql, tokens)?;
+    }
+    for (trigger, tokens) in [
+        (
+            "trg_review_run_finding_count_migration_insert",
+            &[
+                "before insert on review_run_finding_count_migrations",
+                "new.project_id!=(select project_id from review_runs where id=new.review_run_id)",
+                "new.actual_count!=(",
+                "select count(*) from findings where review_run_id=new.review_run_id",
+                "new.declared_count!=(",
+                "select new_findings_count from review_runs where id=new.review_run_id",
+                "review finding count migration must preserve the exact source declaration",
+            ][..],
+        ),
+        (
+            "trg_review_run_completion_migration_insert",
+            &[
+                "before insert on review_run_completion_migrations",
+                "new.project_id!=(select project_id from review_runs where id=new.review_run_id)",
+                "new.source_status!=(",
+                "select status from review_runs where id=new.review_run_id",
+                "new.declared_count!=(",
+                "select new_findings_count from review_runs where id=new.review_run_id",
+                "new.actual_count!=(",
+                "select count(*) from findings where review_run_id=new.review_run_id",
+                "review run completion migration must preserve the exact source state",
+            ][..],
+        ),
+        (
+            "trg_review_invocation_completion_migration_insert",
+            &[
+                "before insert on review_invocation_completion_migrations",
+                "select project_id from review_agent_invocations where id=new.invocation_id",
+                "select review_run_id from review_agent_invocations where id=new.invocation_id",
+                "select status from review_agent_invocations where id=new.invocation_id",
+                "review invocation completion migration must preserve the exact source state",
+            ][..],
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens("review inventory migration insert guard", &sql, tokens)?;
+    }
+    for (trigger, operation, table, message) in [
+        (
+            "trg_review_run_finding_count_migration_immutable_update",
+            "before update",
+            "review_run_finding_count_migrations",
+            "review finding count migrations are append-only",
+        ),
+        (
+            "trg_review_run_finding_count_migration_immutable_delete",
+            "before delete",
+            "review_run_finding_count_migrations",
+            "review finding count migrations are append-only",
+        ),
+        (
+            "trg_review_run_completion_migration_immutable_update",
+            "before update",
+            "review_run_completion_migrations",
+            "review run completion migrations are append-only",
+        ),
+        (
+            "trg_review_run_completion_migration_immutable_delete",
+            "before delete",
+            "review_run_completion_migrations",
+            "review run completion migrations are append-only",
+        ),
+        (
+            "trg_review_invocation_completion_migration_immutable_update",
+            "before update",
+            "review_invocation_completion_migrations",
+            "review invocation completion migrations are append-only",
+        ),
+        (
+            "trg_review_invocation_completion_migration_immutable_delete",
+            "before delete",
+            "review_invocation_completion_migrations",
+            "review invocation completion migrations are append-only",
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens(
+            "review inventory migration append-only guard",
+            &sql,
+            &[operation, table, message],
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_sealed_finding_target_schema(conn: &Connection) -> Result<()> {
+    for (table, tokens) in [
+        (
+            "finding_targets",
+            &[
+                "finding_id integer not null",
+                "ordinal integer not null check(ordinal > 0)",
+                "check(design_requirement_id is not null or task_id is not null)",
+                "unique(finding_id, ordinal)",
+                "unique(finding_id, design_requirement_id, task_id)",
+            ][..],
+        ),
+        (
+            "review_result_draft_item_targets",
+            &[
+                "draft_item_id integer not null",
+                "ordinal integer not null check(ordinal > 0)",
+                "check(design_requirement_id is not null or task_id is not null)",
+                "unique(draft_item_id, ordinal)",
+                "unique(draft_item_id, design_requirement_id, task_id)",
+            ][..],
+        ),
+        (
+            "finding_target_seals",
+            &[
+                "finding_id integer primary key",
+                "target_count integer not null check(target_count >= 0)",
+            ][..],
+        ),
+        (
+            "review_result_draft_item_target_seals",
+            &[
+                "draft_item_id integer primary key",
+                "target_count integer not null check(target_count >= 0)",
+            ][..],
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "table", table)?;
+        require_sql_tokens("sealed finding target table", &sql, tokens)?;
+    }
+    for (index, tokens) in [
+        (
+            "idx_finding_target_requirement_only",
+            &[
+                "on finding_targets(finding_id,design_requirement_id)",
+                "where task_id is null",
+            ][..],
+        ),
+        (
+            "idx_finding_target_task_only",
+            &[
+                "on finding_targets(finding_id,task_id)",
+                "where design_requirement_id is null",
+            ][..],
+        ),
+        (
+            "idx_draft_finding_target_requirement_only",
+            &[
+                "on review_result_draft_item_targets(draft_item_id,design_requirement_id)",
+                "where task_id is null",
+            ][..],
+        ),
+        (
+            "idx_draft_finding_target_task_only",
+            &[
+                "on review_result_draft_item_targets(draft_item_id,task_id)",
+                "where design_requirement_id is null",
+            ][..],
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "index", index)?;
+        require_sql_tokens("sealed finding target uniqueness index", &sql, tokens)?;
+    }
+    for (trigger, tokens) in [
+        (
+            "trg_finding_target_project_insert",
+            &[
+                "before insert on finding_targets",
+                "new.project_id != (select project_id from findings where id=new.finding_id)",
+                "new.project_id != (select project_id from design_requirements where id=new.design_requirement_id)",
+                "new.project_id != coalesce((",
+                "select work.project_id from tasks task",
+                "join work_units work on work.id=task.work_unit_id",
+                "where task.id=new.task_id",
+                "(select id from projects order by id limit 1)",
+                "finding target project_id must match referenced rows",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_project_insert",
+            &[
+                "before insert on review_result_draft_item_targets",
+                "new.project_id != (select project_id from review_result_draft_items where id=new.draft_item_id)",
+                "new.project_id != (select project_id from design_requirements where id=new.design_requirement_id)",
+                "new.project_id != coalesce((",
+                "select work.project_id from tasks task",
+                "join work_units work on work.id=task.work_unit_id",
+                "where task.id=new.task_id",
+                "(select id from projects order by id limit 1)",
+                "draft finding target project_id must match referenced rows",
+            ][..],
+        ),
+        (
+            "trg_finding_target_seal_insert",
+            &[
+                "before insert on finding_target_seals",
+                "new.project_id != (select project_id from findings where id=new.finding_id)",
+                "new.target_count != (",
+                "from finding_targets target where target.finding_id=new.finding_id",
+                "finding target seal must match the complete target set",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_seal_insert",
+            &[
+                "before insert on review_result_draft_item_target_seals",
+                "new.project_id != (",
+                "select project_id from review_result_draft_items where id=new.draft_item_id",
+                "new.target_count != (",
+                "from review_result_draft_item_targets target",
+                "draft finding target seal must match the complete target set",
+            ][..],
+        ),
+        (
+            "trg_finding_target_insert_after_seal",
+            &[
+                "before insert on finding_targets",
+                "from finding_target_seals seal where seal.finding_id=new.finding_id",
+                "finding target set is sealed",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_insert_after_seal",
+            &[
+                "before insert on review_result_draft_item_targets",
+                "from review_result_draft_item_target_seals seal",
+                "draft finding target set is sealed",
+            ][..],
+        ),
+        (
+            "trg_finding_target_seal_immutable_update",
+            &[
+                "before update on finding_target_seals",
+                "finding target seals are append-only",
+            ][..],
+        ),
+        (
+            "trg_finding_target_seal_immutable_delete",
+            &[
+                "before delete on finding_target_seals",
+                "finding target seals are append-only",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_seal_immutable_update",
+            &[
+                "before update on review_result_draft_item_target_seals",
+                "draft finding target seals are append-only",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_seal_immutable_delete",
+            &[
+                "before delete on review_result_draft_item_target_seals",
+                "draft finding target seals are append-only",
+            ][..],
+        ),
+        (
+            "trg_finding_target_immutable_update",
+            &[
+                "before update on finding_targets",
+                "finding targets are append-only",
+            ][..],
+        ),
+        (
+            "trg_finding_target_immutable_delete",
+            &[
+                "before delete on finding_targets",
+                "finding targets are append-only",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_immutable_update",
+            &[
+                "before update on review_result_draft_item_targets",
+                "review result draft item targets are append-only",
+            ][..],
+        ),
+        (
+            "trg_review_result_draft_item_target_immutable_delete",
+            &[
+                "before delete on review_result_draft_item_targets",
+                "review result draft item targets are append-only",
+            ][..],
+        ),
+    ] {
+        let sql = schema_object_sql(conn, "trigger", trigger)?;
+        require_sql_tokens("sealed finding target guard", &sql, tokens)?;
+    }
+    Ok(())
+}
+
 fn validate_correction_decomposition_membership_view(conn: &Connection) -> Result<()> {
     let ingress = schema_object_sql(conn, "table", "decomposition_plan_ingress_identities")?;
     require_sql_tokens(
@@ -1225,13 +1907,13 @@ fn validate_transition_registry() -> Result<()> {
     for source_generation in supported_storage_generations() {
         let path = registered_storage_path(source_generation)?;
         if source_generation != crate::db::SCHEMA_VERSION
-            && path.last().map(|edge| edge.target.key) != Some(GENERATION_25.key)
+            && path.last().map(|edge| edge.target.key) != Some(GENERATION_26.key)
         {
             bail!("storage transition registry does not form a complete adjacent path");
         }
     }
     let repair_path = registered_storage_path_from_descriptor(GENERATION_13_REPAIR_SOURCE.key)?;
-    if repair_path.last().map(|edge| edge.target.key) != Some(GENERATION_25.key) {
+    if repair_path.last().map(|edge| edge.target.key) != Some(GENERATION_26.key) {
         bail!("registered core repair does not compose to the current target");
     }
     Ok(())
@@ -1263,6 +1945,7 @@ pub(crate) fn registered_storage_edges() -> Vec<TransitionEdge> {
         generation_22_to_23_edge(),
         generation_23_to_24_edge(),
         generation_24_to_25_edge(),
+        generation_25_to_26_edge(),
     ]);
     edges
 }
@@ -1282,6 +1965,7 @@ pub(crate) fn registered_storage_path(source_generation: i64) -> Result<Vec<Tran
         23 => GENERATION_23.key,
         24 => GENERATION_24.key,
         25 => GENERATION_25.key,
+        26 => GENERATION_26.key,
         generation => historical_descriptor(generation)
             .map(|descriptor| descriptor.key)
             .context("storage header has no registered source descriptor")?,
@@ -1298,7 +1982,7 @@ fn registered_storage_path_from_descriptor(source_key: &str) -> Result<Vec<Trans
     states.sort_by_key(|state| state.key);
     states.dedup_by_key(|state| state.key);
     Ok(
-        resolve_path(&states, &edges, source_key, GENERATION_25.key)?
+        resolve_path(&states, &edges, source_key, GENERATION_26.key)?
             .into_iter()
             .copied()
             .collect(),
@@ -1658,5 +2342,16 @@ pub(crate) fn generation_24_to_25_edge() -> TransitionEdge {
         observe_source: observe_generation_24,
         apply: apply_generation_25,
         validate_target: validate_generation_25,
+    }
+}
+
+pub(crate) fn generation_25_to_26_edge() -> TransitionEdge {
+    TransitionEdge {
+        key: "install-sealed-finding-targets",
+        source: GENERATION_25,
+        target: GENERATION_26,
+        observe_source: observe_generation_25,
+        apply: apply_generation_26,
+        validate_target: validate_generation_26,
     }
 }

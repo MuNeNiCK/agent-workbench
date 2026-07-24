@@ -169,10 +169,13 @@ pub fn rebind_task_derivation(
                     'accepted_out_of_scope','explicit_exception','classified_failure'
                   )
               )
-              and (finding.task_id is null or finding.task_id=task.id)
-              and (
-                finding.design_requirement_id is null
-                or finding.design_requirement_id=requirement.id
+              and exists(
+                select 1
+                from finding_targets target
+                where target.project_id=finding.project_id
+                  and target.finding_id=finding.id
+                  and target.design_requirement_id=requirement.id
+                  and target.task_id=task.id
               )
               and requirement.design_version_id=?4 and requirement.requirement_key=?5
             "#,

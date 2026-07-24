@@ -39,11 +39,11 @@ pub fn adjudicate_owner(
         "finding" => {
             let work: i64 = conn
                 .query_row(
-                    "select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2",
+                    "select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2 and r.status='completed' and (select count(*) from findings inventory where inventory.review_run_id=r.id)=r.new_findings_count",
                     params![project, target],
                     |row| row.get(0),
                 )
-                .context("finding not found")?;
+                .context("completed review finding inventory not found")?;
             (work, format!("finding:{target}"))
         }
         "verification" => {
@@ -171,7 +171,7 @@ pub fn decide_finding(
     }
     let conn = open_existing_project(root)?;
     let project = project_id(&conn)?;
-    let owner:i64=conn.query_row("select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2",params![project,finding_id],|row|row.get(0)).context("finding not found")?;
+    let owner:i64=conn.query_row("select p.work_unit_id from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id where f.project_id=?1 and f.id=?2 and r.status='completed' and (select count(*) from findings inventory where inventory.review_run_id=r.id)=r.new_findings_count",params![project,finding_id],|row|row.get(0)).context("completed review finding inventory not found")?;
     record_owner_decision(
         root,
         OwnerDecisionRequest {

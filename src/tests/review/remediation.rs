@@ -745,7 +745,7 @@ fn close_ready_finding_allows_remediation_then_requires_exact_resume_verificatio
             target_ref: Some("work_unit:1"),
             prompt_deviations: None,
             result_summary: Some("found issue"),
-            new_findings_count: 3,
+            new_findings_count: 1,
             carried_findings_checked: 0,
             clean_run: false,
             status: "completed",

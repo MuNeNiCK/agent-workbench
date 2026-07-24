@@ -189,6 +189,23 @@ fn finding_decision_is_the_classification_and_lifecycle_authority() {
     assert_eq!(accepted_state, ("valid".into(), "open".into()));
     drop(conn);
 
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "the owner may reject an unapplied remediation",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/review/adjudication.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("no remediation was applied"),
+            tests_or_gates: Some("finding disposition regression"),
+            verification_plan: Some("inspect the terminal disposition"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
     let rejected = decide_finding(
         temp.path(),
         finding.finding_id,
@@ -200,16 +217,21 @@ fn finding_decision_is_the_classification_and_lifecycle_authority() {
     )
     .unwrap();
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
-    let rejected_state: (String, String, String) = conn
+    let rejected_state: (String, String, String, String) = conn
         .query_row(
-            "select classification,status,lifecycle_state from findings where id=?1",
-            params![finding.finding_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            "select f.classification,f.status,f.lifecycle_state,c.status from findings f join closures c on c.finding_id=f.id where f.id=?1 and c.id=?2",
+            params![finding.finding_id, closure.closure_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
     assert_eq!(
         rejected_state,
-        ("invalid".into(), "closed".into(), "closed".into())
+        (
+            "invalid".into(),
+            "closed".into(),
+            "closed".into(),
+            "superseded".into()
+        )
     );
     assert!(!rejected.decision_handle.is_empty());
 }

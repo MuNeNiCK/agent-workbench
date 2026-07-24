@@ -102,14 +102,18 @@ pub(crate) fn start_release_attempt(
             tx.commit()?;
             return Ok(ReleaseAttemptStart::Completed(outcome(&applied, true)));
         }
-        revalidate_release_work_boundary(&tx, project_id, root, current.candidate_id)?;
+        if !matches!(action, "reconcile" | "withdraw" | "supersede") {
+            revalidate_release_work_boundary(&tx, project_id, root, current.candidate_id)?;
+        }
         tx.commit()?;
         return Ok(ReleaseAttemptStart::Ready {
             attempt_id: id,
             resumed: true,
         });
     }
-    revalidate_release_work_boundary(&tx, project_id, root, current.candidate_id)?;
+    if !matches!(action, "reconcile" | "withdraw" | "supersede") {
+        revalidate_release_work_boundary(&tx, project_id, root, current.candidate_id)?;
+    }
     if current.revision_handle != expected_current {
         stale_revision(candidate_handle, &current.revision_handle)?;
     }

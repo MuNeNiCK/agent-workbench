@@ -8,25 +8,57 @@ use crate::db::{current_phase_blocker, open_existing_project, project_id};
 use super::{closure::*, correction_contract::*, evaluation::*, *};
 
 pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome> {
+    let targets = if input.design_requirement_id.is_some() || input.task_id.is_some() {
+        vec![FindingTargetInput {
+            design_requirement_id: input.design_requirement_id,
+            task_id: input.task_id,
+        }]
+    } else {
+        Vec::new()
+    };
+    add_finding_with_targets(root, input, &targets)
+}
+
+pub fn add_finding_with_targets(
+    root: &Path,
+    input: NewFinding<'_>,
+    targets: &[FindingTargetInput],
+) -> Result<FindingOutcome> {
+    for (index, target) in targets.iter().enumerate() {
+        if target.design_requirement_id.is_none() && target.task_id.is_none() {
+            bail!("finding target {} is empty", index + 1);
+        }
+        if targets[..index].contains(target) {
+            bail!("finding targets must be unique");
+        }
+    }
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project_id = project_id(&tx)?;
-    let run = tx
+    let (run, declared_findings, actual_findings, run_status) = tx
         .query_row(
             r#"
-            select r.run_type, p.review_policy_id, p.review_type, r.clean_run
+            select r.run_type, p.review_policy_id, p.review_type, r.clean_run,
+                   r.new_findings_count,
+                   (select count(*) from findings existing where existing.review_run_id=r.id),
+                   r.status
             from review_runs r
             join review_plans p on p.id = r.review_plan_id
             where r.id = ?1 and r.project_id = ?2
             "#,
             params![input.review_run_id, project_id],
             |row| {
-                Ok(StoredReviewRunPolicy {
-                    run_type: row.get(0)?,
-                    review_policy_id: row.get(1)?,
-                    review_type: row.get(2)?,
-                    clean_run: row.get::<_, i64>(3)? == 1,
-                })
+                Ok((
+                    StoredReviewRunPolicy {
+                        run_type: row.get(0)?,
+                        review_policy_id: row.get(1)?,
+                        review_type: row.get(2)?,
+                        clean_run: row.get::<_, i64>(3)? == 1,
+                    },
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
             },
         )
         .optional()?
@@ -39,13 +71,38 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
     if run.run_type == "resume" && !policy.allow_new_findings_in_resume {
         bail!("new findings are disabled for resume review by policy");
     }
-    tx.query_row(
-        "select id from review_runs where id = ?1 and project_id = ?2",
-        params![input.review_run_id, project_id],
-        |row| row.get::<_, i64>(0),
-    )
-    .optional()?
-    .context("review run not found")?;
+    if declared_findings <= 0 {
+        bail!(
+            "review run declares no findings; publish findings through the staged review result lifecycle"
+        );
+    }
+    if actual_findings >= declared_findings {
+        bail!(
+            "review finding inventory would exceed declared new_findings_count {declared_findings}"
+        );
+    }
+    if !matches!(run_status.as_str(), "requested" | "running") {
+        bail!(
+            "review finding inventory is not staging; publish findings through review result stage, finding-add, and complete"
+        );
+    }
+    if run_status == "requested" {
+        let started = tx.execute(
+            "update review_runs set status='running' where id=?1 and project_id=?2 and status='requested'",
+            params![input.review_run_id, project_id],
+        )?;
+        if started != 1 {
+            bail!("review finding inventory start lost");
+        }
+        let invocations = tx.execute(
+            "update review_agent_invocations set status='running',started_at=current_timestamp where project_id=?1 and review_run_id=?2 and status='requested'",
+            params![project_id, input.review_run_id],
+        )?;
+        if invocations != 1 {
+            bail!("review finding inventory requires one requested compatibility invocation");
+        }
+    }
+    let first_target = targets.first().copied();
     tx.execute(
         r#"
         insert into findings(
@@ -60,11 +117,40 @@ pub fn add_finding(root: &Path, input: NewFinding<'_>) -> Result<FindingOutcome>
             input.finding_type,
             input.severity,
             input.description,
-            input.design_requirement_id,
-            input.task_id,
+            first_target.and_then(|target| target.design_requirement_id),
+            first_target.and_then(|target| target.task_id),
         ],
     )?;
     let finding_id = tx.last_insert_rowid();
+    for (index, target) in targets.iter().enumerate() {
+        tx.execute(
+            "insert into finding_targets(project_id,finding_id,ordinal,design_requirement_id,task_id,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",
+            params![
+                project_id,
+                finding_id,
+                i64::try_from(index + 1)?,
+                target.design_requirement_id,
+                target.task_id
+            ],
+        )?;
+    }
+    if actual_findings + 1 == declared_findings {
+        let completed = tx.execute(
+            "update review_runs set status='completed' where id=?1 and project_id=?2 and status='running'",
+            params![input.review_run_id, project_id],
+        )?;
+        if completed != 1 {
+            bail!("review finding inventory completion lost");
+        }
+        tx.execute(
+            "update review_agent_invocations set status='completed',finished_at=current_timestamp where project_id=?1 and review_run_id=?2 and status='running'",
+            params![project_id, input.review_run_id],
+        )?;
+    }
+    tx.execute(
+        "insert into finding_target_seals(finding_id,project_id,target_count,created_at) values(?1,?2,?3,current_timestamp)",
+        params![finding_id, project_id, i64::try_from(targets.len())?],
+    )?;
     refresh_plan_for_run(&tx, project_id, input.review_run_id)?;
     tx.commit()?;
     Ok(FindingOutcome { finding_id })

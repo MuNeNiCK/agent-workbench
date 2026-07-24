@@ -535,7 +535,20 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
         },
     )
     .unwrap();
+    let disposed_finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "medium",
+            description: "legacy disposed finding",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
     classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    classify_finding(temp.path(), disposed_finding.finding_id, "valid").unwrap();
     let closure = add_closure(
         temp.path(),
         NewClosure {
@@ -553,19 +566,6 @@ fn repeated_init_preserves_ready_closure_and_single_pending_attempt() {
         },
     )
     .unwrap();
-    let disposed_finding = add_finding(
-        temp.path(),
-        NewFinding {
-            review_run_id: run.review_run_id,
-            finding_type: "implementation_finding",
-            severity: "medium",
-            description: "legacy disposed finding",
-            design_requirement_id: None,
-            task_id: None,
-        },
-    )
-    .unwrap();
-    classify_finding(temp.path(), disposed_finding.finding_id, "valid").unwrap();
     let disposed_closure = add_closure(
         temp.path(),
         NewClosure {

@@ -694,6 +694,14 @@ pub(super) fn ensure_review_finding_target(
     finding_id: i64,
     operation: &str,
 ) -> Result<()> {
+    let published: bool = conn.query_row(
+        "select exists(select 1 from findings f join review_runs r on r.id=f.review_run_id where f.id=?1 and r.status='completed' and (select count(*) from findings inventory where inventory.review_run_id=r.id)=r.new_findings_count)",
+        [finding_id],
+        |row| row.get(0),
+    )?;
+    if !published {
+        bail!("{operation} requires a completed review finding inventory");
+    }
     let terminally_accepted: bool = conn.query_row(
         r#"
         select exists(

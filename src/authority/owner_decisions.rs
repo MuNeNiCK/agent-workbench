@@ -245,11 +245,21 @@ fn apply_decision_projection(
             }
             let current_state: String = conn
                 .query_row(
-                    "select lifecycle_state from findings where project_id=?1 and id=?2",
+                    r#"
+                    select finding.lifecycle_state
+                    from findings finding
+                    join review_runs run on run.id=finding.review_run_id
+                    where finding.project_id=?1 and finding.id=?2
+                      and run.status='completed'
+                      and (
+                        select count(*) from findings inventory
+                        where inventory.review_run_id=run.id
+                      )=run.new_findings_count
+                    "#,
                     params![project, finding],
                     |row| row.get(0),
                 )
-                .context("finding disposition target not found")?;
+                .context("completed review finding inventory not found")?;
             let predecessor:Option<i64>=conn.query_row("select id from finding_disposition_decisions where project_id=?1 and finding_id=?2 order by id desc limit 1",params![project,finding],|row|row.get(0)).optional()?;
             let mut invalidate_derived_permissions = false;
             if let Some(predecessor_id) = predecessor {
@@ -271,6 +281,36 @@ fn apply_decision_projection(
                 )?;
                 if prior == "accepted" && closure == 1 {
                     invalidate_derived_permissions = true;
+                }
+            }
+            if matches!(request.decision_value, "rejected" | "authority_disposed") {
+                let active_remediation_effect: i64 = conn.query_row(
+                    r#"
+                    select exists(
+                      select 1
+                      from closures c
+                      where c.project_id=?1 and c.finding_id=?2
+                        and (
+                          exists(
+                            select 1 from correction_tokens token
+                            where token.closure_id=c.id and token.status='applied'
+                          )
+                          or exists(
+                            select 1 from authority_events event
+                            where event.project_id=?1
+                              and event.source='trace derivation rebind'
+                              and event.status='active'
+                              and event.text_or_summary like
+                                'closure ' || c.id || ' rebinds task derivation %'
+                          )
+                        )
+                    )
+                    "#,
+                    params![project, finding],
+                    |row| row.get(0),
+                )?;
+                if active_remediation_effect == 1 {
+                    bail!("finding_has_active_remediation_effects");
                 }
             }
             conn.execute("insert into finding_disposition_decisions(project_id,owner_decision_id,finding_id,value,predecessor_id,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",params![project,owner_decision_id,finding,request.decision_value,predecessor])?;

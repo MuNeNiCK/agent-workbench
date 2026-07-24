@@ -9,6 +9,8 @@ use crate::identity::{
     ReviewResultStageHandle, ReviewResultVersionHandle, domain_digest,
 };
 
+use super::FindingTargetInput;
+
 #[derive(Clone, Debug)]
 pub struct ReviewProvenanceIssue<'a> {
     pub reviewer_ref: &'a str,
@@ -96,6 +98,16 @@ pub struct AddResultFindingRequest<'a> {
     pub description: &'a str,
     pub requirement: Option<i64>,
     pub task: Option<i64>,
+    pub expected_current: &'a str,
+    pub idempotency_key: &'a str,
+}
+
+pub struct AddResultFindingWithTargetsRequest<'a> {
+    pub stage_handle: &'a str,
+    pub finding_type: &'a str,
+    pub severity: &'a str,
+    pub description: &'a str,
+    pub targets: &'a [FindingTargetInput],
     pub expected_current: &'a str,
     pub idempotency_key: &'a str,
 }
@@ -564,32 +576,104 @@ pub fn add_result_finding(
     root: &Path,
     request: AddResultFindingRequest<'_>,
 ) -> Result<ResultStageOutcome> {
+    let targets = if request.requirement.is_some() || request.task.is_some() {
+        vec![FindingTargetInput {
+            design_requirement_id: request.requirement,
+            task_id: request.task,
+        }]
+    } else {
+        Vec::new()
+    };
+    add_result_finding_with_targets_in(
+        root,
+        AddResultFindingWithTargetsRequest {
+            stage_handle: request.stage_handle,
+            finding_type: request.finding_type,
+            severity: request.severity,
+            description: request.description,
+            targets: &targets,
+            expected_current: request.expected_current,
+            idempotency_key: request.idempotency_key,
+        },
+        Some((request.requirement, request.task)),
+    )
+}
+
+pub fn add_result_finding_with_targets(
+    root: &Path,
+    request: AddResultFindingWithTargetsRequest<'_>,
+) -> Result<ResultStageOutcome> {
+    add_result_finding_with_targets_in(root, request, None)
+}
+
+fn add_result_finding_with_targets_in(
+    root: &Path,
+    request: AddResultFindingWithTargetsRequest<'_>,
+    legacy_target: Option<(Option<i64>, Option<i64>)>,
+) -> Result<ResultStageOutcome> {
     if !matches!(request.severity, "critical" | "high" | "medium" | "low") {
         bail!("invalid staged finding severity");
     }
+    validate_finding_targets(request.targets)?;
     require_text(request.description, "finding description")?;
     require_key(request.idempotency_key)?;
     let stage = ReviewResultStageHandle::parse(request.stage_handle)?;
-    let payload = CanonicalValue::object([
-        ("stage", CanonicalValue::string(stage.as_str())),
-        ("type", CanonicalValue::string(request.finding_type)),
-        ("severity", CanonicalValue::string(request.severity)),
-        ("description", CanonicalValue::string(request.description)),
-        (
-            "requirement",
-            request
-                .requirement
-                .map_or(CanonicalValue::Null, CanonicalValue::Integer),
-        ),
-        (
-            "task",
-            request
-                .task
-                .map_or(CanonicalValue::Null, CanonicalValue::Integer),
-        ),
-        ("expected", CanonicalValue::string(request.expected_current)),
-    ]);
-    let digest = domain_digest(b"agent-workbench:review-result-finding-add-v2\0", &payload);
+    let (payload, digest_domain, item_domain): (CanonicalValue, &[u8], &[u8]) =
+        if let Some((requirement, task)) = legacy_target {
+            (
+                CanonicalValue::object([
+                    ("stage", CanonicalValue::string(stage.as_str())),
+                    ("type", CanonicalValue::string(request.finding_type)),
+                    ("severity", CanonicalValue::string(request.severity)),
+                    ("description", CanonicalValue::string(request.description)),
+                    (
+                        "requirement",
+                        requirement.map_or(CanonicalValue::Null, CanonicalValue::Integer),
+                    ),
+                    (
+                        "task",
+                        task.map_or(CanonicalValue::Null, CanonicalValue::Integer),
+                    ),
+                    ("expected", CanonicalValue::string(request.expected_current)),
+                ]),
+                b"agent-workbench:review-result-finding-add-v2\0",
+                b"agent-workbench:review-result-item-v2\0",
+            )
+        } else {
+            let target_values = request
+                .targets
+                .iter()
+                .map(|target| {
+                    CanonicalValue::object([
+                        (
+                            "requirement",
+                            target
+                                .design_requirement_id
+                                .map_or(CanonicalValue::Null, CanonicalValue::Integer),
+                        ),
+                        (
+                            "task",
+                            target
+                                .task_id
+                                .map_or(CanonicalValue::Null, CanonicalValue::Integer),
+                        ),
+                    ])
+                })
+                .collect();
+            (
+                CanonicalValue::object([
+                    ("stage", CanonicalValue::string(stage.as_str())),
+                    ("type", CanonicalValue::string(request.finding_type)),
+                    ("severity", CanonicalValue::string(request.severity)),
+                    ("description", CanonicalValue::string(request.description)),
+                    ("targets", CanonicalValue::Array(target_values)),
+                    ("expected", CanonicalValue::string(request.expected_current)),
+                ]),
+                b"agent-workbench:review-result-finding-add-v3\0",
+                b"agent-workbench:review-result-item-v3\0",
+            )
+        };
+    let digest = domain_digest(digest_domain, &payload);
     let mut conn = open_existing_project(root)?;
     let tx = conn.transaction()?;
     let project = project_id(&tx)?;
@@ -630,11 +714,33 @@ pub fn add_result_finding(
     }
     validate_staged_finding_type(&tx, project, invocation_id, request.finding_type)?;
     let next = version + 1;
-    let item = ReviewResultItemHandle::derive(b"agent-workbench:review-result-item-v2\0", &payload);
+    let item = ReviewResultItemHandle::derive(item_domain, &payload);
     let next_version = result_version_handle(stage.as_str(), next);
+    let first_target = request.targets.first().copied();
     tx.execute(
         "insert into review_result_draft_items(project_id,draft_id,item_handle,item_version,finding_type,severity,description,design_requirement_id,task_id,created_at) values(?1,?2,?3,?4,?5,?6,?7,?8,?9,current_timestamp)",
-        params![project, draft_id, item.as_str(), next, request.finding_type, request.severity, request.description, request.requirement, request.task],
+        params![project, draft_id, item.as_str(), next, request.finding_type, request.severity, request.description, first_target.and_then(|target| target.design_requirement_id), first_target.and_then(|target| target.task_id)],
+    )?;
+    let draft_item_id = tx.last_insert_rowid();
+    for (index, target) in request.targets.iter().enumerate() {
+        tx.execute(
+            "insert into review_result_draft_item_targets(project_id,draft_item_id,ordinal,design_requirement_id,task_id,created_at) values(?1,?2,?3,?4,?5,current_timestamp)",
+            params![
+                project,
+                draft_item_id,
+                i64::try_from(index + 1)?,
+                target.design_requirement_id,
+                target.task_id
+            ],
+        )?;
+    }
+    tx.execute(
+        "insert into review_result_draft_item_target_seals(draft_item_id,project_id,target_count,created_at) values(?1,?2,?3,current_timestamp)",
+        params![
+            draft_item_id,
+            project,
+            i64::try_from(request.targets.len())?
+        ],
     )?;
     let changed = tx.execute(
         "update review_result_drafts set version=?1,version_handle=?2 where id=?3 and status='staging' and version=?4",
@@ -660,6 +766,18 @@ pub fn add_result_finding(
         result_handle: Some(item.as_str().to_string()),
         already_applied: false,
     })
+}
+
+fn validate_finding_targets(targets: &[FindingTargetInput]) -> Result<()> {
+    for (index, target) in targets.iter().enumerate() {
+        if target.design_requirement_id.is_none() && target.task_id.is_none() {
+            bail!("finding target {} is empty", index + 1);
+        }
+        if targets[..index].contains(target) {
+            bail!("finding targets must be unique");
+        }
+    }
+    Ok(())
 }
 
 pub fn complete_result_stage(
@@ -741,10 +859,52 @@ pub fn complete_result_stage(
             finding_result: None,
         },
     )?);
-    tx.execute(
-        "insert into findings(project_id,review_run_id,finding_type,severity,description,design_requirement_id,task_id,created_at) select project_id,?1,finding_type,severity,description,design_requirement_id,task_id,current_timestamp from review_result_draft_items where draft_id=?2 order by item_version",
-        params![run_id, draft_id],
-    )?;
+    let draft_items = tx
+        .prepare(
+            "select id,project_id,finding_type,severity,description,design_requirement_id,task_id from review_result_draft_items where draft_id=?1 order by item_version",
+        )?
+        .query_map(params![draft_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (draft_item, item_project, finding_type, severity, description, requirement, task) in
+        draft_items
+    {
+        tx.execute(
+            "insert into findings(project_id,review_run_id,finding_type,severity,description,design_requirement_id,task_id,created_at) values(?1,?2,?3,?4,?5,?6,?7,current_timestamp)",
+            params![
+                item_project,
+                run_id,
+                finding_type,
+                severity,
+                description,
+                requirement,
+                task
+            ],
+        )?;
+        let finding_id = tx.last_insert_rowid();
+        tx.execute(
+            "insert into finding_targets(project_id,finding_id,ordinal,design_requirement_id,task_id,created_at) select project_id,?1,ordinal,design_requirement_id,task_id,current_timestamp from review_result_draft_item_targets where draft_item_id=?2 order by ordinal",
+            params![finding_id, draft_item],
+        )?;
+        let target_count: i64 = tx.query_row(
+            "select target_count from review_result_draft_item_target_seals where draft_item_id=?1",
+            params![draft_item],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "insert into finding_target_seals(finding_id,project_id,target_count,created_at) values(?1,?2,?3,current_timestamp)",
+            params![finding_id, item_project, target_count],
+        )?;
+    }
     let changed = tx.execute(
         "update review_agent_invocations set status='completed',claim='findings',result_summary=?1,review_run_id=?2,finished_at=current_timestamp where id=?3 and status=?4",
         params![request.summary, run_id, invocation_id, request.invocation_current],

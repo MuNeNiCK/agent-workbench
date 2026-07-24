@@ -16,9 +16,6 @@ pub(crate) use update::{
     GENERATION_23_SQL, GENERATION_24_SQL,
 };
 
-#[cfg(test)]
-pub(crate) const REVIEW_INTEGRITY_SQL: &str = review_integrity::SQL;
-
 pub(super) const SCHEMA_BATCHES: &[&str] = &[
     repository::SQL,
     work::SQL,
