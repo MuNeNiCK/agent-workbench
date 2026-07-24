@@ -29,10 +29,7 @@ pub(super) fn current_owner_actions(conn: &Connection) -> Result<Vec<OwnerAction
         .into_iter()
         .map(|(owner_id, title, work_status)| {
             let review_blocker = owner_review_blocker(conn, owner_id)?;
-            if let Some(correction) = corrections
-                .iter()
-                .find(|correction| correction.work_unit_id == owner_id)
-            {
+            if let Some(correction) = corrections.first() {
                 if review_blocker
                     .as_ref()
                     .is_some_and(|blocker| {

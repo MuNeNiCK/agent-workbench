@@ -43,6 +43,31 @@ pub fn apply_correction_transition(
         )
         .optional()?
         .context("registered correction transition token not found")?;
+    if status == "applied" {
+        let (application_id, stored_authority, stored_evidence, result_ref): (
+            i64,
+            Option<i64>,
+            Option<String>,
+            String,
+        ) = tx.query_row(
+            "select id, authority_event_id, evidence_ref, result_ref from correction_transition_applications where correction_token_id = ?1",
+            params![token_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if stored_authority != authority_event_id
+            || stored_evidence.as_deref() != evidence.map(str::trim)
+        {
+            bail!("transition token was already applied with different authority or evidence");
+        }
+        validate_completion_inheritance_application(&tx, application_id)?;
+        return Ok(CorrectionTransitionOutcome {
+            closure_id,
+            token_ordinal,
+            application_id,
+            result_ref,
+            idempotent: true,
+        });
+    }
     let declared_stale = matches!(operation.as_str(), "stale-accept" | "stale-close");
     let design_recovery = matches!(
         operation.as_str(),
@@ -118,31 +143,6 @@ pub fn apply_correction_transition(
         session_id = Some(tx.last_insert_rowid());
     }
     let session_id = session_id.unwrap();
-    if status == "applied" {
-        let (application_id, stored_authority, stored_evidence, result_ref): (
-            i64,
-            Option<i64>,
-            Option<String>,
-            String,
-        ) = tx.query_row(
-            "select id, authority_event_id, evidence_ref, result_ref from correction_transition_applications where correction_token_id = ?1",
-            params![token_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
-        if stored_authority != authority_event_id
-            || stored_evidence.as_deref() != evidence.map(str::trim)
-        {
-            bail!("transition token was already applied with different authority or evidence");
-        }
-        validate_completion_inheritance_application(&tx, application_id)?;
-        return Ok(CorrectionTransitionOutcome {
-            closure_id,
-            token_ordinal,
-            application_id,
-            result_ref,
-            idempotent: true,
-        });
-    }
     let selected_transition: i64 = if declared_stale && matches_selected_stale {
         token_ordinal
     } else {

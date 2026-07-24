@@ -1,13 +1,143 @@
 use super::*;
 use agent_workbench::{
     AdjudicationInput, ClosureReady, ClosureSupersession, DesignPackageImport, NewAuthorityEvent,
-    NewClosure, NewDecisionContinuation, NewDesignPackage, NewFinding, NewReviewPlan,
-    NewReviewPolicy, NewReviewRun, NewTask, add_authority_event, add_closure,
-    add_decision_continuation, add_finding, add_review_plan, add_review_policy, add_review_run,
-    add_review_run_with_finding_result, add_task, adjudicate_verification, begin_correction,
-    classify_finding, import_design_package, init_design_package, init_project, list_findings,
-    ready_closure, start_work, supersede_closure,
+    NewClosure, NewDecisionContinuation, NewDesignPackage, NewFinding, NewPhaseDependency,
+    NewReviewPlan, NewReviewPolicy, NewReviewRun, NewTask, NewWorkPhase, add_authority_event,
+    add_closure, add_decision_continuation, add_finding, add_phase_dependency, add_review_plan,
+    add_review_policy, add_review_run, add_review_run_with_finding_result, add_task,
+    adjudicate_verification, begin_correction, classify_finding, create_phase,
+    import_design_package, init_design_package, init_project, list_findings, ready_closure,
+    start_work, supersede_closure,
 };
+
+#[test]
+fn printed_runtime_transition_executes_through_the_public_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "public runtime transition", None).unwrap();
+    let prerequisite = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "runtime-input",
+            title: "Runtime input",
+            kind: "implementation",
+            order: 1,
+            reason: Some("exercise the printed evidence argument"),
+        },
+    )
+    .unwrap();
+    let dependent = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "runtime-consumer",
+            title: "Runtime consumer",
+            kind: "implementation",
+            order: 2,
+            reason: Some("consume the printed evidence argument"),
+        },
+    )
+    .unwrap();
+    let dependency = add_phase_dependency(
+        temp.path(),
+        NewPhaseDependency {
+            from_phase_id: prerequisite.phase_id,
+            to_phase_id: dependent.phase_id,
+            dependency_type: "blocks",
+            reason: "runtime evidence completes the public correction",
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "close-ready",
+            scope: None,
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some("work_unit:1"),
+            prompt_deviations: None,
+            result_summary: Some("runtime evidence is required"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: Some("runtime-reviewer"),
+            external_agent_id: Some("runtime-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("review:runtime"),
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "high",
+            description: "apply runtime evidence through the public command",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let surfaces = format!(
+        "transition:phase-dependency-satisfy:{}",
+        dependency.dependency_id
+    );
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "the printed runtime command is executable",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some(&surfaces),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("execute the printed evidence command"),
+            tests_or_gates: Some("public CLI runtime transition"),
+            verification_plan: Some("inspect the satisfied dependency"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    begin_correction(temp.path(), closure.closure_id).unwrap();
+    let next = ok(
+        temp.path(),
+        &["next", "--work", &work.work_unit_id.to_string()],
+    );
+    assert!(next.contains("--evidence <evidence-ref>"));
+    let applied = run_printed_command_with_replacements(
+        temp.path(),
+        &next,
+        "agent-workbench closure transition apply",
+        &[("<evidence-ref>", "test:public-runtime-evidence")],
+    );
+    assert!(applied.contains(&format!(
+        "result_ref: phase-dependency:{}:satisfied",
+        dependency.dependency_id
+    )));
+}
 
 #[test]
 fn kpt_public_lifecycle_exposes_all_targets_and_replayable_dismissal() {

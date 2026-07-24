@@ -51,10 +51,24 @@ fn ok_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
 }
 
 fn run_printed_command(root: &Path, output: &str, command_prefix: &str) -> String {
+    run_printed_command_with_replacements(root, output, command_prefix, &[])
+}
+
+fn run_printed_command_with_replacements(
+    root: &Path,
+    output: &str,
+    command_prefix: &str,
+    replacements: &[(&str, &str)],
+) -> String {
     let command = output
         .lines()
         .find_map(|line| line.find(command_prefix).map(|start| &line[start..]))
         .unwrap_or_else(|| panic!("printed command not found: {command_prefix}\n{output}"));
+    let command = replacements
+        .iter()
+        .fold(command.to_string(), |command, (from, to)| {
+            command.replace(from, to)
+        });
     assert!(
         !command.contains('<') && !command.contains('>'),
         "printed command requires unresolved input: {command}"

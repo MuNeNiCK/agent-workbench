@@ -164,6 +164,12 @@ fn typed_close_ready_contract_routes_to_source_correction() {
     .unwrap();
     let unrelated_work = conn.last_insert_rowid();
     drop(conn);
+    let unrelated_status = project_status_for(temp.path(), Some(unrelated_work)).unwrap();
+    assert_eq!(unrelated_status.owner_actions.len(), 1);
+    assert_eq!(
+        unrelated_status.owner_actions[0].next_action,
+        selected_command
+    );
     for rejected in [
         suspend_work(temp.path(), "must not bypass correction", "resume").unwrap_err(),
         interrupt_work(
@@ -203,7 +209,7 @@ fn typed_close_ready_contract_routes_to_source_correction() {
         .to_string()
         .contains("registered correction transition token not found")
     );
-    apply_correction_transition(
+    let applied = apply_correction_transition(
         temp.path(),
         closure.closure_id,
         1,
@@ -211,6 +217,18 @@ fn typed_close_ready_contract_routes_to_source_correction() {
         Some("test:prerequisite-observed"),
     )
     .unwrap();
+    assert!(!applied.idempotent);
+    let replayed = apply_correction_transition(
+        temp.path(),
+        closure.closure_id,
+        1,
+        None,
+        Some("test:prerequisite-observed"),
+    )
+    .unwrap();
+    assert!(replayed.idempotent);
+    assert_eq!(replayed.application_id, applied.application_id);
+    assert_eq!(replayed.result_ref, applied.result_ref);
 }
 
 #[test]

@@ -259,16 +259,17 @@ Observe the public behavior.
         "agent-workbench closure transition apply",
     );
     assert!(decomposed.contains("result_ref: checklist:"));
-    let reconciled = ok(
+    let next_reconcile = ok(temp.path(), &["next", "--work", &work_id.to_string()]);
+    assert!(
+        next_reconcile.contains(&format!(
+            "agent-workbench closure transition apply {closure_id} --token 2"
+        )),
+        "unexpected next after evidence: {next_reconcile}"
+    );
+    let reconciled = run_printed_command(
         temp.path(),
-        &[
-            "closure",
-            "transition",
-            "apply",
-            &closure_id,
-            "--token",
-            "2",
-        ],
+        &next_reconcile,
+        "agent-workbench closure transition apply",
     );
     assert!(reconciled.contains("result_ref: checklist:"));
 }
