@@ -121,11 +121,7 @@ if [ -n "${FAKE_ASSEMBLY_BARRIER_DIR:-}" ]; then
   while [ ! -e "$FAKE_ASSEMBLY_BARRIER_DIR/release" ]; do sleep 0.01; done
 fi
 mkdir -p "$out"
-if [ -n "${FAKE_ASSEMBLY_ASSET_DRIFT:-}" ]; then
-  printf binary-drift > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
-else
-  printf binary > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
-fi
+printf binary > "$out/agent-workbench-${tag}-linux-x86_64.tar.gz"
 printf skill > "$out/agent-workbench-${tag}-skill.tar.gz"
 printf docs > "$out/agent-workbench-${tag}-docs.tar.gz"
 printf source > "$out/agent-workbench-${tag}-source.tar.gz"

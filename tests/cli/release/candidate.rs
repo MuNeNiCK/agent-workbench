@@ -217,7 +217,7 @@ fn failed_release_assembly_removes_every_owned_staging_directory() {
     let mismatch_root = tempfile::tempdir().unwrap();
     let mismatch_commit = release_source(mismatch_root.path());
     let mismatch_work = init_release_project(mismatch_root.path(), &mismatch_commit);
-    ok(
+    let assembled = ok(
         mismatch_root.path(),
         &[
             "operator",
@@ -236,7 +236,17 @@ fn failed_release_assembly_removes_every_owned_staging_directory() {
             "mismatch-cleanup",
         ],
     );
-    let mismatch_failure = aw_env(
+    let candidate = field(&assembled, "candidate");
+    fs::write(
+        mismatch_root
+            .path()
+            .join(".agent-workbench/release-candidates")
+            .join(candidate)
+            .join("agent-workbench-v0.2.0-linux-x86_64.tar.gz"),
+        "corrupted candidate asset",
+    )
+    .unwrap();
+    let mismatch_failure = aw(
         mismatch_root.path(),
         &[
             "operator",
@@ -254,7 +264,6 @@ fn failed_release_assembly_removes_every_owned_staging_directory() {
             "--idempotency-key",
             "mismatch-cleanup",
         ],
-        &[("FAKE_ASSEMBLY_ASSET_DRIFT", "1")],
     );
     assert!(!mismatch_failure.status.success());
     assert_eq!(staging_directory_count(mismatch_root.path()), 0);
