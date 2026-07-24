@@ -200,6 +200,81 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
     .unwrap();
     remediate_work(temp.path(), finding.finding_id).unwrap();
 
+    let rebind_second_to_first = || TaskDerivationRebind {
+        design_version_id: design.design_version_id,
+        requirement_key: "REQ-002",
+        task_id: task.task_id,
+        checklist_item_id: first.checklist_item_id,
+        closure_id: closure.closure_id,
+        reason: "bind the second requirement to its establishing shared boundary",
+    };
+    let assert_lifecycle_rejected = || {
+        assert!(
+            rebind_task_derivation(temp.path(), rebind_second_to_first())
+                .unwrap_err()
+                .to_string()
+                .contains(
+                    "target checklist item is outside the remediation owner, design, task, or lifecycle"
+                )
+        );
+    };
+    assert_lifecycle_rejected();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update checklists set status='closed' where id=?1",
+        [first.checklist_id],
+    )
+    .unwrap();
+    conn.execute("update tasks set status='open' where id=?1", [task.task_id])
+        .unwrap();
+    drop(conn);
+    assert_lifecycle_rejected();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update checklists set status='active' where id=?1",
+        [first.checklist_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update checklist_items set status='open' where id=?1",
+        [first.checklist_item_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update tasks set status='blocked' where id=?1",
+        [task.task_id],
+    )
+    .unwrap();
+    drop(conn);
+    assert_lifecycle_rejected();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update checklist_items set status='blocked' where id=?1",
+        [first.checklist_item_id],
+    )
+    .unwrap();
+    conn.execute("update tasks set status='open' where id=?1", [task.task_id])
+        .unwrap();
+    drop(conn);
+    assert_lifecycle_rejected();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update checklists set status='closed' where id=?1",
+        [first.checklist_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update checklist_items set status='closed' where task_id=?1",
+        [task.task_id],
+    )
+    .unwrap();
+    conn.execute(
+        "update tasks set status='closed' where id=?1",
+        [task.task_id],
+    )
+    .unwrap();
+    drop(conn);
+
     let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
     let sealed = conn.execute(
         "insert into finding_targets(project_id,finding_id,ordinal,design_requirement_id,task_id,created_at) select project_id,id,2,?1,null,current_timestamp from findings where id=?2",
@@ -251,21 +326,13 @@ fn completed_derivation_rebind_is_owned_audited_and_idempotent() {
             .contains("does not authorize this task derivation rebind")
     );
 
-    let input = || TaskDerivationRebind {
-        design_version_id: design.design_version_id,
-        requirement_key: "REQ-002",
-        task_id: task.task_id,
-        checklist_item_id: first.checklist_item_id,
-        closure_id: closure.closure_id,
-        reason: "bind the second requirement to its establishing shared boundary",
-    };
-    let rebound = rebind_task_derivation(temp.path(), input()).unwrap();
+    let rebound = rebind_task_derivation(temp.path(), rebind_second_to_first()).unwrap();
     assert_eq!(rebound.task_derivation_id, second.task_derivation_id);
     assert_eq!(rebound.previous_checklist_item_id, second.checklist_item_id);
     assert_eq!(rebound.checklist_item_id, first.checklist_item_id);
     assert!(!rebound.idempotent);
     assert!(
-        rebind_task_derivation(temp.path(), input())
+        rebind_task_derivation(temp.path(), rebind_second_to_first())
             .unwrap()
             .idempotent
     );
