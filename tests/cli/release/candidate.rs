@@ -221,32 +221,10 @@ fn assembly_rejects_an_open_work_even_when_its_close_ready_gate_passes() {
 }
 
 #[test]
-fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
+fn unrelated_work_review_state_does_not_block_assembly_or_revalidation() {
     let temp = tempfile::tempdir().unwrap();
     let commit = release_source(temp.path());
     let release_work = init_release_project(temp.path(), &commit);
-    let assembled = ok(
-        temp.path(),
-        &[
-            "operator",
-            "release",
-            "candidate",
-            "assemble",
-            "--work",
-            &release_work.work_unit_id,
-            "--version",
-            "0.2.0",
-            "--commit",
-            &commit,
-            "--expected-current",
-            "absent",
-            "--idempotency-key",
-            "assemble-before-project-finding",
-        ],
-    );
-    let candidate = field(&assembled, "candidate").to_string();
-    let revision = field(&assembled, "current_revision").to_string();
-
     let started = ok(temp.path(), &["work", "start", "separate review owner"]);
     let finding_work = field(&started, "work_unit_id").to_string();
     let plan = ok(
@@ -279,11 +257,11 @@ fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
             "--new-findings",
             "1",
             "--summary",
-            "separate work has an unresolved release blocker",
+            "separate work has unresolved review state",
         ],
     );
     let run = field(&run, "review_run_id").to_string();
-    let pending_review_rejected = aw(
+    let assembled = ok(
         temp.path(),
         &[
             "operator",
@@ -299,30 +277,11 @@ fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
             "--expected-current",
             "absent",
             "--idempotency-key",
-            "assemble-during-project-review",
+            "assemble-with-unrelated-review",
         ],
     );
-    assert!(!pending_review_rejected.status.success());
-    let error = String::from_utf8_lossy(&pending_review_rejected.stderr);
-    assert!(error.contains("pending_review_runs=1"), "{error}");
-    assert!(error.contains("pending_review_invocations=1"), "{error}");
-    let pending_inspect_rejected = aw(
-        temp.path(),
-        &[
-            "operator",
-            "release",
-            "candidate",
-            "inspect",
-            &candidate,
-            "--expected-current",
-            &revision,
-            "--idempotency-key",
-            "inspect-during-project-review",
-        ],
-    );
-    assert!(!pending_inspect_rejected.status.success());
-    let error = String::from_utf8_lossy(&pending_inspect_rejected.stderr);
-    assert!(error.contains("pending_review_runs=1"), "{error}");
+    let candidate = field(&assembled, "candidate").to_string();
+    let revision = field(&assembled, "current_revision").to_string();
 
     let finding = ok(
         temp.path(),
@@ -336,7 +295,7 @@ fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
             "--severity",
             "high",
             "--description",
-            "project release state is unresolved",
+            "unrelated work remains unresolved",
         ],
     );
     let finding = field(&finding, "finding_id").to_string();
@@ -345,31 +304,7 @@ fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
         &["finding", "classify", &finding, "--classification", "valid"],
     );
 
-    let assemble_rejected = aw(
-        temp.path(),
-        &[
-            "operator",
-            "release",
-            "candidate",
-            "assemble",
-            "--work",
-            &release_work.work_unit_id,
-            "--version",
-            "0.2.0",
-            "--commit",
-            &commit,
-            "--expected-current",
-            "absent",
-            "--idempotency-key",
-            "assemble-after-project-finding",
-        ],
-    );
-    assert!(!assemble_rejected.status.success());
-    let error = String::from_utf8_lossy(&assemble_rejected.stderr);
-    assert!(error.contains("unresolved project review state"), "{error}");
-    assert!(error.contains("open_findings=1"), "{error}");
-
-    let inspect_rejected = aw(
+    let inspected = ok(
         temp.path(),
         &[
             "operator",
@@ -380,13 +315,10 @@ fn project_wide_unresolved_finding_blocks_assembly_and_revalidation() {
             "--expected-current",
             &revision,
             "--idempotency-key",
-            "inspect-after-project-finding",
+            "inspect-with-unrelated-finding",
         ],
     );
-    assert!(!inspect_rejected.status.success());
-    let error = String::from_utf8_lossy(&inspect_rejected.stderr);
-    assert!(error.contains("unresolved project review state"), "{error}");
-    assert!(error.contains("open_findings=1"), "{error}");
+    assert!(inspected.contains("state: locally_verified"), "{inspected}");
 }
 
 #[test]
@@ -561,7 +493,7 @@ fn candidate_transition_rejects_a_changed_close_ready_source_boundary() {
 }
 
 #[test]
-fn omitted_work_rejects_multiple_eligible_closed_owners_and_explicit_work_resolves_one() {
+fn omitted_work_counts_only_review_ready_closed_owners() {
     let temp = tempfile::tempdir().unwrap();
     let commit = release_source(temp.path());
     let first = init_release_project(temp.path(), &commit);
@@ -658,6 +590,40 @@ fn omitted_work_rejects_multiple_eligible_closed_owners_and_explicit_work_resolv
     assert!(error.contains(&format!("--work {}", first.work_unit_id)));
     assert!(error.contains(&format!("--work {second_work}")));
 
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            &second_work,
+            "--type",
+            "general",
+            "--stage",
+            "resume-ready",
+        ],
+    );
+    let plan = field(&plan, "review_plan_id").to_string();
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            &plan,
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--new-findings",
+            "1",
+            "--summary",
+            "second closed work is not release-ready",
+        ],
+    );
+
     let assembled = ok(
         temp.path(),
         &[
@@ -665,8 +631,6 @@ fn omitted_work_rejects_multiple_eligible_closed_owners_and_explicit_work_resolv
             "release",
             "candidate",
             "assemble",
-            "--work",
-            &first.work_unit_id,
             "--version",
             "0.2.0",
             "--commit",
@@ -674,7 +638,7 @@ fn omitted_work_rejects_multiple_eligible_closed_owners_and_explicit_work_resolv
             "--expected-current",
             "absent",
             "--idempotency-key",
-            "explicit-closed-work",
+            "only-review-ready-closed-work",
         ],
     );
     assert_eq!(field(&assembled, "work_unit_id"), first.work_unit_id);

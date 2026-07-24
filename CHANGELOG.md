@@ -4,8 +4,10 @@
 
 - Preserve exact multi-target review findings and keep legacy single-target
   callers idempotent.
-- Freeze reviewed work, repository state, and release targets until an
-  explicit reconciliation or supersession invalidates the affected review.
+- Freeze the reviewed work boundary and release targets until an explicit
+  reconciliation or supersession invalidates the affected review.
+- Scope release assembly and revalidation readiness to the selected work unit,
+  so unresolved review state in separate work does not block its release.
 - Make review-target invalidation transactional and expose public recovery
   paths for completed work.
 - Audit generation 26 migrations and retained trigger bodies so upgrades

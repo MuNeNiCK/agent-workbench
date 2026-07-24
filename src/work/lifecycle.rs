@@ -535,8 +535,8 @@ pub(crate) fn resolve_release_work_boundary(
     requested_work: Option<i64>,
     reviewed_commit: &str,
 ) -> Result<ReleaseWorkBoundary> {
-    ensure_release_project_ready(conn, project)?;
     if let Some(work_unit_id) = requested_work {
+        ensure_release_work_ready(conn, project, work_unit_id)?;
         return release_work_boundary_for(conn, project, root, work_unit_id, reviewed_commit)?
             .with_context(|| {
                 format!(
@@ -555,12 +555,18 @@ pub(crate) fn resolve_release_work_boundary(
     for work_unit_id in work_units {
         if let Some(boundary) =
             release_work_boundary_for(conn, project, root, work_unit_id, reviewed_commit)?
+            && release_work_review_state(conn, project, work_unit_id)?
+                == (0, 0, 0, 0, 0, 0, 0, 0, 0)
         {
             candidates.push(boundary);
         }
     }
     match candidates.len() {
-        1 => Ok(candidates.remove(0)),
+        1 => {
+            let candidate = candidates.remove(0);
+            ensure_release_work_ready(conn, project, candidate.work_unit_id)?;
+            Ok(candidate)
+        }
         0 => bail!(
             "release assembly found no close-ready work for reviewed commit {reviewed_commit}; next: agent-workbench status"
         ),
@@ -578,7 +584,7 @@ pub(crate) fn resolve_release_work_boundary(
     }
 }
 
-fn ensure_release_project_ready(conn: &Connection, project: i64) -> Result<()> {
+fn ensure_release_work_ready(conn: &Connection, project: i64, work_unit_id: i64) -> Result<()> {
     let (
         pending_review_plans,
         pending_review_runs,
@@ -589,30 +595,73 @@ fn ensure_release_project_ready(conn: &Connection, project: i64) -> Result<()> {
         awaiting_verification,
         incomplete_closures,
         active_remediations,
-    ) = conn.query_row(
+    ) = release_work_review_state(conn, project, work_unit_id)?;
+    if pending_review_plans > 0
+        || pending_review_runs > 0
+        || pending_review_invocations > 0
+        || staging_review_results > 0
+        || inconsistent_completed_runs > 0
+        || open_findings > 0
+        || awaiting_verification > 0
+        || incomplete_closures > 0
+        || active_remediations > 0
+    {
+        bail!(
+            "release blocked by unresolved work review state for work unit {work_unit_id}: pending_review_plans={pending_review_plans}, pending_review_runs={pending_review_runs}, pending_review_invocations={pending_review_invocations}, staging_review_results={staging_review_results}, inconsistent_completed_runs={inconsistent_completed_runs}, open_findings={open_findings}, awaiting_verification={awaiting_verification}, incomplete_closures={incomplete_closures}, active_remediations={active_remediations}; next: agent-workbench status"
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::type_complexity)]
+fn release_work_review_state(
+    conn: &Connection,
+    project: i64,
+    work_unit_id: i64,
+) -> Result<(i64, i64, i64, i64, i64, i64, i64, i64, i64)> {
+    conn.query_row(
         r#"
             select
               (select count(*) from review_plans
-               where project_id=?1 and required=1
+               where project_id=?1 and work_unit_id=?2 and required=1
                  and status not in ('clean','accepted_exception','not_required')),
-              (select count(*) from review_runs
-               where project_id=?1 and status in ('requested','running')),
-              (select count(*) from review_agent_invocations
-               where project_id=?1 and status in ('requested','running')),
-              (select count(*) from review_result_drafts
-               where project_id=?1 and status='staging'),
               (select count(*) from review_runs run
+               join review_plans plan on plan.id=run.review_plan_id
+               where run.project_id=?1 and plan.work_unit_id=?2
+                 and run.status in ('requested','running')),
+              (select count(*) from review_agent_invocations invocation
+               join review_plans plan on plan.id=invocation.review_plan_id
+               where invocation.project_id=?1 and plan.work_unit_id=?2
+                 and invocation.status in ('requested','running')),
+              (select count(*) from review_result_drafts draft
+               join review_agent_invocations invocation on invocation.id=draft.invocation_id
+               join review_plans plan on plan.id=invocation.review_plan_id
+               where draft.project_id=?1 and plan.work_unit_id=?2
+                 and draft.status='staging'),
+              (select count(*) from review_runs run
+               join review_plans plan on plan.id=run.review_plan_id
                where run.project_id=?1 and run.status='completed'
+                 and plan.work_unit_id=?2
                  and run.new_findings_count != (
                    select count(*) from findings inventory
                    where inventory.review_run_id=run.id
                  )),
-              (select count(*) from findings
-               where project_id=?1 and status='open'),
-              (select count(*) from findings
-               where project_id=?1 and lifecycle_state='awaiting_verification'),
-              (select count(*) from closures
-               where project_id=?1 and status not in ('verified','superseded')),
+              (select count(*) from findings finding
+               join review_runs run on run.id=finding.review_run_id
+               join review_plans plan on plan.id=run.review_plan_id
+               where finding.project_id=?1 and plan.work_unit_id=?2
+                 and finding.status='open'),
+              (select count(*) from findings finding
+               join review_runs run on run.id=finding.review_run_id
+               join review_plans plan on plan.id=run.review_plan_id
+               where finding.project_id=?1 and plan.work_unit_id=?2
+                 and finding.lifecycle_state='awaiting_verification'),
+              (select count(*) from closures closure
+               join findings finding on finding.id=closure.finding_id
+               join review_runs run on run.id=finding.review_run_id
+               join review_plans plan on plan.id=run.review_plan_id
+               where closure.project_id=?1 and plan.work_unit_id=?2
+                 and closure.status not in ('verified','superseded')),
               (select count(*) from finding_remediation_bindings binding
                join work_unit_activations activation
                  on activation.id=binding.work_unit_activation_id
@@ -620,11 +669,11 @@ fn ensure_release_project_ready(conn: &Connection, project: i64) -> Result<()> {
                join closures closure
                  on closure.id=binding.closure_id
                 and closure.project_id=binding.project_id
-               where binding.project_id=?1
+               where binding.project_id=?1 and binding.work_unit_id=?2
                  and activation.status in ('active','suspended')
                  and closure.status not in ('verified','superseded'))
             "#,
-        params![project],
+        params![project, work_unit_id],
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -638,22 +687,8 @@ fn ensure_release_project_ready(conn: &Connection, project: i64) -> Result<()> {
                 row.get::<_, i64>(8)?,
             ))
         },
-    )?;
-    if pending_review_plans > 0
-        || pending_review_runs > 0
-        || pending_review_invocations > 0
-        || staging_review_results > 0
-        || inconsistent_completed_runs > 0
-        || open_findings > 0
-        || awaiting_verification > 0
-        || incomplete_closures > 0
-        || active_remediations > 0
-    {
-        bail!(
-            "release blocked by unresolved project review state: pending_review_plans={pending_review_plans}, pending_review_runs={pending_review_runs}, pending_review_invocations={pending_review_invocations}, staging_review_results={staging_review_results}, inconsistent_completed_runs={inconsistent_completed_runs}, open_findings={open_findings}, awaiting_verification={awaiting_verification}, incomplete_closures={incomplete_closures}, active_remediations={active_remediations}; next: agent-workbench status"
-        );
-    }
-    Ok(())
+    )
+    .map_err(Into::into)
 }
 
 pub(crate) fn resolve_release_work_boundary_for_root(
