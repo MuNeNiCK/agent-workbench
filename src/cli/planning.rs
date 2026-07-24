@@ -231,8 +231,9 @@ pub(crate) fn handle_requirement(root: &Path, command: RequirementCommand) -> Re
             }
             for record in records {
                 println!(
-                    "{} [{}:{} rev={}] {} ({})",
+                    "{} [id={} {}:{} rev={}] {} ({})",
                     record.requirement_key,
+                    record.id,
                     record.priority,
                     record.status,
                     record.revision,

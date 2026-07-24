@@ -89,6 +89,26 @@ Observe the aggregate behavior.
         },
     )
     .unwrap();
+    let requirement_inventory = ok(
+        temp.path(),
+        &[
+            "requirement",
+            "list",
+            "--design",
+            &design.design_version_id.to_string(),
+        ],
+    );
+    let requirement_id = |key: &str| {
+        requirement_inventory
+            .lines()
+            .find(|line| line.starts_with(&format!("{key} [id=")))
+            .and_then(|line| line.split_once("[id=").map(|(_, suffix)| suffix))
+            .and_then(|suffix| suffix.split_whitespace().next())
+            .and_then(|id| id.parse::<i64>().ok())
+            .unwrap_or_else(|| panic!("requirement list did not expose the id for {key}"))
+    };
+    let first_requirement_id = requirement_id("REQ-001");
+    let second_requirement_id = requirement_id("REQ-002");
     let first = derive_task_from_requirement(
         temp.path(),
         NewTaskDerivation {
@@ -180,11 +200,11 @@ Observe the aggregate behavior.
             "--description",
             "rebind the completed derivation",
             "--design-requirement",
-            &first.design_requirement_id.to_string(),
+            &first_requirement_id.to_string(),
             "--task",
             &task.task_id.to_string(),
             "--design-requirement",
-            &second.design_requirement_id.to_string(),
+            &second_requirement_id.to_string(),
             "--task",
             &task.task_id.to_string(),
         ],
@@ -208,7 +228,7 @@ Observe the aggregate behavior.
     let target_inventory = ok(temp.path(), &["finding", "list", "--status", "open"]);
     assert!(target_inventory.contains(&format!(
         "targets: requirement={},task={};requirement={},task={}",
-        first.design_requirement_id, task.task_id, second.design_requirement_id, task.task_id
+        first_requirement_id, task.task_id, second_requirement_id, task.task_id
     )));
     let closure = add_closure(
         temp.path(),
