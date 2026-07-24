@@ -580,6 +580,11 @@ def expectedPublicOutputGenerators : Array String := #[
   "AgentWorkbench.Application.Service.resolutionOutput"
 ]
 
+def expectedGeneratedResponseProjections : Array String := #[
+  "AgentWorkbench.Application.Service.Response.output",
+  "AgentWorkbench.Application.Service.Response.store"
+]
+
 def contentHasMarker (content : String) (markers : Array String) : Bool :=
   markers.any fun marker => content.contains marker
 
@@ -944,9 +949,14 @@ partial def declarationReaches (env : Environment) (target : Name) :
             declarationReaches env target (declarationDependencies info ++ rest) (name :: visited)
 
 def auditPublicOutputGenerators (env : Environment) : IO Unit := do
-  let actual := (publicDefinitionsInModule env
-    "AgentWorkbench.Application.Service").filter fun declaration =>
-      !declaration.startsWith "AgentWorkbench.Application.Service.Response." &&
+  let serviceDefinitions := publicDefinitionsInModule env
+    "AgentWorkbench.Application.Service"
+  let responseProjections := serviceDefinitions.filter
+    (·.startsWith "AgentWorkbench.Application.Service.Response.")
+  unless responseProjections = expectedGeneratedResponseProjections do
+    fail s!"generated Response projections differ from the exact exclusion inventory: {repr responseProjections}"
+  let actual := serviceDefinitions.filter fun declaration =>
+      !expectedGeneratedResponseProjections.contains declaration &&
         match env.find? declaration.toName with
         | some info => hasPublicOutputType info
         | none => false
