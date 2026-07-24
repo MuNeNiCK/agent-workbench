@@ -1,38 +1,36 @@
 use super::*;
-use agent_workbench::{
-    DesignPackageImport, DesignVersionApproval, NewDesignPackage, NewReviewPlan, NewReviewRun,
-    NewTask, NewTaskDerivation, add_review_plan, add_review_run, add_task, approve_design_version,
-    derive_task_from_requirement, import_design_package, init_design_package, init_project,
-    start_work,
-};
+
+fn field<'a>(output: &'a str, name: &str) -> &'a str {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+        .unwrap()
+}
 
 #[test]
 fn public_cli_rebinds_a_completed_derivation_under_its_closure() {
     let temp = tempfile::tempdir().unwrap();
-    init_project(temp.path()).unwrap();
-    let work = start_work(temp.path(), "public completed trace repair", None).unwrap();
-    let task = add_task(
+    ok(temp.path(), &["init"]);
+    let started = ok(
         temp.path(),
-        NewTask {
-            title: "implement aggregate behavior",
-            priority: "high",
-            source: "design",
-            work_unit_id: None,
-            details: Some("one aggregate task"),
-            completion_condition: Some("all completion boundaries hold"),
-        },
-    )
-    .unwrap();
-    let package = init_design_package(
+        &["work", "start", "public completed trace repair"],
+    );
+    let work_id = field(&started, "work_unit_id").to_string();
+    ok(
         temp.path(),
-        NewDesignPackage {
-            design_id: "public-completed-rebind",
-            title: "Public Completed Rebind",
-        },
-    )
-    .unwrap();
+        &[
+            "design",
+            "init",
+            "public-completed-rebind",
+            "--title",
+            "Public Completed Rebind",
+        ],
+    );
+    let package = temp
+        .path()
+        .join(".agent-workbench/designs/public-completed-rebind");
     std::fs::write(
-        package.package_path.join("requirements/README.md"),
+        package.join("requirements/README.md"),
         r#"## REQ-001: First boundary
 ```yaml agent-workbench
 type: requirement
@@ -58,7 +56,7 @@ Second completion boundary.
     )
     .unwrap();
     std::fs::write(
-        package.package_path.join("validation/gates.md"),
+        package.join("validation/gates.md"),
         r#"## GATE-001: Observe aggregate behavior
 ```yaml agent-workbench
 type: validation_gate_template
@@ -72,30 +70,146 @@ Observe the aggregate behavior.
 "#,
     )
     .unwrap();
-    let design = import_design_package(
-        temp.path(),
-        DesignPackageImport {
-            package_path: &package.package_path,
-            status: "draft",
-        },
-    )
-    .unwrap();
-    approve_design_version(
-        temp.path(),
-        DesignVersionApproval {
-            design_version_id: design.design_version_id,
-            summary: None,
-        },
-    )
-    .unwrap();
-    let requirement_inventory = ok(
+    let imported = ok(
         temp.path(),
         &[
-            "requirement",
-            "list",
-            "--design",
-            &design.design_version_id.to_string(),
+            "design",
+            "import",
+            ".agent-workbench/designs/public-completed-rebind",
         ],
+    );
+    let design_id = field(&imported, "design_version_id").to_string();
+    let design_identity = field(&imported, "design_identity").to_string();
+    ok(temp.path(), &["design", "approve", &design_id]);
+    let plans = package.join("plans");
+    std::fs::create_dir_all(&plans).unwrap();
+    std::fs::write(
+        plans.join("plan.md"),
+        format!(
+            r#"# Public completed rebind plan
+
+```yaml agent-workbench
+type: decomposition_plan
+format: 1
+key: public-completed-rebind-plan
+design_fingerprint: {design_identity}
+items:
+  - key: aggregate
+    requirements: [REQ-001, REQ-002]
+    title: implement aggregate behavior
+    details: one aggregate task
+    completion:
+      outcome: all completion boundaries hold
+      observation: exercise the public command
+      evidence_owner: work:{work_id}
+      evidence_kind: validation
+      gates: [GATE-001]
+    checklist:
+      - key: first-boundary
+        condition: first boundary holds
+        evidence_kind: validation
+        gates: [GATE-001]
+      - key: second-boundary
+        condition: second boundary holds
+        evidence_kind: validation
+        gates: [GATE-001]
+    slice: implementation
+slices:
+  - key: implementation
+    title: Implementation
+    order: 1
+    depends_on: []
+```
+"#
+        ),
+    )
+    .unwrap();
+    let staged = ok(
+        temp.path(),
+        &[
+            "decomposition",
+            "apply",
+            &design_id,
+            "--work",
+            &work_id,
+            "--plan",
+            ".agent-workbench/designs/public-completed-rebind/plans/plan.md",
+        ],
+    );
+    let plan_context = field(&staged, "review_context").to_string();
+    let plan = ok(
+        temp.path(),
+        &[
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            &work_id,
+            "--design-version",
+            &design_id,
+            "--type",
+            "design_task_decomposition",
+            "--stage",
+            "implementation-ready",
+            "--required",
+        ],
+    );
+    let plan_id = field(&plan, "review_plan_id").to_string();
+    let plan_run = ok(
+        temp.path(),
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            &plan_id,
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            &plan_context,
+            "--clean",
+            "--summary",
+            "the exact plan has observable completion boundaries",
+            "--agent-label",
+            "independent-plan-reviewer",
+            "--external-agent-id",
+            "independent-plan-reviewer-1",
+            "--provenance",
+            "external_agent",
+            "--provenance-ref",
+            "review-output:exact-plan",
+        ],
+    );
+    ok(
+        temp.path(),
+        &[
+            "review",
+            "adjudicate",
+            field(&plan_run, "review_run_id"),
+            "--decision",
+            "accepted",
+            "--reason",
+            "accept the exact clean plan review",
+            "--expected-current",
+            "pending",
+        ],
+    );
+    ok(
+        temp.path(),
+        &["decomposition", "apply", &design_id, "--work", &work_id],
+    );
+    let task_inventory = ok(temp.path(), &["task", "list", "--work-unit", &work_id]);
+    let task_id = task_inventory
+        .lines()
+        .find(|line| line.ends_with("implement aggregate behavior"))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    let requirement_inventory = ok(
+        temp.path(),
+        &["requirement", "list", "--design", &design_id],
     );
     let requirement_id = |key: &str| {
         requirement_inventory
@@ -108,32 +222,55 @@ Observe the aggregate behavior.
     };
     let first_requirement_id = requirement_id("REQ-001");
     let second_requirement_id = requirement_id("REQ-002");
-    let first = derive_task_from_requirement(
+    let derivations = ok(
         temp.path(),
-        NewTaskDerivation {
-            design_version_id: design.design_version_id,
-            requirement_key: "REQ-001",
-            task_id: task.task_id,
-            derivation_reason: Some("initial decomposition"),
-            checklist_title: Some("aggregate"),
-            item_title: Some("first-boundary"),
-            completion_condition: Some("first boundary holds"),
-        },
-    )
-    .unwrap();
-    let second = derive_task_from_requirement(
-        temp.path(),
-        NewTaskDerivation {
-            design_version_id: design.design_version_id,
-            requirement_key: "REQ-002",
-            task_id: task.task_id,
-            derivation_reason: Some("initial decomposition"),
-            checklist_title: Some("aggregate"),
-            item_title: Some("second-boundary"),
-            completion_condition: Some("second boundary holds"),
-        },
-    )
-    .unwrap();
+        &["trace", "derivation", "list", "--design", &design_id],
+    );
+    let derivation = |requirement: &str| {
+        let line = derivations
+            .lines()
+            .find(|line| line.contains(&format!("requirement={requirement} ")))
+            .unwrap_or_else(|| panic!("missing derivation for {requirement}"));
+        let id = line
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+        let item = line
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix("checklist_item="))
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+        (id, item)
+    };
+    let (_first_derivation_id, first_item_id) = derivation("REQ-001");
+    let (second_derivation_id, second_initial_item_id) = derivation("REQ-002");
+    assert_eq!(second_initial_item_id, first_item_id);
+    let checklist_inventory = ok(temp.path(), &["checklist", "list", "--work", &work_id]);
+    let checklist_id = checklist_inventory
+        .lines()
+        .find(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|value| value.parse::<i64>().is_ok())
+        })
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    let checklist_items = ok(temp.path(), &["checklist", "item", "list", &checklist_id]);
+    let item_id = |title: &str| {
+        checklist_items
+            .lines()
+            .find(|line| line.contains(&format!("] {title} |")))
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_else(|| panic!("missing checklist item {title}"))
+            .parse::<i64>()
+            .unwrap()
+    };
+    let first_item_id = item_id("first-boundary");
+    let second_item_id = item_id("second-boundary");
     for requirement in ["REQ-001", "REQ-002"] {
         let selected = ok(
             temp.path(),
@@ -141,13 +278,13 @@ Observe the aggregate behavior.
                 "gate",
                 "select",
                 "--design",
-                &design.design_version_id.to_string(),
+                &design_id,
                 "--template",
                 "GATE-001",
                 "--requirement",
                 requirement,
                 "--task",
-                &task.task_id.to_string(),
+                &task_id,
                 "--command",
                 "public-test-validation",
             ],
@@ -175,9 +312,9 @@ Observe the aggregate behavior.
                 "evidence",
                 "add",
                 "--task",
-                &task.task_id.to_string(),
+                &task_id,
                 "--design",
-                &design.design_version_id.to_string(),
+                &design_id,
                 "--requirement",
                 requirement,
                 "--type",
@@ -192,11 +329,11 @@ Observe the aggregate behavior.
                 "coverage",
                 "add",
                 "--design",
-                &design.design_version_id.to_string(),
+                &design_id,
                 "--requirement",
                 requirement,
                 "--task",
-                &task.task_id.to_string(),
+                &task_id,
                 "--status",
                 "covered",
                 "--requirement-text",
@@ -210,73 +347,60 @@ Observe the aggregate behavior.
     }
     ok(
         temp.path(),
-        &[
-            "checklist",
-            "item",
-            "close",
-            &first.checklist_item_id.to_string(),
-        ],
+        &["checklist", "item", "close", &first_item_id.to_string()],
     );
     ok(
         temp.path(),
+        &["checklist", "item", "close", &second_item_id.to_string()],
+    );
+    ok(temp.path(), &["checklist", "close", &checklist_id]);
+    ok(temp.path(), &["task", "close", &task_id]);
+    let repair_plan = ok(
+        temp.path(),
         &[
-            "checklist",
-            "item",
-            "close",
-            &second.checklist_item_id.to_string(),
+            "review",
+            "plan",
+            "add",
+            "--work-unit",
+            &work_id,
+            "--design-version",
+            &design_id,
+            "--type",
+            "design_implementation_diff",
+            "--stage",
+            "close-ready",
+            "--required",
         ],
     );
-    ok(
+    let repair_plan_id = field(&repair_plan, "review_plan_id").to_string();
+    let repair_run = ok(
         temp.path(),
-        &["checklist", "close", &first.checklist_id.to_string()],
+        &[
+            "review",
+            "run",
+            "add",
+            "--plan",
+            &repair_plan_id,
+            "--type",
+            "fresh",
+            "--purpose",
+            "new_unbiased_review",
+            "--target",
+            &format!("review-context:design-implementation-diff:design={design_id}:work={work_id}"),
+            "--new-findings",
+            "1",
+            "--summary",
+            "the completed derivation targets the wrong boundary",
+        ],
     );
-    ok(temp.path(), &["task", "close", &task.task_id.to_string()]);
-    let plan = add_review_plan(
-        temp.path(),
-        NewReviewPlan {
-            work_unit_id: work.work_unit_id,
-            design_version_id: Some(design.design_version_id),
-            review_type: "design_implementation_diff",
-            required: true,
-            stage: "close-ready",
-            scope: None,
-            clean_condition: None,
-            stop_condition: None,
-            review_policy_id: None,
-            review_scope_id: None,
-        },
-    )
-    .unwrap();
-    let run = add_review_run(
-        temp.path(),
-        NewReviewRun {
-            review_plan_id: plan.review_plan_id,
-            run_type: "fresh",
-            run_purpose: "new_unbiased_review",
-            target_ref: Some(&format!(
-                "review-context:design-implementation-diff:design={}:work={}",
-                design.design_version_id, work.work_unit_id
-            )),
-            prompt_deviations: None,
-            result_summary: Some("the completed derivation targets the wrong boundary"),
-            new_findings_count: 1,
-            carried_findings_checked: 0,
-            clean_run: false,
-            status: "completed",
-            agent_label: None,
-            external_agent_id: None,
-            review_provenance: "self_recorded",
-            review_provenance_ref: None,
-        },
-    )
-    .unwrap();
+    let repair_run_id = field(&repair_run, "review_run_id").to_string();
     let added_finding = ok(
         temp.path(),
         &[
             "finding",
             "add",
             "--run",
-            &run.review_run_id.to_string(),
+            &repair_run_id,
             "--type",
             "design_implementation_drift",
             "--severity",
@@ -286,11 +410,11 @@ Observe the aggregate behavior.
             "--design-requirement",
             &first_requirement_id.to_string(),
             "--task",
-            &task.task_id.to_string(),
+            &task_id,
             "--design-requirement",
             &second_requirement_id.to_string(),
             "--task",
-            &task.task_id.to_string(),
+            &task_id,
         ],
     );
     let finding_id = added_finding
@@ -320,7 +444,7 @@ Observe the aggregate behavior.
     let target_inventory = ok(temp.path(), &["finding", "list", "--status", "open"]);
     assert!(target_inventory.contains(&format!(
         "targets: requirement={},task={};requirement={},task={}",
-        first_requirement_id, task.task_id, second_requirement_id, task.task_id
+        first_requirement_id, task_id, second_requirement_id, task_id
     )));
     let closure = ok(
         temp.path(),
@@ -351,9 +475,7 @@ Observe the aggregate behavior.
         &["work", "remediate", "--finding", &finding_id.to_string()],
     );
 
-    let design_id = design.design_version_id.to_string();
-    let task_id = task.task_id.to_string();
-    let item_id = first.checklist_item_id.to_string();
+    let item_id = second_item_id.to_string();
     let args = [
         "trace",
         "derivation",
@@ -372,10 +494,7 @@ Observe the aggregate behavior.
         "bind the second requirement to its establishing shared boundary",
     ];
     let rebound = ok(temp.path(), &args);
-    assert!(rebound.contains(&format!(
-        "task_derivation_id: {}",
-        second.task_derivation_id
-    )));
+    assert!(rebound.contains(&format!("task_derivation_id: {}", second_derivation_id)));
     assert!(rebound.contains("idempotent: false"));
     assert!(ok(temp.path(), &args).contains("idempotent: true"));
 
@@ -400,6 +519,6 @@ Observe the aggregate behavior.
             .contains("finding_has_active_remediation_effects")
     );
     let listed = ok(temp.path(), &["finding", "list", "--status", "open"]);
-    assert!(listed.contains(&format!("{} [run={} ", finding_id, run.review_run_id)));
+    assert!(listed.contains(&format!("{} [run={} ", finding_id, repair_run_id)));
     assert!(listed.contains(&format!("current_decision_handle: {}", decision_handle)));
 }
