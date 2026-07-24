@@ -50,7 +50,7 @@ modules = [
 source_authorities = [
   "AgentWorkbench/Audit/Expected.lean=39d20d8bcff4dd06b4b729a06694758b8aeaf00abedf891ed68a374b5d7020b6",
   "AgentWorkbench/Application/Service.lean=9cea1e4cf58fe6e88f988924bfaeddeb77eca8f86ebcbcdd1cc608949baec08c",
-  "AgentWorkbench/Audit/Main.lean=0a898cc084ba18092e541bee3cb277bbf57921668e612da9c2255e8afffc2477",
+  "AgentWorkbench/Audit/Main.lean=f609d8d5a28ca8be69c52f6e9a78908a330cb51688248c3dd806aaa6fbbb03b6",
 ]
 
 permitted_axioms = [
