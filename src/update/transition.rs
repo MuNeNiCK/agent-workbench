@@ -1745,16 +1745,26 @@ fn validate_opaque_correction_trigger_behavior(conn: &Connection) -> Result<()> 
 
 fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result<()> {
     let correction = schema_object_sql(conn, "trigger", "trg_correction_token_links_insert")?;
+    let session = schema_object_sql(conn, "trigger", "trg_correction_session_links_insert")?;
     let probe = Connection::open_in_memory()?;
     probe.execute_batch(
         r#"
-        create table closures(id integer,project_id integer,finding_id integer,status text);
-        create table findings(id integer,review_run_id integer,status text,classification text);
+        create table closures(
+          id integer,project_id integer,finding_id integer,status text,
+          affected_surfaces text,fix_plan text,tests_or_gates text,verification_plan text
+        );
+        create table findings(
+          id integer,project_id integer,review_run_id integer,status text,classification text
+        );
         create table review_runs(id integer,review_plan_id integer);
         create table review_plans(id integer,required integer,stage text,review_type text);
         create table checklists(id integer);
         create table work_phases(id integer);
         create table work_phase_dependencies(id integer);
+        create table correction_sessions(
+          id integer primary key,project_id integer,finding_id integer,closure_id integer,
+          status text,created_at text,completed_at text
+        );
         create table correction_tokens(
           id integer primary key,project_id integer,closure_id integer,token_ordinal integer,
           token_kind text,operation text,target text,pre_state text,pre_hash text,
@@ -1764,11 +1774,14 @@ fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result
           (1,1,'close-ready','design_implementation_diff'),
           (2,1,'close-ready','implementation_review');
         insert into review_runs values(1,1),(2,2);
-        insert into findings values(1,1,'open','valid'),(2,2,'open','valid');
-        insert into closures values(1,1,1,'registered'),(2,1,2,'registered');
+        insert into findings values(1,1,1,'open','valid'),(2,2,2,'open','valid');
+        insert into closures values
+          (1,1,1,'registered','transition:design-decompose:80/1','fix','test','verify'),
+          (2,2,2,'registered','transition:design-decompose:80/1','fix','test','verify');
         "#,
     )?;
     probe.execute_batch(&correction)?;
+    probe.execute_batch(&session)?;
     probe
         .execute(
             "insert into correction_tokens values(1,1,1,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp,null)",
@@ -1779,11 +1792,25 @@ fn validate_close_ready_correction_trigger_behavior(conn: &Connection) -> Result
         )?;
     probe
         .execute(
-            "insert into correction_tokens values(2,1,2,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp,null)",
+            "insert into correction_tokens values(2,2,2,1,'transition','design-decompose','80/1','checklist_max:0',null,'pending',current_timestamp,null)",
             [],
         )
         .context(
             "correction trigger rejected a source correction for a required close-ready implementation review",
+        )?;
+    probe
+        .execute(
+            "insert into correction_sessions values(1,1,1,1,'active',current_timestamp,null)",
+            [],
+        )
+        .context("correction session trigger rejected a required close-ready design correction")?;
+    probe
+        .execute(
+            "insert into correction_sessions values(2,2,2,2,'active',current_timestamp,null)",
+            [],
+        )
+        .context(
+            "correction session trigger rejected a required close-ready implementation correction",
         )?;
     Ok(())
 }

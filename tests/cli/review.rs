@@ -699,6 +699,13 @@ fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli
             |row| row.get(0),
         )
         .unwrap();
+    let session_trigger: String = conn
+        .query_row(
+            "select sql from sqlite_schema where type='trigger' and name='trg_correction_session_links_insert'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     let current_clause = "and f.status='open' and f.classification='valid'\n            )";
     let legacy_clause = "and f.status='open' and f.classification='valid'\n                  and not (p.required=1 and p.stage='close-ready'\n                           and p.review_type in ('implementation_review','design_implementation_diff'))\n            )";
     let legacy_trigger = trigger.replacen(current_clause, legacy_clause, 1);
@@ -706,6 +713,14 @@ fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli
     conn.execute_batch("drop trigger trg_correction_token_links_insert;")
         .unwrap();
     conn.execute_batch(&legacy_trigger).unwrap();
+    let current_session_clause = "and f.id=new.finding_id and f.status='open' and f.classification='valid'\n                  and exists(\n                      select 1 from correction_tokens token where token.closure_id=c.id\n                  )";
+    let legacy_session_clause = "and f.id=new.finding_id and f.status='open' and f.classification='valid'\n                  and not (p.required=1 and p.stage='close-ready'\n                           and p.review_type in ('implementation_review','design_implementation_diff'))";
+    let legacy_session_trigger =
+        session_trigger.replacen(current_session_clause, legacy_session_clause, 1);
+    assert_ne!(legacy_session_trigger, session_trigger);
+    conn.execute_batch("drop trigger trg_correction_session_links_insert;")
+        .unwrap();
+    conn.execute_batch(&legacy_session_trigger).unwrap();
     conn.execute("delete from schema_migrations where version=27", [])
         .unwrap();
     drop(conn);
@@ -736,7 +751,7 @@ fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli
             "--invariant",
             "the corrected design owns the decomposition",
             "--surfaces",
-            "transition:design-decompose:80/1",
+            "docs:create:docs/fix.md",
             "--fix-plan",
             "decompose the corrected approved design",
             "--tests",
@@ -756,7 +771,7 @@ fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli
             "--invariant",
             "the corrected design owns the decomposition",
             "--surfaces",
-            "transition:design-decompose:80/1",
+            "docs:create:docs/replacement.md",
             "--fix-plan",
             "decompose the corrected approved design",
             "--tests",
@@ -770,6 +785,16 @@ fn migrated_adopter_executes_source_correction_add_and_supersede_through_the_cli
         ],
     );
     assert!(superseded.contains("superseded closure"));
+    let correction = ok(
+        temp.path(),
+        &[
+            "closure",
+            "correction-begin",
+            cli_value(&superseded, "closure_id"),
+        ],
+    );
+    assert!(correction.contains("began correction session"));
+    assert!(correction.contains("token_count: 1"));
 }
 
 #[test]
