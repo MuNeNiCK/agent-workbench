@@ -8,14 +8,15 @@ The Lean implementation is the default product from `v0.2.0`.
 
 ## Install
 
-The published binary currently supports Linux x86_64 with glibc.
+The published binary supports Linux x86_64 without requiring a host-provided
+glibc or other dynamic C runtime.
 
 ```bash
-version=v0.2.0
+version=v0.2.1
 gh release download "$version" \
   --repo MuNeNiCK/agent-workbench \
-  --pattern "agent-workbench-$version-linux-x86_64.tar.gz"
-tar -xzf "agent-workbench-$version-linux-x86_64.tar.gz"
+  --pattern "agent-workbench-$version-linux-x86_64-static.tar.gz"
+tar -xzf "agent-workbench-$version-linux-x86_64-static.tar.gz"
 install -Dm755 agent-workbench "$HOME/.local/bin/agent-workbench"
 agent-workbench --version
 ```
@@ -23,7 +24,7 @@ agent-workbench --version
 Install the Agent Skill separately:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.0 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.1 \
   --scope user --agent <target-agent>
 ```
 

@@ -3,8 +3,12 @@ import Lake
 open System Lake DSL
 
 package «agent-workbench» where
-  version := v!"0.2.0"
+  version := v!"0.2.1"
   leanOptions := #[⟨`warningAsError, true⟩]
+  moreLinkArgs :=
+    match get_config? staticRelease with
+    | some "true" => #["-static"]
+    | _ => #[]
 
 require leansqlite from git
   "https://github.com/leanprover/leansqlite" @ "v4.30.0"

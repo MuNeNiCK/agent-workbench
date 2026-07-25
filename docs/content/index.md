@@ -21,7 +21,8 @@ automatically become a product requirement.
 
 ## Supported release
 
-Prebuilt releases currently target Linux x86_64 with glibc. Source builds use
-the toolchain pinned in `lean-toolchain`.
+Prebuilt releases from `v0.2.1` target Linux x86_64 as a static executable and
+do not require a host-provided glibc. Source builds use the toolchain pinned in
+`lean-toolchain`.
 
 Continue with [Installation](installation.md) and [Workflow](workflow.md).

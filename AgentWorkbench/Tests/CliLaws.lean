@@ -506,7 +506,7 @@ def runFixture (cli root project state : System.FilePath)
 def run : IO Unit := IO.FS.withTempDir fun root => do
   let cli : System.FilePath := ".lake/build/bin/agent-workbench"
   let version ← invoke cli #["--version"]
-  expect (version.stdout.trimAscii.toString == "agent-workbench 0.2.0")
+  expect (version.stdout.trimAscii.toString == "agent-workbench 0.2.1")
     "native CLI did not report the release version"
   let nodeProject := root / "node-project"
   let pythonProject := root / "python-project"

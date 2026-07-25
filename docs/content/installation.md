@@ -6,14 +6,14 @@ Download the pinned release, verify it through the published checksum file,
 and install the executable:
 
 ```bash
-version=v0.2.0
+version=v0.2.1
 gh release download "$version" \
   --repo MuNeNiCK/agent-workbench \
-  --pattern "agent-workbench-$version-linux-x86_64.tar.gz" \
+  --pattern "agent-workbench-$version-linux-x86_64-static.tar.gz" \
   --pattern "agent-workbench-$version-checksums.txt"
-grep "agent-workbench-$version-linux-x86_64.tar.gz" \
+grep "agent-workbench-$version-linux-x86_64-static.tar.gz" \
   "agent-workbench-$version-checksums.txt" | sha256sum -c -
-tar -xzf "agent-workbench-$version-linux-x86_64.tar.gz"
+tar -xzf "agent-workbench-$version-linux-x86_64-static.tar.gz"
 install -Dm755 agent-workbench "$HOME/.local/bin/agent-workbench"
 agent-workbench --version
 ```
@@ -21,13 +21,13 @@ agent-workbench --version
 The expected output is:
 
 ```text
-agent-workbench 0.2.0
+agent-workbench 0.2.1
 ```
 
 ## Install the Agent Skill
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.0 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.1 \
   --scope user --agent <target-agent>
 ```
 

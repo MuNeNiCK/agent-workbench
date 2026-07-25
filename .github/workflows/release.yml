@@ -30,8 +30,27 @@ jobs:
           .lake/build/bin/storage-laws
           .lake/build/bin/workflow-laws
           .lake/build/bin/cli-laws
+      - uses: docker/setup-buildx-action@v3
+      - name: Build static Linux executable
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: release/linux-x86_64-static.Dockerfile
+          target: artifact
+          outputs: type=local,dest=${{ runner.temp }}/static
+          cache-from: type=gha,scope=lean-4.30.0-musl
+          cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
       - name: Build release assets
-        run: scripts/build-release-assets.sh "$GITHUB_REF_NAME" "$PWD/dist"
+        run: |
+          chmod +x "$RUNNER_TEMP/static/agent-workbench"
+          scripts/build-release-assets.sh "$GITHUB_REF_NAME" "$PWD/dist" \
+            "$RUNNER_TEMP/static/agent-workbench"
+          mkdir "$RUNNER_TEMP/verify"
+          tar -xzf \
+            "$PWD/dist/agent-workbench-$GITHUB_REF_NAME-linux-x86_64-static.tar.gz" \
+            -C "$RUNNER_TEMP/verify"
+          scripts/test-release-binary.sh \
+            "$RUNNER_TEMP/verify/agent-workbench"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

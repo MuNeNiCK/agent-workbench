@@ -4,7 +4,7 @@
 
 Each supported release publishes:
 
-- a Linux x86_64 native binary archive;
+- a static Linux x86_64 native binary archive;
 - an Agent Skill archive;
 - a documentation archive;
 - a source archive;
@@ -25,8 +25,9 @@ The tag workflow builds the project with the pinned Lean toolchain and runs:
 .lake/build/bin/cli-laws
 ```
 
-It then rebuilds the assets, extracts the published binary candidate, and
-checks its version and help output before creating the GitHub Release.
+It builds the release executable against musl, checks that the packaged
+artifact is statically linked, and runs the exact binary in clean Alpine and
+Debian environments before creating the GitHub Release.
 
 ## Updating
 

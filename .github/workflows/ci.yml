@@ -28,4 +28,30 @@ jobs:
       - name: Check release tooling
         run: |
           shellcheck scripts/build-release-assets.sh
-          scripts/build-release-assets.sh v0.2.0 "$RUNNER_TEMP/dist"
+          shellcheck scripts/test-release-binary.sh
+
+  static-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Build static Linux executable
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: release/linux-x86_64-static.Dockerfile
+          target: artifact
+          outputs: type=local,dest=${{ runner.temp }}/static
+          cache-from: type=gha,scope=lean-4.30.0-musl
+          cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
+      - name: Validate packaged static executable
+        run: |
+          chmod +x "$RUNNER_TEMP/static/agent-workbench"
+          scripts/build-release-assets.sh v0.2.1 "$RUNNER_TEMP/dist" \
+            "$RUNNER_TEMP/static/agent-workbench"
+          mkdir "$RUNNER_TEMP/verify"
+          tar -xzf \
+            "$RUNNER_TEMP/dist/agent-workbench-v0.2.1-linux-x86_64-static.tar.gz" \
+            -C "$RUNNER_TEMP/verify"
+          scripts/test-release-binary.sh \
+            "$RUNNER_TEMP/verify/agent-workbench"
