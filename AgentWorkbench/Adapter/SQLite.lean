@@ -8,7 +8,7 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open SQLite.Blob
 
-def schemaVersion : Nat := 4
+def schemaVersion : Nat := 5
 def predecessorSchemaVersion : Nat := 2
 
 private def writerPath (path : System.FilePath) : System.FilePath :=

@@ -680,7 +680,7 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       | some state => pure state
       | none => throw <| IO.userError "review-purpose projection is not recoverable"
     expect (Policy.Completion.requiredReviewsReady ⟨1⟩
-      state.reviewPlans state.decompositions state.claims state.adjudications
+      state.work state.reviewPlans state.decompositions state.claims state.adjudications
       state.reviewFindings state.findingVerifications == expectedReviewsReady)
       s!"fresh SQLite reconstruction changed required review readiness: {name}"
     expect (Policy.Completion.closeable ⟨1⟩ state.work state.activations

@@ -1,5 +1,6 @@
 import AgentWorkbench.Domain.Identity
 import AgentWorkbench.Domain.Facts
+import AgentWorkbench.Domain.Work
 
 namespace AgentWorkbench.Domain.Design
 
@@ -227,10 +228,58 @@ structure RelatedWorkRequirement where
   kind : RelatedWorkKind
 deriving DecidableEq, Repr
 
+structure PhaseSpec where
+  key : String
+  group : String
+  order : Nat
+  dependencies : List String
+  tasks : List String
+  reviews : List ReviewPlanId
+deriving DecidableEq, Repr
+
+inductive ScopeChangeKind
+  | rescope
+  | split
+deriving DecidableEq, Repr, BEq
+
+inductive ScopeChangeCause
+  | outcome
+  | owner
+  | independentLifecycle
+deriving DecidableEq, Repr, BEq
+
+structure ResultingScope where
+  key : String
+  work : WorkId
+  owner : String
+  outcome : String
+  completionBoundary : String
+deriving DecidableEq, Repr
+
+def ResultingScope.toWorkUnit (scope : ResultingScope) : Work.WorkUnit :=
+  { id := scope.work
+    status := .open
+    owner := scope.owner
+    outcome := scope.outcome
+    completionBoundary := scope.completionBoundary }
+
+structure ScopeChange where
+  key : String
+  work : WorkId
+  kind : ScopeChangeKind
+  cause : ScopeChangeCause
+  principal : String
+  reason : String
+  sharedRecords : List String
+  dependencies : List String
+  dispositions : List String
+  resultingScopes : List ResultingScope
+deriving DecidableEq, Repr
+
 structure CompletionPlan where
   work : WorkId
   relatedWork : List RelatedWorkRequirement
-  phases : List String
+  phases : List PhaseSpec
   tasks : List String
   checklists : List String
   reviews : List ReviewPlanId
@@ -243,6 +292,11 @@ deriving DecidableEq, Repr
 
 structure PhaseRecord where
   key : String
+  group : String
+  order : Nat
+  dependencies : List String
+  tasks : List String
+  reviews : List ReviewPlanId
   status : ItemStatus
 deriving DecidableEq, Repr
 
@@ -297,12 +351,20 @@ structure CompletionState where
   repositories : List RepositoryRecord
   corrections : List CorrectionRecord
   workRecords : List WorkRecordLink
+  scopeChanges : List ScopeChange
 deriving DecidableEq, Repr
 
 def initializeState (plan : CompletionPlan) : CompletionState :=
   { plan
     epoch := ⟨0⟩
-    phases := plan.phases.map fun key => { key, status := .pending }
+    phases := plan.phases.map fun phase => {
+      key := phase.key
+      group := phase.group
+      order := phase.order
+      dependencies := phase.dependencies
+      tasks := phase.tasks
+      reviews := phase.reviews
+      status := .pending }
     tasks := plan.tasks.map fun key => { key, status := .pending }
     checklists := plan.checklists.map fun key => { key, status := .pending }
     findings := plan.findings.map fun key => { key, status := .open }
@@ -312,17 +374,58 @@ def initializeState (plan : CompletionPlan) : CompletionState :=
       { key, status := .unclassified, epoch := ⟨0⟩, snapshotDigest := "" }
     corrections := plan.corrections.map fun key => { key, status := .open }
     workRecords := plan.workRecords.map fun key =>
-      { key, status := .unlinked, reference := "" } }
+      { key, status := .unlinked, reference := "" }
+    scopeChanges := [] }
 
 def nonemptyKeys (keys : List String) : Prop :=
   (keys.all fun key => !key.isEmpty) = true
+
+def phaseWellFormed (plan : CompletionPlan) (phase : PhaseSpec) : Bool :=
+  !phase.key.isEmpty && !phase.group.isEmpty && phase.order > 0 &&
+  phase.dependencies.eraseDups.length == phase.dependencies.length &&
+  !phase.dependencies.contains phase.key &&
+  phase.dependencies.all fun dependency =>
+    plan.phases.any fun predecessor =>
+      predecessor.key == dependency && predecessor.order < phase.order
+
+def phaseAssignmentsExact (plan : CompletionPlan) : Bool :=
+  let assignedTasks := plan.phases.flatMap (·.tasks)
+  let assignedReviews := plan.phases.flatMap (·.reviews)
+  assignedTasks.eraseDups.length == assignedTasks.length &&
+  assignedTasks.all plan.tasks.contains &&
+  assignedReviews.eraseDups.length == assignedReviews.length
+
+def phasesOrdered : List PhaseSpec → Bool
+  | [] => true
+  | phase :: rest =>
+      rest.all (fun successor => phase.order < successor.order) &&
+      phasesOrdered rest
+
+def scopeChangeWellFormed (change : ScopeChange) : Bool :=
+  !change.key.isEmpty && !change.principal.isEmpty && !change.reason.isEmpty &&
+  !change.sharedRecords.isEmpty &&
+  change.sharedRecords.all (fun record => !record.isEmpty) &&
+  change.dependencies.all (fun dependency => !dependency.isEmpty) &&
+  !change.dispositions.isEmpty &&
+  change.dispositions.all (fun disposition => !disposition.isEmpty) &&
+  change.resultingScopes.all (fun scope =>
+    !scope.key.isEmpty && scope.toWorkUnit.wellFormed) &&
+  (change.resultingScopes.map (·.key)).Nodup &&
+  (change.resultingScopes.map (·.work)).Nodup &&
+  match change.kind with
+  | .rescope => change.resultingScopes.length == 1
+  | .split => decide (2 ≤ change.resultingScopes.length)
 
 def ValidPlan (work : List WorkId) (plan : CompletionPlan) : Prop :=
   work.contains plan.work = true ∧
   (plan.relatedWork.map (·.work)).Nodup ∧
   (plan.relatedWork.all fun requirement =>
     requirement.work != plan.work && work.contains requirement.work) = true ∧
-  plan.phases.Nodup ∧ nonemptyKeys plan.phases ∧
+  (plan.phases.map (·.key)).Nodup ∧
+  (plan.phases.map (·.order)).Nodup ∧
+  phasesOrdered plan.phases = true ∧
+  (plan.phases.all (phaseWellFormed plan)) = true ∧
+  phaseAssignmentsExact plan = true ∧
   plan.tasks.Nodup ∧ nonemptyKeys plan.tasks ∧
   plan.checklists.Nodup ∧ nonemptyKeys plan.checklists ∧
   plan.reviews.Nodup ∧
@@ -333,14 +436,17 @@ def ValidPlan (work : List WorkId) (plan : CompletionPlan) : Prop :=
   plan.workRecords.Nodup ∧ nonemptyKeys plan.workRecords
 
 def MatchesPlan (state : CompletionState) : Prop :=
-  state.phases.map (·.key) = state.plan.phases ∧
+  state.phases.map (·.key) = state.plan.phases.map (·.key) ∧
   state.tasks.map (·.key) = state.plan.tasks ∧
   state.checklists.map (·.key) = state.plan.checklists ∧
   state.findings.map (·.key) = state.plan.findings ∧
   state.validations.map (·.key) = state.plan.validations ∧
   state.repositories.map (·.key) = state.plan.repositories ∧
   state.corrections.map (·.key) = state.plan.corrections ∧
-  state.workRecords.map (·.key) = state.plan.workRecords
+  state.workRecords.map (·.key) = state.plan.workRecords ∧
+  (state.scopeChanges.all fun change =>
+    scopeChangeWellFormed change && change.work == state.plan.work) = true ∧
+  (state.scopeChanges.map (·.key)).Nodup
 
 def RecordsWellFormed (state : CompletionState) : Prop :=
   (state.validations.all fun record =>
@@ -423,6 +529,27 @@ def recordsReady (state : CompletionState) : Bool :=
 
 def advance (state : CompletionState) : CompletionState :=
   { state with epoch := state.epoch.next }
+
+def phaseDependenciesReady (state : CompletionState) (phase : PhaseRecord) : Bool :=
+  phase.dependencies.all fun dependency =>
+    state.phases.any fun candidate =>
+      candidate.key == dependency && itemTerminal candidate.status
+
+def phaseTasksReady (state : CompletionState) (phase : PhaseRecord) : Bool :=
+  phase.tasks.all fun task =>
+    state.tasks.any fun candidate =>
+      candidate.key == task && itemTerminal candidate.status
+
+def sharedRecords (state : CompletionState) : List String :=
+  state.tasks.map (·.key) ++ state.checklists.map (·.key) ++
+    state.workRecords.map (·.key)
+
+def phaseDependencies (state : CompletionState) : List String :=
+  (state.phases.flatMap (·.dependencies)).eraseDups
+
+def recordScopeChange (state : CompletionState) (change : ScopeChange) :
+    CompletionState :=
+  advance { state with scopeChanges := state.scopeChanges ++ [change] }
 
 def completePhase (state : CompletionState) (key : String) : CompletionState :=
   advance { state with phases := state.phases.map fun record =>

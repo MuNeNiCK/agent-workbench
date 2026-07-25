@@ -86,6 +86,12 @@ private def jsonListFieldD (json : Json) (name : String) (α : Type)
   | .null => .ok []
   | value => fromJson? value
 
+private def jsonOptionalFieldD (json : Json) (name : String) (α : Type)
+    [FromJson α] : Except String (Option α) :=
+  match json.getObjValD name with
+  | .null => .ok none
+  | value => some <$> fromJson? value
+
 private def parsePurpose : String → Except String Review.Purpose
   | "design" => .ok .design
   | "decomposition" => .ok .decomposition
@@ -128,6 +134,23 @@ deriving FromJson
 private structure RelatedWorkInput where
   work : Nat
   kind : String
+deriving FromJson
+
+private structure PhaseInput where
+  key : String
+  group : String
+  order : Nat
+  dependencies : List String
+  tasks : List String
+  reviews : List Nat
+deriving FromJson
+
+private structure ResultingScopeInput where
+  key : String
+  work : Nat
+  owner : String
+  outcome : String
+  completionBoundary : String
 deriving FromJson
 
 private def parseObservationKind : String → Except String Review.ObservationKind
@@ -204,9 +227,17 @@ private def parseAttemptState : String → Except String ExternalOperation.Attem
   | "conflict" => .ok .conflict
   | _ => .error "external operation state must be prepared, dispatched, uncertain, retryable, succeeded, failed, or conflict"
 
+private def parseExternalOperationKind :
+    String → Except String ExternalOperation.OperationKind
+  | "release" => .ok .release
+  | "transport" => .ok .transport
+  | "publication" => .ok .publication
+  | _ => .error "external operation kind must be release, transport, or publication"
+
 private def scopeFromJson (json : Json) : Except String Review.FrozenScope := do
   let designValue : Option Nat ← jsonField json "design" (Option Nat)
   let work : Nat ← jsonField json "work" Nat
+  let phase ← jsonOptionalFieldD json "phase" String
   let repositorySnapshot : String ← jsonField json "repositorySnapshot" String
   let artifactDigest : String ← jsonField json "artifactDigest" String
   let purposeName : String ← jsonField json "purpose" String
@@ -214,6 +245,7 @@ private def scopeFromJson (json : Json) : Except String Review.FrozenScope := do
   return {
     design := designValue.map (⟨·⟩)
     work := ⟨work⟩
+    phase
     repositorySnapshot
     artifactDigest
     purpose
@@ -522,7 +554,15 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let relatedWorkInputs : List RelatedWorkInput ←
           jsonField json "relatedWork" (List RelatedWorkInput)
         let relatedWork ← relatedWorkInputs.mapM relatedWorkFromInput
-        let phases : List String ← jsonField json "phases" (List String)
+        let phaseInputs : List PhaseInput ← jsonField json "phases" (List PhaseInput)
+        let phases := phaseInputs.map fun phase => ({
+          key := phase.key
+          group := phase.group
+          order := phase.order
+          dependencies := phase.dependencies
+          tasks := phase.tasks
+          reviews := phase.reviews.map (⟨·⟩)
+        } : Lifecycle.PhaseSpec)
         let tasks : List String ← jsonField json "tasks" (List String)
         let checklists : List String ← jsonField json "checklists" (List String)
         let reviewValues : List Nat ← jsonField json "reviews" (List Nat)
@@ -548,6 +588,51 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let work : Nat ← jsonField json "work" Nat
         let relatedWork : Nat ← jsonField json "relatedWork" Nat
         pure <| .acknowledgeRelatedWorkTerminal revision ⟨work⟩ ⟨relatedWork⟩
+    | "record-scope-change" => do
+        let key : String ← jsonField json "key" String
+        let work : Nat ← jsonField json "work" Nat
+        let kindName : String ← jsonField json "kind" String
+        let causeName : String ← jsonField json "cause" String
+        let principal : String ← jsonField json "principal" String
+        let reason : String ← jsonField json "reason" String
+        let sharedRecords : List String ←
+          jsonField json "sharedRecords" (List String)
+        let dependencies : List String ←
+          jsonField json "dependencies" (List String)
+        let dispositions : List String ←
+          jsonField json "dispositions" (List String)
+        let resultingScopeInputs : List ResultingScopeInput ←
+          jsonField json "resultingScopes" (List ResultingScopeInput)
+        let resultingScopes := resultingScopeInputs.map fun scope => ({
+          key := scope.key
+          work := ⟨scope.work⟩
+          owner := scope.owner
+          outcome := scope.outcome
+          completionBoundary := scope.completionBoundary
+        } : Lifecycle.ResultingScope)
+        let kind ← match kindName with
+          | "rescope" => pure Lifecycle.ScopeChangeKind.rescope
+          | "split" => pure Lifecycle.ScopeChangeKind.split
+          | _ => throw "scope change kind must be rescope or split"
+        let cause ← match causeName with
+          | "outcome" => pure Lifecycle.ScopeChangeCause.outcome
+          | "owner" => pure Lifecycle.ScopeChangeCause.owner
+          | "independent-lifecycle" =>
+              pure Lifecycle.ScopeChangeCause.independentLifecycle
+          | _ =>
+              throw "scope change cause must be outcome, owner, or independent-lifecycle"
+        pure <| .recordScopeChange revision {
+          key
+          work := ⟨work⟩
+          kind
+          cause
+          principal
+          reason
+          sharedRecords
+          dependencies
+          dispositions
+          resultingScopes
+        }
     | "complete-phase" => do
         let work : Nat ← jsonField json "work" Nat
         let key : String ← jsonField json "key" String
@@ -656,8 +741,13 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let externalOperation : String ←
           jsonField json "externalOperation" String
         let artifactDigest : String ← jsonField json "artifactDigest" String
+        let workValue ← jsonOptionalFieldD json "work" Nat
+        let kindName : String ← jsonField json "kind" String
+        let kind ← parseExternalOperationKind kindName
         pure <| .recordExternalOperation revision {
           operation := ⟨externalOperation⟩
+          work := workValue.map (⟨·⟩)
+          kind
           artifactDigest
           state := .prepared
         }
@@ -665,6 +755,8 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let externalOperation : String ←
           jsonField json "externalOperation" String
         let artifactDigest : String ← jsonField json "artifactDigest" String
+        let workValue ← jsonOptionalFieldD json "work" Nat
+        let kindName : String ← jsonField json "kind" String
         let stateName : String ← jsonField json "state" String
         let observationIdentity : Option String ←
           jsonField json "observationIdentity" (Option String)
@@ -673,11 +765,14 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let disposition : Option String ←
           jsonField json "disposition" (Option String)
         let state ← parseAttemptState stateName
+        let kind ← parseExternalOperationKind kindName
         let observation := observationIdentity.map fun identity =>
           ({ identity, artifactDigest := observedArtifactDigest } :
             ExternalOperation.RemoteObservation)
         pure <| .advanceExternalOperation revision {
           operation := ⟨externalOperation⟩
+          work := workValue.map (⟨·⟩)
+          kind
           artifactDigest
           state
           observation

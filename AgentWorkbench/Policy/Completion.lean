@@ -95,7 +95,8 @@ def purposeReviewReady (target : WorkId) (design : Option DesignId)
 def requiredReviewPurposes : List Review.Purpose :=
   [.designConformance, .implementationQuality]
 
-def requiredReviewsReady (target : WorkId) (plans : List Review.Plan)
+def requiredReviewsReady (target : WorkId) (work : List Work.WorkUnit)
+    (plans : List Review.Plan)
     (decompositions : List Design.Decomposition)
     (claims : List Review.Claim) (adjudications : List Review.Adjudication)
     (findings : List Review.Finding)
@@ -108,6 +109,9 @@ def requiredReviewsReady (target : WorkId) (plans : List Review.Plan)
       match Review.latestPlanFor? design target .implementationQuality plans with
       | none => false
       | some quality =>
+          work.any (fun unit =>
+            unit.id == target && unit.status == .open &&
+            conformance.owner == unit.owner && quality.owner == unit.owner) &&
           Review.sameArtifactScope conformance.scope quality.scope &&
           requiredReviewPurposes.all fun purpose =>
             purposeReviewReady target design purpose plans claims adjudications
@@ -174,7 +178,7 @@ def closeable (target : WorkId) (work : List Work.WorkUnit)
   Work.workIsOpen work target &&
   authoritativeReady target work claims adjudications lifecycle &&
   traceReady target designs approvals decompositions &&
-  requiredReviewsReady target reviewPlans decompositions claims
+  requiredReviewsReady target work reviewPlans decompositions claims
     adjudications findings verifications &&
   correctionsReady target decompositions corrections &&
   (completionBinding? target reviewPlans decompositions).any fun binding =>

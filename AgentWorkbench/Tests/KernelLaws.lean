@@ -54,7 +54,13 @@ def completionPlan : Domain.Lifecycle.CompletionPlan :=
     relatedWork := [
       { work := secondWork.id, kind := .child },
       { work := thirdWork.id, kind := .dependency }]
-    phases := ["phase-1"]
+    phases := [{
+      key := "phase-1"
+      group := "delivery"
+      order := 1
+      dependencies := []
+      tasks := ["task-1"]
+      reviews := [] }]
     tasks := ["task-1", "task-after-validation"]
     checklists := ["checklist-1"]
     reviews := [⟨3001⟩]
@@ -529,13 +535,13 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
       executeStore (.acknowledgeRelatedWorkTerminal store.ledger.storedHead
         firstWork.id thirdWork.id) store "dependency completion rejected"
     else pure store
-  let store ← if missing != some .phase then
-      executeStore (.completePhase store.ledger.storedHead firstWork.id "phase-1")
-        store "phase completion rejected"
-    else pure store
   let store ← if missing != some .task then
       executeStore (.completeTask store.ledger.storedHead firstWork.id "task-1")
         store "task completion rejected"
+    else pure store
+  let store ← if missing != some .phase && missing != some .task then
+      executeStore (.completePhase store.ledger.storedHead firstWork.id "phase-1")
+        store "phase completion rejected"
     else pure store
   let store ← executeStore
     (.completeTask store.ledger.storedHead firstWork.id "task-after-validation")
@@ -660,10 +666,190 @@ def expectMissingRequiredReviewRejected : IO Unit := do
     work.id == secondWork.id && work.status == .open)
     "required-review rejection changed the active work"
 
+def testAggregateWorkLifecycle : IO Unit := do
+  let initial := Kernel.Replay.emptyState
+  let state ← executeState
+    (.initializeWork initial.revision firstWork firstActivation) initial
+    "aggregate work initialization rejected"
+  let phaseReview : ReviewPlanId := ⟨8001⟩
+  let plan : Domain.Lifecycle.CompletionPlan := {
+    work := firstWork.id
+    relatedWork := []
+    phases := [
+      { key := "phase-a", group := "delivery", order := 1
+        dependencies := [], tasks := ["task-a"], reviews := [] },
+      { key := "phase-b", group := "delivery", order := 2
+        dependencies := ["phase-a"], tasks := ["task-b"]
+        reviews := [phaseReview] }]
+    tasks := ["task-a", "task-b"]
+    checklists := []
+    reviews := []
+    findings := []
+    validations := []
+    repositories := []
+    corrections := []
+    workRecords := [] }
+  let state ← executeState (.planCompletion state.revision plan) state
+    "aggregate completion plan rejected"
+  let sharedRecords := ["task-a", "task-b"]
+  let dependencies := ["phase-a"]
+  let rescope : Domain.Lifecycle.ScopeChange := {
+    key := "rescope-outcome"
+    work := firstWork.id
+    kind := .rescope
+    cause := .outcome
+    principal := firstWork.owner
+    reason := "the accepted outcome now names one narrower delivery"
+    sharedRecords
+    dependencies
+    dispositions := ["retain both task records under the narrower outcome"]
+    resultingScopes := [{
+      key := "narrow-delivery"
+      work := firstWork.id
+      owner := firstWork.owner
+      outcome := "deliver the narrower aggregate outcome"
+      completionBoundary := firstWork.completionBoundary }] }
+  let state ← executeState (.recordScopeChange state.revision rescope) state
+    "aggregate rescope transition rejected"
+  let split : Domain.Lifecycle.ScopeChange := {
+    key := "split-lifecycle"
+    work := firstWork.id
+    kind := .split
+    cause := .independentLifecycle
+    principal := firstWork.owner
+    reason := "the two deliveries now require independent lifecycles"
+    sharedRecords
+    dependencies
+    dispositions := ["phase-a remains the dependency of phase-b"]
+    resultingScopes := [
+      { key := "delivery-a", work := secondWork.id, owner := firstWork.owner
+        outcome := "deliver independent result a"
+        completionBoundary := "result a reaches its own terminal state" },
+      { key := "delivery-b", work := thirdWork.id, owner := firstWork.owner
+        outcome := "deliver independent result b"
+        completionBoundary := "result b reaches its own terminal state" }] }
+  let state ← executeState (.recordScopeChange state.revision split) state
+    "aggregate split transition rejected"
+  let state ← executeState
+    (.completeTask state.revision firstWork.id "task-a") state
+    "aggregate phase-a task rejected"
+  let state ← executeState
+    (.completePhase state.revision firstWork.id "phase-a") state
+    "aggregate phase-a completion rejected"
+  let state ← executeState
+    (.completeTask state.revision firstWork.id "task-b") state
+    "aggregate phase-b task rejected"
+  let scope : Domain.Review.FrozenScope := {
+    design := none
+    work := firstWork.id
+    phase := some "phase-b"
+    repositorySnapshot := "snapshot:aggregate"
+    artifactDigest := "sha256:aggregate"
+    purpose := .implementationQuality }
+  let reviewPlan : Domain.Review.Plan := {
+    id := phaseReview
+    owner := firstWork.owner
+    reviewer := "phase-reviewer"
+    adjudicator := firstWork.owner
+    scope }
+  let state ← executeState
+    (.recordReviewPlan state.revision reviewPlan) state
+    "phase-scoped review plan rejected"
+  let epoch ← match Domain.Lifecycle.forWork state.lifecycle firstWork.id with
+    | some completion => pure completion.epoch
+    | none => throw <| IO.userError "aggregate lifecycle disappeared"
+  let claim : Domain.Review.Claim := {
+    id := ⟨8001⟩
+    plan := phaseReview
+    work := firstWork.id
+    epoch
+    claim := .clean
+    reviewer := reviewPlan.reviewer
+    scope := some scope }
+  let state ← executeState
+    (.recordReviewClaim state.revision claim) state
+    "phase-scoped review claim rejected"
+  let adjudication : Domain.Review.Adjudication := {
+    review := claim.id
+    decision := .accepted
+    adjudicator := firstWork.owner
+    reason := "the phase result meets its accepted scope" }
+  let state ← executeState
+    (.recordReviewAdjudication state.revision adjudication) state
+    "phase-scoped review adjudication rejected"
+  let state ← executeState
+    (.completePhase state.revision firstWork.id "phase-b") state
+    "dependency-ordered phase-b completion rejected"
+  let release : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"release-aggregate"⟩
+    work := some firstWork.id
+    kind := .release
+    artifactDigest := "sha256:aggregate"
+    state := .prepared }
+  let state ← executeState
+    (.recordExternalOperation state.revision release) state
+    "aggregate release preparation rejected"
+  let dispatched := { release with state := .dispatched }
+  let state ← executeState
+    (.advanceExternalOperation state.revision dispatched) state
+    "aggregate release dispatch rejected"
+  let uncertain := { release with state := .uncertain }
+  let state ← executeState
+    (.advanceExternalOperation state.revision uncertain) state
+    "aggregate release uncertainty rejected"
+  let succeeded := {
+    release with
+    state := .succeeded
+    observation := some {
+      identity := "release:aggregate"
+      artifactDigest := some release.artifactDigest } }
+  let state ← executeState
+    (.advanceExternalOperation state.revision succeeded) state
+    "aggregate release reconciliation rejected"
+  let ownerChange : Domain.Lifecycle.ScopeChange := {
+    key := "rescope-owner"
+    work := firstWork.id
+    kind := .rescope
+    cause := .owner
+    principal := firstWork.owner
+    reason := "the aggregate work has a new accountable owner"
+    sharedRecords
+    dependencies
+    dispositions := ["new owner accepts the retained phase and task records"]
+    resultingScopes := [{
+      key := "narrow-delivery"
+      work := firstWork.id
+      owner := "successor-owner"
+      outcome := "deliver the narrower aggregate outcome"
+      completionBoundary := firstWork.completionBoundary }] }
+  let state ← executeState
+    (.recordScopeChange state.revision ownerChange) state
+    "aggregate owner rescope rejected"
+  let completion ← match Domain.Lifecycle.forWork state.lifecycle firstWork.id with
+    | some completion => pure completion
+    | none => throw <| IO.userError "aggregate lifecycle disappeared after release"
+  expect (Domain.Lifecycle.phasesReady completion)
+    "ordered aggregate phases were not complete"
+  expect (completion.scopeChanges == [rescope, split, ownerChange])
+    "aggregate scope transitions were not retained exactly"
+  expect (state.work.any fun work =>
+    work.id == firstWork.id &&
+      work.outcome == "deliver the narrower aggregate outcome" &&
+      work.owner == "successor-owner")
+    "aggregate rescope did not change the authoritative outcome and owner"
+  expect (state.work.any (·.id == secondWork.id) &&
+      state.work.any (·.id == thirdWork.id))
+    "aggregate split did not create independent work lifecycles"
+  expect (state.externalOperations == [succeeded])
+    "release reconciliation did not retain the succeeded observation"
+  expect (!Kernel.Replay.reviewScopeReady phaseReview state)
+    "owner rescope left the former owner's review authority current"
+
 set_option maxRecDepth 2048 in
 def main : IO Unit := do
   testEvidenceScopeSatisfaction
   expectMissingRequiredReviewRejected
+  testAggregateWorkLifecycle
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
   expectRejectedNoEffect
@@ -959,14 +1145,14 @@ def main : IO Unit := do
   let dependencyDone ← executeState
     (.acknowledgeRelatedWorkTerminal childDone.revision firstWork.id thirdWork.id) childDone
     "dependency completion rejected"
-  let phaseDone ← executeState
-    (.completePhase dependencyDone.revision firstWork.id "phase-1") dependencyDone
-    "phase completion rejected"
   let taskDone ← executeState
-    (.completeTask phaseDone.revision firstWork.id "task-1") phaseDone
+    (.completeTask dependencyDone.revision firstWork.id "task-1") dependencyDone
     "task completion rejected"
+  let phaseDone ← executeState
+    (.completePhase taskDone.revision firstWork.id "phase-1") taskDone
+    "phase completion rejected"
   let checklistDone ← executeState
-    (.completeChecklist taskDone.revision firstWork.id "checklist-1") taskDone
+    (.completeChecklist phaseDone.revision firstWork.id "checklist-1") phaseDone
     "checklist completion rejected"
   let findingDone ← executeState
     (.resolveFinding checklistDone.revision firstWork.id "blocking-review-finding")
@@ -1078,7 +1264,8 @@ def main : IO Unit := do
       reviewPlans := completable.reviewPlans.filter fun plan =>
         plan.scope.purpose != .implementationQuality }
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
-    withoutQualityReview.reviewPlans withoutQualityReview.decompositions
+    withoutQualityReview.work withoutQualityReview.reviewPlans
+    withoutQualityReview.decompositions
     withoutQualityReview.claims withoutQualityReview.adjudications
     withoutQualityReview.reviewFindings withoutQualityReview.findingVerifications))
     "completion accepted a missing implementation-quality review"
@@ -1093,7 +1280,8 @@ def main : IO Unit := do
                 purpose := Domain.Review.Purpose.designConformance } }
         else plan }
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
-    reusedConformanceReview.reviewPlans reusedConformanceReview.decompositions
+    reusedConformanceReview.work reusedConformanceReview.reviewPlans
+    reusedConformanceReview.decompositions
     reusedConformanceReview.claims reusedConformanceReview.adjudications
     reusedConformanceReview.reviewFindings
     reusedConformanceReview.findingVerifications))
@@ -1125,7 +1313,8 @@ def main : IO Unit := do
     mismatchedQualityScope.findingVerifications)
     "artifact mismatch invalidated the implementation-quality review itself"
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
-    mismatchedQualityScope.reviewPlans mismatchedQualityScope.decompositions
+    mismatchedQualityScope.work mismatchedQualityScope.reviewPlans
+    mismatchedQualityScope.decompositions
     mismatchedQualityScope.claims mismatchedQualityScope.adjudications
     mismatchedQualityScope.reviewFindings mismatchedQualityScope.findingVerifications))
     "completion combined required reviews from different frozen artifact scopes"
@@ -1158,7 +1347,8 @@ def main : IO Unit := do
     mismatchedRepositoryScope.findingVerifications)
     "repository mismatch invalidated the implementation-quality review itself"
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
-    mismatchedRepositoryScope.reviewPlans mismatchedRepositoryScope.decompositions
+    mismatchedRepositoryScope.work mismatchedRepositoryScope.reviewPlans
+    mismatchedRepositoryScope.decompositions
     mismatchedRepositoryScope.claims mismatchedRepositoryScope.adjudications
     mismatchedRepositoryScope.reviewFindings
     mismatchedRepositoryScope.findingVerifications))
@@ -1182,7 +1372,7 @@ def main : IO Unit := do
     missingQualityAdjudication.findingVerifications))
     "implementation-quality review was ready without adjudication"
   expect (!(Policy.Completion.requiredReviewsReady firstWork.id
-    missingQualityAdjudication.reviewPlans
+    missingQualityAdjudication.work missingQualityAdjudication.reviewPlans
     missingQualityAdjudication.decompositions
     missingQualityAdjudication.claims missingQualityAdjudication.adjudications
     missingQualityAdjudication.reviewFindings

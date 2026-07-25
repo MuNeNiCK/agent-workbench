@@ -32,6 +32,8 @@ inductive Command
   | recordReviewPlan (expectedRevision : Revision) (plan : Review.Plan)
   | planCompletion (expectedRevision : Revision) (plan : Lifecycle.CompletionPlan)
   | acknowledgeRelatedWorkTerminal (expectedRevision : Revision) (owner related : WorkId)
+  | recordScopeChange (expectedRevision : Revision)
+      (change : Lifecycle.ScopeChange)
   | completePhase (expectedRevision : Revision) (work : WorkId) (key : String)
   | completeTask (expectedRevision : Revision) (work : WorkId) (key : String)
   | completeChecklist (expectedRevision : Revision) (work : WorkId) (key : String)
@@ -85,6 +87,7 @@ def Command.expectedRevision : Command → Revision
   | .recordReviewPlan revision _
   | .planCompletion revision _
   | .acknowledgeRelatedWorkTerminal revision _ _
+  | .recordScopeChange revision _
   | .completePhase revision _ _
   | .completeTask revision _ _
   | .completeChecklist revision _ _
@@ -241,6 +244,9 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       if Policy.Authority.mayInvoke plan state.authorityExceptions &&
           Review.planWellFormed plan && !state.reviewPlans.any (·.id == plan.id) &&
           state.work.any (·.id == plan.scope.work) &&
+          plan.scope.phase.all (fun phase =>
+            (Lifecycle.forWork state.lifecycle plan.scope.work).any fun completion =>
+              completion.phases.any (·.key == phase)) &&
           (match plan.scope.design with
           | some design => state.designs.any (fun version =>
               version.id == design && version.owner == plan.owner) &&
@@ -271,13 +277,19 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
             .ok ⟨[.relatedWorkTerminalAcknowledged owner related], by simp⟩
           else
             .error (.invalidTransition "related work has not reached its own terminal state")
+  | .recordScopeChange _ change =>
+      if Replay.scopeChangeApplicable change state then
+        .ok ⟨[.scopeChangeRecorded change], by simp⟩
+      else
+        .error (.invalidTransition
+          "rescope or split requires one open aggregate work unit, an exact impact report, owner dispositions, and valid resulting scopes")
   | .completePhase _ work key =>
       match Lifecycle.forWork state.lifecycle work with
       | some completion =>
-          if completion.phases.any (fun record =>
-              record.key == key && record.status == .pending) then
+          if Replay.phaseCompletionReady completion key state then
             .ok ⟨[.phaseCompleted work key], by simp⟩
-          else .error (.invalidTransition "phase is not pending")
+          else .error (.invalidTransition
+            "phase completion requires a pending phase with complete dependencies, assigned tasks, and phase-scoped reviews")
       | none => .error (.invalidTransition "completion plan is missing")
   | .completeTask _ work key =>
       match Lifecycle.forWork state.lifecycle work with
@@ -336,7 +348,9 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
   | .recordReviewClaim _ claim =>
       if Review.claimWellFormed claim &&
           !state.claims.any (·.id == claim.id) &&
-          state.reviewPlans.any (fun plan => Review.scopeExact plan claim) then
+          state.reviewPlans.any (fun plan =>
+            Review.scopeExact plan claim &&
+            Replay.reviewPlanOwnerCurrent plan state) then
         .ok ⟨[.reviewClaimed claim], by simp⟩
       else
         .error (.invalidTransition "review claim is not bound to the exact frozen scope")
@@ -352,6 +366,9 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           state.claims.any (fun claim =>
             claim.id == finding.review &&
               Review.claimAcceptsFindings claim state.reviewPlans state.claims &&
+              state.reviewPlans.any (fun plan =>
+                plan.id == claim.plan &&
+                Replay.reviewPlanOwnerCurrent plan state) &&
               claim.scope.any
                 (Replay.reviewAuthorityCurrent finding.authority · state)) &&
           !state.reviewFindings.any (·.key == finding.key) then
@@ -364,13 +381,14 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           finding.closureAttempts.isEmpty && !reason.isEmpty &&
           state.claims.any (fun claim =>
             claim.id == finding.review &&
-            state.reviewPlans.any (fun plan =>
-              plan.id == claim.plan && plan.adjudicator == principal &&
-              principal != claim.reviewer))) then
+            principal != claim.reviewer &&
+            state.work.any (fun work =>
+              work.id == claim.work && work.status == .open &&
+              work.owner == principal))) then
         .ok ⟨[.reviewFindingAdjudicated key principal reason accepted], by simp⟩
       else
         .error (.invalidTransition
-          "finding adjudication requires the frozen plan adjudicator, a reason, and separation from the reviewer")
+          "finding adjudication requires the current work owner, a reason, and separation from the reviewer")
   | .closeReviewFinding _ key attempt =>
       if Review.attemptWellFormed attempt &&
           state.reviewFindings.any (fun finding =>
@@ -410,9 +428,10 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
             record.key == finding &&
             state.claims.any (fun claim =>
               claim.id == record.review &&
-              state.reviewPlans.any (fun plan =>
-                plan.id == claim.plan && plan.adjudicator == adjudicator &&
-                adjudicator != verification.verifier)))) then
+              adjudicator != verification.verifier &&
+              state.work.any (fun work =>
+                work.id == claim.work && work.status == .open &&
+                work.owner == adjudicator)))) then
         .ok ⟨[.findingVerificationAdjudicated finding attempt adjudicator], by simp⟩
       else
         .error (.invalidTransition "finding verification requires separate owner adjudication")
@@ -470,6 +489,8 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .error (.invalidTransition "evidence requires requirement links, producer, and observation time")
   | .recordExternalOperation _ attempt =>
       if attempt.state == .prepared && attempt.wellFormed &&
+          attempt.work.all (fun work =>
+            state.work.any fun unit => unit.id == work && unit.status == .open) &&
           !state.externalOperations.any (·.operation == attempt.operation) then
         .ok ⟨[.externalOperationRecorded attempt], by simp⟩
       else

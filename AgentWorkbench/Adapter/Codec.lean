@@ -56,6 +56,7 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Verifica
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Obligation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Evidence
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.AttemptState
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.OperationKind
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemoteObservation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.Attempt
 
@@ -67,6 +68,11 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.Repos
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CorrectionStatus
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.WorkRecordStatus
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RelatedWorkRequirement
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.PhaseSpec
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChangeKind
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChangeCause
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ResultingScope
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChange
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CompletionPlan
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.PhaseRecord
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.TaskRecord

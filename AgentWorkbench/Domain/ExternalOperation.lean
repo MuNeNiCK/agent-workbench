@@ -15,6 +15,12 @@ inductive AttemptState
   | conflict
 deriving DecidableEq, Repr, BEq
 
+inductive OperationKind
+  | release
+  | transport
+  | publication
+deriving DecidableEq, Repr, BEq
+
 structure RemoteObservation where
   identity : String
   artifactDigest : Option String
@@ -22,6 +28,8 @@ deriving DecidableEq, Repr, BEq
 
 structure Attempt where
   operation : OperationId
+  work : Option WorkId := none
+  kind : OperationKind := .publication
   artifactDigest : String
   state : AttemptState
   observation : Option RemoteObservation := none
@@ -46,6 +54,7 @@ def RemoteObservation.conflicts (expected : String)
 
 def Attempt.wellFormed (attempt : Attempt) : Bool :=
   !attempt.operation.value.isEmpty && !attempt.artifactDigest.isEmpty &&
+    (attempt.kind != .release || attempt.work.isSome) &&
     match attempt.state, attempt.observation, attempt.disposition with
     | .prepared, none, none
     | .dispatched, none, none
@@ -63,6 +72,7 @@ def Attempt.wellFormed (attempt : Attempt) : Bool :=
 
 def sameIntent (current next : Attempt) : Bool :=
   current.operation == next.operation &&
+    current.work == next.work && current.kind == next.kind &&
     current.artifactDigest == next.artifactDigest
 
 def transitionAllowed (current next : Attempt) : Bool :=

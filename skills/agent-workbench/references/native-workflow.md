@@ -13,11 +13,20 @@ Use only the native executable and an explicit state path.
 8. Record design-conformance and implementation-quality review plans over the
    same repository snapshot and artifact.
 9. Record the completion plan.
-10. Record the two fresh clean review claims and the caller's separate
+10. For aggregate work, assign ordered grouped phases, explicit dependencies,
+    tasks, and any phase-scoped review plans. Record rescope or split only when
+    the outcome, owner, or independent lifecycle actually changes, with
+    reasoned dispositions for the reported shared records and dependencies.
+11. Complete each phase only after its dependencies, assigned tasks, and
+    phase-scoped reviews are ready.
+12. Record the two fresh clean work-level review claims and the caller's separate
     adjudications.
-11. Record current validation obligations and their exact evidence.
-12. Complete the active work.
-13. Start a fresh process and run `status` and `next` to verify recovery and
+13. Record current validation obligations and their exact evidence.
+14. For a release operation, preserve its work, kind, and artifact identity
+    through dispatch; reconcile an uncertain result against a remote
+    observation before reporting success.
+15. Complete the active work.
+16. Start a fresh process and run `status` and `next` to verify recovery and
     the terminal state.
 
 Use one `apply` request per mutation. After every accepted request, use the

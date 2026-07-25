@@ -146,10 +146,14 @@ def lifecycleRequests : List String := [
   ],
   request 17 "record-external-operation" "record-external-operation" [
     ("externalOperation", toJson "publish-fixture"),
+    ("work", toJson (some 1 : Option Nat)),
+    ("kind", toJson "release"),
     ("artifactDigest", toJson "sha256:artifact")
   ],
   request 18 "dispatch-external-operation" "advance-external-operation" [
     ("externalOperation", toJson "publish-fixture"),
+    ("work", toJson (some 1 : Option Nat)),
+    ("kind", toJson "release"),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "dispatched"),
     ("observationIdentity", toJson (none : Option String)),
@@ -158,6 +162,8 @@ def lifecycleRequests : List String := [
   ],
   request 19 "uncertain-external-operation" "advance-external-operation" [
     ("externalOperation", toJson "publish-fixture"),
+    ("work", toJson (some 1 : Option Nat)),
+    ("kind", toJson "release"),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "uncertain"),
     ("observationIdentity", toJson (none : Option String)),
@@ -166,6 +172,8 @@ def lifecycleRequests : List String := [
   ],
   request 20 "reconcile-external-operation" "advance-external-operation" [
     ("externalOperation", toJson "publish-fixture"),
+    ("work", toJson (some 1 : Option Nat)),
+    ("kind", toJson "release"),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "succeeded"),
     ("observationIdentity", toJson (some "remote-fixture" : Option String)),
@@ -223,6 +231,118 @@ def applySources (cli root state : System.FilePath) (sources : List String) :
     let requestPath := root / s!"focused-request-{index}.json"
     IO.FS.writeFile requestPath source
     let _ ← invoke cli #["--state", state.toString, "apply", requestPath.toString]
+
+def testAggregateLifecycle (cli root : System.FilePath) : IO Unit := do
+  let state := root / "aggregate-lifecycle.sqlite3"
+  let _ ← invoke cli #[
+    "--state", state.toString, "init", "owner",
+    "deliver an aggregate outcome", "both ordered phases and release complete"]
+  let phaseA := Json.mkObj [
+    ("key", toJson "phase-a"), ("group", toJson "delivery"),
+    ("order", toJson 1), ("dependencies", toJson ([] : List String)),
+    ("tasks", toJson ["task-a"]), ("reviews", toJson ([] : List Nat))]
+  let phaseB := Json.mkObj [
+    ("key", toJson "phase-b"), ("group", toJson "delivery"),
+    ("order", toJson 2), ("dependencies", toJson ["phase-a"]),
+    ("tasks", toJson ["task-b"]), ("reviews", toJson [8001])]
+  let phaseScope : List (String × Json) := [
+    ("design", toJson (none : Option Nat)),
+    ("work", toJson 1),
+    ("phase", toJson (some "phase-b" : Option String)),
+    ("repositorySnapshot", toJson "snapshot:aggregate"),
+    ("artifactDigest", toJson "sha256:aggregate"),
+    ("purpose", toJson "implementation-quality")]
+  let resultingScope (key : String) (work : Nat) (outcome boundary : String) :=
+    Json.mkObj [
+      ("key", toJson key), ("work", toJson work), ("owner", toJson "owner"),
+      ("outcome", toJson outcome), ("completionBoundary", toJson boundary)]
+  let externalFields : List (String × Json) := [
+    ("externalOperation", toJson "release-aggregate"),
+    ("work", toJson (some 1 : Option Nat)),
+    ("kind", toJson "release"),
+    ("artifactDigest", toJson "sha256:aggregate")]
+  applySources cli root state [
+    request 1 "aggregate-plan" "plan-completion" [
+      ("work", toJson 1), ("relatedWork", toJson ([] : List Json)),
+      ("phases", Json.arr #[phaseA, phaseB]),
+      ("tasks", toJson ["task-a", "task-b"]),
+      ("checklists", toJson ([] : List String)),
+      ("reviews", toJson ([] : List Nat)),
+      ("findings", toJson ([] : List String)),
+      ("validations", toJson ([] : List String)),
+      ("repositories", toJson ([] : List String)),
+      ("corrections", toJson ([] : List String)),
+      ("workRecords", toJson ([] : List String))],
+    request 2 "aggregate-rescope" "record-scope-change" [
+      ("key", toJson "rescope-outcome"), ("work", toJson 1),
+      ("kind", toJson "rescope"), ("cause", toJson "outcome"),
+      ("principal", toJson "owner"),
+      ("reason", toJson "the accepted outcome is narrower"),
+      ("sharedRecords", toJson ["task-a", "task-b"]),
+      ("dependencies", toJson ["phase-a"]),
+      ("dispositions", toJson ["retain both task records"]),
+      ("resultingScopes", Json.arr #[
+        resultingScope "narrow-delivery" 1 "deliver the narrower outcome"
+          "both ordered phases and release complete"])],
+    request 3 "aggregate-split" "record-scope-change" [
+      ("key", toJson "split-lifecycle"), ("work", toJson 1),
+      ("kind", toJson "split"), ("cause", toJson "independent-lifecycle"),
+      ("principal", toJson "owner"),
+      ("reason", toJson "the deliveries now have independent lifecycles"),
+      ("sharedRecords", toJson ["task-a", "task-b"]),
+      ("dependencies", toJson ["phase-a"]),
+      ("dispositions", toJson ["retain phase dependency"]),
+      ("resultingScopes", Json.arr #[
+        resultingScope "delivery-a" 2 "deliver independent result a"
+          "result a reaches its own terminal state",
+        resultingScope "delivery-b" 3 "deliver independent result b"
+          "result b reaches its own terminal state"])],
+    request 4 "aggregate-task-a" "complete-task" [
+      ("work", toJson 1), ("key", toJson "task-a")],
+    request 5 "aggregate-phase-a" "complete-phase" [
+      ("work", toJson 1), ("key", toJson "phase-a")],
+    request 6 "aggregate-task-b" "complete-task" [
+      ("work", toJson 1), ("key", toJson "task-b")],
+    request 7 "aggregate-phase-review-plan" "record-review-plan" <| [
+      ("plan", toJson 8001), ("owner", toJson "owner"),
+      ("reviewer", toJson "phase-reviewer"), ("adjudicator", toJson "owner")
+    ] ++ phaseScope,
+    request 8 "aggregate-phase-review-claim" "record-review-claim" <| [
+      ("review", toJson 8001), ("plan", toJson 8001), ("epoch", toJson 5),
+      ("claim", toJson "clean"), ("reviewer", toJson "phase-reviewer")
+    ] ++ phaseScope,
+    request 9 "aggregate-phase-review-adjudication"
+      "record-review-adjudication" [
+      ("review", toJson 8001), ("decision", toJson "accepted"),
+      ("adjudicator", toJson "owner"),
+      ("reason", toJson "the phase result meets its accepted scope")],
+    request 10 "aggregate-phase-b" "complete-phase" [
+      ("work", toJson 1), ("key", toJson "phase-b")],
+    request 11 "aggregate-release-prepare" "record-external-operation"
+      externalFields,
+    request 12 "aggregate-release-dispatch" "advance-external-operation" <|
+      externalFields ++ [
+        ("state", toJson "dispatched"),
+        ("observationIdentity", toJson (none : Option String)),
+        ("observedArtifactDigest", toJson (none : Option String)),
+        ("disposition", toJson (none : Option String))],
+    request 13 "aggregate-release-uncertain" "advance-external-operation" <|
+      externalFields ++ [
+        ("state", toJson "uncertain"),
+        ("observationIdentity", toJson (none : Option String)),
+        ("observedArtifactDigest", toJson (none : Option String)),
+        ("disposition", toJson (none : Option String))],
+    request 14 "aggregate-release-succeeded" "advance-external-operation" <|
+      externalFields ++ [
+        ("state", toJson "succeeded"),
+        ("observationIdentity", toJson (some "release:aggregate" : Option String)),
+        ("observedArtifactDigest", toJson (some "sha256:aggregate" : Option String)),
+        ("disposition", toJson (none : Option String))]
+  ]
+  let status ← invoke cli #["--state", state.toString, "status"]
+  expect (status.stdout.contains "state: current" &&
+      status.stdout.contains "revision: 15")
+    "native aggregate lifecycle did not retain its exact current revision"
 
 def testRecoveryDetails (cli root : System.FilePath) : IO Unit := do
   let state := root / "recovery-details.sqlite3"
@@ -393,6 +513,7 @@ def run : IO Unit := IO.FS.withTempDir fun root => do
   runFixture cli root pythonProject
     (root / "detached-state" / "python.sqlite3")
     "main.py" "print('python-fixture')\n" "python3"
+  testAggregateLifecycle cli root
   testRecoveryDetails cli root
   testProjectionRepair cli root
   IO.println "cli laws: pass"

@@ -124,6 +124,11 @@ def proposalSuccessorsExact (claim : Review.Claim)
         state.designs.any fun version =>
           version.id == successor && version.predecessor == some reviewed
 
+def reviewPlanOwnerCurrent (plan : Review.Plan) (state : State) : Bool :=
+  state.work.any fun work =>
+    work.id == plan.scope.work && work.status == .open &&
+    work.owner == plan.owner
+
 def reviewAdjudicationApplicable (decision : Review.Adjudication)
     (state : State) : Bool :=
   state.claims.any (fun claim =>
@@ -132,6 +137,7 @@ def reviewAdjudicationApplicable (decision : Review.Adjudication)
     state.reviewPlans.any (fun plan =>
       plan.id == claim.plan &&
       Review.scopeExact plan claim &&
+      reviewPlanOwnerCurrent plan state &&
       decision.adjudicator == plan.adjudicator &&
       decision.adjudicator != claim.reviewer)) &&
   !state.adjudications.any (·.review == decision.review)
@@ -231,6 +237,7 @@ inductive Event
   | reviewPlanRecorded (plan : Review.Plan)
   | completionPlanned (plan : Lifecycle.CompletionPlan)
   | relatedWorkTerminalAcknowledged (owner related : WorkId)
+  | scopeChangeRecorded (change : Lifecycle.ScopeChange)
   | phaseCompleted (work : WorkId) (key : String)
   | taskCompleted (work : WorkId) (key : String)
   | checklistCompleted (work : WorkId) (key : String)
@@ -317,6 +324,27 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       { invalidated with
         lifecycle := state.lifecycle.map fun completion =>
           if completion.plan.work == owner then Lifecycle.advance completion else completion }
+  | .scopeChangeRecorded change =>
+      let work := match change.kind with
+        | .rescope =>
+            match change.resultingScopes with
+            | [scope] =>
+                state.work.map fun unit =>
+                  if unit.id == change.work then
+                    { unit with
+                      owner := scope.owner
+                      outcome := scope.outcome
+                      completionBoundary := scope.completionBoundary }
+                  else unit
+            | _ => state.work
+        | .split =>
+            state.work ++ change.resultingScopes.map (·.toWorkUnit)
+      { invalidated with
+        work
+        lifecycle := state.lifecycle.map fun completion =>
+          if completion.plan.work == change.work then
+            Lifecycle.recordScopeChange completion change
+          else completion }
   | .phaseCompleted work key =>
       { invalidated with lifecycle := state.lifecycle.map fun completion =>
         if completion.plan.work == work then Lifecycle.completePhase completion key else completion }
@@ -489,9 +517,59 @@ def completionObligationsReady (target : WorkId)
 
 def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
   state.reviewPlans.any fun plan =>
-    plan.id == planId && Review.isLatestPlan plan state.reviewPlans &&
+    plan.id == planId && reviewPlanOwnerCurrent plan state &&
+      Review.isLatestPlan plan state.reviewPlans &&
       Review.scopeReady plan state.claims state.adjudications
         state.reviewFindings state.findingVerifications
+
+def phaseReviewsReady (completion : Lifecycle.CompletionState)
+    (phase : Lifecycle.PhaseRecord) (state : State) : Bool :=
+  phase.reviews.all fun review =>
+    state.reviewPlans.any fun plan =>
+      plan.id == review &&
+      plan.scope.work == completion.plan.work &&
+      plan.scope.phase == some phase.key &&
+      Review.isLatestPlan plan state.reviewPlans &&
+      reviewScopeReady plan.id state &&
+      (Review.latestClaimFor plan state.claims).any fun claim =>
+        claim.epoch == completion.epoch && claim.claim == .clean &&
+        state.adjudications.any fun decision =>
+          decision.review == claim.id && decision.decision == .accepted &&
+          Review.adjudicationExact claim decision
+
+def phaseCompletionReady (completion : Lifecycle.CompletionState)
+    (key : String) (state : State) : Bool :=
+  completion.phases.any fun phase =>
+    phase.key == key && phase.status == .pending &&
+    Lifecycle.phaseDependenciesReady completion phase &&
+    Lifecycle.phaseTasksReady completion phase &&
+    phaseReviewsReady completion phase state
+
+def scopeChangeApplicable (change : Lifecycle.ScopeChange)
+    (state : State) : Bool :=
+  Lifecycle.scopeChangeWellFormed change &&
+  state.work.any (fun work =>
+    work.id == change.work && work.status == .open &&
+    work.owner == change.principal &&
+    match change.kind, change.cause, change.resultingScopes with
+    | .rescope, .outcome, [scope] =>
+        scope.work == work.id && scope.owner == work.owner &&
+        scope.outcome != work.outcome
+    | .rescope, .owner, [scope] =>
+        scope.work == work.id && scope.owner != work.owner &&
+        scope.outcome == work.outcome &&
+        scope.completionBoundary == work.completionBoundary
+    | .split, .independentLifecycle, scopes =>
+        scopes.all (fun scope =>
+          scope.work != work.id &&
+          !state.work.any (·.id == scope.work))
+    | _, _, _ => false) &&
+  (Work.activeFor state.activations change.work).isSome &&
+  !state.lifecycle.any (fun completion =>
+    completion.scopeChanges.any (·.key == change.key)) &&
+  (Lifecycle.forWork state.lifecycle change.work).any fun completion =>
+    change.sharedRecords == Lifecycle.sharedRecords completion &&
+    change.dependencies == Lifecycle.phaseDependencies completion
 
 def decompositionRecordable (decomposition : Design.Decomposition)
     (state : State) : Bool :=
@@ -570,6 +648,9 @@ def completionRequiredReviewsReady (target : WorkId) (state : State) : Bool :=
           state.reviewPlans with
       | none => false
       | some quality =>
+          state.work.any (fun unit =>
+            unit.id == target && unit.status == .open &&
+            conformance.owner == unit.owner && quality.owner == unit.owner) &&
           Review.sameArtifactScope conformance.scope quality.scope &&
           completionRequiredReviewPurposes.all fun purpose =>
             completionPurposeReviewReady target design purpose state
@@ -755,6 +836,9 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   | .reviewPlanRecorded plan =>
       Review.planWellFormed plan && !state.reviewPlans.any (·.id == plan.id) &&
       state.work.any (·.id == plan.scope.work) &&
+      plan.scope.phase.all (fun phase =>
+        (Lifecycle.forWork state.lifecycle plan.scope.work).any fun completion =>
+          completion.phases.any (·.key == phase)) &&
       (Review.independent plan ||
         state.authorityExceptions.any (Review.exceptionExact plan)) &&
       (match plan.scope.design with
@@ -777,10 +861,10 @@ def eventApplicable (event : Event) (state : State) : Bool :=
           completion.plan.relatedWork.any (·.work == related) &&
           state.work.any (fun work => work.id == related &&
             (work.status == .closed || work.status == .abandoned))
+  | .scopeChangeRecorded change => scopeChangeApplicable change state
   | .phaseCompleted work key =>
       match Lifecycle.forWork state.lifecycle work with
-      | some completion => completion.phases.any (fun record =>
-          record.key == key && record.status == .pending)
+      | some completion => phaseCompletionReady completion key state
       | none => false
   | .taskCompleted work key =>
       match Lifecycle.forWork state.lifecycle work with
@@ -818,7 +902,8 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   | .reviewClaimed claim =>
       Review.claimWellFormed claim &&
       !state.claims.any (·.id == claim.id) &&
-      state.reviewPlans.any (fun plan => Review.scopeExact plan claim)
+      state.reviewPlans.any (fun plan =>
+        Review.scopeExact plan claim && reviewPlanOwnerCurrent plan state)
   | .reviewAdjudicated decision =>
       reviewAdjudicationApplicable decision state
   | .reviewFindingRecorded finding =>
@@ -826,6 +911,8 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !finding.adjudicated && finding.closureAttempts.isEmpty &&
       state.claims.any (fun claim => claim.id == finding.review &&
         Review.claimAcceptsFindings claim state.reviewPlans state.claims &&
+        state.reviewPlans.any (fun plan =>
+          plan.id == claim.plan && reviewPlanOwnerCurrent plan state) &&
         claim.scope.any (reviewAuthorityCurrent finding.authority · state)) &&
       !state.reviewFindings.any (·.key == finding.key)
   | .reviewFindingAdjudicated key principal reason _ =>
@@ -834,9 +921,10 @@ def eventApplicable (event : Event) (state : State) : Bool :=
         finding.closureAttempts.isEmpty &&
         state.claims.any (fun claim =>
           claim.id == finding.review &&
-          state.reviewPlans.any (fun plan =>
-            plan.id == claim.plan && plan.adjudicator == principal &&
-            principal != claim.reviewer)))
+          principal != claim.reviewer &&
+          state.work.any (fun work =>
+            work.id == claim.work && work.status == .open &&
+            work.owner == principal)))
   | .reviewFindingClosureAttempted key attempt =>
       Review.attemptWellFormed attempt &&
       state.reviewFindings.any (fun finding =>
@@ -871,9 +959,10 @@ def eventApplicable (event : Event) (state : State) : Bool :=
           record.key == finding &&
           state.claims.any (fun claim =>
             claim.id == record.review &&
-            state.reviewPlans.any (fun plan =>
-              plan.id == claim.plan && plan.adjudicator == adjudicator &&
-              adjudicator != verification.verifier))))
+            adjudicator != verification.verifier &&
+            state.work.any (fun work =>
+              work.id == claim.work && work.status == .open &&
+              work.owner == adjudicator))))
   | .correctionRecorded correction =>
       Design.correctionWellFormed correction && !correction.resolved &&
       !state.corrections.any (·.key == correction.key)
@@ -909,6 +998,8 @@ def eventApplicable (event : Event) (state : State) : Bool :=
         Evidence.exactFor item obligation)
   | .externalOperationRecorded attempt =>
       attempt.state == .prepared && attempt.wellFormed &&
+      attempt.work.all (fun work =>
+        state.work.any fun unit => unit.id == work && unit.status == .open) &&
       !state.externalOperations.any (·.operation == attempt.operation)
   | .externalOperationAdvanced attempt =>
       state.externalOperations.any fun current =>

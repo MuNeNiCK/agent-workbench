@@ -15,6 +15,7 @@ deriving DecidableEq, Repr, BEq
 structure FrozenScope where
   design : Option DesignId
   work : WorkId
+  phase : Option String := none
   repositorySnapshot : String
   artifactDigest : String
   purpose : Purpose
@@ -141,6 +142,7 @@ def scopeExact (plan : Plan) (claim : Claim) : Bool :=
 
 def planWellFormed (plan : Plan) : Bool :=
   !plan.scope.repositorySnapshot.isEmpty && !plan.scope.artifactDigest.isEmpty &&
+  plan.scope.phase.all (fun phase => !phase.isEmpty) &&
   !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty
 
 def findingWellFormed (finding : Finding) : Bool :=
@@ -200,10 +202,11 @@ def mayStartAttempt (finding : Finding)
 
 def sameContext (left right : FrozenScope) : Bool :=
   left.design == right.design && left.work == right.work &&
-  left.purpose == right.purpose
+    left.phase == right.phase && left.purpose == right.purpose
 
 def sameArtifactScope (left right : FrozenScope) : Bool :=
   left.design == right.design && left.work == right.work &&
+    left.phase == right.phase &&
   left.repositorySnapshot == right.repositorySnapshot &&
   left.artifactDigest == right.artifactDigest
 
@@ -211,11 +214,14 @@ def latestPlanFor? (design : Option DesignId) (work : WorkId)
     (purpose : Purpose) (plans : List Plan) : Option Plan :=
   plans.reverse.find? fun plan =>
     plan.scope.design == design && plan.scope.work == work &&
-    plan.scope.purpose == purpose
+    plan.scope.phase.isNone && plan.scope.purpose == purpose
 
 def isLatestPlan (plan : Plan) (plans : List Plan) : Bool :=
-  (latestPlanFor? plan.scope.design plan.scope.work plan.scope.purpose plans).any
-    (·.id == plan.id)
+  (plans.reverse.find? fun candidate =>
+    candidate.scope.design == plan.scope.design &&
+    candidate.scope.work == plan.scope.work &&
+    candidate.scope.phase == plan.scope.phase &&
+    candidate.scope.purpose == plan.scope.purpose).any (·.id == plan.id)
 
 def verificationExact (finding : Finding) (claim : Claim)
     (verification : Verification) : Bool :=
