@@ -8,7 +8,8 @@
   malformed sibling or root histories.
 - Add a regression that reconstructs nested suspended activation history and
   verifies the latest activation is selected, plus boundary regressions for
-  invalid same-work siblings and ambiguity across distinct work owners.
+  invalid same-work siblings, malformed roots, and ambiguity across distinct
+  work owners.
 
 ## v0.1.33 — 2026-07-25
 

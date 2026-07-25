@@ -143,6 +143,43 @@ fn resume_check_rejects_suspended_siblings_for_one_work_unit() {
 }
 
 #[test]
+fn resume_check_rejects_a_parentless_nonzero_depth_root() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "reject malformed root", None).unwrap();
+    suspend_work(temp.path(), "outer pause", "resume outer activation").unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update work_unit_activations set stack_depth = 1 where id = 1",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, parent_activation_id, stack_depth, status,
+            activation_reason, opened_at, suspended_at
+        )
+        select project_id, work_unit_id, id, 2, 'suspended', 'resume',
+               current_timestamp, current_timestamp
+        from work_unit_activations
+        where id = 1
+        "#,
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = resume_check_for(temp.path(), Some(1), "trace-aware").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("work unit 1 has multiple suspended activations")
+    );
+}
+
+#[test]
 fn resume_check_without_owner_keeps_distinct_suspended_owners_ambiguous() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

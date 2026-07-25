@@ -445,7 +445,7 @@ fn has_valid_suspended_ancestry(
         parent_id = next_parent_id;
     }
 
-    Ok(remaining.is_empty())
+    Ok(remaining.is_empty() && child_depth == 0)
 }
 
 fn resolve_suspended_activation(
