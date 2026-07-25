@@ -1,0 +1,22 @@
+site_name: Agent Workbench
+site_url: https://munenick.github.io/agent-workbench/
+repo_url: https://github.com/MuNeNiCK/agent-workbench
+repo_name: MuNeNiCK/agent-workbench
+docs_dir: content
+site_dir: ../site
+theme:
+  name: readthedocs
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Concepts: concepts.md
+  - Workflow: workflow.md
+  - Reviews: reviews.md
+  - Recovery: recovery.md
+  - Request reference: request-reference.md
+  - Releases: releases.md
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true

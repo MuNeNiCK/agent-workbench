@@ -11,6 +11,8 @@ open Lean
 abbrev Request := Application.Service.Request
 abbrev Response := Application.Service.Response
 
+def version : String := "0.2.0"
+
 def executeRequest :=
   Application.Service.executeRequest
 
@@ -986,6 +988,7 @@ private def dispatch (path : System.FilePath) : List String → IO Unit
 def run (args : List String) : IO Unit := do
   match args with
   | "--state" :: path :: arguments => dispatch path arguments
+  | ["--version"] | ["version"] => IO.println s!"agent-workbench {version}"
   | ["help"] | ["--help"] | ["-h"] => IO.println usage
   | _ => throw <| IO.userError usage
 

@@ -3,7 +3,7 @@ import Lake
 open System Lake DSL
 
 package «agent-workbench» where
-  version := v!"0.1.0"
+  version := v!"0.2.0"
   leanOptions := #[⟨`warningAsError, true⟩]
 
 require leansqlite from git

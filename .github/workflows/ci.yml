@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [lean]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: leanprover/lean-action@v1
+        with:
+          test: false
+          use-mathlib-cache: false
+          build-args: "--wfail"
+      - name: Run executable laws
+        run: |
+          .lake/build/bin/kernel-laws
+          .lake/build/bin/storage-laws
+          .lake/build/bin/workflow-laws
+          .lake/build/bin/cli-laws
+      - name: Check release tooling
+        run: |
+          shellcheck scripts/build-release-assets.sh
+          scripts/build-release-assets.sh v0.2.0 "$RUNNER_TEMP/dist"
