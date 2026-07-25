@@ -35,7 +35,3 @@ lean_exe «storage-laws» where
 @[default_target]
 lean_exe «workflow-laws» where
   root := `AgentWorkbench.Tests.WorkflowLaws
-
-@[default_target]
-lean_exe «verified-core-audit» where
-  root := `AgentWorkbench.Audit.Main
