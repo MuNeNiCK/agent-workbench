@@ -525,17 +525,17 @@ def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
 def phaseReviewsReady (completion : Lifecycle.CompletionState)
     (phase : Lifecycle.PhaseRecord) (state : State) : Bool :=
   phase.reviews.all fun review =>
-    state.reviewPlans.any fun plan =>
-      plan.id == review &&
-      plan.scope.work == completion.plan.work &&
-      plan.scope.phase == some phase.key &&
-      Review.isLatestPlan plan state.reviewPlans &&
-      reviewScopeReady plan.id state &&
-      (Review.latestClaimFor plan state.claims).any fun claim =>
-        claim.epoch == completion.epoch && claim.claim == .clean &&
-        state.adjudications.any fun decision =>
-          decision.review == claim.id && decision.decision == .accepted &&
-          Review.adjudicationExact claim decision
+    (state.reviewPlans.find? (·.id == review)).any fun assigned =>
+      assigned.scope.work == completion.plan.work &&
+      assigned.scope.phase == some phase.key &&
+      (Review.latestPlanForContext? assigned.scope state.reviewPlans).any fun plan =>
+        reviewPlanOwnerCurrent plan state &&
+        reviewScopeReady plan.id state &&
+        (Review.latestClaimFor plan state.claims).any fun claim =>
+          claim.epoch == completion.epoch && claim.claim == .clean &&
+          state.adjudications.any fun decision =>
+            decision.review == claim.id && decision.decision == .accepted &&
+            Review.adjudicationExact claim decision
 
 def phaseCompletionReady (completion : Lifecycle.CompletionState)
     (key : String) (state : State) : Bool :=

@@ -758,25 +758,77 @@ def testAggregateWorkLifecycle : IO Unit := do
   let epoch ← match Domain.Lifecycle.forWork state.lifecycle firstWork.id with
     | some completion => pure completion.epoch
     | none => throw <| IO.userError "aggregate lifecycle disappeared"
-  let claim : Domain.Review.Claim := {
+  let findingClaim : Domain.Review.Claim := {
     id := ⟨8001⟩
     plan := phaseReview
     work := firstWork.id
     epoch
-    claim := .clean
+    claim := .findings
     reviewer := reviewPlan.reviewer
     scope := some scope }
   let state ← executeState
+    (.recordReviewClaim state.revision findingClaim) state
+    "phase-scoped findings claim rejected"
+  let remediationScope : Domain.Review.FrozenScope := {
+    scope with
+      repositorySnapshot := "snapshot:aggregate-remediated"
+      artifactDigest := "sha256:aggregate-remediated" }
+  let finding : Domain.Review.Finding := {
+    key := "phase-review-remediation"
+    review := findingClaim.id
+    blocking := true
+    authority := "aggregate-phase-readiness"
+    failureAccount := "the phase result requires remediation before completion"
+    invariant := "the remediated phase receives a fresh clean review"
+    remediationSurfaces := ["phase-b"]
+    accepted := true
+    adjudicated := true
+    decisionReason := "the owner accepts the concrete phase defect"
+    closureAttempts := [{
+      attempt := 1
+      evidenceDigest := "sha256:phase-review-remediation"
+      repositorySnapshot := remediationScope.repositorySnapshot }] }
+  let verification : Domain.Review.Verification := {
+    finding := finding.key
+    attempt := 1
+    verifier := "phase-verifier"
+    scope := remediationScope
+    evidenceDigest := "sha256:phase-review-remediation"
+    result := .verified
+    adjudicator := firstWork.owner
+    adjudicated := true
+    accepted := true }
+  let state := {
+    state with
+      reviewFindings := state.reviewFindings ++ [finding]
+      findingVerifications := state.findingVerifications ++ [verification] }
+  let successorPlan : Domain.Review.Plan := {
+    reviewPlan with
+      id := ⟨8002⟩
+      reviewer := "successor-phase-reviewer"
+      scope := remediationScope }
+  let state ← executeState
+    (.recordReviewPlan state.revision successorPlan) state
+    "phase-scoped successor review plan rejected"
+  let claim : Domain.Review.Claim := {
+    id := ⟨8002⟩
+    plan := successorPlan.id
+    work := firstWork.id
+    epoch
+    claim := .clean
+    reviewer := successorPlan.reviewer
+    scope := some remediationScope }
+  let state ← executeState
     (.recordReviewClaim state.revision claim) state
-    "phase-scoped review claim rejected"
+    "phase-scoped successor review claim rejected"
   let adjudication : Domain.Review.Adjudication := {
     review := claim.id
     decision := .accepted
     adjudicator := firstWork.owner
-    reason := "the phase result meets its accepted scope" }
+    reason := "the remediated phase result meets its accepted scope" }
   let state ← executeState
     (.recordReviewAdjudication state.revision adjudication) state
-    "phase-scoped review adjudication rejected"
+    "phase-scoped successor review adjudication rejected"
   let state ← executeState
     (.completePhase state.revision firstWork.id "phase-b") state
     "dependency-ordered phase-b completion rejected"

@@ -216,12 +216,11 @@ def latestPlanFor? (design : Option DesignId) (work : WorkId)
     plan.scope.design == design && plan.scope.work == work &&
     plan.scope.phase.isNone && plan.scope.purpose == purpose
 
+def latestPlanForContext? (scope : FrozenScope) (plans : List Plan) : Option Plan :=
+  plans.reverse.find? fun plan => sameContext plan.scope scope
+
 def isLatestPlan (plan : Plan) (plans : List Plan) : Bool :=
-  (plans.reverse.find? fun candidate =>
-    candidate.scope.design == plan.scope.design &&
-    candidate.scope.work == plan.scope.work &&
-    candidate.scope.phase == plan.scope.phase &&
-    candidate.scope.purpose == plan.scope.purpose).any (·.id == plan.id)
+  (latestPlanForContext? plan.scope plans).any (·.id == plan.id)
 
 def verificationExact (finding : Finding) (claim : Claim)
     (verification : Verification) : Bool :=
