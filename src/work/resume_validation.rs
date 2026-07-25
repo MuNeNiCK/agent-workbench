@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashSet;
 
 use crate::db::{StoredActivation, max_id, project_id, suspend_snapshot};
 
@@ -391,6 +392,62 @@ pub(super) fn evaluate_resume_ready_for(
     })
 }
 
+struct SuspendedCandidate {
+    activation: StoredActivation,
+    parent_activation_id: Option<i64>,
+}
+
+fn has_valid_suspended_ancestry(
+    conn: &Connection,
+    candidates: &[SuspendedCandidate],
+) -> Result<bool> {
+    let Some(target) = candidates.first() else {
+        return Ok(false);
+    };
+    let mut remaining = candidates
+        .iter()
+        .skip(1)
+        .map(|candidate| candidate.activation.activation_id)
+        .collect::<HashSet<_>>();
+    let mut visited = HashSet::from([target.activation.activation_id]);
+    let mut parent_id = target.parent_activation_id;
+    let mut child_depth = target.activation.stack_depth;
+
+    while let Some(id) = parent_id {
+        if !visited.insert(id) {
+            return Ok(false);
+        }
+        let parent = conn
+            .query_row(
+                r#"
+                select work_unit_id,stack_depth,parent_activation_id
+                from work_unit_activations
+                where id=?1
+                "#,
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((work_unit_id, stack_depth, next_parent_id)) = parent else {
+            return Ok(false);
+        };
+        if work_unit_id != target.activation.work_unit_id || stack_depth + 1 != child_depth {
+            return Ok(false);
+        }
+        remaining.remove(&id);
+        child_depth = stack_depth;
+        parent_id = next_parent_id;
+    }
+
+    Ok(remaining.is_empty())
+}
+
 fn resolve_suspended_activation(
     conn: &Connection,
     requested_work_unit_id: Option<i64>,
@@ -410,31 +467,55 @@ fn resolve_suspended_activation(
     }
     let mut stmt = conn.prepare(
         r#"
-        select id,project_id,work_unit_id,stack_depth,status
+        select id,project_id,work_unit_id,stack_depth,status,parent_activation_id
         from work_unit_activations
         where project_id=?1 and status='suspended'
           and (?2 is null or work_unit_id=?2)
-        order by work_unit_id,id
+        order by work_unit_id,stack_depth desc,id desc
         "#,
     )?;
-    let candidates = stmt
+    let mut candidates = stmt
         .query_map(params![project, requested_work_unit_id], |row| {
-            Ok(StoredActivation {
-                activation_id: row.get(0)?,
-                project_id: row.get(1)?,
-                work_unit_id: row.get(2)?,
-                stack_depth: row.get(3)?,
-                status: row.get(4)?,
+            Ok(SuspendedCandidate {
+                activation: StoredActivation {
+                    activation_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    work_unit_id: row.get(2)?,
+                    stack_depth: row.get(3)?,
+                    status: row.get(4)?,
+                },
+                parent_activation_id: row.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut owners = Vec::new();
+    while !candidates.is_empty() {
+        let work_unit_id = candidates[0].activation.work_unit_id;
+        let owner_count = candidates
+            .iter()
+            .take_while(|candidate| candidate.activation.work_unit_id == work_unit_id)
+            .count();
+        let owner_candidates = candidates.drain(..owner_count).collect::<Vec<_>>();
+        if !has_valid_suspended_ancestry(conn, &owner_candidates)? {
+            bail!(
+                "project integrity blocked: work unit {work_unit_id} has multiple suspended activations; next: agent-workbench status --work {work_unit_id}"
+            );
+        }
+        owners.push(
+            owner_candidates
+                .into_iter()
+                .next()
+                .expect("non-empty group"),
+        );
+    }
+    let candidates = owners;
     match candidates.as_slice() {
         [target] => Ok(StoredActivation {
-            activation_id: target.activation_id,
-            project_id: target.project_id,
-            work_unit_id: target.work_unit_id,
-            stack_depth: target.stack_depth,
-            status: target.status.clone(),
+            activation_id: target.activation.activation_id,
+            project_id: target.activation.project_id,
+            work_unit_id: target.activation.work_unit_id,
+            stack_depth: target.activation.stack_depth,
+            status: target.activation.status.clone(),
         }),
         [] => {
             if let Some(work_unit_id) = requested_work_unit_id {
@@ -444,19 +525,13 @@ fn resolve_suspended_activation(
             }
             bail!("no suspended activation to resume")
         }
-        _ if requested_work_unit_id.is_some() => {
-            let work_unit_id = requested_work_unit_id.expect("checked above");
-            bail!(
-                "project integrity blocked: work unit {work_unit_id} has multiple suspended activations; next: agent-workbench status --work {work_unit_id}"
-            )
-        }
         _ => {
             let actions = candidates
                 .iter()
                 .map(|candidate| {
                     format!(
                         "next: agent-workbench resume-check {} --maturity trace-aware",
-                        candidate.work_unit_id
+                        candidate.activation.work_unit_id
                     )
                 })
                 .collect::<Vec<_>>()

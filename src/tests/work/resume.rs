@@ -48,6 +48,119 @@ fn resume_ready_without_target_returns_blocked_gate_result() {
 }
 
 #[test]
+fn resume_check_selects_the_latest_suspended_activation_for_one_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "resume nested activation", None).unwrap();
+    suspend_work(temp.path(), "outer pause", "resume outer activation").unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, parent_activation_id, stack_depth, status,
+            activation_reason, opened_at, suspended_at
+        )
+        select project_id, work_unit_id, id, stack_depth + 1, 'suspended',
+               'resume', current_timestamp, current_timestamp
+        from work_unit_activations
+        where id = 1
+        "#,
+        [],
+    )
+    .unwrap();
+    let latest_activation_id = conn.last_insert_rowid();
+    conn.execute(
+        r#"
+        insert into suspend_snapshots(
+            work_unit_activation_id, work_unit_id, reason, active_task_ids,
+            next_action, selected_gate_id, authority_refs, review_scope_refs,
+            repository_heads, repository_snapshot_ids, repository_status,
+            dirty_state_summary, open_findings, assumptions, created_at
+        )
+        select ?1, work_unit_id, 'inner pause', active_task_ids,
+               'resume inner activation', selected_gate_id, authority_refs,
+               review_scope_refs, repository_heads, repository_snapshot_ids,
+               repository_status, dirty_state_summary, open_findings,
+               assumptions, current_timestamp
+        from suspend_snapshots
+        where work_unit_activation_id = 1
+        "#,
+        params![latest_activation_id],
+    )
+    .unwrap();
+    let latest_snapshot_id = conn.last_insert_rowid();
+    conn.execute(
+        "update work_unit_activations set suspend_snapshot_id = ?1 where id = ?2",
+        params![latest_snapshot_id, latest_activation_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let check = resume_check_for(temp.path(), Some(1), "trace-aware").unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let selected_activation_id: i64 = conn
+        .query_row(
+            "select work_unit_activation_id from resume_checks where id = ?1",
+            params![check.resume_check_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected_activation_id, latest_activation_id);
+}
+
+#[test]
+fn resume_check_rejects_suspended_siblings_for_one_work_unit() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "reject ambiguous siblings", None).unwrap();
+    suspend_work(temp.path(), "first pause", "resume first activation").unwrap();
+
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        r#"
+        insert into work_unit_activations(
+            project_id, work_unit_id, stack_depth, status, activation_reason,
+            opened_at, suspended_at
+        )
+        select project_id, work_unit_id, stack_depth, 'suspended', 'resume',
+               current_timestamp, current_timestamp
+        from work_unit_activations
+        where id = 1
+        "#,
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = resume_check_for(temp.path(), Some(1), "trace-aware").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("work unit 1 has multiple suspended activations")
+    );
+}
+
+#[test]
+fn resume_check_without_owner_keeps_distinct_suspended_owners_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    start_work(temp.path(), "first owner", None).unwrap();
+    suspend_work(temp.path(), "pause first", "resume first").unwrap();
+    start_work(temp.path(), "second owner", None).unwrap();
+    suspend_work(temp.path(), "pause second", "resume second").unwrap();
+
+    let error = resume_check_for(temp.path(), None, "trace-aware").unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("2 suspended work owners require an explicit owner")
+    );
+}
+
+#[test]
 fn trace_aware_resume_check_evaluates_trace_items() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

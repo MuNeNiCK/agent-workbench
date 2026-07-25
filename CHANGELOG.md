@@ -1,5 +1,15 @@
 # Release history
 
+## v0.1.34 — 2026-07-25
+
+- Fix `resume-check` for a work unit with nested suspended activation history
+  by selecting its latest suspended activation instead of rejecting the valid
+  lifecycle state as ambiguous, while retaining the integrity error for
+  malformed sibling or root histories.
+- Add a regression that reconstructs nested suspended activation history and
+  verifies the latest activation is selected, plus boundary regressions for
+  invalid same-work siblings and ambiguity across distinct work owners.
+
 ## v0.1.33 — 2026-07-25
 
 - Keep an active file-only source correction executable when an unrelated
