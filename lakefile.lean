@@ -36,3 +36,7 @@ lean_exe «storage-laws» where
 @[default_target]
 lean_exe «workflow-laws» where
   root := `AgentWorkbench.Tests.WorkflowLaws
+
+@[default_target]
+lean_exe «cli-laws» where
+  root := `AgentWorkbench.Tests.CliLaws

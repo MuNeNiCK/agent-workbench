@@ -1,4 +1,4 @@
 import AgentWorkbench.Cli.Program
 
-def main : IO Unit :=
-  AgentWorkbench.Cli.Program.run
+def main (args : List String) : IO Unit :=
+  AgentWorkbench.Cli.Program.run args
