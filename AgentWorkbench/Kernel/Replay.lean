@@ -78,7 +78,7 @@ structure State where
   reviewFindings : List Review.Finding
   findingVerifications : List Review.Verification
   corrections : List Design.Correction
-  learnedRules : List Design.LearnedRule
+  authorityTransitions : List Design.AuthorityTransition
   evidence : List Evidence.Evidence
   externalOperations : List ExternalOperation.Attempt
   obligations : List Evidence.Obligation
@@ -90,6 +90,51 @@ def ReviewClaimsReferencePlans (_states : List Lifecycle.CompletionState)
     (plans : List Review.Plan) (claims : List Review.Claim) : Prop :=
   (claims.all fun claim =>
     plans.any (fun plan => Review.scopeExact plan claim)) = true
+
+def approvedDesignCurrent (state : State) (version : Design.DesignVersion) : Bool :=
+  state.designApprovals.any (·.design == version.id) &&
+  !state.designs.any (fun successor =>
+    successor.predecessor == some version.id &&
+    state.designApprovals.any (·.design == successor.id))
+
+def designApprovalLineageReady (state : State)
+    (version : Design.DesignVersion) : Bool :=
+  version.predecessor.all fun predecessor =>
+    state.designs.any fun current =>
+      current.id == predecessor && approvedDesignCurrent state current
+
+def reviewAuthorityCurrent (authority : String) (scope : Review.FrozenScope)
+    (state : State) : Bool :=
+  (scope.design.bind fun design =>
+    state.designs.find? fun version =>
+      version.id == design &&
+      (scope.purpose == .design || approvedDesignCurrent state version)).any
+      (fun version =>
+        version.requirements.any (fun requirement =>
+          requirement.key == authority && requirement.active) ||
+        version.decisions.contains authority) ||
+  Design.authorityCurrentFor authority scope.work scope.design
+    state.authorityTransitions
+
+def proposalSuccessorsExact (claim : Review.Claim)
+    (decision : Review.Adjudication) (state : State) : Bool :=
+  decision.observations.all fun disposition =>
+    disposition.successorDesign.all fun successor =>
+      claim.scope.bind (·.design) |>.any fun reviewed =>
+        state.designs.any fun version =>
+          version.id == successor && version.predecessor == some reviewed
+
+def reviewAdjudicationApplicable (decision : Review.Adjudication)
+    (state : State) : Bool :=
+  state.claims.any (fun claim =>
+    Review.adjudicationExact claim decision &&
+    proposalSuccessorsExact claim decision state &&
+    state.reviewPlans.any (fun plan =>
+      plan.id == claim.plan &&
+      Review.scopeExact plan claim &&
+      decision.adjudicator == plan.adjudicator &&
+      decision.adjudicator != claim.reviewer)) &&
+  !state.adjudications.any (·.review == decision.review)
 
 def returnTargetValid (state : State) : Bool :=
   match state.returnTarget with
@@ -118,13 +163,14 @@ def ValidState (state : State) : Prop :=
   (state.reviewPlans.map (·.id)).Nodup ∧
   (state.authorityExceptions.map (·.key)).Nodup ∧
   (state.reviewPlans.all Review.planWellFormed) = true ∧
+  (state.claims.all Review.claimWellFormed) = true ∧
   Review.ValidReviewState state.claims state.adjudications ∧
   (state.reviewFindings.map (·.key)).Nodup ∧
   (state.reviewFindings.all Review.findingWellFormed) = true ∧
   (state.corrections.map (·.key)).Nodup ∧
   (state.corrections.all Design.correctionWellFormed) = true ∧
-  (state.learnedRules.map (·.key)).Nodup ∧
-  (state.learnedRules.all Design.ruleWellFormed) = true ∧
+  (state.authorityTransitions.map (·.key)).Nodup ∧
+  (state.authorityTransitions.all Design.authorityTransitionWellFormed) = true ∧
   ReviewClaimsReferencePlans state.lifecycle state.reviewPlans state.claims ∧
   Evidence.UniqueEvidenceIds state.evidence ∧
   Evidence.EvidenceWellFormed state.evidence ∧
@@ -147,8 +193,8 @@ instance (state : State) : Decidable (ValidState state) := by
     Work.ActiveReferencesOpenWork
     Work.ActivationsReferenceWork Work.NonterminalActivationsReferenceOpenWork
     Design.versionWellFormed Design.decompositionWellFormed
-    Design.correctionWellFormed Design.ruleWellFormed
-    Review.planWellFormed Review.findingWellFormed
+    Design.correctionWellFormed Design.authorityTransitionWellFormed
+    Review.planWellFormed Review.claimWellFormed Review.findingWellFormed
     Review.ValidReviewState Review.UniqueClaimIds Review.UniqueAdjudications
     Review.AdjudicationsReferenceClaims
     Evidence.UniqueEvidenceIds Evidence.EvidenceWellFormed
@@ -196,15 +242,15 @@ inductive Event
   | reviewClaimed (claim : Review.Claim)
   | reviewAdjudicated (decision : Review.Adjudication)
   | reviewFindingRecorded (finding : Review.Finding)
-  | reviewFindingAdjudicated (key principal : String) (accepted : Bool)
+  | reviewFindingAdjudicated (key principal reason : String) (accepted : Bool)
   | reviewFindingClosureAttempted (key : String)
       (attempt : Review.ClosureAttempt)
   | findingVerified (verification : Review.Verification)
   | findingVerificationAdjudicated (finding : String) (attempt : Nat)
       (adjudicator : String)
   | correctionRecorded (correction : Design.Correction)
-  | userCorrectionResolved (key : String)
-  | correctionPromoted (rule : Design.LearnedRule)
+  | userCorrectionResolved (key reason : String) (rejected : Bool)
+  | authorityTransitionRecorded (transition : Design.AuthorityTransition)
   | evidenceRecorded (item : Evidence.Evidence)
   | externalOperationRecorded (attempt : ExternalOperation.Attempt)
   | externalOperationAdvanced (attempt : ExternalOperation.Attempt)
@@ -244,7 +290,20 @@ private def applyUnchecked (event : Event) (state : State) : State :=
   | .designImported version =>
       { invalidated with designs := state.designs ++ [version] }
   | .designApproved approval =>
-      { invalidated with designApprovals := state.designApprovals ++ [approval] }
+      let predecessor :=
+        (state.designs.find? (·.id == approval.design)).bind (·.predecessor)
+      let obligations := state.obligations.map fun obligation =>
+        if predecessor == some obligation.design then
+          { obligation with current := false }
+        else obligation
+      let evidence := state.evidence.map fun item =>
+        if predecessor == some item.design then
+          { item with current := false }
+        else item
+      { invalidated with
+        designApprovals := state.designApprovals ++ [approval]
+        obligations
+        evidence }
   | .decompositionRecorded decomposition =>
       { invalidated with decompositions := state.decompositions ++ [decomposition] }
   | .authorityExceptionRecorded exception =>
@@ -290,9 +349,10 @@ private def applyUnchecked (event : Event) (state : State) : State :=
       { invalidated with adjudications := state.adjudications ++ [decision] }
   | .reviewFindingRecorded finding =>
       { invalidated with reviewFindings := state.reviewFindings ++ [finding] }
-  | .reviewFindingAdjudicated key _ accepted =>
+  | .reviewFindingAdjudicated key _ reason accepted =>
       { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
-          if finding.key == key then { finding with accepted, adjudicated := true }
+          if finding.key == key then
+            { finding with accepted, adjudicated := true, decisionReason := reason }
           else finding }
   | .reviewFindingClosureAttempted key attempt =>
       { invalidated with reviewFindings := state.reviewFindings.map fun finding =>
@@ -327,12 +387,24 @@ private def applyUnchecked (event : Event) (state : State) : State :=
               (activation.confirmedBasis.map (·.design)) then
             { activation with readyToResume := false, confirmedBasis := none }
           else activation }
-  | .userCorrectionResolved key =>
+  | .userCorrectionResolved key reason rejected =>
       { invalidated with corrections := state.corrections.map fun correction =>
-          if correction.key == key then { correction with resolved := true }
+          if correction.key == key then
+            { correction with
+              resolved := true
+              resolutionReason := some reason
+              rejected }
           else correction }
-  | .correctionPromoted rule =>
-      { invalidated with learnedRules := state.learnedRules ++ [rule] }
+  | .authorityTransitionRecorded transition =>
+      { invalidated with
+        corrections := state.corrections.map fun correction =>
+          if correction.key == transition.correction then
+            { correction with
+              resolved := true
+              resolutionReason := some transition.reason
+              authorityTransition := some transition.key }
+          else correction
+        authorityTransitions := state.authorityTransitions ++ [transition] }
   | .evidenceRecorded item =>
       { invalidated with
         evidence := state.evidence ++ [{ item with current := true }] }
@@ -646,10 +718,18 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       Work.resumable state.activations activation &&
       resumeCurrent work activation state
   | .designImported version =>
-      Design.versionWellFormed version && !state.designs.any (·.id == version.id)
+      Design.versionWellFormed version &&
+      (match version.predecessor with
+      | none => true
+      | some predecessor =>
+          state.designs.any fun current =>
+            current.id == predecessor &&
+              Design.versionCurrent state.designs current) &&
+      !state.designs.any (·.id == version.id)
   | .designApproved approval =>
       !state.designApprovals.any (·.design == approval.design) &&
       state.designs.any (fun version => version.id == approval.design &&
+      designApprovalLineageReady state version &&
       state.reviewPlans.any (fun plan =>
         plan.scope.design == some approval.design &&
         plan.scope.purpose == .design &&
@@ -736,26 +816,21 @@ def eventApplicable (event : Event) (state : State) : Bool :=
           record.key == key && record.status == .unlinked)
       | none => false
   | .reviewClaimed claim =>
+      Review.claimWellFormed claim &&
       !state.claims.any (·.id == claim.id) &&
       state.reviewPlans.any (fun plan => Review.scopeExact plan claim)
   | .reviewAdjudicated decision =>
-      state.claims.any (fun claim =>
-        claim.id == decision.review &&
-        state.reviewPlans.any (fun plan =>
-          plan.id == claim.plan &&
-          Review.scopeExact plan claim &&
-          decision.adjudicator == plan.adjudicator &&
-          decision.adjudicator != claim.reviewer)) &&
-      !state.adjudications.any (·.review == decision.review)
+      reviewAdjudicationApplicable decision state
   | .reviewFindingRecorded finding =>
       Review.findingWellFormed finding &&
       !finding.adjudicated && finding.closureAttempts.isEmpty &&
       state.claims.any (fun claim => claim.id == finding.review &&
-        Review.claimAcceptsFindings claim state.reviewPlans state.claims) &&
+        Review.claimAcceptsFindings claim state.reviewPlans state.claims &&
+        claim.scope.any (reviewAuthorityCurrent finding.authority · state)) &&
       !state.reviewFindings.any (·.key == finding.key)
-  | .reviewFindingAdjudicated key principal _ =>
+  | .reviewFindingAdjudicated key principal reason _ =>
       state.reviewFindings.any (fun finding =>
-        finding.key == key && !finding.adjudicated &&
+        finding.key == key && !finding.adjudicated && !reason.isEmpty &&
         finding.closureAttempts.isEmpty &&
         state.claims.any (fun claim =>
           claim.id == finding.review &&
@@ -802,15 +877,29 @@ def eventApplicable (event : Event) (state : State) : Bool :=
   | .correctionRecorded correction =>
       Design.correctionWellFormed correction && !correction.resolved &&
       !state.corrections.any (·.key == correction.key)
-  | .userCorrectionResolved key =>
+  | .userCorrectionResolved key reason rejected =>
       state.corrections.any (fun correction =>
-        correction.key == key && !correction.resolved)
-  | .correctionPromoted rule =>
-      Design.ruleWellFormed rule &&
+        correction.key == key && !correction.resolved) &&
+      !reason.isEmpty &&
+      (!rejected || !state.authorityTransitions.any
+        (·.correction == key))
+  | .authorityTransitionRecorded transition =>
+      Design.authorityTransitionWellFormed transition &&
       state.corrections.any (fun correction =>
-        correction.key == rule.correction && correction.resolved &&
-        correction.scope == rule.scope) &&
-      !state.learnedRules.any (·.key == rule.key)
+        correction.key == transition.correction && !correction.resolved &&
+        correction.scope == transition.scope &&
+        correction.work == transition.work &&
+        correction.design == transition.design) &&
+      !state.authorityTransitions.any (·.key == transition.key) &&
+      (match Design.latestAuthorityFor? transition.target transition.scope
+          transition.work transition.design state.authorityTransitions with
+      | none => transition.operation == .create
+      | some current =>
+          transition.operation != .create &&
+          current.operation != .retire &&
+          current.scope == transition.scope &&
+          current.kind == transition.kind &&
+          current.lifetime == transition.lifetime)
   | .evidenceRecorded item =>
       !item.obligation.isEmpty && !item.artifactDigest.isEmpty &&
       Evidence.traceable item &&
@@ -831,11 +920,14 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
       !obligation.requirements.isEmpty && !obligation.expectedProducer.isEmpty &&
       !obligation.expectedObservation.isEmpty &&
+      Evidence.negativeBoundaryAdmissible obligation &&
       obligation.revision == state.revision &&
       state.work.any (fun work => work.id == obligation.work && work.status == .open) &&
       (state.designs.any (fun version =>
         version.id == obligation.design &&
-        version.revision == obligation.designRevision))
+        version.revision == obligation.designRevision &&
+        approvedDesignCurrent state version &&
+        Design.requirementsActive version obligation.requirements))
   | .workCompleted work activation =>
       match Work.activeFor state.activations work with
       | some current => current.id == activation &&
@@ -882,7 +974,7 @@ def emptyState : State :=
     reviewFindings := []
     findingVerifications := []
     corrections := []
-    learnedRules := []
+    authorityTransitions := []
     evidence := []
     externalOperations := []
     obligations := []

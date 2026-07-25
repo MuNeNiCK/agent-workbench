@@ -187,7 +187,8 @@ def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
     "completion design review claim rejected"
   let store ← executeStore
     (.recordReviewAdjudication store.ledger.storedHead
-      { review := claim.id, decision := .accepted, adjudicator := plan.adjudicator })
+      { review := claim.id, decision := .accepted, adjudicator := plan.adjudicator
+        reason := "the design claim matches the frozen completion scope" })
     store "completion design review adjudication rejected"
   executeStore (.approveDesign store.ledger.storedHead evidenceDesign.id) store
     "completion design approval rejected"
@@ -220,7 +221,8 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
   let store ← executeStore
     (.recordReviewAdjudication store.ledger.storedHead
       { review := decompositionClaim.id, decision := .accepted
-        adjudicator := decompositionPlan.adjudicator })
+        adjudicator := decompositionPlan.adjudicator
+        reason := "the decomposition claim covers the current design" })
     store "decomposition review adjudication rejected"
   let decomposition : Domain.Design.Decomposition :=
     { key := decompositionDigest
@@ -266,7 +268,8 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
   let store ← executeStore
     (.recordReviewAdjudication store.ledger.storedHead
       { review := implementationClaim.id, decision := .accepted
-        adjudicator := implementationPlan.adjudicator })
+        adjudicator := implementationPlan.adjudicator
+        reason := "the implementation claim matches current evidence" })
     store "implementation review adjudication rejected"
   if !includeQuality then
     return store
@@ -298,7 +301,8 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
   executeStore
     (.recordReviewAdjudication store.ledger.storedHead
       { review := qualityClaim.id, decision := .accepted
-        adjudicator := qualityPlan.adjudicator })
+        adjudicator := qualityPlan.adjudicator
+        reason := "the quality claim matches the frozen implementation scope" })
     store "implementation quality review adjudication rejected"
 
 def recordReadinessEvidence (work : WorkId) (store : Kernel.Projection.Store) :
@@ -573,7 +577,8 @@ def buildCompletionStore (missing : Option MissingCompletionCondition) :
       let claimed ← executeStore
         (.recordReviewClaim store.ledger.storedHead claim) store "review claim rejected"
       executeStore (.recordReviewAdjudication claimed.ledger.storedHead
-        { review := claim.id, decision := .accepted, adjudicator := "owner" }) claimed
+        { review := claim.id, decision := .accepted, adjudicator := "owner"
+          reason := "the claim is current and exact" }) claimed
         "review adjudication rejected"
     else pure store
   let store ← if missing != some .validation then
@@ -718,14 +723,21 @@ def main : IO Unit := do
     "evidence design import rejected"
   let currentObligation :=
     { unboundObligation with revision := designed.revision }
+  expectRejectedNoEffect
+    (.recordObligation designed.revision currentObligation) designed
+    "obligation derived from an imported but unapproved design"
+  let approvedDesigned :=
+    { designed with
+      designApprovals := [{ design := evidenceDesign.id, review := ⟨9000⟩ }] }
   let noDesignObligation :=
     { currentObligation with design := ⟨99⟩, designRevision := ⟨99⟩ }
   let noDesignObligationState :=
-    { first with obligations := [noDesignObligation] }
+    { approvedDesigned with obligations := [noDesignObligation] }
   expect (!(decide (Kernel.Replay.ValidState noDesignObligationState)))
     "valid state accepted an obligation for a missing design"
   let obligated ← match Kernel.Decide.decide
-      (.recordObligation designed.revision currentObligation) designed with
+      (.recordObligation approvedDesigned.revision currentObligation)
+      approvedDesigned with
     | .ok transaction => pure transaction.result.state
     | .error error => throw <| IO.userError s!"valid obligation rejected: {repr error}"
   let item : Domain.Evidence.Evidence :=
@@ -983,12 +995,13 @@ def main : IO Unit := do
   expectRejectedNoEffect (.recordReviewClaim claimed.revision claim) claimed
     "duplicate review claim"
   let unknownAdjudication : Domain.Review.Adjudication :=
-    { review := ⟨99⟩, decision := .accepted }
+    { review := ⟨99⟩, decision := .accepted, reason := "unknown claim" }
   expectRejectedNoEffect
     (.recordReviewAdjudication claimed.revision unknownAdjudication) claimed
     "adjudication without claim"
   let adjudication : Domain.Review.Adjudication :=
-    { review := claim.id, decision := .accepted, adjudicator := "owner" }
+    { review := claim.id, decision := .accepted, adjudicator := "owner"
+      reason := "the claim matches the current completion scope" }
   let adjudicated ← executeState
     (.recordReviewAdjudication claimed.revision adjudication) claimed
     "review adjudication rejected"
@@ -1017,7 +1030,8 @@ def main : IO Unit := do
     (.recordReviewClaim repositoryRefreshed.revision freshClaim) repositoryRefreshed
     "fresh scoped review claim rejected"
   let freshAdjudication : Domain.Review.Adjudication :=
-    { review := freshClaim.id, decision := .accepted, adjudicator := "owner" }
+    { review := freshClaim.id, decision := .accepted, adjudicator := "owner"
+      reason := "the refreshed claim matches current evidence" }
   let freshlyAdjudicated ← executeState
     (.recordReviewAdjudication freshlyClaimed.revision freshAdjudication) freshlyClaimed
     "fresh review adjudication rejected"
@@ -1290,7 +1304,8 @@ def main : IO Unit := do
   let latestCleanAdjudication : Domain.Review.Adjudication :=
     { review := latestCleanClaim.id
       decision := .accepted
-      adjudicator := supersedingImplementationPlan.adjudicator }
+      adjudicator := supersedingImplementationPlan.adjudicator
+      reason := "the latest clean claim supersedes the earlier findings claim" }
   let restoredLatestReview :=
     { supersededByFindings with
       claims := supersededByFindings.claims ++ [latestCleanClaim]
@@ -1599,7 +1614,8 @@ def main : IO Unit := do
     "current findings claim rejected"
   let findingsAdjudicated ← executeStore
     (.recordReviewAdjudication findingsClaimed.ledger.storedHead
-      { review := findingsClaim.id, decision := .accepted, adjudicator := "owner" })
+      { review := findingsClaim.id, decision := .accepted, adjudicator := "owner"
+        reason := "the findings claim is current and exactly scoped" })
     findingsClaimed
     "current findings adjudication rejected"
   let findingsEvidence : Domain.Evidence.Evidence :=
@@ -1641,7 +1657,8 @@ def main : IO Unit := do
     findingsRefreshed "recovery clean claim rejected"
   let recoveryAdjudicated ← executeStore
     (.recordReviewAdjudication recoveryClaimed.ledger.storedHead
-      { review := recoveryClaim.id, decision := .accepted, adjudicator := "owner" })
+      { review := recoveryClaim.id, decision := .accepted, adjudicator := "owner"
+        reason := "the recovery clean claim supersedes the findings claim" })
     recoveryClaimed
     "recovery clean adjudication rejected"
   let recoveryEvidence : Domain.Evidence.Evidence :=

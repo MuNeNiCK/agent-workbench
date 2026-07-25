@@ -77,10 +77,410 @@ def claimFor (id : Nat) (plan : Domain.Review.Plan)
     scope := some plan.scope }
 
 def adjudicationFor (claim : Domain.Review.Claim) : Domain.Review.Adjudication :=
-  { review := claim.id, decision := .accepted, adjudicator := "owner" }
+  { review := claim.id, decision := .accepted, adjudicator := "owner"
+    reason := "the claim matches the frozen scope and current authority" }
 
 set_option maxRecDepth 2048 in
 def run : IO Unit := do
+  for purpose in [Domain.Review.Purpose.design,
+      Domain.Review.Purpose.designConformance] do
+    let plan := reviewPlan 900 purpose "sha256:review-candidates" workOne.id
+    let risk : Domain.Review.Observation :=
+      { key := "possible-complexity"
+        kind := .risk
+        summary := "the implementation may be more complex than necessary"
+        evidence := "reviewer observation" }
+    let proposal : Domain.Review.Observation :=
+      { key := "add-policy-layer"
+        kind := .proposal
+        summary := "add another policy abstraction"
+        evidence := "reviewer preference" }
+    let claim :=
+      { claimFor 900 plan .clean with observations := [risk, proposal] }
+    let adjudication : Domain.Review.Adjudication :=
+      { review := claim.id
+        decision := .accepted
+        adjudicator := "owner"
+        reason := "no current contract violation remains"
+        observations := [
+          { observation := risk.key
+            decision := .needsEvidence
+            reason := "the concern lacks a reproducible failure" },
+          { observation := proposal.key
+            decision := .rejected
+            reason := "no requirement justifies the additional complexity" }] }
+    expect (Domain.Review.scopeReady plan [claim] [adjudication] [] [])
+      "non-blocking risks or proposals prevented a clean review"
+    let riskDisposition : Domain.Review.ObservationDisposition :=
+      { observation := risk.key
+        decision := .needsEvidence
+        reason := "the concern lacks a reproducible failure" }
+    let ungroundedAdoption :=
+      { adjudication with observations := [
+          riskDisposition,
+          { observation := proposal.key
+            decision := .accepted
+            reason := "adopt the proposal"
+            changesAuthority := true }] }
+    expect (!Domain.Review.adjudicationExact claim ungroundedAdoption)
+      "authority-changing proposal was adopted without a successor design"
+
+  let groundedFinding : Domain.Review.Finding :=
+    { key := "grounded-violation"
+      review := ⟨900⟩
+      blocking := true
+      authority := "review-authority"
+      failureAccount := "a reviewer claim directly changed owner authority"
+      invariant := "review claims remain advisory"
+      remediationSurfaces := ["AgentWorkbench/Policy/Authority.lean"]
+      accepted := false
+      adjudicated := false }
+  expect (Domain.Review.findingWellFormed groundedFinding)
+    "a grounded confirmed violation was rejected"
+  expect (!Domain.Review.findingWellFormed
+    { groundedFinding with authority := "", failureAccount := "" })
+    "an unsupported concern entered the blocking finding lifecycle"
+
+  let authorityBase ← execute
+    (.initializeWork ⟨0⟩ workOne activationOne)
+    Kernel.Replay.emptyState "authority lifecycle work initialization failed"
+  let authorityBase ← execute
+    (.importDesign authorityBase.revision designVersion) authorityBase
+    "authority lifecycle design import failed"
+  let contextStatement : Domain.Design.Correction :=
+    { key := "context-only-statement"
+      scope := "workflow"
+      statement := "consider simplifying the next action"
+      resolved := false
+      work := some workOne.id
+      design := some designVersion.id }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision contextStatement) authorityBase
+    "context statement was not preserved"
+  expect (!Domain.Design.authorityCurrentFor "simpler-next-action" workOne.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "a raw user statement acquired normative effect without a transition"
+  let authorityBase ← execute
+    (.resolveUserCorrection authorityBase.revision contextStatement.key
+      "recorded as useful context; no normative change was requested")
+    authorityBase "context-only resolution failed"
+  let rejectedProposal :=
+    { contextStatement with
+      key := "rejected-policy-layer"
+      statement := "add another policy layer" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision rejectedProposal) authorityBase
+    "proposal source was not preserved"
+  let authorityBase ← execute
+    (.rejectUserProposal authorityBase.revision rejectedProposal.key
+      "the active design does not require the added complexity")
+    authorityBase "proposal rejection failed"
+  expect (!Domain.Design.authorityCurrentFor "forbid-policy-layer" workOne.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "proposal rejection was converted into a prohibition"
+
+  let cleanupStatement :=
+    { contextStatement with
+      key := "finite-cleanup"
+      statement := "remove the obsolete generated artifact" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision cleanupStatement) authorityBase
+    "finite cleanup source was not preserved"
+  let cleanupCreate : Domain.Design.AuthorityTransition :=
+    { key := "cleanup-v1"
+      correction := cleanupStatement.key
+      target := "cleanup-obsolete-artifact"
+      operation := .create
+      kind := .workObligation
+      scope := cleanupStatement.scope
+      work := cleanupStatement.work
+      design := cleanupStatement.design
+      lifetime := .finite
+      statement := cleanupStatement.statement
+      reason := "one-time cleanup is required for the current implementation" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision cleanupCreate)
+    authorityBase "finite cleanup authority creation failed"
+  expect (Domain.Design.authorityCurrentFor cleanupCreate.target workOne.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "finite cleanup was not current while open"
+  let cleanupRetirementSource :=
+    { contextStatement with
+      key := "finite-cleanup-complete"
+      statement := "the one-time cleanup is complete" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision cleanupRetirementSource)
+    authorityBase "cleanup completion source was not preserved"
+  let cleanupRetire : Domain.Design.AuthorityTransition :=
+    { cleanupCreate with
+      key := "cleanup-v2"
+      correction := cleanupRetirementSource.key
+      operation := .retire
+      statement := ""
+      reason := "one-time completion evidence fulfilled the finite obligation" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision cleanupRetire)
+    authorityBase "finite cleanup retirement failed"
+  expect (!Domain.Design.authorityCurrentFor cleanupCreate.target workOne.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "fulfilled cleanup remained continuing authority"
+  let retiredAmendmentSource :=
+    { contextStatement with
+      key := "retired-cleanup-amendment"
+      statement := "extend the already fulfilled cleanup" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision retiredAmendmentSource)
+    authorityBase "retired authority amendment source was not preserved"
+  reject (.recordAuthorityTransition authorityBase.revision
+    { cleanupCreate with
+      key := "cleanup-v3"
+      correction := retiredAmendmentSource.key
+      operation := .amend
+      statement := retiredAmendmentSource.statement
+      reason := "attempt to revive a retired authority" }) authorityBase
+    "an amendment revived retired authority"
+  let authorityBase ← execute
+    (.resolveUserCorrection authorityBase.revision retiredAmendmentSource.key
+      "the retired obligation remains historical and is not revived")
+    authorityBase "retired amendment source resolution failed"
+
+  let permanentSource :=
+    { contextStatement with
+      key := "persistent-rule-source"
+      statement := "resume requires current evidence" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision permanentSource)
+    authorityBase "persistent authority source was not preserved"
+  let permanentCreate : Domain.Design.AuthorityTransition :=
+    { key := "resume-rule-v1"
+      correction := permanentSource.key
+      target := "resume-current-evidence"
+      operation := .create
+      kind := .rule
+      scope := permanentSource.scope
+      work := permanentSource.work
+      design := permanentSource.design
+      lifetime := .persistent
+      statement := permanentSource.statement
+      reason := "stale evidence can resume the wrong implementation state" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision permanentCreate)
+    authorityBase "persistent authority creation failed"
+  let amendmentSource :=
+    { contextStatement with
+      key := "persistent-rule-amendment"
+      statement := "resume requires current evidence and decomposition" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision amendmentSource)
+    authorityBase "authority amendment source was not preserved"
+  let amendment : Domain.Design.AuthorityTransition :=
+    { permanentCreate with
+      key := "resume-rule-v2"
+      correction := amendmentSource.key
+      operation := .amend
+      statement := amendmentSource.statement
+      reason := "current decomposition is also part of resume readiness" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision amendment)
+    authorityBase "persistent authority amendment failed"
+  expect ((Domain.Design.latestAuthorityFor? permanentCreate.target
+    permanentCreate.scope permanentCreate.work permanentCreate.design
+    authorityBase.authorityTransitions).any (·.key == amendment.key))
+    "authority amendment did not become current"
+  expect (!Domain.Design.authorityCurrentFor permanentCreate.target workTwo.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "work-scoped user authority escaped into another review scope"
+  let authorityBase ← execute
+    (.registerWork authorityBase.revision workTwo) authorityBase
+    "second authority scope work registration failed"
+  let otherScopeSource :=
+    { contextStatement with
+      key := "other-scope-rule-source"
+      statement := "use a different resume rule for work two"
+      work := some workTwo.id }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision otherScopeSource) authorityBase
+    "other-scope authority source was not preserved"
+  let otherScopeCreate : Domain.Design.AuthorityTransition :=
+    { permanentCreate with
+      key := "resume-rule-work-two-v1"
+      correction := otherScopeSource.key
+      operation := .create
+      work := otherScopeSource.work
+      statement := otherScopeSource.statement
+      reason := "work two has an independently scoped resume rule" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision otherScopeCreate)
+    authorityBase "same-target authority in another scope was rejected"
+  let otherScopeRetirementSource :=
+    { otherScopeSource with
+      key := "other-scope-rule-retirement"
+      statement := "retire only the work two rule" }
+  let authorityBase ← execute
+    (.recordUserCorrection authorityBase.revision otherScopeRetirementSource)
+    authorityBase "other-scope retirement source was not preserved"
+  let otherScopeRetire : Domain.Design.AuthorityTransition :=
+    { otherScopeCreate with
+      key := "resume-rule-work-two-v2"
+      correction := otherScopeRetirementSource.key
+      operation := .retire
+      statement := ""
+      reason := "work two no longer needs its scoped rule" }
+  let authorityBase ← execute
+    (.recordAuthorityTransition authorityBase.revision otherScopeRetire)
+    authorityBase "other-scope authority retirement failed"
+  expect (Domain.Design.authorityCurrentFor permanentCreate.target workOne.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "another work scope retired the current work-one authority"
+  expect (!Domain.Design.authorityCurrentFor permanentCreate.target workTwo.id
+    (some designVersion.id) authorityBase.authorityTransitions)
+    "retired work-two authority remained current"
+
+  let authorityReviewPlan :=
+    reviewPlan 901 .design designVersion.contentDigest workOne.id
+  let authorityBase ← execute
+    (.recordReviewPlan authorityBase.revision authorityReviewPlan) authorityBase
+    "authority lifecycle design review plan failed"
+  let authorityReviewClaim := claimFor 901 authorityReviewPlan .clean
+  let authorityBase ← execute
+    (.recordReviewClaim authorityBase.revision authorityReviewClaim) authorityBase
+    "authority lifecycle design review claim failed"
+  let authorityBase ← execute
+    (.recordReviewAdjudication authorityBase.revision
+      (adjudicationFor authorityReviewClaim)) authorityBase
+    "authority lifecycle owner adjudication failed"
+  let authorityBase ← execute
+    (.approveDesign authorityBase.revision designVersion.id) authorityBase
+    "authority lifecycle design approval failed"
+
+  let activeObligation : Domain.Evidence.Obligation :=
+    { work := workOne.id
+      key := "current-contract-check"
+      revision := authorityBase.revision
+      commandProfile := "workflow-laws"
+      invocation := ".lake/build/bin/workflow-laws"
+      repository := "agent-workbench"
+      snapshot := "commit:current-contract"
+      artifactDigest := "sha256:current-contract"
+      current := true
+      requirements := ["resume-readiness"]
+      expectedProducer := "workflow-law-runner"
+      expectedObservation := "current-contract-observation"
+      design := designVersion.id
+      designRevision := designVersion.revision }
+  let authorityBase ← execute
+    (.recordObligation authorityBase.revision activeObligation)
+    authorityBase "active product contract did not authorize validation"
+  reject (.recordObligation authorityBase.revision
+    { activeObligation with
+      key := "proposal-derived-check"
+      revision := authorityBase.revision
+      requirements := ["add-policy-layer"] }) authorityBase
+    "a proposal authorized permanent validation"
+  reject (.recordObligation authorityBase.revision
+    { activeObligation with
+      key := "ungrounded-negative-check"
+      revision := authorityBase.revision
+      negative := true }) authorityBase
+    "a negative check without concrete harm or boundary rationale"
+  let groundedNegative :=
+    { activeObligation with
+      key := "grounded-negative-check"
+      revision := authorityBase.revision
+      negative := true
+      reintroductionHarm := "stale evidence can resume the wrong repository state"
+      positiveBoundaryInsufficient :=
+        "the forbidden stale receipt is observable only at the evidence boundary" }
+  let authorityBase ← execute
+    (.recordObligation authorityBase.revision groundedNegative)
+    authorityBase "grounded current negative boundary was rejected"
+  let successorDesign :=
+    { designVersion with
+      id := ⟨2⟩
+      revision := ⟨2⟩
+      predecessor := some designVersion.id
+      contentDigest := "sha256:design-v2"
+      requirements := designVersion.requirements.map fun requirement =>
+        if requirement.key == "resume-readiness" then
+          { requirement with active := false }
+        else requirement }
+  let authorityBase ← execute
+    (.importDesign authorityBase.revision successorDesign) authorityBase
+    "successor design import failed"
+  expect (authorityBase.obligations.any fun obligation =>
+    obligation.design == designVersion.id && obligation.current)
+    "unapproved successor import retired current validation authority"
+  let wrongSuccessorDisposition : Domain.Review.Adjudication :=
+    { review := authorityReviewClaim.id
+      decision := .accepted
+      adjudicator := authorityReviewPlan.adjudicator
+      reason := "adopt authority-changing proposal"
+      observations := [{
+        observation := "proposal"
+        decision := .accepted
+        reason := "adopt"
+        changesAuthority := true
+        successorDesign := some designVersion.id }] }
+  let proposalClaim :=
+    { authorityReviewClaim with
+      observations := [{
+        key := "proposal"
+        kind := .proposal
+        summary := "change current authority"
+        evidence := "" }] }
+  expect (!Kernel.Replay.proposalSuccessorsExact proposalClaim
+    wrongSuccessorDisposition authorityBase)
+    "authority-changing proposal named the reviewed design as its successor"
+  let skippedDesign :=
+    { successorDesign with
+      id := ⟨3⟩
+      revision := ⟨3⟩
+      predecessor := some successorDesign.id
+      contentDigest := "sha256:design-v3" }
+  let authorityBase ← execute
+    (.importDesign authorityBase.revision skippedDesign) authorityBase
+    "third-generation design import failed"
+  let skippedReviewPlan :=
+    { reviewPlan 903 .design skippedDesign.contentDigest workOne.id with
+      scope := {
+        (scope .design skippedDesign.contentDigest workOne.id) with
+        design := some skippedDesign.id } }
+  let authorityBase ← execute
+    (.recordReviewPlan authorityBase.revision skippedReviewPlan) authorityBase
+    "third-generation design review plan failed"
+  let skippedReviewClaim := claimFor 903 skippedReviewPlan .clean
+  let authorityBase ← execute
+    (.recordReviewClaim authorityBase.revision skippedReviewClaim) authorityBase
+    "third-generation design review claim failed"
+  let authorityBase ← execute
+    (.recordReviewAdjudication authorityBase.revision
+      (adjudicationFor skippedReviewClaim)) authorityBase
+    "third-generation design adjudication failed"
+  reject (.approveDesign authorityBase.revision skippedDesign.id) authorityBase
+    "a third-generation design skipped approval of its predecessor"
+  let successorReviewPlan :=
+    { reviewPlan 902 .design successorDesign.contentDigest workOne.id with
+      scope := {
+        (scope .design successorDesign.contentDigest workOne.id) with
+        design := some successorDesign.id } }
+  let authorityBase ← execute
+    (.recordReviewPlan authorityBase.revision successorReviewPlan) authorityBase
+    "successor design review plan failed"
+  let successorReviewClaim := claimFor 902 successorReviewPlan .clean
+  let authorityBase ← execute
+    (.recordReviewClaim authorityBase.revision successorReviewClaim) authorityBase
+    "successor design review claim failed"
+  let authorityBase ← execute
+    (.recordReviewAdjudication authorityBase.revision
+      (adjudicationFor successorReviewClaim)) authorityBase
+    "successor design adjudication failed"
+  let authorityBase ← execute
+    (.approveDesign authorityBase.revision successorDesign.id) authorityBase
+    "successor design approval failed"
+  expect (authorityBase.obligations.all fun obligation =>
+    obligation.design != designVersion.id || !obligation.current)
+    "retired contract left its solely derived validation active"
+
   let state ← execute
     (.initializeWork ⟨0⟩ workOne activationOne)
     Kernel.Replay.emptyState "work initialization failed"
@@ -141,7 +541,8 @@ def run : IO Unit := do
   reject
     (.recordReviewAdjudication state.revision
       { review := designClaim.id, decision := .accepted,
-        adjudicator := designClaim.reviewer })
+        adjudicator := designClaim.reviewer
+        reason := "attempted reviewer self-adjudication" })
     state "reviewer self-adjudication"
   let state ← execute
     (.recordReviewAdjudication state.revision (adjudicationFor designClaim))
@@ -416,6 +817,8 @@ def run : IO Unit := do
     { key := "later-snapshot-resume-finding"
       review := initialFindingsClaim.id
       blocking := true
+      authority := "resume-readiness"
+      failureAccount := "a later repository snapshot cannot validate an older resume basis"
       invariant := "finding verification remains snapshot exact"
       remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
       accepted := false
@@ -476,6 +879,8 @@ def run : IO Unit := do
     { key := "unadjudicated-resume-finding"
       review := implementationClaim.id
       blocking := true
+      authority := "review-authority"
+      failureAccount := "an unadjudicated blocking finding would permit owner authority to be inferred"
       invariant := "unadjudicated findings invalidate readiness"
       remediationSurfaces := ["AgentWorkbench/Kernel/Replay.lean"]
       accepted := false
@@ -592,13 +997,21 @@ def run : IO Unit := do
     "resolver selected resume while an applicable correction remained"
   reject (.resumeWork state.revision workTwo.id activationTwo.id) state
     "stale confirmation resumed after correction"
-  let state ← execute (.resolveUserCorrection state.revision correction.key) state
-    "correction resolution failed"
-  let rule : Domain.Design.LearnedRule :=
-    { key := "resume-readiness-rule", correction := correction.key, scope := correction.scope
-      statement := correction.statement }
-  let state ← execute (.promoteCorrection state.revision rule) state
-    "learning promotion failed"
+  let transition : Domain.Design.AuthorityTransition :=
+    { key := "resume-readiness-authority-v1"
+      correction := correction.key
+      target := "resume-readiness"
+      operation := .create
+      kind := .rule
+      scope := correction.scope
+      work := correction.work
+      design := correction.design
+      lifetime := .persistent
+      statement := correction.statement
+      reason := "current resume behavior requires a durable scoped rule" }
+  let state ← execute
+    (.recordAuthorityTransition state.revision transition) state
+    "authority creation failed"
 
   let obligationTwo :=
     { { obligation with revision := state.revision } with
@@ -679,6 +1092,8 @@ def run : IO Unit := do
     { key := "resume-evidence-finding"
       review := findingClaim.id
       blocking := true
+      authority := "evidence-integrity"
+      failureAccount := "a mismatched evidence digest or snapshot would satisfy resume readiness"
       invariant := "resume evidence remains exact"
       remediationSurfaces := ["AgentWorkbench/Kernel/Decide.lean"]
       accepted := false
@@ -690,7 +1105,9 @@ def run : IO Unit := do
     repositorySnapshot := "commit:workflow-v2" }) state
     "unadjudicated finding closure"
   let state ← execute
-    (.adjudicateReviewFinding state.revision finding.key "owner" true)
+    (.adjudicateReviewFinding state.revision finding.key "owner"
+      "the concrete evidence mismatch violates the active evidence-integrity requirement"
+      true)
     state "finding adjudication failed"
   let bypassPlan :=
     reviewPlan 5 .designConformance "sha256:implementation-v2" workTwo.id
@@ -857,27 +1274,33 @@ def run : IO Unit := do
       (.correctionsReady publicCorrection.scope) recoveredStore).value ==
         .blocked "an applicable durable user correction remains unresolved")
     "recovered correction was not visible to the public readiness gate"
-  let resolvedStore ←
-    match Application.Service.execute
-        (.resolveUserCorrection recoveredStore.ledger.storedHead publicCorrection.key)
-        recoveredStore with
-    | .ok transaction => pure transaction.result
-    | .error error => throw <| IO.userError s!"public correction resolution failed: {repr error}"
-  let publicRule : Domain.Design.LearnedRule :=
-    { key := "PUBLIC-RULE", correction := publicCorrection.key
-      scope := publicCorrection.scope, statement := publicCorrection.statement }
+  let publicTransition : Domain.Design.AuthorityTransition :=
+    { key := "PUBLIC-AUTHORITY-V1"
+      correction := publicCorrection.key
+      target := "public-correction-rule"
+      operation := .create
+      kind := .rule
+      scope := publicCorrection.scope
+      work := publicCorrection.work
+      design := publicCorrection.design
+      lifetime := .persistent
+      statement := publicCorrection.statement
+      reason := "the user explicitly established a persistent workflow rule" }
   let promotedStore ←
     match Application.Service.execute
-        (.promoteCorrection resolvedStore.ledger.storedHead publicRule) resolvedStore with
+        (.recordAuthorityTransition recoveredStore.ledger.storedHead
+          publicTransition)
+        recoveredStore with
     | .ok transaction => pure transaction.result
-    | .error error => throw <| IO.userError s!"public correction promotion failed: {repr error}"
+    | .error error =>
+        throw <| IO.userError s!"public authority transition failed: {repr error}"
   match (Application.Service.status promotedStore).value.currentState? with
   | some promoted =>
       expect (promoted.corrections.any fun item =>
         item.key == publicCorrection.key && item.resolved)
         "promoted correction lost its resolved provenance"
-      expect (promoted.learnedRules.contains publicRule)
-        "replacement session lost promoted correction provenance"
+      expect (promoted.authorityTransitions.contains publicTransition)
+        "replacement session lost authority transition provenance"
   | none => throw <| IO.userError "promoted correction projection unavailable"
 
   IO.println "workflow laws: pass"

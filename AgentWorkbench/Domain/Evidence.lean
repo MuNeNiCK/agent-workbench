@@ -21,6 +21,9 @@ structure Obligation where
   expectedObservation : String := ""
   design : DesignId := ⟨0⟩
   designRevision : Revision := ⟨0⟩
+  negative : Bool := false
+  reintroductionHarm : String := ""
+  positiveBoundaryInsufficient : String := ""
 deriving DecidableEq, Repr
 
 structure Evidence where
@@ -71,6 +74,11 @@ def traceable (item : Evidence) : Bool :=
 def obligationsCurrent (obligations : List Obligation) : Bool :=
   obligations.all (·.current)
 
+def negativeBoundaryAdmissible (obligation : Obligation) : Bool :=
+  !obligation.negative ||
+    (!obligation.reintroductionHarm.isEmpty &&
+      !obligation.positiveBoundaryInsufficient.isEmpty)
+
 def forWork (obligations : List Obligation) (work : WorkId) : List Obligation :=
   obligations.filter fun obligation =>
     obligation.work == work && obligation.current
@@ -98,7 +106,8 @@ def ObligationsWellFormed (obligations : List Obligation) : Prop :=
       !obligation.invocation.isEmpty && !obligation.repository.isEmpty &&
       !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
       !obligation.requirements.isEmpty && !obligation.expectedProducer.isEmpty &&
-      !obligation.expectedObservation.isEmpty) = true
+      !obligation.expectedObservation.isEmpty &&
+      negativeBoundaryAdmissible obligation) = true
 
 def ObligationsReferenceWork (work : List WorkId) (obligations : List Obligation) : Prop :=
   (obligations.all fun obligation => work.contains obligation.work) = true

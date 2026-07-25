@@ -13,6 +13,7 @@ deriving DecidableEq, Repr
 structure DesignVersion where
   id : DesignId
   revision : Revision
+  predecessor : Option DesignId := none
   owner : String
   contentDigest : String
   requirements : List Requirement
@@ -52,25 +53,62 @@ structure Correction where
   scope : String
   statement : String
   resolved : Bool
+  resolutionReason : Option String := none
+  rejected : Bool := false
+  authorityTransition : Option String := none
   work : Option WorkId := none
   design : Option DesignId := none
 deriving DecidableEq, Repr
 
-structure LearnedRule where
+inductive AuthorityOperation
+  | create
+  | amend
+  | retire
+deriving DecidableEq, Repr, BEq
+
+inductive AuthorityLifetime
+  | finite
+  | persistent
+deriving DecidableEq, Repr, BEq
+
+inductive AuthorityKind
+  | designArtifact
+  | rule
+  | instruction
+  | workObligation
+deriving DecidableEq, Repr, BEq
+
+structure AuthorityTransition where
   key : String
   correction : String
+  target : String
+  operation : AuthorityOperation
+  kind : AuthorityKind
   scope : String
+  work : Option WorkId := none
+  design : Option DesignId := none
+  lifetime : AuthorityLifetime
   statement : String
+  reason : String
 deriving DecidableEq, Repr
 
 def versionWellFormed (version : DesignVersion) : Bool :=
   !version.owner.isEmpty && !version.contentDigest.isEmpty &&
+  version.predecessor != some version.id &&
   !version.requirements.isEmpty && !version.decisions.isEmpty &&
   !version.validationGates.isEmpty &&
   version.requirements.all (fun requirement => !requirement.key.isEmpty) &&
   version.decisions.all (fun decision => !decision.isEmpty) &&
   version.validationGates.all (fun gate => !gate.isEmpty) &&
   (version.requirements.map (·.key)).Nodup
+
+def requirementsActive (version : DesignVersion) (keys : List String) : Bool :=
+  !keys.isEmpty && keys.all fun key =>
+    version.requirements.any fun requirement =>
+      requirement.key == key && requirement.active
+
+def versionCurrent (versions : List DesignVersion) (version : DesignVersion) : Bool :=
+  !versions.any (·.predecessor == some version.id)
 
 def decompositionWellFormed (decomposition : Decomposition) : Bool :=
   !decomposition.key.isEmpty && !decomposition.contentDigest.isEmpty &&
@@ -109,11 +147,35 @@ def correctionApplies (correction : Correction) (work : WorkId)
 
 def correctionWellFormed (correction : Correction) : Bool :=
   !correction.key.isEmpty && !correction.scope.isEmpty &&
-  !correction.statement.isEmpty
+  !correction.statement.isEmpty &&
+  (correction.resolved == correction.resolutionReason.isSome) &&
+  (!correction.rejected || correction.resolved) &&
+  (correction.authorityTransition.isNone || correction.resolved) &&
+  !(correction.rejected && correction.authorityTransition.isSome)
 
-def ruleWellFormed (rule : LearnedRule) : Bool :=
-  !rule.key.isEmpty && !rule.correction.isEmpty && !rule.scope.isEmpty &&
-  !rule.statement.isEmpty
+def authorityTransitionWellFormed (transition : AuthorityTransition) : Bool :=
+  !transition.key.isEmpty && !transition.correction.isEmpty &&
+  !transition.target.isEmpty && !transition.scope.isEmpty &&
+  !transition.reason.isEmpty &&
+  (transition.kind != .workObligation || transition.lifetime == .finite) &&
+  (transition.operation == .retire || !transition.statement.isEmpty)
+
+def latestAuthorityFor? (target scope : String) (work : Option WorkId)
+    (design : Option DesignId)
+    (transitions : List AuthorityTransition) : Option AuthorityTransition :=
+  transitions.reverse.find? fun transition =>
+    transition.target == target && transition.scope == scope &&
+    transition.work == work && transition.design == design
+
+def authorityCurrentFor (target : String) (work : WorkId)
+    (design : Option DesignId) (transitions : List AuthorityTransition) : Bool :=
+  transitions.any fun transition =>
+    transition.target == target &&
+    (transition.work.isNone || transition.work == some work) &&
+    (transition.design.isNone || transition.design == design) &&
+    (latestAuthorityFor? transition.target transition.scope transition.work
+      transition.design transitions).any fun current =>
+        current.key == transition.key && current.operation != .retire
 
 end AgentWorkbench.Domain.Design
 

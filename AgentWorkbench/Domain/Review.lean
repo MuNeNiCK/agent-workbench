@@ -39,6 +39,18 @@ structure AuthorityException where
   reason : String
 deriving DecidableEq, Repr
 
+inductive ObservationKind
+  | risk
+  | proposal
+deriving DecidableEq, Repr, BEq
+
+structure Observation where
+  key : String
+  kind : ObservationKind
+  summary : String
+  evidence : String
+deriving DecidableEq, Repr
+
 structure Claim where
   id : ReviewId
   plan : ReviewPlanId
@@ -47,12 +59,31 @@ structure Claim where
   claim : ReviewClaim
   reviewer : String := ""
   scope : Option FrozenScope := none
+  observations : List Observation := []
+deriving DecidableEq, Repr
+
+inductive ObservationDecision
+  | accepted
+  | rejected
+  | rescoped
+  | deferred
+  | needsEvidence
+deriving DecidableEq, Repr, BEq
+
+structure ObservationDisposition where
+  observation : String
+  decision : ObservationDecision
+  reason : String
+  changesAuthority : Bool := false
+  successorDesign : Option DesignId := none
 deriving DecidableEq, Repr
 
 structure Adjudication where
   review : ReviewId
   decision : OwnerDecision
   adjudicator : String := ""
+  reason : String
+  observations : List ObservationDisposition := []
 deriving DecidableEq, Repr
 
 structure ClosureAttempt where
@@ -71,10 +102,13 @@ structure Finding where
   key : String
   review : ReviewId
   blocking : Bool
+  authority : String
+  failureAccount : String
   invariant : String
   remediationSurfaces : List String
   accepted : Bool
   adjudicated : Bool
+  decisionReason : String := ""
   closureAttempts : List ClosureAttempt := []
 deriving DecidableEq, Repr
 
@@ -110,9 +144,37 @@ def planWellFormed (plan : Plan) : Bool :=
   !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty
 
 def findingWellFormed (finding : Finding) : Bool :=
-  !finding.key.isEmpty && !finding.invariant.isEmpty &&
+  !finding.key.isEmpty && !finding.authority.isEmpty &&
+  !finding.failureAccount.isEmpty && !finding.invariant.isEmpty &&
   !finding.remediationSurfaces.isEmpty &&
-  finding.remediationSurfaces.all (fun surface => !surface.isEmpty)
+  finding.remediationSurfaces.all (fun surface => !surface.isEmpty) &&
+  (!finding.accepted || finding.adjudicated) &&
+  (!finding.adjudicated || !finding.decisionReason.isEmpty)
+
+def observationWellFormed (observation : Observation) : Bool :=
+  !observation.key.isEmpty && !observation.summary.isEmpty
+
+def claimWellFormed (claim : Claim) : Bool :=
+  claim.observations.all observationWellFormed &&
+  (claim.observations.map (·.key)).Nodup
+
+def dispositionWellFormed (observation : Observation)
+    (disposition : ObservationDisposition) : Bool :=
+  disposition.observation == observation.key && !disposition.reason.isEmpty &&
+  (!disposition.changesAuthority ||
+    (observation.kind == .proposal &&
+      disposition.decision == .accepted &&
+      disposition.successorDesign.isSome)) &&
+  (disposition.successorDesign.isNone || disposition.changesAuthority)
+
+def adjudicationExact (claim : Claim) (adjudication : Adjudication) : Bool :=
+  adjudication.review == claim.id && !adjudication.adjudicator.isEmpty &&
+  !adjudication.reason.isEmpty &&
+  (adjudication.observations.map (·.observation)).Nodup &&
+  claim.observations.all (fun observation =>
+    adjudication.observations.any (dispositionWellFormed observation)) &&
+  adjudication.observations.all (fun disposition =>
+    claim.observations.any (·.key == disposition.observation))
 
 def attemptWellFormed (attempt : ClosureAttempt) : Bool :=
   attempt.attempt > 0 && !attempt.evidenceDigest.isEmpty &&
@@ -202,7 +264,8 @@ def scopeReady (plan : Plan) (claims : List Claim)
   | some claim =>
       claim.claim == .clean &&
       adjudications.any (fun decision =>
-        decision.review == claim.id && decision.decision == .accepted) &&
+        decision.decision == .accepted &&
+          adjudicationExact claim decision) &&
       scopeFindingsClosed plan.scope claims findings verifications
 
 def acceptedReviews (decisions : List Adjudication) : List ReviewId :=
@@ -218,7 +281,7 @@ def UniqueAdjudications (adjudications : List Adjudication) : Prop :=
 def AdjudicationsReferenceClaims (claims : List Claim)
     (adjudications : List Adjudication) : Prop :=
   (adjudications.all fun adjudication =>
-    claims.any (·.id == adjudication.review)) = true
+    claims.any (adjudicationExact · adjudication)) = true
 
 def ValidReviewState (claims : List Claim) (adjudications : List Adjudication) : Prop :=
   UniqueClaimIds claims ∧

@@ -69,7 +69,7 @@ def testWorkContractPersistence (root : System.FilePath) : IO Unit := do
 def storageDesign : Domain.Design.DesignVersion :=
   { id := ⟨1⟩
     revision := ⟨1⟩
-    owner := "storage-owner"
+    owner := "bootstrap-owner"
     contentDigest := "sha256:storage-law-design"
     requirements := [{ key := "evidence-integrity", active := true }]
     decisions := ["stored evidence binds an exact design version"]
@@ -369,8 +369,45 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
   let evidenceInitialized ← bootstrap evidenceLedger
   let designed ← mutate evidenceLedger "design" 1
     (.importDesign ⟨1⟩ storageDesign)
+  let designScope : Domain.Review.FrozenScope :=
+    { design := some storageDesign.id
+      work := ⟨1⟩
+      repositorySnapshot := "snapshot:storage-design"
+      artifactDigest := storageDesign.contentDigest
+      purpose := .design }
+  let designPlan : Domain.Review.Plan :=
+    { id := ⟨700⟩
+      owner := storageDesign.owner
+      reviewer := "storage-design-reviewer"
+      adjudicator := storageDesign.owner
+      scope := designScope }
+  let planned ← mutate evidenceLedger "design-review-plan"
+    designed.store.ledger.storedHead.value
+    (.recordReviewPlan designed.store.ledger.storedHead designPlan)
+  let designClaim : Domain.Review.Claim :=
+    { id := ⟨700⟩
+      plan := designPlan.id
+      work := designScope.work
+      epoch := ⟨0⟩
+      claim := .clean
+      reviewer := designPlan.reviewer
+      scope := some designScope }
+  let claimed ← mutate evidenceLedger "design-review-claim"
+    planned.store.ledger.storedHead.value
+    (.recordReviewClaim planned.store.ledger.storedHead designClaim)
+  let adjudicated ← mutate evidenceLedger "design-review-adjudication"
+    claimed.store.ledger.storedHead.value
+    (.recordReviewAdjudication claimed.store.ledger.storedHead
+      { review := designClaim.id
+        decision := .accepted
+        adjudicator := designPlan.adjudicator
+        reason := "the evidence design matches its frozen review scope" })
+  let approved ← mutate evidenceLedger "design-approval"
+    adjudicated.store.ledger.storedHead.value
+    (.approveDesign adjudicated.store.ledger.storedHead storageDesign.id)
   let obligation : Domain.Evidence.Obligation := {
-    work := ⟨1⟩, key := "evidence-integrity", revision := ⟨2⟩
+    work := ⟨1⟩, key := "evidence-integrity"
+    revision := approved.store.ledger.storedHead
     commandProfile := "storage-laws"
     invocation := ".lake/build/bin/storage-laws --fault-matrix"
     repository := "main", snapshot := "commit:test"
@@ -378,8 +415,9 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
     requirements := ["evidence-integrity"], expectedProducer := "storage-law-runner"
     expectedObservation := "storage-law-observation"
     design := ⟨1⟩, designRevision := ⟨1⟩ }
-  let _ ← mutate evidenceLedger "obligation" 2
-    (.recordObligation ⟨2⟩ obligation)
+  let obligated ← mutate evidenceLedger "obligation"
+    approved.store.ledger.storedHead.value
+    (.recordObligation approved.store.ledger.storedHead obligation)
   let item : Domain.Evidence.Evidence := {
     id := ⟨1⟩
     work := ⟨1⟩
@@ -397,8 +435,9 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
     observedAt := "storage-law-observation"
     design := obligation.design
     designRevision := obligation.designRevision }
-  let evidenced ← mutate evidenceLedger "evidence" 3
-    (.recordEvidence ⟨3⟩ item)
+  let evidenced ← mutate evidenceLedger "evidence"
+    obligated.store.ledger.storedHead.value
+    (.recordEvidence obligated.store.ledger.storedHead item)
   let recovered ← load evidenceLedger
   expect (recovered == evidenced.store) "exact evidence did not survive reconstruction"
   let current ← match (Kernel.Projection.inspect recovered).currentState? with
@@ -444,23 +483,27 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
   | .action _ =>
       throw <| IO.userError
         "fresh SQLite session selected continue with an applicable correction"
-  let resolved ← mutate ledger "resolve-correction"
+  let transition : Domain.Design.AuthorityTransition := {
+    key := "durable-correction-authority-v1"
+    correction := correction.key
+    target := "durable-correction-rule"
+    operation := .create
+    kind := .rule
+    scope := correction.scope
+    work := correction.work
+    design := correction.design
+    lifetime := .persistent
+    statement := correction.statement
+    reason := "the correction establishes a persistent scoped authority" }
+  let resolved ← mutate ledger "record-authority-transition"
     recorded.store.ledger.storedHead.value
-    (.resolveUserCorrection recorded.store.ledger.storedHead correction.key)
+    (.recordAuthorityTransition recorded.store.ledger.storedHead transition)
   match (Application.Service.resolve resolved.store).value with
   | .action (.continueActiveWork _ work _) =>
       expect (work == ⟨1⟩)
         "resolved correction restored continue for the wrong work"
   | other =>
       throw <| IO.userError s!"resolved correction did not restore continue: {repr other}"
-  let rule : Domain.Design.LearnedRule := {
-    key := "durable-correction-rule"
-    correction := correction.key
-    scope := correction.scope
-    statement := correction.statement }
-  let _ ← mutate ledger "promote-correction"
-    resolved.store.ledger.storedHead.value
-    (.promoteCorrection resolved.store.ledger.storedHead rule)
   let promoted ← load ledger
   let promotedState ←
     match (Application.Service.status promoted).value.currentState? with
@@ -469,8 +512,8 @@ def testCorrectionPersistence (root : System.FilePath) : IO Unit := do
   expect (promotedState.corrections.any fun item =>
     item.key == correction.key && item.resolved)
     "fresh SQLite session lost resolved correction provenance"
-  expect (promotedState.learnedRules.contains rule)
-    "fresh SQLite session lost promoted correction provenance"
+  expect (promotedState.authorityTransitions.contains transition)
+    "fresh SQLite session lost authority transition provenance"
 
 def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
   let run (name : String) (qualityArtifact? qualitySnapshot? : Option String)
@@ -522,7 +565,8 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
           claimed.store.ledger.storedHead.value
           (.recordReviewAdjudication claimed.store.ledger.storedHead
             { review := claim.id, decision := .accepted
-              adjudicator := reviewPurposeDesign.owner })
+              adjudicator := reviewPurposeDesign.owner
+              reason := "the stored claim matches the frozen review scope" })
         pure adjudicated.store
       else
         pure claimed.store
@@ -690,12 +734,14 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
     let outcome ← mutate ledger operation store.ledger.storedHead.value
       (command store.ledger.storedHead)
     pure outcome.store
+  let store ← apply "finding-design" (fun revision =>
+    .importDesign revision reviewPurposeDesign) initialized.store
   let scope : Domain.Review.FrozenScope :=
-    { design := none
+    { design := some reviewPurposeDesign.id
       work := ⟨1⟩
       repositorySnapshot := "snapshot:before-remediation"
       artifactDigest := "sha256:before-remediation"
-      purpose := .designConformance }
+      purpose := .design }
   let plan : Domain.Review.Plan :=
     { id := ⟨100⟩
       owner := "bootstrap-owner"
@@ -703,7 +749,7 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
       adjudicator := "bootstrap-owner"
       scope }
   let store ← apply "finding-plan" (fun revision =>
-    .recordReviewPlan revision plan) initialized.store
+    .recordReviewPlan revision plan) store
   let claim : Domain.Review.Claim :=
     { id := ⟨100⟩
       plan := plan.id
@@ -718,6 +764,8 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
     { key := "durable-finding"
       review := claim.id
       blocking := true
+      authority := "review-authority"
+      failureAccount := "overwriting a failed verification would erase review history"
       invariant := "failed verification preserves immutable history"
       remediationSurfaces := ["kernel"]
       accepted := false
@@ -725,7 +773,8 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
   let store ← apply "finding-record" (fun revision =>
     .recordReviewFinding revision finding) store
   let store ← apply "finding-adjudicate" (fun revision =>
-    .adjudicateReviewFinding revision finding.key plan.adjudicator true) store
+    .adjudicateReviewFinding revision finding.key plan.adjudicator
+      "the immutable verification history violation is confirmed" true) store
   let firstAttempt : Domain.Review.ClosureAttempt :=
     { attempt := 1
       evidenceDigest := "sha256:first-fix"
@@ -1046,6 +1095,11 @@ def makeUnsupportedSchema (ledger : System.FilePath) : IO Unit := do
   db.transaction (mode := .immediate) do
     db.exec "UPDATE metadata SET schema_version = '1' WHERE singleton = 1;"
 
+def makeIncompatibleV3 (ledger : System.FilePath) : IO Unit := do
+  let db ← _root_.SQLite.openWith ledger { mode := .readWrite }
+  db.transaction (mode := .immediate) do
+    db.exec "UPDATE metadata SET schema_version = '3' WHERE singleton = 1;"
+
 def makePredecessorV2 (ledger : System.FilePath) : IO Unit := do
   let db ← _root_.SQLite.openWith ledger { mode := .readWrite }
   db.transaction (mode := .immediate) do
@@ -1121,7 +1175,7 @@ def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO 
   match ← Adapter.SQLite.repairProjection predecessorV2 v2RepairPlan with
   | .ok retry =>
       expect (retry == v2RepairReceipt)
-        "predecessor v2 repair receipt changed across v3 migration"
+        "predecessor v2 repair receipt changed across v4 migration"
   | .error error =>
       throw <| IO.userError s!"migrated predecessor v2 repair retry failed: {repr error}"
   let v2Restored ← Adapter.Update.restore predecessorV2 predecessorV2Backups v2UpdateReceipt
@@ -1288,6 +1342,21 @@ def testExplicitUpdateAndRestore (root : System.FilePath) : IO Unit := do
   | other => throw <| IO.userError s!"unknown schema was not explicit unsupported: {repr other}"
   expect ((← IO.FS.readBinFile unsupportedLedger) == unsupportedBefore)
     "unsupported schema inspection mutated storage"
+
+  let incompatibleLedger := root / "incompatible-v3.sqlite3"
+  Adapter.SQLite.initializeStore incompatibleLedger
+  let _ ← bootstrap incompatibleLedger
+  makeIncompatibleV3 incompatibleLedger
+  let incompatibleBefore ← IO.FS.readBinFile incompatibleLedger
+  match ← Adapter.Update.inspect incompatibleLedger with
+  | .unsupported point =>
+      expect (point.schemaVersion == 3)
+        "binary-incompatible v3 schema identity drifted"
+  | other =>
+      throw <| IO.userError
+        s!"binary-incompatible v3 ledger was treated as current: {repr other}"
+  expect ((← IO.FS.readBinFile incompatibleLedger) == incompatibleBefore)
+    "incompatible schema inspection mutated storage"
 
 def postRenameSyncFailureChild (root : System.FilePath) : IO Unit := do
   let ledger := root / "post-rename-uncertain.sqlite3"
