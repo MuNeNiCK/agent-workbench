@@ -4,6 +4,7 @@ open System Lake DSL
 
 package «agent-workbench» where
   version := v!"0.1.0"
+  leanOptions := #[⟨`warningAsError, true⟩]
 
 require leansqlite from git
   "https://github.com/leanprover/leansqlite" @ "v4.30.0"
