@@ -305,6 +305,11 @@ fn review_context_includes_selected_validation_run_evidence() {
             .text
             .contains(&format!("latest_run={}", run.validation_run_id))
     );
+    assert!(
+        document
+            .text
+            .contains(&format!("id={}", gate.validation_gate_id))
+    );
     assert!(document.text.contains("latest_result=pass"));
     assert!(document.text.contains("artifact=artifacts/gate.log"));
     assert!(document.text.contains("notes=cleanup gate passed"));

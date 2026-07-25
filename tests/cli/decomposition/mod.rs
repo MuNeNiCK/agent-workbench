@@ -70,10 +70,14 @@ fn accept_exact_plan_review(root: &Path, design: &str, work: &str, context_ref: 
         },
     )
     .unwrap();
+    accept_exact_plan_review_for_plan(root, review_plan.review_plan_id, context_ref);
+}
+
+fn accept_exact_plan_review_for_plan(root: &Path, review_plan_id: i64, context_ref: &str) {
     let review_run = add_review_run(
         root,
         NewReviewRun {
-            review_plan_id: review_plan.review_plan_id,
+            review_plan_id,
             run_type: "fresh",
             run_purpose: "new_unbiased_review",
             target_ref: Some(context_ref),

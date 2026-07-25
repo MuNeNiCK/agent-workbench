@@ -125,9 +125,13 @@ agent-workbench closure ready <closure-id> --evidence "<evidence>" --tests "<tes
 ```
 
 Apply only declared transition tokens and never substitute their underlying
-task, phase, decomposition, dependency, or stale command. Then use the same
-exact-context resume/verify path. Record a later fresh clean run after all
-findings are verified or disposed; resume review is not final completion proof.
+task, phase, dependency, or stale command. For a declared
+`decomposition-plan-reconcile` token, follow the printed `decomposition show`
+action instead of `closure transition apply`; run its exact reconciliation
+preview and then the preview's printed execute action. That public
+reconciliation consumes the token atomically. Then use the same exact-context
+resume/verify path. Record a later fresh clean run after all findings are
+verified or disposed; resume review is not final completion proof.
 
 ## Completion Review Prompt Contract
 

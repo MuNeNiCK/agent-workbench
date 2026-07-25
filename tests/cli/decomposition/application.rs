@@ -772,6 +772,10 @@ reconciliation:
     )
     .unwrap();
     begin_correction(root, continuation_closure.closure_id).unwrap();
+    let correction_next = ok(root, &["next"]);
+    assert!(correction_next.contains(&format!(
+        "owner_next: agent-workbench decomposition show --design-version {design} --work {work}"
+    )));
     let pre_review = ok(
         root,
         &[
@@ -794,7 +798,28 @@ reconciliation:
         .unwrap();
     let restaged = ok(root, &refresh.split_whitespace().collect::<Vec<_>>());
     assert_eq!(field(&restaged, "status"), "ready");
-    accept_exact_plan_review(root, &design, &work, field(&restaged, "review_context"));
+    let add_review = restaged
+        .lines()
+        .find(|line| {
+            line.starts_with("next: agent-workbench review plan add ")
+                && line.contains("--type design_task_decomposition")
+        })
+        .unwrap_or_else(|| panic!("{restaged}"));
+    assert!(add_review.ends_with(" --required"));
+    let added_review = ok(
+        root,
+        &add_review
+            .strip_prefix("next: agent-workbench ")
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+    );
+    let review_plan_id = field(&added_review, "review_plan_id").parse().unwrap();
+    let review_plans = ok(root, &["review", "plan", "list"]);
+    assert!(review_plans.contains(&format!(
+        "{review_plan_id} [design_task_decomposition:open required=true]"
+    )));
+    accept_exact_plan_review_for_plan(root, review_plan_id, field(&restaged, "review_context"));
 
     let reviewed = ok(
         root,

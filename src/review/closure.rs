@@ -7,6 +7,32 @@ use crate::db::{current_phase_blocker, open_existing_project, project_id};
 
 use super::{correction_contract::*, *};
 
+fn applied_reconciliation_consumed_file(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    closure_id: i64,
+    path: &Path,
+) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        r#"
+        select target
+        from correction_tokens
+        where closure_id=?1 and token_kind='transition'
+          and operation='decomposition-plan-reconcile' and status='applied'
+        "#,
+    )?;
+    let targets = stmt
+        .query_map(params![closure_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for target in targets {
+        let (_, _, plan_path) = parse_decomposition_reconciliation_target(&target)?;
+        if root.join(plan_path) == path {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureReadyOutcome> {
     require_text(
         Some(input.implementation_evidence),
@@ -48,26 +74,33 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
         } else {
             false
         };
-        let selected_source_correction: bool = if blocker.kind == "source_correction"
-            && blocker
-                .next_action
-                .contains(&format!("closure ready {}", input.closure_id))
-        {
-            tx.query_row(
-                r#"
+        let selected_source_correction: bool =
+            if matches!(blocker.kind.as_str(), "source_correction" | "stale_design") {
+                tx.query_row(
+                    r#"
                 select exists(
                   select 1 from correction_sessions session
                   join closures closure on closure.id=session.closure_id
+                  join findings finding on finding.id=closure.finding_id
                   where session.closure_id=?1 and session.status='active'
-                    and closure.finding_id=?2
+                    and closure.project_id=?2
+                    and closure.status='registered'
+                    and finding.status='open'
+                    and finding.classification='valid'
+                    and not exists(
+                      select 1 from correction_tokens pending
+                      where pending.closure_id=session.closure_id
+                        and pending.token_kind='transition'
+                        and pending.status='pending'
+                    )
                 )
                 "#,
-                params![input.closure_id, blocker.finding_id],
-                |row| row.get(0),
-            )?
-        } else {
-            false
-        };
+                    params![input.closure_id, project_id],
+                    |row| row.get(0),
+                )?
+            } else {
+                false
+            };
         if !selected_ready && !stale_design_recovery && !selected_source_correction {
             bail!(
                 "closure ready is not the selected action; next: {}",
@@ -315,7 +348,15 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
                         path.display()
                     ));
                 }
-                "edit" if Some(file_sha256(&path)?) == pre_hash => {
+                "edit"
+                    if Some(file_sha256(&path)?) == pre_hash
+                        && !applied_reconciliation_consumed_file(
+                            &tx,
+                            root,
+                            input.closure_id,
+                            &path,
+                        )? =>
+                {
                     incomplete_surfaces.push(format!(
                         "edited correction surface is unchanged: {}",
                         path.display()

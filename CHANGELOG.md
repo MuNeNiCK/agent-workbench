@@ -1,5 +1,23 @@
 # Release history
 
+## v0.1.33 — 2026-07-25
+
+- Keep an active file-only source correction executable when an unrelated
+  stale design record has higher global resolver precedence.
+- Preserve closure, finding, correction-session, and transition guards while
+  leaving the stale record available for its subsequent owner action.
+- Report the exact missing and unexpected predecessor IDs when reconciliation
+  mappings do not cover their required domain.
+- Include selected validation-gate IDs in generated review contexts so those
+  reconciliation diagnostics can be resolved through the public interface.
+- Keep the printed decomposition-review recovery action authoritative by
+  creating the required implementation-ready review plan.
+- Route pending decomposition reconciliation through `decomposition show` so
+  the next printed action resolves to the reviewed Plan and authorized preview.
+- Allow a reconciliation closure to finish without fabricating a file edit
+  when its applied transition already consumed that exact reviewed Plan;
+  unchanged ordinary edit contracts remain rejected.
+
 ## v0.1.32 — 2026-07-25
 
 - Serialize identical concurrent release assembly requests so one process

@@ -439,6 +439,9 @@ pub(super) fn current_source_corrections(conn: &Connection) -> Result<Vec<Source
                 where t.closure_id = c.id and t.token_kind = 'transition' and t.status = 'pending'),
                (select operation from correction_tokens t
                 where t.closure_id = c.id and t.token_kind = 'transition' and t.status = 'pending'
+                order by token_ordinal limit 1),
+               (select target from correction_tokens t
+                where t.closure_id = c.id and t.token_kind = 'transition' and t.status = 'pending'
                 order by token_ordinal limit 1)
         from correction_sessions s
         join closures c on c.id = s.closure_id and c.status = 'registered'
@@ -453,9 +456,21 @@ pub(super) fn current_source_corrections(conn: &Connection) -> Result<Vec<Source
         let closure_id = row.get::<_, i64>(3)?;
         let pending_token = row.get::<_, Option<i64>>(11)?;
         let pending_operation = row.get::<_, Option<String>>(12)?;
+        let pending_target = row.get::<_, Option<String>>(13)?;
         let next_action = if let (Some(token), Some(operation)) = (pending_token, pending_operation)
         {
-            correction_transition_command(closure_id, token, &operation)
+            if operation == "decomposition-plan-reconcile" {
+                let target = pending_target.as_deref().unwrap_or_default();
+                let mut parts = target.split('/');
+                match (parts.next(), parts.next()) {
+                    (Some(design), Some(work)) => format!(
+                        "agent-workbench decomposition show --design-version {design} --work {work}"
+                    ),
+                    _ => correction_transition_command(closure_id, token, &operation),
+                }
+            } else {
+                correction_transition_command(closure_id, token, &operation)
+            }
         } else {
             format!(
                 "apply only the typed file correction contract, then agent-workbench closure ready {closure_id} --evidence \"<evidence>\" --tests \"<tests>\""

@@ -430,6 +430,19 @@ reconciliation:
     )
     .unwrap();
     classify_finding(temp.path(), finding.finding_id, "valid").unwrap();
+    let previous_current_identity = current.current_identity.clone();
+    let current = show_decomposition_plan(
+        temp.path(),
+        DecompositionPlanQuery {
+            design_version_id: imported.design_version_id,
+            work_unit_id: work.work_unit_id,
+        },
+    )
+    .unwrap();
+    let successor_document = fs::read_to_string(&successor_path)
+        .unwrap()
+        .replace(&previous_current_identity, &current.current_identity);
+    fs::write(&successor_path, &successor_document).unwrap();
     let successor_project_path = successor_path
         .strip_prefix(temp.path())
         .unwrap()
@@ -458,20 +471,6 @@ reconciliation:
     )
     .unwrap();
     begin_correction(temp.path(), closure.closure_id).unwrap();
-
-    let previous_current_identity = current.current_identity.clone();
-    let current = show_decomposition_plan(
-        temp.path(),
-        DecompositionPlanQuery {
-            design_version_id: imported.design_version_id,
-            work_unit_id: work.work_unit_id,
-        },
-    )
-    .unwrap();
-    let successor_document = fs::read_to_string(&successor_path)
-        .unwrap()
-        .replace(&previous_current_identity, &current.current_identity);
-    fs::write(&successor_path, &successor_document).unwrap();
     let substituted_path = plans.join("substituted-path.md");
     fs::write(&substituted_path, &successor_document).unwrap();
     let substituted = preview_decomposition_reconciliation(
@@ -511,6 +510,12 @@ reconciliation:
     .unwrap_err();
     assert!(
         omitted.to_string().contains("exact predecessor domain"),
+        "{omitted:#}"
+    );
+    assert!(
+        omitted
+            .to_string()
+            .contains(&format!("missing: [{gate},{retired_gate}]; unexpected: []")),
         "{omitted:#}"
     );
     fs::write(&successor_path, &successor_document).unwrap();

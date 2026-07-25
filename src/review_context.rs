@@ -243,7 +243,7 @@ pub(crate) fn resolve_decomposition_plan_review_owner(
             None,
             context_ref,
             vec![format!(
-                "agent-workbench review plan add --work-unit {} --type design_task_decomposition --stage implementation-ready --design-version {}",
+                "agent-workbench review plan add --work-unit {} --type design_task_decomposition --stage implementation-ready --design-version {} --required",
                 target.work_unit_id, target.design_version_id
             )],
             "no-plan",
@@ -332,7 +332,7 @@ pub(crate) fn resolve_decomposition_plan_review_owner(
             fresh_review_actions(target, review_plan_id, &context_ref)
         } else {
             vec![format!(
-                "agent-workbench review plan add --work-unit {} --type design_task_decomposition --stage implementation-ready --design-version {}",
+                "agent-workbench review plan add --work-unit {} --type design_task_decomposition --stage implementation-ready --design-version {} --required",
                 target.work_unit_id, target.design_version_id
             )]
         };
@@ -1135,8 +1135,9 @@ fn render_design_context(
         let notes = gate.latest_notes.as_deref().unwrap_or("-");
         writeln!(
             output,
-            "- {} requirement={} task={} status={} latest_run={} latest_result={} command_usage={} snapshot={} artifact={} notes={}",
+            "- {} id={} requirement={} task={} status={} latest_run={} latest_result={} command_usage={} snapshot={} artifact={} notes={}",
             gate.gate_key,
+            gate.id,
             gate.requirement_key,
             task,
             gate.status,

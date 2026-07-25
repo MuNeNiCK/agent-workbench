@@ -1194,7 +1194,19 @@ fn require_exact_source_domain(
 ) -> Result<()> {
     let declared = declared.collect::<BTreeSet<_>>();
     if actual != &declared {
-        bail!("reconciliation {label} mappings must cover the exact predecessor domain");
+        let missing = actual
+            .difference(&declared)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let unexpected = declared
+            .difference(actual)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        bail!(
+            "reconciliation {label} mappings must cover the exact predecessor domain; missing: [{missing}]; unexpected: [{unexpected}]"
+        );
     }
     Ok(())
 }

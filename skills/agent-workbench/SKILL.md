@@ -297,8 +297,12 @@ from current managed project state.
 - In `source_correction`, edit only the printed typed Markdown surfaces after
   `closure correction-begin`. Apply declared `transition:` tokens in ordinal
   order with `closure transition apply`; do not run the underlying task,
-  decomposition, phase, dependency, or stale mutation directly. Run `closure
-  ready` only after every file postcondition and transition token is complete.
+  phase, dependency, or stale mutation directly. A
+  `decomposition-plan-reconcile` token is the one exception: run the printed
+  `decomposition show`, then its exact `decomposition reconcile --dry-run` and
+  printed execute action; the reconciliation atomically consumes that token.
+  Run `closure ready` only after every file postcondition and transition token
+  is complete.
 - For legacy partial or duplicate current decomposition, use only a declared
   `design-reconcile:<design>/<work>/<canonical-checklist>` transition. Apply
   stale tokens first, reconcile before using generated aliases, replace phase

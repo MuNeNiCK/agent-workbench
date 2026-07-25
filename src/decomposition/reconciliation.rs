@@ -952,7 +952,12 @@ pub(super) fn validate_reconciliation_successor(
             |row| row.get(0),
         )?;
         if source_meaning != boundary.condition {
-            bail!("preserve checklist effect requires unchanged boundary meaning");
+            bail!(
+                "preserve checklist effect requires unchanged boundary meaning: source {} -> {}/{}",
+                mapping.source,
+                item.key,
+                boundary.key
+            );
         }
     }
 

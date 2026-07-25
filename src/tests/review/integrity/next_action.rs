@@ -5,6 +5,57 @@ fn open_required_review_finding_blocks_next_action() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();
     let work = start_work(temp.path(), "review guarded phase", None).unwrap();
+    let task = add_task(
+        temp.path(),
+        NewTask {
+            title: "trace the corrected design",
+            priority: "high",
+            source: "design",
+            work_unit_id: Some(work.work_unit_id),
+            details: None,
+            completion_condition: Some("the corrected design is traceable"),
+        },
+    )
+    .unwrap();
+    let package = init_design_package(
+        temp.path(),
+        NewDesignPackage {
+            design_id: "source-correction-routing",
+            title: "Source Correction Routing",
+        },
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("requirements").join("README.md"),
+        requirement_doc("REQ-001", "Keep source corrections routable", "high"),
+    )
+    .unwrap();
+    fs::write(
+        package.package_path.join("validation").join("gates.md"),
+        validation_gate_doc("GATE-001"),
+    )
+    .unwrap();
+    let design = import_design_package(
+        temp.path(),
+        DesignPackageImport {
+            package_path: &package.package_path,
+            status: "draft",
+        },
+    )
+    .unwrap();
+    let derivation = derive_task_from_requirement(
+        temp.path(),
+        NewTaskDerivation {
+            design_version_id: design.design_version_id,
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            derivation_reason: Some("exercise stale precedence"),
+            checklist_title: None,
+            item_title: None,
+            completion_condition: None,
+        },
+    )
+    .unwrap();
     let policy = add_review_policy(
         temp.path(),
         NewReviewPolicy {
@@ -200,6 +251,13 @@ fn open_required_review_finding_blocks_next_action() {
         )
     );
     assert_eq!(correcting.source_corrections.len(), 1);
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='stale' where id=?1",
+        params![derivation.task_derivation_id],
+    )
+    .unwrap();
+    drop(conn);
     let attempt = ready_closure(
         temp.path(),
         ClosureReady {
@@ -210,6 +268,13 @@ fn open_required_review_finding_blocks_next_action() {
         },
     )
     .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    conn.execute(
+        "update task_derivations set status='active' where id=?1",
+        params![derivation.task_derivation_id],
+    )
+    .unwrap();
+    drop(conn);
     let not_fixed = add_review_run_with_finding_result(
         temp.path(),
         NewReviewRun {
