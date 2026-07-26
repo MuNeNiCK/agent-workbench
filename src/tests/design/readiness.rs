@@ -267,6 +267,27 @@ fn implementation_ready_blocks_stale_derivations_and_checklists() {
         },
     )
     .unwrap();
+    let stale_gate = select_validation_gate(
+        temp.path(),
+        ValidationGateSelection {
+            design_version_id: import_a.design_version_id,
+            gate_key: "GATE-001",
+            requirement_key: "REQ-001",
+            task_id: task.task_id,
+            command: Some("cargo test"),
+            command_profile: None,
+            timeout: None,
+        },
+    )
+    .unwrap();
+    {
+        let db = open_existing_project(temp.path()).unwrap();
+        db.execute(
+            "update validation_gates set work_unit_id = null where id = ?1",
+            [stale_gate.validation_gate_id],
+        )
+        .unwrap();
+    }
     add_coverage_item(
         temp.path(),
         NewCoverageItem {
@@ -360,6 +381,12 @@ This requirement describes changed cleanup behavior that must be implemented.
         blocked
             .items
             .iter()
+            .any(|item| { item.name == "validation_gates_current" && item.result == "fail" })
+    );
+    assert!(
+        blocked
+            .items
+            .iter()
             .any(|item| { item.name == "coverage_items_current" && item.result == "fail" })
     );
     let stale = list_stale_records(temp.path()).unwrap();
@@ -369,11 +396,65 @@ This requirement describes changed cleanup behavior that must be implemented.
             .any(|record| record.record_type == "task_derivation")
     );
     assert!(stale.iter().any(|record| record.record_type == "checklist"));
+    assert!(stale.iter().any(|record| {
+        record.record_type == "validation_gate" && record.id == stale_gate.validation_gate_id
+    }));
     assert!(
         stale
             .iter()
             .any(|record| record.record_type == "coverage_item")
     );
+    {
+        let db = open_existing_project(temp.path()).unwrap();
+        db.execute(
+            "update work_units set status = 'closed' where id = ?1",
+            [work.work_unit_id],
+        )
+        .unwrap();
+    }
+    let closed_history = implementation_ready(
+        temp.path(),
+        ImplementationReadyCheck {
+            design_version_id: Some(import_b.design_version_id),
+        },
+    )
+    .unwrap();
+    for item_name in [
+        "task_derivations_current",
+        "checklists_current",
+        "validation_gates_current",
+        "coverage_items_current",
+    ] {
+        assert!(
+            closed_history
+                .items
+                .iter()
+                .any(|item| item.name == item_name && item.result == "pass"),
+            "{item_name} should ignore stale records owned by closed work: {closed_history:#?}"
+        );
+    }
+    let retained_history = list_stale_records(temp.path()).unwrap();
+    for record_type in [
+        "task_derivation",
+        "checklist",
+        "validation_gate",
+        "coverage_item",
+    ] {
+        assert!(
+            retained_history
+                .iter()
+                .any(|record| record.record_type == record_type),
+            "{record_type} should remain visible as stale history"
+        );
+    }
+    {
+        let db = open_existing_project(temp.path()).unwrap();
+        db.execute(
+            "update work_units set status = 'open' where id = ?1",
+            [work.work_unit_id],
+        )
+        .unwrap();
+    }
     let coverage_item_id = stale
         .iter()
         .find(|record| record.record_type == "coverage_item")
@@ -417,6 +498,17 @@ This requirement describes changed cleanup behavior that must be implemented.
         },
     )
     .unwrap();
+    let accepted_gate = accept_stale_record(
+        temp.path(),
+        StaleRecordDisposition {
+            record_type: "validation_gate",
+            record_id: stale_gate.validation_gate_id,
+            reason: "user accepted stale validation gate while preserving scope",
+        },
+    )
+    .unwrap();
+    assert_eq!(accepted_gate.record_type, "validation_gate");
+    assert_eq!(accepted_gate.record_id, stale_gate.validation_gate_id);
     let accepted_coverage = accept_stale_record(
         temp.path(),
         StaleRecordDisposition {
@@ -448,6 +540,12 @@ This requirement describes changed cleanup behavior that must be implemented.
             .items
             .iter()
             .any(|item| { item.name == "checklists_current" && item.result == "pass" })
+    );
+    assert!(
+        accepted
+            .items
+            .iter()
+            .any(|item| { item.name == "validation_gates_current" && item.result == "pass" })
     );
     assert!(
         accepted

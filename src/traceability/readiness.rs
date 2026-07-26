@@ -753,6 +753,9 @@ pub(super) fn count_stale_task_derivations(
         from task_derivations td
         join design_requirements r on r.id = td.design_requirement_id
         join tasks source_task on source_task.id = td.task_id
+        join work_units source_work
+          on source_work.id = source_task.work_unit_id
+         and source_work.status in ('open', 'blocked')
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
@@ -805,6 +808,9 @@ pub(super) fn count_stale_checklists(
         r#"
         select count(distinct c.id)
         from checklists c
+        join work_units source_work
+          on source_work.id = c.work_unit_id
+         and source_work.status in ('open', 'blocked')
         join checklist_items ci on ci.checklist_id = c.id
         join design_requirements r on r.id = ci.design_requirement_id
         join design_versions v on v.id = r.design_version_id
@@ -846,6 +852,10 @@ pub(super) fn count_stale_validation_gates(
         from validation_gates vg
         join validation_gate_templates gt on gt.id = vg.template_id
         join design_requirements r on r.id = vg.design_requirement_id
+        left join tasks source_task on source_task.id = vg.task_id
+        join work_units source_work
+          on source_work.id = coalesce(vg.work_unit_id, source_task.work_unit_id)
+         and source_work.status in ('open', 'blocked')
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
@@ -894,7 +904,6 @@ pub(super) fn count_stale_validation_gates(
               on replacement_requirement.id=replacement.design_requirement_id
             join design_versions replacement_version
               on replacement_version.id=replacement_requirement.design_version_id
-            left join tasks source_task on source_task.id=vg.task_id
             left join tasks replacement_task on replacement_task.id=replacement.task_id
             where replacement.project_id=vg.project_id
               and replacement.status!='stale'
@@ -921,6 +930,10 @@ pub(super) fn count_stale_coverage_items(
         select count(*)
         from coverage_items c
         join design_requirements r on r.id = c.design_requirement_id
+        left join tasks source_task on source_task.id = c.task_id
+        join work_units source_work
+          on source_work.id = coalesce(c.work_unit_id, source_task.work_unit_id)
+         and source_work.status in ('open', 'blocked')
         join design_versions v on v.id = r.design_version_id
         join design_packages p on p.id = v.design_package_id
         where p.id = ?1
