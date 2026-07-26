@@ -20,24 +20,20 @@ def fromTraceItem (item : Design.TraceItem) : PlanItem :=
     validationGates := item.validationGates }
 
 def covers (item : PlanItem) (requirement : String) : Bool :=
-  item.requirements.contains requirement &&
-  !item.completionBoundaries.isEmpty &&
-  !item.validationGates.isEmpty
+  item.requirements.contains requirement
 
 def allCovered (requirements : List String) (items : List PlanItem) : Bool :=
   requirements.all fun requirement => items.any (covers · requirement)
 
 def implementationBound (item : Design.TraceItem) : Bool :=
   !item.key.isEmpty && !item.requirements.isEmpty &&
-  !item.implementationWork.isEmpty &&
   item.implementationWork.all (fun target => !target.isEmpty) &&
-  !item.tasks.isEmpty && item.tasks.all (fun task => !task.isEmpty) &&
-  !item.completionChecks.isEmpty &&
+  item.tasks.all (fun task => !task.isEmpty) &&
   item.completionChecks.all (fun condition => !condition.isEmpty) &&
-  !item.checklists.isEmpty &&
   item.checklists.all (fun checklist => !checklist.isEmpty) &&
-  !item.validationGates.isEmpty &&
-  item.validationGates.all (fun gate => !gate.isEmpty)
+  item.validationGates.all (fun gate => !gate.isEmpty) &&
+  !(item.implementationWork ++ item.tasks ++ item.completionChecks ++
+    item.checklists ++ item.validationGates).isEmpty
 
 def ready (design : Design.DesignVersion)
     (approval : Design.Approval) (decomposition : Design.Decomposition) : Bool :=

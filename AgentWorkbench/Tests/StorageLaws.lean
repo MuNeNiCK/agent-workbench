@@ -380,6 +380,7 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
       owner := storageDesign.owner
       reviewer := "storage-design-reviewer"
       adjudicator := storageDesign.owner
+      caller := storageDesign.owner
       scope := designScope }
   let planned ← mutate evidenceLedger "design-review-plan"
     designed.store.ledger.storedHead.value
@@ -545,6 +546,7 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
           owner := reviewPurposeDesign.owner
           reviewer
           adjudicator := reviewPurposeDesign.owner
+          caller := reviewPurposeDesign.owner
           scope := scope purpose snapshot artifact }
       let planned ← mutate ledger s!"{operation}-plan"
         store.ledger.storedHead.value
@@ -615,11 +617,17 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
         pure store
     let completionPlan : Domain.Lifecycle.CompletionPlan :=
       { work := ⟨1⟩
+        decomposition := some "review-purpose-decomposition"
         relatedWork := []
         phases := []
         tasks := []
         checklists := []
-        reviews := []
+        reviews :=
+          if qualityArtifact?.isSome && qualitySnapshot?.isSome then
+            [⟨3⟩, ⟨4⟩]
+          else
+            [⟨3⟩]
+        obligations := ["completion-proof"]
         findings := []
         validations := ["validation"]
         repositories := ["repository"]
@@ -681,7 +689,8 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
       | none => throw <| IO.userError "review-purpose projection is not recoverable"
     expect (Policy.Completion.requiredReviewsReady ⟨1⟩
       state.work state.reviewPlans state.decompositions state.claims state.adjudications
-      state.reviewFindings state.findingVerifications == expectedReviewsReady)
+      state.reviewFindings state.findingVerifications state.lifecycle ==
+        expectedReviewsReady)
       s!"fresh SQLite reconstruction changed required review readiness: {name}"
     expect (Policy.Completion.closeable ⟨1⟩ state.work state.activations
       state.claims state.adjudications state.reviewPlans state.reviewFindings
@@ -704,11 +713,11 @@ def testReviewPurposePersistence (root : System.FilePath) : IO Unit := do
   let implementationArtifact := "sha256:reviewed-implementation"
   let defaultSnapshot := "snapshot:review-purpose"
   run "complete" (some implementationArtifact) (some defaultSnapshot) true true true
-  run "missing-quality" none none false false false
+  run "single-selected-review" none none false true true
   run "mismatched-artifact" (some "sha256:different-artifact")
-    (some defaultSnapshot) true false false
+    (some defaultSnapshot) true true false
   run "mismatched-snapshot" (some implementationArtifact)
-    (some "snapshot:different") true false false
+    (some "snapshot:different") true true false
   run "missing-quality-adjudication" (some implementationArtifact)
     (some defaultSnapshot) false false false
   run "mismatched-repository" (some implementationArtifact)
@@ -747,6 +756,7 @@ def testFindingAttemptPersistence (root : System.FilePath) : IO Unit := do
       owner := "bootstrap-owner"
       reviewer := "finding-reviewer"
       adjudicator := "bootstrap-owner"
+      caller := "bootstrap-owner"
       scope }
   let store ← apply "finding-plan" (fun revision =>
     .recordReviewPlan revision plan) store

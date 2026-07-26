@@ -188,6 +188,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .error (.invalidTransition "resumed activation must be ready, suspended, inactive, and reference the exact open work")
   | .importDesign _ version =>
       if Design.versionWellFormed version &&
+          Replay.successorAuthorized version state &&
           (match version.predecessor with
           | none => true
           | some predecessor =>
@@ -197,7 +198,8 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           !state.designs.any (·.id == version.id) then
         .ok ⟨[.designImported version], by simp⟩
       else
-        .error (.invalidTransition "design import requires a new immutable, well-formed, unapproved version")
+        .error (.invalidTransition
+          "design import requires a new immutable version and caller adoption before succession")
   | .approveDesign _ design =>
       match state.designs.find? (·.id == design) with
       | none => .error (.invalidTransition "design version is missing")
@@ -511,17 +513,17 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       if !obligation.requirements.isEmpty &&
           !obligation.expectedProducer.isEmpty &&
           !obligation.expectedObservation.isEmpty &&
-          Evidence.negativeBoundaryAdmissible obligation &&
           obligation.revision == state.revision &&
           state.designs.any (fun version =>
             version.id == obligation.design &&
             version.revision == obligation.designRevision &&
             Replay.approvedDesignCurrent state version &&
+            Replay.negativeValidationAuthorized obligation version &&
             Design.requirementsActive version obligation.requirements) then
         .ok ⟨[.obligationRecorded obligation], by simp⟩
       else
         .error (.invalidTransition
-          "obligations require active requirements from the exact current design version")
+          "obligations require active authority from the exact current design version")
   | .completeWork _ target =>
       match Work.activeFor state.activations target with
       | none => .error (.invalidTransition "target work is not active")
@@ -658,16 +660,12 @@ theorem replay_completion_applicability_matches_policy (target : WorkId)
   unfold completionApplicable completionObligationsReady
     completionObligationSatisfied completionRelatedWorkTerminal
     completionReviewsReady latestCompletionReview
-    completionRequiredReviewsReady completionPurposeReviewReady
-    completionRequiredReviewPurposes
+    completionRequiredReviewsReady
     completionReady Policy.Completion.closeable Policy.Completion.obligationsReady
     Policy.Completion.obligationSatisfied Policy.Completion.authoritativeReady
     Policy.Completion.relatedWorkTerminal Policy.Completion.reviewsReady
     Policy.Completion.traceReady Policy.Completion.requiredReviewsReady
-    Policy.Completion.purposeReviewReady Policy.Completion.requiredReviewPurposes
-    Policy.Completion.completionBinding?
-    Policy.Completion.completionBindingReady Policy.Completion.correctionsReady
-    completionBinding? completionBindingReady
+    Policy.Completion.correctionsReady
     Policy.Traceability.ready
     Review.scopeReady
     Review.scopeFindingsClosed

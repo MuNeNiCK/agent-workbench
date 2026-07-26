@@ -51,6 +51,7 @@ def blockedRelatedWork : Domain.Work.WorkUnit :=
 
 def completionPlan : Domain.Lifecycle.CompletionPlan :=
   { work := firstWork.id
+    decomposition := some "decomposition-1"
     relatedWork := [
       { work := secondWork.id, kind := .child },
       { work := thirdWork.id, kind := .dependency }]
@@ -64,6 +65,7 @@ def completionPlan : Domain.Lifecycle.CompletionPlan :=
     tasks := ["task-1", "task-after-validation"]
     checklists := ["checklist-1"]
     reviews := [⟨3001⟩]
+    obligations := ["completion-proof"]
     findings := ["blocking-review-finding"]
     validations := ["validation-1"]
     repositories := ["repository-1"]
@@ -145,8 +147,6 @@ inductive MissingCompletionCondition
   | validationArtifactMismatch
   | evidenceSnapshotMismatch
   | evidenceArtifactMismatch
-  | reviewSnapshotMismatch
-  | reviewArtifactMismatch
 deriving DecidableEq, Repr, BEq
 
 def currentState (store : Kernel.Projection.Store) : IO Kernel.Replay.State :=
@@ -178,6 +178,7 @@ def installDesignContract (work : WorkId) (store : Kernel.Projection.Store) :
       owner := evidenceDesign.owner
       reviewer := "design-reviewer"
       adjudicator := evidenceDesign.owner
+      caller := evidenceDesign.owner
       scope := contractScope work .design evidenceDesign.contentDigest }
   let store ← executeStore (.recordReviewPlan store.ledger.storedHead plan) store
     "completion design review plan rejected"
@@ -209,6 +210,7 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
       owner := evidenceDesign.owner
       reviewer := s!"decomposition-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
+      caller := evidenceDesign.owner
       scope := contractScope work .decomposition decompositionDigest }
   let store ← executeStore
     (.recordReviewPlan store.ledger.storedHead decompositionPlan) store
@@ -255,6 +257,7 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
       owner := evidenceDesign.owner
       reviewer := s!"implementation-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
+      caller := evidenceDesign.owner
       scope :=
         contractScope work .designConformance s!"implementation-{work.value}" }
   let store ← executeStore
@@ -284,6 +287,7 @@ def bindWorkContract (work : WorkId) (store : Kernel.Projection.Store)
       owner := evidenceDesign.owner
       reviewer := s!"quality-reviewer-{work.value}"
       adjudicator := evidenceDesign.owner
+      caller := evidenceDesign.owner
       scope :=
         let base :=
           contractScope work .implementationQuality s!"implementation-{work.value}"
@@ -481,11 +485,7 @@ def buildPlannedCompletionStore (missing : Option MissingCompletionCondition) :
     "parent resume rejected"
   let store ← executeStore (.registerWork store.ledger.storedHead firstWork) store
     "owner registration rejected"
-  let store ← bindWorkContract firstWork.id store true
-    (if missing == some .reviewSnapshotMismatch then
-      some "snapshot:different" else none)
-    (if missing == some .reviewArtifactMismatch then
-      some "artifact:different" else none)
+  let store ← bindWorkContract firstWork.id store
   let (store, firstBasis) ← recordReadinessEvidence firstWork.id store
   let firstContext : Domain.Work.SuspensionContext :=
     { suspensionContext with basis := some firstBasis }
@@ -646,7 +646,7 @@ def expectPublicCompletionRejected (missing : MissingCompletionCondition)
     activation.work == firstWork.id && activation.status == .active)
     s!"{label}: rejected completion did not retain the owning activation"
 
-def expectMissingRequiredReviewRejected : IO Unit := do
+def expectUnselectedReviewNotRequired : IO Unit := do
   let store ← executeStore
     (.initializeWork Application.Service.initialStore.ledger.storedHead
       secondWork secondActivation)
@@ -655,16 +655,16 @@ def expectMissingRequiredReviewRejected : IO Unit := do
   let store ← bindWorkContract secondWork.id store false
   let store ← prepareMinimalActiveWork secondWork.id store
   match Application.Service.complete store.ledger.storedHead secondWork.id store with
-  | .error _ => pure ()
-  | .ok _ =>
+  | .error error =>
       throw <| IO.userError
-        "public completion accepted a missing implementation-quality review"
+        s!"an unselected review purpose blocked public completion: {repr error}"
+  | .ok _ => pure ()
   let state ← currentState store
-  expect (!Kernel.Replay.completionRequiredReviewsReady secondWork.id state)
-    "replay accepted a missing implementation-quality review"
+  expect (Kernel.Replay.completionRequiredReviewsReady secondWork.id state)
+    "replay required an unselected review purpose"
   expect (state.work.any fun work =>
     work.id == secondWork.id && work.status == .open)
-    "required-review rejection changed the active work"
+    "read-only fixture state changed before completion"
 
 def testAggregateWorkLifecycle : IO Unit := do
   let initial := Kernel.Replay.emptyState
@@ -751,6 +751,7 @@ def testAggregateWorkLifecycle : IO Unit := do
     owner := firstWork.owner
     reviewer := "phase-reviewer"
     adjudicator := firstWork.owner
+    caller := firstWork.owner
     scope }
   let state ← executeState
     (.recordReviewPlan state.revision reviewPlan) state
@@ -900,7 +901,7 @@ def testAggregateWorkLifecycle : IO Unit := do
 set_option maxRecDepth 2048 in
 def main : IO Unit := do
   testEvidenceScopeSatisfaction
-  expectMissingRequiredReviewRejected
+  expectUnselectedReviewNotRequired
   testAggregateWorkLifecycle
   let initial := Kernel.Replay.emptyState
   expect (decide (Kernel.Replay.ValidState initial)) "empty state must be valid"
@@ -1240,6 +1241,10 @@ def main : IO Unit := do
   let adjudication : Domain.Review.Adjudication :=
     { review := claim.id, decision := .accepted, adjudicator := "owner"
       reason := "the claim matches the current completion scope" }
+  expectRejectedNoEffect
+    (.recordReviewAdjudication claimed.revision
+      { adjudication with adjudicator := "later-invoker" }) claimed
+    "a principal other than the caller frozen on the review request"
   let adjudicated ← executeState
     (.recordReviewAdjudication claimed.revision adjudication) claimed
     "review adjudication rejected"
@@ -1305,6 +1310,9 @@ def main : IO Unit := do
   let completable ← executeState
     (.recordEvidence obligatedCompletion.revision completionEvidence) obligatedCompletion
     "completion evidence rejected"
+  expect (Policy.Completion.obligationsReady firstWork.id none ["completion-proof"]
+    completable.evidence completable.obligations completable.designs [])
+    "a selected obligation implicitly required an unselected decomposition"
   expect (Policy.Completion.closeable firstWork.id completable.work completable.activations
     completable.claims completable.adjudications completable.reviewPlans
     completable.reviewFindings completable.findingVerifications completable.lifecycle
@@ -1315,12 +1323,13 @@ def main : IO Unit := do
     { completable with
       reviewPlans := completable.reviewPlans.filter fun plan =>
         plan.scope.purpose != .implementationQuality }
-  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+  expect (Policy.Completion.requiredReviewsReady firstWork.id
     withoutQualityReview.work withoutQualityReview.reviewPlans
     withoutQualityReview.decompositions
     withoutQualityReview.claims withoutQualityReview.adjudications
-    withoutQualityReview.reviewFindings withoutQualityReview.findingVerifications))
-    "completion accepted a missing implementation-quality review"
+    withoutQualityReview.reviewFindings withoutQualityReview.findingVerifications
+    withoutQualityReview.lifecycle)
+    "an unselected review purpose blocked completion"
   let reusedConformanceReview :=
     { completable with
       reviewPlans := completable.reviewPlans.map fun
@@ -1336,8 +1345,8 @@ def main : IO Unit := do
     reusedConformanceReview.decompositions
     reusedConformanceReview.claims reusedConformanceReview.adjudications
     reusedConformanceReview.reviewFindings
-    reusedConformanceReview.findingVerifications))
-    "one design-conformance review was reused for both required purposes"
+    reusedConformanceReview.findingVerifications reusedConformanceReview.lifecycle))
+    "a selected review remained current after its scope was superseded"
   let mismatchedQualityScope :=
     { completable with
       reviewPlans := completable.reviewPlans.map fun
@@ -1364,12 +1373,13 @@ def main : IO Unit := do
     mismatchedQualityScope.adjudications mismatchedQualityScope.reviewFindings
     mismatchedQualityScope.findingVerifications)
     "artifact mismatch invalidated the implementation-quality review itself"
-  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+  expect (Policy.Completion.requiredReviewsReady firstWork.id
     mismatchedQualityScope.work mismatchedQualityScope.reviewPlans
     mismatchedQualityScope.decompositions
     mismatchedQualityScope.claims mismatchedQualityScope.adjudications
-    mismatchedQualityScope.reviewFindings mismatchedQualityScope.findingVerifications))
-    "completion combined required reviews from different frozen artifact scopes"
+    mismatchedQualityScope.reviewFindings mismatchedQualityScope.findingVerifications
+    mismatchedQualityScope.lifecycle)
+    "an unselected review artifact blocked completion"
   let mismatchedRepositoryScope :=
     { completable with
       reviewPlans := completable.reviewPlans.map fun
@@ -1398,13 +1408,14 @@ def main : IO Unit := do
     mismatchedRepositoryScope.reviewFindings
     mismatchedRepositoryScope.findingVerifications)
     "repository mismatch invalidated the implementation-quality review itself"
-  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+  expect (Policy.Completion.requiredReviewsReady firstWork.id
     mismatchedRepositoryScope.work mismatchedRepositoryScope.reviewPlans
     mismatchedRepositoryScope.decompositions
     mismatchedRepositoryScope.claims mismatchedRepositoryScope.adjudications
     mismatchedRepositoryScope.reviewFindings
-    mismatchedRepositoryScope.findingVerifications))
-    "completion combined required reviews from different repository snapshots"
+    mismatchedRepositoryScope.findingVerifications
+    mismatchedRepositoryScope.lifecycle)
+    "an unselected review repository blocked completion"
   let missingQualityAdjudication :=
     { completable with
       adjudications := completable.adjudications.filter fun decision =>
@@ -1423,27 +1434,28 @@ def main : IO Unit := do
     missingQualityAdjudication.reviewFindings
     missingQualityAdjudication.findingVerifications))
     "implementation-quality review was ready without adjudication"
-  expect (!(Policy.Completion.requiredReviewsReady firstWork.id
+  expect (Policy.Completion.requiredReviewsReady firstWork.id
     missingQualityAdjudication.work missingQualityAdjudication.reviewPlans
     missingQualityAdjudication.decompositions
     missingQualityAdjudication.claims missingQualityAdjudication.adjudications
     missingQualityAdjudication.reviewFindings
-    missingQualityAdjudication.findingVerifications))
-    "completion accepted an unadjudicated implementation-quality review"
+    missingQualityAdjudication.findingVerifications
+    missingQualityAdjudication.lifecycle)
+    "an unselected unadjudicated review blocked completion"
   expect (Kernel.Replay.completionRequiredReviewsReady firstWork.id completable)
-    "replay did not recognize both exact required review purposes"
-  expect (!Kernel.Replay.completionRequiredReviewsReady
+    "replay did not recognize the selected review"
+  expect (Kernel.Replay.completionRequiredReviewsReady
     firstWork.id withoutQualityReview)
-    "replay accepted a missing required review purpose"
-  expect (!Kernel.Replay.completionRequiredReviewsReady
+    "replay required an unselected review purpose"
+  expect (Kernel.Replay.completionRequiredReviewsReady
     firstWork.id mismatchedQualityScope)
-    "replay combined reviews from different frozen artifacts"
-  expect (!Kernel.Replay.completionRequiredReviewsReady
+    "replay required an unselected review artifact"
+  expect (Kernel.Replay.completionRequiredReviewsReady
     firstWork.id mismatchedRepositoryScope)
-    "replay combined reviews from different repository snapshots"
-  expect (!Kernel.Replay.completionRequiredReviewsReady
+    "replay required an unselected review repository"
+  expect (Kernel.Replay.completionRequiredReviewsReady
     firstWork.id missingQualityAdjudication)
-    "replay accepted an unadjudicated implementation-quality review"
+    "replay required adjudication of an unselected review"
   let otherDesign :=
     { evidenceDesign with id := ⟨2⟩, contentDigest := "sha256:other-design" }
   let otherDesignObligation :=
@@ -1503,6 +1515,7 @@ def main : IO Unit := do
       owner := "owner"
       reviewer := "implementation-reviewer-new"
       adjudicator := "owner"
+      caller := "owner"
       scope :=
         contractScope firstWork.id .designConformance
           s!"implementation-{firstWork.id.value}" }
@@ -1521,11 +1534,14 @@ def main : IO Unit := do
   expect (!Kernel.Gates.reviewReadyState ⟨3000 + firstWork.id.value⟩
     supersededReviewState)
     "an older implementation review gate remained ready after a newer plan"
+  let completionEpoch :=
+    (Domain.Lifecycle.forWork completable.lifecycle firstWork.id).map (·.epoch)
+      |>.getD ⟨0⟩
   let supersedingFindingsClaim : Domain.Review.Claim :=
     { id := ⟨3998⟩
       plan := supersedingImplementationPlan.id
       work := firstWork.id
-      epoch := ⟨0⟩
+      epoch := completionEpoch
       claim := .findings
       reviewer := supersedingImplementationPlan.reviewer
       scope := some supersedingImplementationPlan.scope }
@@ -1552,7 +1568,14 @@ def main : IO Unit := do
     { supersededByFindings with
       claims := supersededByFindings.claims ++ [latestCleanClaim]
       adjudications :=
-        supersededByFindings.adjudications ++ [latestCleanAdjudication] }
+        supersededByFindings.adjudications ++ [latestCleanAdjudication]
+      lifecycle := supersededByFindings.lifecycle.map fun
+          (completion : Domain.Lifecycle.CompletionState) =>
+        if completion.plan.work == firstWork.id then
+          { completion with
+            plan := { completion.plan with
+              reviews := [supersedingImplementationPlan.id] } }
+        else completion }
   expect (Policy.Completion.closeable firstWork.id
     restoredLatestReview.work restoredLatestReview.activations
     restoredLatestReview.claims restoredLatestReview.adjudications
@@ -1561,7 +1584,7 @@ def main : IO Unit := do
     restoredLatestReview.evidence restoredLatestReview.obligations
     restoredLatestReview.designs restoredLatestReview.designApprovals
     restoredLatestReview.decompositions restoredLatestReview.corrections)
-    "latest clean implementation review did not restore completion authority"
+    "the explicitly selected latest clean review did not restore completion authority"
   let currentDecomposition ←
     match completable.decompositions.reverse.find? (·.work == firstWork.id) with
     | some decomposition => pure decomposition
@@ -1829,9 +1852,7 @@ def main : IO Unit := do
     (.repositorySnapshotMismatch, "repository snapshot mismatch"),
     (.validationArtifactMismatch, "validation artifact mismatch"),
     (.evidenceSnapshotMismatch, "evidence snapshot mismatch"),
-    (.evidenceArtifactMismatch, "evidence artifact mismatch"),
-    (.reviewSnapshotMismatch, "review snapshot mismatch"),
-    (.reviewArtifactMismatch, "review artifact mismatch")]
+    (.evidenceArtifactMismatch, "evidence artifact mismatch")]
   for (condition, label) in rejectionCases do
     expectPublicCompletionRejected condition label
   let allReadyStore ← buildCompletionStore none
@@ -1945,14 +1966,12 @@ def main : IO Unit := do
     "unmet obligation setup rejected"
   let unmetState ← currentState withUnmetObligation
   match Application.Service.complete withUnmetObligation.ledger.storedHead firstWork.id withUnmetObligation with
-  | .error _ => pure ()
-  | .ok _ => throw <| IO.userError "completion erased an unmet current obligation"
-  let unmetResult := Kernel.Decide.decide
-    (.completeWork unmetState.revision firstWork.id) unmetState
-  expect (Kernel.Decide.committedEvents unmetResult).isEmpty
-    "unmet obligation rejection exposed an accepted event"
-  expect (Kernel.Decide.committedState unmetResult unmetState == unmetState)
-    "unmet obligation rejection changed authoritative state"
+  | .error error =>
+      throw <| IO.userError
+        s!"an obligation outside the accepted completion boundary blocked completion: {repr error}"
+  | .ok _ => pure ()
+  expect (Kernel.Replay.completionApplicable firstWork.id unmetState)
+    "an unselected current obligation entered the completion boundary"
   let staleCompletionRevision := allReadyStore.ledger.storedHead
   let refreshEvidence : Domain.Evidence.Evidence :=
     { id := ⟨101⟩

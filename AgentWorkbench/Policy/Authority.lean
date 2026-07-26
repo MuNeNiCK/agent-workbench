@@ -21,7 +21,7 @@ def mayInvoke (plan : Plan) (exceptions : List AuthorityException) : Bool :=
   independent plan || exceptions.any (exceptionExact plan)
 
 def mayAdjudicate (plan : Plan) (claim : Claim) (principal : String) : Bool :=
-  scopeExact plan claim && principal == plan.adjudicator &&
+  scopeExact plan claim && principal == plan.caller &&
   principal != claim.reviewer
 
 def blockingFindingsClosed (review : ReviewId) (claims : List Claim)

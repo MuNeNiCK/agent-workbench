@@ -26,6 +26,7 @@ structure Plan where
   owner : String
   reviewer : String
   adjudicator : String
+  caller : String
   scope : FrozenScope
 deriving DecidableEq, Repr
 
@@ -36,6 +37,7 @@ structure AuthorityException where
   owner : String
   reviewer : String
   adjudicator : String
+  caller : String
   authorizedBy : String
   reason : String
 deriving DecidableEq, Repr
@@ -71,12 +73,20 @@ inductive ObservationDecision
   | needsEvidence
 deriving DecidableEq, Repr, BEq
 
+structure AdoptionRationale where
+  necessity : String
+  simplerAlternativesInsufficient : String
+  boundedScope : String
+  complexityCost : String
+deriving DecidableEq, Repr
+
 structure ObservationDisposition where
   observation : String
   decision : ObservationDecision
   reason : String
   changesAuthority : Bool := false
   successorDesign : Option DesignId := none
+  adoptionRationale : Option AdoptionRationale := none
 deriving DecidableEq, Repr
 
 structure Adjudication where
@@ -127,13 +137,15 @@ deriving DecidableEq, Repr
 
 def independent (plan : Plan) : Bool :=
   !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty &&
-  plan.reviewer != plan.owner && plan.reviewer != plan.adjudicator
+  !plan.caller.isEmpty && plan.reviewer != plan.owner &&
+  plan.reviewer != plan.adjudicator && plan.reviewer != plan.caller
 
 def exceptionExact (plan : Plan) (exception : AuthorityException) : Bool :=
   exception.plan == plan.id && exception.scope == plan.scope &&
   exception.owner == plan.owner &&
   exception.reviewer == plan.reviewer &&
   exception.adjudicator == plan.adjudicator &&
+  exception.caller == plan.caller &&
   exception.authorizedBy == "user" && !exception.reason.isEmpty
 
 def scopeExact (plan : Plan) (claim : Claim) : Bool :=
@@ -143,7 +155,8 @@ def scopeExact (plan : Plan) (claim : Claim) : Bool :=
 def planWellFormed (plan : Plan) : Bool :=
   !plan.scope.repositorySnapshot.isEmpty && !plan.scope.artifactDigest.isEmpty &&
   plan.scope.phase.all (fun phase => !phase.isEmpty) &&
-  !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty
+  !plan.owner.isEmpty && !plan.reviewer.isEmpty && !plan.adjudicator.isEmpty &&
+  !plan.caller.isEmpty
 
 def findingWellFormed (finding : Finding) : Bool :=
   !finding.key.isEmpty && !finding.authority.isEmpty &&
@@ -160,13 +173,24 @@ def claimWellFormed (claim : Claim) : Bool :=
   claim.observations.all observationWellFormed &&
   (claim.observations.map (·.key)).Nodup
 
+def adoptionRationaleWellFormed (rationale : AdoptionRationale) : Bool :=
+  !rationale.necessity.isEmpty &&
+  !rationale.simplerAlternativesInsufficient.isEmpty &&
+  !rationale.boundedScope.isEmpty &&
+  !rationale.complexityCost.isEmpty
+
 def dispositionWellFormed (observation : Observation)
     (disposition : ObservationDisposition) : Bool :=
+  let adoptedProposal :=
+    observation.kind == .proposal &&
+    disposition.decision == .accepted
   disposition.observation == observation.key && !disposition.reason.isEmpty &&
+  (adoptedProposal ==
+    disposition.adoptionRationale.any adoptionRationaleWellFormed) &&
   (!disposition.changesAuthority ||
-    (observation.kind == .proposal &&
-      disposition.decision == .accepted &&
-      disposition.successorDesign.isSome)) &&
+    (adoptedProposal &&
+      disposition.successorDesign.isSome &&
+      disposition.adoptionRationale.any adoptionRationaleWellFormed)) &&
   (disposition.successorDesign.isNone || disposition.changesAuthority)
 
 def adjudicationExact (claim : Claim) (adjudication : Adjudication) : Bool :=

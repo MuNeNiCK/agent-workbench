@@ -125,12 +125,20 @@ private structure ObservationInput where
   evidence : String
 deriving FromJson
 
+private structure AdoptionRationaleInput where
+  necessity : String
+  simplerAlternativesInsufficient : String
+  boundedScope : String
+  complexityCost : String
+deriving FromJson
+
 private structure DispositionInput where
   observation : String
   decision : String
   reason : String
   changesAuthority : Bool := false
   successorDesign : Option Nat := none
+  adoptionRationale : Option AdoptionRationaleInput := none
 deriving FromJson
 
 private structure RelatedWorkInput where
@@ -185,6 +193,12 @@ private def dispositionFromInput (input : DispositionInput) :
     reason := input.reason
     changesAuthority := input.changesAuthority
     successorDesign := input.successorDesign.map (⟨·⟩)
+    adoptionRationale := input.adoptionRationale.map fun rationale => {
+      necessity := rationale.necessity
+      simplerAlternativesInsufficient := rationale.simplerAlternativesInsufficient
+      boundedScope := rationale.boundedScope
+      complexityCost := rationale.complexityCost
+    }
   }
 
 private def parseVerificationResult : String → Except String Review.VerificationResult
@@ -344,11 +358,16 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let owner : String ← jsonField json "owner" String
         let contentDigest : String ← jsonField json "contentDigest" String
         let requirementKeys : List String ← jsonField json "requirements" (List String)
+        let negativeRequirements ←
+          jsonListFieldD json "negativeRequirements" String
         let decisions : List String ← jsonField json "decisions" (List String)
         let validationGates : List String ←
           jsonField json "validationGates" (List String)
         let requirements := requirementKeys.map fun key =>
-          ({ key, active := true } : Design.Requirement)
+          ({ key
+             active := true
+             negativeValidationAuthority := negativeRequirements.contains key
+           } : Design.Requirement)
         pure <| .importDesign revision {
           id := ⟨id⟩
           revision := ⟨designRevision⟩
@@ -367,8 +386,10 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let owner : String ← jsonField json "owner" String
         let reviewer : String ← jsonField json "reviewer" String
         let adjudicator : String ← jsonField json "adjudicator" String
+        let caller : String ← jsonField json "caller" String
         let scope ← scopeFromJson json
-        pure <| .recordReviewPlan revision { id := ⟨id⟩, owner, reviewer, adjudicator, scope }
+        pure <| .recordReviewPlan revision {
+          id := ⟨id⟩, owner, reviewer, adjudicator, caller, scope }
     | "record-review-claim" => do
         let id : Nat ← jsonField json "review" Nat
         let plan : Nat ← jsonField json "plan" Nat
@@ -553,6 +574,7 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         }
     | "plan-completion" => do
         let work : Nat ← jsonField json "work" Nat
+        let decomposition ← jsonOptionalFieldD json "decomposition" String
         let relatedWorkInputs : List RelatedWorkInput ←
           jsonField json "relatedWork" (List RelatedWorkInput)
         let relatedWork ← relatedWorkInputs.mapM relatedWorkFromInput
@@ -568,6 +590,7 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let tasks : List String ← jsonField json "tasks" (List String)
         let checklists : List String ← jsonField json "checklists" (List String)
         let reviewValues : List Nat ← jsonField json "reviews" (List Nat)
+        let obligations ← jsonListFieldD json "obligations" String
         let findings : List String ← jsonField json "findings" (List String)
         let validations : List String ← jsonField json "validations" (List String)
         let repositories : List String ← jsonField json "repositories" (List String)
@@ -575,11 +598,13 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let workRecords : List String ← jsonField json "workRecords" (List String)
         pure <| .planCompletion revision {
           work := ⟨work⟩
+          decomposition
           relatedWork
           phases
           tasks
           checklists
           reviews := reviewValues.map (⟨·⟩)
+          obligations
           findings
           validations
           repositories

@@ -103,6 +103,22 @@ def designApprovalLineageReady (state : State)
     state.designs.any fun current =>
       current.id == predecessor && approvedDesignCurrent state current
 
+def successorAuthorized (version : Design.DesignVersion) (state : State) : Bool :=
+  match version.predecessor with
+  | none => true
+  | some predecessor =>
+      state.adjudications.any fun decision =>
+        decision.observations.any fun disposition =>
+          disposition.decision == .accepted &&
+          disposition.changesAuthority &&
+          disposition.successorDesign == some version.id &&
+          state.claims.any fun claim =>
+            claim.id == decision.review &&
+            state.reviewPlans.any fun plan =>
+              plan.id == claim.plan &&
+              plan.scope.design == some predecessor &&
+              decision.adjudicator == plan.caller
+
 def reviewAuthorityCurrent (authority : String) (scope : Review.FrozenScope)
     (state : State) : Bool :=
   (scope.design.bind fun design =>
@@ -116,13 +132,13 @@ def reviewAuthorityCurrent (authority : String) (scope : Review.FrozenScope)
   Design.authorityCurrentFor authority scope.work scope.design
     state.authorityTransitions
 
-def proposalSuccessorsExact (claim : Review.Claim)
-    (decision : Review.Adjudication) (state : State) : Bool :=
-  decision.observations.all fun disposition =>
-    disposition.successorDesign.all fun successor =>
-      claim.scope.bind (·.design) |>.any fun reviewed =>
-        state.designs.any fun version =>
-          version.id == successor && version.predecessor == some reviewed
+def negativeValidationAuthorized (obligation : Evidence.Obligation)
+    (version : Design.DesignVersion) : Bool :=
+  !obligation.negative ||
+    obligation.requirements.any fun key =>
+      version.requirements.any fun requirement =>
+        requirement.key == key && requirement.active &&
+        requirement.negativeValidationAuthority
 
 def reviewPlanOwnerCurrent (plan : Review.Plan) (state : State) : Bool :=
   state.work.any fun work =>
@@ -133,12 +149,11 @@ def reviewAdjudicationApplicable (decision : Review.Adjudication)
     (state : State) : Bool :=
   state.claims.any (fun claim =>
     Review.adjudicationExact claim decision &&
-    proposalSuccessorsExact claim decision state &&
     state.reviewPlans.any (fun plan =>
       plan.id == claim.plan &&
       Review.scopeExact plan claim &&
       reviewPlanOwnerCurrent plan state &&
-      decision.adjudicator == plan.adjudicator &&
+      decision.adjudicator == plan.caller &&
       decision.adjudicator != claim.reviewer)) &&
   !state.adjudications.any (·.review == decision.review)
 
@@ -493,27 +508,26 @@ def completionObligationSatisfied (evidence : List Evidence.Evidence)
   obligation.current && evidence.any (Evidence.exactFor · obligation)
 
 def completionObligationsReady (target : WorkId)
+    (selectedDecomposition : Option String) (selected : List String)
     (evidence : List Evidence.Evidence) (obligations : List Evidence.Obligation)
     (designs : List Design.DesignVersion)
     (decompositions : List Design.Decomposition) : Bool :=
+  if selected.isEmpty then true else
   let owned := Evidence.forWork obligations target
-  match decompositions.reverse.find? (·.work == target) with
-  | none => false
-  | some decomposition =>
-      match designs.find? fun design =>
-          design.id == decomposition.design &&
-          design.revision == decomposition.designRevision with
-      | none => false
-      | some design =>
-          let active := (design.requirements.filter (·.active)).map (·.key)
-          !owned.isEmpty &&
-          owned.all (fun obligation =>
+  selected.all (fun key =>
+    owned.any fun obligation =>
+      obligation.key == key &&
+      designs.any fun design =>
             obligation.design == design.id &&
             obligation.designRevision == design.revision &&
-            completionObligationSatisfied evidence obligation) &&
-          active.all fun requirement =>
-            owned.any (fun obligation =>
-              obligation.requirements.contains requirement)
+            (selectedDecomposition.isNone ||
+              decompositions.any fun decomposition =>
+                decomposition.work == target &&
+                decomposition.key == selectedDecomposition.getD "" &&
+                decomposition.design == design.id &&
+                decomposition.designRevision == design.revision) &&
+            Design.requirementsActive design obligation.requirements &&
+            completionObligationSatisfied evidence obligation)
 
 def reviewScopeReady (planId : ReviewPlanId) (state : State) : Bool :=
   state.reviewPlans.any fun plan =>
@@ -626,48 +640,29 @@ def implementationReviewReadyFor (basis : Work.ReadinessBasis) (work : WorkId)
       plan.scope.repositorySnapshot == basis.repositorySnapshot &&
       reviewScopeReady plan.id state
 
-def completionPurposeReviewReady (target : WorkId) (design : Option DesignId)
-    (purpose : Review.Purpose) (state : State) : Bool :=
-  match Review.latestPlanFor? design target purpose state.reviewPlans with
-  | none => false
-  | some plan =>
-      Review.scopeReady plan state.claims state.adjudications
-        state.reviewFindings state.findingVerifications
-
-def completionRequiredReviewPurposes : List Review.Purpose :=
-  [.designConformance, .implementationQuality]
-
 def completionRequiredReviewsReady (target : WorkId) (state : State) : Bool :=
-  let design :=
-    (state.decompositions.reverse.find? (·.work == target)).map (·.design)
-  match Review.latestPlanFor? design target .designConformance
-      state.reviewPlans with
+  match Lifecycle.forWork state.lifecycle target with
   | none => false
-  | some conformance =>
-      match Review.latestPlanFor? design target .implementationQuality
-          state.reviewPlans with
-      | none => false
-      | some quality =>
-          state.work.any (fun unit =>
-            unit.id == target && unit.status == .open &&
-            conformance.owner == unit.owner && quality.owner == unit.owner) &&
-          Review.sameArtifactScope conformance.scope quality.scope &&
-          completionRequiredReviewPurposes.all fun purpose =>
-            completionPurposeReviewReady target design purpose state
+  | some completion =>
+      state.work.any fun unit =>
+        unit.id == target && unit.status == .open &&
+        completion.plan.reviews.all fun selected =>
+          (state.reviewPlans.find? (·.id == selected)).any fun plan =>
+            plan.scope.work == target && plan.owner == unit.owner &&
+            Review.isLatestPlan plan state.reviewPlans &&
+            Review.scopeReady plan state.claims state.adjudications
+              state.reviewFindings state.findingVerifications
 
 def completionBinding? (target : WorkId) (state : State) :
     Option (String × String) :=
-  let design :=
-    (state.decompositions.reverse.find? (·.work == target)).map (·.design)
-  match Review.latestPlanFor? design target .designConformance state.reviewPlans,
-      Review.latestPlanFor? design target .implementationQuality
-        state.reviewPlans with
-  | some conformance, some quality =>
-      if Review.sameArtifactScope conformance.scope quality.scope then
-        some (conformance.scope.repositorySnapshot,
-          conformance.scope.artifactDigest)
-      else none
-  | _, _ => none
+  (Lifecycle.forWork state.lifecycle target).bind fun completion =>
+    completion.plan.reviews.head?.bind fun firstId =>
+      (state.reviewPlans.find? (·.id == firstId)).bind fun first =>
+        if completion.plan.reviews.all fun selected =>
+            (state.reviewPlans.find? (·.id == selected)).any fun plan =>
+              Review.sameArtifactScope first.scope plan.scope then
+          some (first.scope.repositorySnapshot, first.scope.artifactDigest)
+        else none
 
 def completionBindingReady (target : WorkId) (binding : String × String)
     (state : State) : Bool :=
@@ -678,15 +673,14 @@ def completionBindingReady (target : WorkId) (binding : String × String)
         record.status == .classified && record.snapshotDigest == binding.1) &&
       (completion.validations.all fun record =>
         record.status == .passed && record.artifactDigest == binding.2) &&
-      let current := state.obligations.filter fun obligation =>
-        obligation.work == target && obligation.current
-      !current.isEmpty &&
-      current.all fun obligation =>
-        obligation.snapshot == binding.1 &&
-        obligation.artifactDigest == binding.2 &&
-        state.evidence.any fun item =>
-          Evidence.exactFor item obligation &&
-          item.snapshot == binding.1 && item.artifactDigest == binding.2
+      completion.plan.obligations.all fun key =>
+        state.obligations.any fun obligation =>
+          obligation.work == target && obligation.key == key &&
+          obligation.snapshot == binding.1 &&
+          obligation.artifactDigest == binding.2 &&
+          state.evidence.any fun item =>
+            Evidence.exactFor item obligation &&
+            item.snapshot == binding.1 && item.artifactDigest == binding.2
 
 def correctionsCurrentFor (state : State) (work : WorkId)
     (design : Option DesignId) : Bool :=
@@ -730,8 +724,10 @@ def resumeCurrent (work : WorkId) (activation : ActivationId) (state : State) : 
         readinessCurrent work activation basis state
 
 def completionApplicable (target : WorkId) (state : State) : Bool :=
-  completionObligationsReady target state.evidence state.obligations
-    state.designs state.decompositions &&
+  (Lifecycle.forWork state.lifecycle target).any (fun completion =>
+    completionObligationsReady target completion.plan.decomposition
+      completion.plan.obligations state.evidence state.obligations state.designs
+      state.decompositions) &&
   (Work.activeFor state.activations target).isSome &&
   Work.workIsOpen state.work target &&
   (match Lifecycle.forWork state.lifecycle target with
@@ -740,22 +736,27 @@ def completionApplicable (target : WorkId) (state : State) : Bool :=
       completionRelatedWorkTerminal state.work completion.plan.relatedWork &&
       Lifecycle.recordsReady completion &&
       completionReviewsReady completion state.claims state.adjudications) &&
-  (match state.decompositions.reverse.find? (·.work == target) with
-  | none => false
-  | some decomposition =>
-      state.designs.any fun design =>
-        design.id == decomposition.design &&
-        design.revision == decomposition.designRevision &&
-        state.designApprovals.any fun approval =>
-          approval.design == design.id &&
-          Design.decompositionCovers design approval decomposition) &&
+  (Lifecycle.forWork state.lifecycle target).any (fun completion =>
+    if completion.plan.decomposition.isNone then true else
+    match state.decompositions.reverse.find? (·.work == target) with
+    | none => false
+    | some decomposition =>
+        decomposition.key == completion.plan.decomposition.getD "" &&
+        state.designs.any fun design =>
+          design.id == decomposition.design &&
+          design.revision == decomposition.designRevision &&
+          state.designApprovals.any fun approval =>
+            approval.design == design.id &&
+            Design.decompositionCovers design approval decomposition) &&
   completionRequiredReviewsReady target state &&
   !state.corrections.any (fun correction =>
     !correction.resolved &&
     Design.correctionApplies correction target
       ((state.decompositions.reverse.find? (·.work == target)).map (·.design))) &&
-  (completionBinding? target state).any fun binding =>
-    completionBindingReady target binding state
+  (Lifecycle.forWork state.lifecycle target).any fun completion =>
+    completion.plan.reviews.isEmpty ||
+      (completionBinding? target state).any fun binding =>
+        completionBindingReady target binding state
 
 def eventApplicable (event : Event) (state : State) : Bool :=
   match event with
@@ -800,6 +801,7 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       resumeCurrent work activation state
   | .designImported version =>
       Design.versionWellFormed version &&
+      successorAuthorized version state &&
       (match version.predecessor with
       | none => true
       | some predecessor =>
@@ -1011,13 +1013,13 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       !obligation.snapshot.isEmpty && !obligation.artifactDigest.isEmpty &&
       !obligation.requirements.isEmpty && !obligation.expectedProducer.isEmpty &&
       !obligation.expectedObservation.isEmpty &&
-      Evidence.negativeBoundaryAdmissible obligation &&
       obligation.revision == state.revision &&
       state.work.any (fun work => work.id == obligation.work && work.status == .open) &&
       (state.designs.any (fun version =>
         version.id == obligation.design &&
         version.revision == obligation.designRevision &&
         approvedDesignCurrent state version &&
+        negativeValidationAuthorized obligation version &&
         Design.requirementsActive version obligation.requirements))
   | .workCompleted work activation =>
       match Work.activeFor state.activations work with

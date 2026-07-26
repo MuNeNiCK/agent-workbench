@@ -41,7 +41,8 @@ def lifecycleRequests : List String := [
     ("plan", toJson 1),
     ("owner", toJson "owner"),
     ("reviewer", toJson "design-reviewer"),
-    ("adjudicator", toJson "owner")
+    ("adjudicator", toJson "owner"),
+    ("caller", toJson "owner")
   ] ++ scopeFields "design" "snapshot:design" "sha256:design",
   request 3 "claim-design-clean" "record-review-claim" <| [
     ("review", toJson 1),
@@ -63,7 +64,8 @@ def lifecycleRequests : List String := [
     ("plan", toJson 2),
     ("owner", toJson "owner"),
     ("reviewer", toJson "planner"),
-    ("adjudicator", toJson "owner")
+    ("adjudicator", toJson "owner"),
+    ("caller", toJson "owner")
   ] ++ scopeFields "decomposition" "snapshot:decomposition" "sha256:decomposition",
   request 7 "claim-decomposition-clean" "record-review-claim" <| [
     ("review", toJson 2),
@@ -97,16 +99,19 @@ def lifecycleRequests : List String := [
     ("plan", toJson 3),
     ("owner", toJson "owner"),
     ("reviewer", toJson "conformance-reviewer"),
-    ("adjudicator", toJson "owner")
+    ("adjudicator", toJson "owner"),
+    ("caller", toJson "owner")
   ] ++ scopeFields "design-conformance" "snapshot:current" "sha256:artifact",
   request 11 "plan-quality-review" "record-review-plan" <| [
     ("plan", toJson 4),
     ("owner", toJson "owner"),
     ("reviewer", toJson "quality-reviewer"),
-    ("adjudicator", toJson "owner")
+    ("adjudicator", toJson "owner"),
+    ("caller", toJson "owner")
   ] ++ scopeFields "implementation-quality" "snapshot:current" "sha256:artifact",
   request 12 "plan-completion" "plan-completion" [
     ("work", toJson 1),
+    ("decomposition", toJson (some "implementation" : Option String)),
     ("relatedWork", toJson ([] : List Json)),
     ("phases", toJson ([] : List String)),
     ("tasks", toJson ([] : List String)),
@@ -305,7 +310,8 @@ def testAggregateLifecycle (cli root : System.FilePath) : IO Unit := do
       ("work", toJson 1), ("key", toJson "task-b")],
     request 7 "aggregate-phase-review-plan" "record-review-plan" <| [
       ("plan", toJson 8001), ("owner", toJson "owner"),
-      ("reviewer", toJson "phase-reviewer"), ("adjudicator", toJson "owner")
+      ("reviewer", toJson "phase-reviewer"), ("adjudicator", toJson "owner"),
+      ("caller", toJson "owner")
     ] ++ phaseScope,
     request 8 "aggregate-phase-review-claim" "record-review-claim" <| [
       ("review", toJson 8001), ("plan", toJson 8001), ("epoch", toJson 5),
@@ -364,7 +370,8 @@ def testRecoveryDetails (cli root : System.FilePath) : IO Unit := do
       ("plan", toJson 1),
       ("owner", toJson "owner"),
       ("reviewer", toJson "reviewer"),
-      ("adjudicator", toJson "owner")
+      ("adjudicator", toJson "owner"),
+      ("caller", toJson "owner")
     ] ++ scopeFields "design" "snapshot:review" "sha256:details-design",
     request 3 "details-review-claim" "record-review-claim" <| [
       ("review", toJson 1),

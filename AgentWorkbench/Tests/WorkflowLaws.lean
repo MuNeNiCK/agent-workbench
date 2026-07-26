@@ -39,7 +39,8 @@ def designVersion : Domain.Design.DesignVersion :=
     owner := "owner"
     contentDigest := "sha256:design-v1"
     requirements := [
-      { key := "resume-readiness", active := true },
+      { key := "resume-readiness", active := true,
+        negativeValidationAuthority := true },
       { key := "completion-integrity", active := true },
       { key := "review-authority", active := true },
       { key := "evidence-integrity", active := true },
@@ -64,6 +65,7 @@ def reviewPlan (id : Nat) (purpose : Domain.Review.Purpose)
     owner := "owner"
     reviewer := s!"reviewer-{id}"
     adjudicator := "owner"
+    caller := "owner"
     scope := scope purpose digest work }
 
 def claimFor (id : Nat) (plan : Domain.Review.Plan)
@@ -82,6 +84,14 @@ def adjudicationFor (claim : Domain.Review.Claim) : Domain.Review.Adjudication :
 
 set_option maxRecDepth 2048 in
 def run : IO Unit := do
+  expect (Domain.Design.versionWellFormed
+    { designVersion with validationGates := [] })
+    "a design without selected validation gates was structurally rejected"
+  expect (Policy.Completion.traceReady workOne.id none [] [] [])
+    "an unselected decomposition entered the completion boundary"
+  expect (!Policy.Completion.traceReady workOne.id
+    (some "selected-decomposition") [] [] [])
+    "a selected decomposition was treated as optional"
   for purpose in [Domain.Review.Purpose.design,
       Domain.Review.Purpose.designConformance] do
     let plan := reviewPlan 900 purpose "sha256:review-candidates" workOne.id
@@ -121,9 +131,23 @@ def run : IO Unit := do
           { observation := proposal.key
             decision := .accepted
             reason := "adopt the proposal"
-            changesAuthority := true }] }
+            changesAuthority := true
+            successorDesign := some ⟨2⟩ }] }
     expect (!Domain.Review.adjudicationExact claim ungroundedAdoption)
-      "authority-changing proposal was adopted without a successor design"
+      "authority-changing proposal was adopted without a bounded rationale"
+    let implementationAdoption :=
+      { adjudication with observations := [
+          riskDisposition,
+          { observation := proposal.key
+            decision := .accepted
+            reason := "adopt the bounded implementation addition"
+            adoptionRationale := some {
+              necessity := "the accepted implementation outcome needs it"
+              simplerAlternativesInsufficient := "the smaller alternative failed"
+              boundedScope := "only the current implementation changes"
+              complexityCost := "one local implementation component" } }] }
+    expect (Domain.Review.adjudicationExact claim implementationAdoption)
+      "a bounded implementation proposal could not record its adoption rationale"
 
   let groundedFinding : Domain.Review.Finding :=
     { key := "grounded-violation"
@@ -379,21 +403,53 @@ def run : IO Unit := do
     "a proposal authorized permanent validation"
   reject (.recordObligation authorityBase.revision
     { activeObligation with
-      key := "ungrounded-negative-check"
+      key := "implicit-negative-check"
       revision := authorityBase.revision
+      requirements := ["evidence-integrity"]
       negative := true }) authorityBase
-    "a negative check without concrete harm or boundary rationale"
-  let groundedNegative :=
+    "an active requirement without explicit negative authority authorized a negative check"
+  let currentNegative :=
     { activeObligation with
-      key := "grounded-negative-check"
+      key := "current-authority-negative-check"
       revision := authorityBase.revision
-      negative := true
-      reintroductionHarm := "stale evidence can resume the wrong repository state"
-      positiveBoundaryInsufficient :=
-        "the forbidden stale receipt is observable only at the evidence boundary" }
+      negative := true }
   let authorityBase ← execute
-    (.recordObligation authorityBase.revision groundedNegative)
-    authorityBase "grounded current negative boundary was rejected"
+    (.recordObligation authorityBase.revision currentNegative)
+    authorityBase "current accepted authority did not authorize validation"
+  let successionPlan := reviewPlan 902 .design designVersion.contentDigest workOne.id
+  let authorityBase ← execute
+    (.recordReviewPlan authorityBase.revision successionPlan) authorityBase
+    "succession review plan failed"
+  let successionClaim : Domain.Review.Claim :=
+    { (claimFor 902 successionPlan .findings) with
+      observations := [{
+        key := "successor-proposal"
+        kind := .proposal
+        summary := "replace the current design"
+        evidence := "accepted scope changed" }] }
+  let authorityBase ← execute
+    (.recordReviewClaim authorityBase.revision successionClaim) authorityBase
+    "succession review claim failed"
+  let successionDecision : Domain.Review.Adjudication :=
+    { review := successionClaim.id
+      decision := .accepted
+      adjudicator := successionPlan.caller
+      reason := "adopt the proposed design change"
+      observations := [{
+        observation := "successor-proposal"
+        decision := .accepted
+        reason := "the changed scope is accepted"
+        changesAuthority := true
+        successorDesign := some ⟨2⟩
+        adoptionRationale := some {
+          necessity := "the accepted behavior changed"
+          simplerAlternativesInsufficient :=
+            "the predecessor cannot express the accepted behavior"
+          boundedScope := "only the reviewed design lineage changes"
+          complexityCost := "one successor design version" } }] }
+  let authorityBase ← execute
+    (.recordReviewAdjudication authorityBase.revision successionDecision)
+    authorityBase "caller adoption of succession failed"
   let successorDesign :=
     { designVersion with
       id := ⟨2⟩
@@ -410,63 +466,23 @@ def run : IO Unit := do
   expect (authorityBase.obligations.any fun obligation =>
     obligation.design == designVersion.id && obligation.current)
     "unapproved successor import retired current validation authority"
-  let wrongSuccessorDisposition : Domain.Review.Adjudication :=
-    { review := authorityReviewClaim.id
-      decision := .accepted
-      adjudicator := authorityReviewPlan.adjudicator
-      reason := "adopt authority-changing proposal"
-      observations := [{
-        observation := "proposal"
-        decision := .accepted
-        reason := "adopt"
-        changesAuthority := true
-        successorDesign := some designVersion.id }] }
-  let proposalClaim :=
-    { authorityReviewClaim with
-      observations := [{
-        key := "proposal"
-        kind := .proposal
-        summary := "change current authority"
-        evidence := "" }] }
-  expect (!Kernel.Replay.proposalSuccessorsExact proposalClaim
-    wrongSuccessorDisposition authorityBase)
-    "authority-changing proposal named the reviewed design as its successor"
   let skippedDesign :=
     { successorDesign with
       id := ⟨3⟩
       revision := ⟨3⟩
       predecessor := some successorDesign.id
       contentDigest := "sha256:design-v3" }
-  let authorityBase ← execute
-    (.importDesign authorityBase.revision skippedDesign) authorityBase
-    "third-generation design import failed"
-  let skippedReviewPlan :=
-    { reviewPlan 903 .design skippedDesign.contentDigest workOne.id with
-      scope := {
-        (scope .design skippedDesign.contentDigest workOne.id) with
-        design := some skippedDesign.id } }
-  let authorityBase ← execute
-    (.recordReviewPlan authorityBase.revision skippedReviewPlan) authorityBase
-    "third-generation design review plan failed"
-  let skippedReviewClaim := claimFor 903 skippedReviewPlan .clean
-  let authorityBase ← execute
-    (.recordReviewClaim authorityBase.revision skippedReviewClaim) authorityBase
-    "third-generation design review claim failed"
-  let authorityBase ← execute
-    (.recordReviewAdjudication authorityBase.revision
-      (adjudicationFor skippedReviewClaim)) authorityBase
-    "third-generation design adjudication failed"
-  reject (.approveDesign authorityBase.revision skippedDesign.id) authorityBase
-    "a third-generation design skipped approval of its predecessor"
+  reject (.importDesign authorityBase.revision skippedDesign) authorityBase
+    "a successor without prior caller adoption was imported"
   let successorReviewPlan :=
-    { reviewPlan 902 .design successorDesign.contentDigest workOne.id with
+    { reviewPlan 904 .design successorDesign.contentDigest workOne.id with
       scope := {
         (scope .design successorDesign.contentDigest workOne.id) with
         design := some successorDesign.id } }
   let authorityBase ← execute
     (.recordReviewPlan authorityBase.revision successorReviewPlan) authorityBase
     "successor design review plan failed"
-  let successorReviewClaim := claimFor 902 successorReviewPlan .clean
+  let successorReviewClaim := claimFor 904 successorReviewPlan .clean
   let authorityBase ← execute
     (.recordReviewClaim authorityBase.revision successorReviewClaim) authorityBase
     "successor design review claim failed"
@@ -498,6 +514,7 @@ def run : IO Unit := do
     { key := "self-review-authority", plan := badPlan.id, scope := badPlan.scope
       owner := badPlan.owner
       reviewer := badPlan.reviewer, adjudicator := badPlan.adjudicator
+      caller := badPlan.caller
       authorizedBy := "user", reason := "scoped test exception" }
   let state ← execute (.recordAuthorityException state.revision exception) state
     "explicit user authority exception failed"
@@ -505,6 +522,9 @@ def run : IO Unit := do
     { badPlan with
       scope := scope .designConformance "different-artifact" workOne.id })
     state "authority exception escaped its frozen scope"
+  reject (.recordReviewPlan state.revision
+    { badPlan with caller := "different-caller" })
+    state "authority exception escaped its frozen caller"
   let state ← execute (.recordReviewPlan state.revision badPlan) state
     "authorized scoped review exception failed"
   reject (.recordReviewPlan state.revision
@@ -661,9 +681,12 @@ def run : IO Unit := do
   expect (Kernel.Gates.traceReadyState designVersion.id workTwo.id state)
     "reviewed decomposition did not pass trace readiness"
 
-  for incomplete in [
-      { decomposition with items := decomposition.items.map fun item =>
-          { item with requirements := [] } },
+  let missingRequirements :=
+    { decomposition with items := decomposition.items.map fun item =>
+        { item with requirements := [] } }
+  expect (!Policy.Traceability.ready designVersion approval missingRequirements)
+    "a material boundary without accepted behavior passed readiness"
+  for proportional in [
       { decomposition with items := decomposition.items.map fun item =>
           { item with implementationWork := [] } },
       { decomposition with items := decomposition.items.map fun item =>
@@ -674,8 +697,18 @@ def run : IO Unit := do
           { item with checklists := [] } },
       { decomposition with items := decomposition.items.map fun item =>
           { item with validationGates := [] } }] do
-    expect (!Policy.Traceability.ready designVersion approval incomplete)
-      "an independently missing trace dimension passed readiness"
+    expect (Policy.Traceability.ready designVersion approval proportional)
+      "an intentionally absent planning artifact blocked readiness"
+  let emptyBoundary :=
+    { decomposition with items := decomposition.items.map fun item =>
+        { item with
+          implementationWork := []
+          tasks := []
+          completionChecks := []
+          checklists := []
+          validationGates := [] } }
+  expect (!Policy.Traceability.ready designVersion approval emptyBoundary)
+    "a trace item without any material boundary passed readiness"
   let uncoveredDecomposition :=
     { decomposition with
       key := "uncovered-decomposition"

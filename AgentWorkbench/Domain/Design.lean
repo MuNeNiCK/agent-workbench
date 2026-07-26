@@ -9,6 +9,7 @@ open AgentWorkbench.Domain
 structure Requirement where
   key : String
   active : Bool
+  negativeValidationAuthority : Bool := false
 deriving DecidableEq, Repr
 
 structure DesignVersion where
@@ -97,7 +98,6 @@ def versionWellFormed (version : DesignVersion) : Bool :=
   !version.owner.isEmpty && !version.contentDigest.isEmpty &&
   version.predecessor != some version.id &&
   !version.requirements.isEmpty && !version.decisions.isEmpty &&
-  !version.validationGates.isEmpty &&
   version.requirements.all (fun requirement => !requirement.key.isEmpty) &&
   version.decisions.all (fun decision => !decision.isEmpty) &&
   version.validationGates.all (fun gate => !gate.isEmpty) &&
@@ -117,17 +117,13 @@ def decompositionWellFormed (decomposition : Decomposition) : Bool :=
   !decomposition.reviewer.isEmpty && !decomposition.adjudicator.isEmpty &&
   decomposition.items.all fun item =>
     !item.key.isEmpty && !item.requirements.isEmpty &&
-    !item.implementationWork.isEmpty && !item.tasks.isEmpty &&
-    !item.completionChecks.isEmpty && !item.checklists.isEmpty &&
-    !item.validationGates.isEmpty &&
     (item.implementationWork ++ item.tasks ++ item.completionChecks ++
-      item.checklists ++ item.validationGates).all (fun value => !value.isEmpty)
+      item.checklists ++ item.validationGates).all (fun value => !value.isEmpty) &&
+    !(item.implementationWork ++ item.tasks ++ item.completionChecks ++
+      item.checklists ++ item.validationGates).isEmpty
 
 def traceItemCovers (item : TraceItem) (requirement : String) : Bool :=
-  item.requirements.contains requirement &&
-  !item.implementationWork.isEmpty && !item.tasks.isEmpty &&
-  !item.completionChecks.isEmpty && !item.checklists.isEmpty &&
-  !item.validationGates.isEmpty
+  item.requirements.contains requirement
 
 def decompositionCovers (version : DesignVersion) (approval : Approval)
     (decomposition : Decomposition) : Bool :=
@@ -278,11 +274,13 @@ deriving DecidableEq, Repr
 
 structure CompletionPlan where
   work : WorkId
+  decomposition : Option String := none
   relatedWork : List RelatedWorkRequirement
   phases : List PhaseSpec
   tasks : List String
   checklists : List String
   reviews : List ReviewPlanId
+  obligations : List String := []
   findings : List String
   validations : List String
   repositories : List String
@@ -418,6 +416,7 @@ def scopeChangeWellFormed (change : ScopeChange) : Bool :=
 
 def ValidPlan (work : List WorkId) (plan : CompletionPlan) : Prop :=
   work.contains plan.work = true ∧
+  plan.decomposition.all (fun key => !key.isEmpty) = true ∧
   (plan.relatedWork.map (·.work)).Nodup ∧
   (plan.relatedWork.all fun requirement =>
     requirement.work != plan.work && work.contains requirement.work) = true ∧
@@ -429,6 +428,7 @@ def ValidPlan (work : List WorkId) (plan : CompletionPlan) : Prop :=
   plan.tasks.Nodup ∧ nonemptyKeys plan.tasks ∧
   plan.checklists.Nodup ∧ nonemptyKeys plan.checklists ∧
   plan.reviews.Nodup ∧
+  plan.obligations.Nodup ∧ nonemptyKeys plan.obligations ∧
   plan.findings.Nodup ∧ nonemptyKeys plan.findings ∧
   plan.validations.Nodup ∧ nonemptyKeys plan.validations ∧
   plan.repositories.Nodup ∧ nonemptyKeys plan.repositories ∧
