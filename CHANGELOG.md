@@ -1,5 +1,13 @@
 # Release history
 
+## v0.1.35 — 2026-07-27
+
+- Keep closed work-unit history visible without letting its stale task
+  derivations, checklists, validation gates, or coverage items block the
+  current design's implementation-readiness gate.
+- Preserve stale blocking and disposition behavior for open and blocked work,
+  including validation gates whose owner is resolved through their task.
+
 ## v0.1.34 — 2026-07-25
 
 - Fix `resume-check` for a work unit with nested suspended activation history
