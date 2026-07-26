@@ -837,6 +837,7 @@ def testAggregateWorkLifecycle : IO Unit := do
     operation := ⟨"release-aggregate"⟩
     work := some firstWork.id
     kind := .release
+    target := .confirmed "release:aggregate"
     artifactDigest := "sha256:aggregate"
     state := .prepared }
   let state ← executeState
@@ -1009,7 +1010,10 @@ def main : IO Unit := do
   expectRejectedNoEffect (.recordEvidence first.revision item) first
     "evidence without a recorded obligation"
   let attempt : Domain.ExternalOperation.Attempt :=
-    { operation := ⟨"publish-1"⟩, artifactDigest := "sha256:artifact", state := .prepared }
+    { operation := ⟨"publish-1"⟩
+      target := .confirmed "remote-object-1"
+      artifactDigest := "sha256:artifact"
+      state := .prepared }
   let externalized ← match Kernel.Decide.decide
       (.recordExternalOperation first.revision attempt) first with
     | .ok transaction => pure transaction.result.state
@@ -1043,6 +1047,13 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.advanceExternalOperation dispatchedState.revision dispatched) dispatchedState
     "external operation repeated dispatch without reconciliation"
+  let unobservedFailure := {
+    attempt with
+    state := .failed
+    disposition := some "no response was received" }
+  expectRejectedNoEffect
+    (.advanceExternalOperation dispatchedState.revision unobservedFailure) dispatchedState
+    "response loss was terminalized as an unobserved failure"
   let uncertain := { attempt with state := .uncertain }
   let uncertainState ← executeState
     (.advanceExternalOperation dispatchedState.revision uncertain) dispatchedState
@@ -1057,6 +1068,14 @@ def main : IO Unit := do
   expectRejectedNoEffect
     (.advanceExternalOperation uncertainState.revision wrongCompletion) uncertainState
     "mismatched remote observation completed an external operation"
+  let wrongTargetObservation : Domain.ExternalOperation.RemoteObservation := {
+    identity := "different-remote-object"
+    artifactDigest := some attempt.artifactDigest }
+  let wrongTargetCompletion := {
+    attempt with state := .succeeded, observation := some wrongTargetObservation }
+  expectRejectedNoEffect
+    (.advanceExternalOperation uncertainState.revision wrongTargetCompletion) uncertainState
+    "same artifact digest at a different remote target completed an external operation"
   let conflict := {
     attempt with state := .conflict, observation := some wrongObservation }
   let conflictState ← executeState
@@ -1073,7 +1092,10 @@ def main : IO Unit := do
     current == abandoned)
     "explicit conflict disposition did not persist"
 
-  let retryAttempt := { attempt with operation := ⟨"publish-retry"⟩ }
+  let retryAttempt := {
+    attempt with
+    operation := ⟨"publish-retry"⟩
+    target := .confirmed "remote-object-2" }
   let retryPrepared ← executeState
     (.recordExternalOperation abandonedState.revision retryAttempt) abandonedState
     "retry fixture intent was rejected"
@@ -1082,7 +1104,7 @@ def main : IO Unit := do
     (.advanceExternalOperation retryPrepared.revision retryDispatched) retryPrepared
     "retry fixture dispatch was rejected"
   let absentObservation : Domain.ExternalOperation.RemoteObservation := {
-    identity := "remote-snapshot-absent"
+    identity := retryAttempt.target.dispatchIdentity?.getD ""
     artifactDigest := none }
   let retryable := {
     retryAttempt with state := .retryable, observation := some absentObservation }
@@ -1632,6 +1654,7 @@ def main : IO Unit := do
     .payloadConflict) "a changed retry payload must conflict"
   let preInitializationAttempt : Domain.ExternalOperation.Attempt :=
     { operation := ⟨"pre-initialization-1"⟩
+      target := .confirmed "remote:pre-initialization-1"
       artifactDigest := "sha256:pre-initialization-1"
       state := .prepared }
   let nonzeroEmptyStore ← executeStore
@@ -1653,6 +1676,7 @@ def main : IO Unit := do
     "nonzero-revision initialization did not advance exactly once"
   let driftAttempt : Domain.ExternalOperation.Attempt :=
     { operation := ⟨"pre-initialization-2"⟩
+      target := .confirmed "remote:pre-initialization-2"
       artifactDigest := "sha256:pre-initialization-2"
       state := .prepared }
   let driftedEmptyStore ← executeStore

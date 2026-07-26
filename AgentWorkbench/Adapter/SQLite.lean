@@ -1,5 +1,6 @@
 import AgentWorkbench.Adapter.Codec
 import AgentWorkbench.Adapter.DurableFilesystem
+import AgentWorkbench.Adapter.LegacyV5
 import SQLite
 
 namespace AgentWorkbench.Adapter.SQLite
@@ -8,7 +9,8 @@ open AgentWorkbench.Domain
 open AgentWorkbench.Kernel
 open SQLite.Blob
 
-def schemaVersion : Nat := 5
+def schemaVersion : Nat := 6
+def legacyV5SchemaVersion : Nat := 5
 def predecessorSchemaVersion : Nat := 2
 
 private def writerPath (path : System.FilePath) : System.FilePath :=
@@ -214,6 +216,29 @@ private def verifySQLiteIntegrity (db : _root_.SQLite) : IO (Except OpenError Un
   if result = "ok" then return .ok ()
   return .error (.corrupt s!"SQLite integrity check failed: {result}")
 
+private def storedTransactionMatches (command : Decide.Command)
+    (prior result : Replay.State) (events : List Replay.Event) : Bool :=
+  match Decide.decide command prior with
+  | .ok decided => decided.events == events && decided.result.state == result
+  | .error _ =>
+      command.expectedRevision == prior.revision &&
+        match command, events with
+        | .recordExternalOperation _ attempt,
+            [.externalOperationRecorded recorded] =>
+            attempt.target == .unresolved && recorded == attempt &&
+              attempt.state == .prepared && attempt.wellFormed &&
+              attempt.work.all (fun work =>
+                prior.work.any fun unit =>
+                  unit.id == work && unit.status == .open) &&
+              !prior.externalOperations.any (·.operation == attempt.operation)
+        | .advanceExternalOperation _ attempt,
+            [.externalOperationAdvanced advanced] =>
+            attempt.target == .unresolved && advanced == attempt &&
+              prior.externalOperations.any (fun current =>
+                current.operation == attempt.operation &&
+                  Domain.ExternalOperation.transitionAllowed current attempt)
+        | _, _ => false
+
 private def validateOperationJournal (db : _root_.SQLite)
     (ledger : Replay.VerifiedLedger) : IO (Except OpenError Unit) := do
   let eventRows ← db.prepare "SELECT revision, operation_id FROM events ORDER BY revision"
@@ -267,14 +292,10 @@ private def validateOperationJournal (db : _root_.SQLite)
     let prior ← match Replay.replayAt ledger ⟨startRevision⟩ with
       | .ok value => pure value
       | .error fault => return .error (.corrupt s!"operation source replay failed: {repr fault}")
-    let decided ← match Decide.decide request.command prior.state with
-      | .ok value => pure value
-      | .error error =>
-          return .error (.corrupt s!"stored operation request is not replayable: {repr error}")
     let storedEvents := ledger.image.events.drop startRevision |>.take (endRevision - startRevision)
-    unless decided.events = storedEvents && decided.result.state = replayed.state do
+    unless storedTransactionMatches request.command prior.state replayed.state storedEvents do
       return .error (.corrupt s!"operation request does not derive its event range at {operationId}")
-    let requiredDigests := (decided.events.filterMap fun
+    let requiredDigests := (storedEvents.filterMap fun
       | .validationPassed _ _ digest => some digest
       | .evidenceRecorded evidence => some evidence.artifactDigest
       | .externalOperationRecorded attempt => some attempt.artifactDigest
@@ -519,6 +540,309 @@ def predecessorV2Supported (db : _root_.SQLite) : IO Bool := do
     | .error _ => return false
   catch _ => return false
 
+private structure LegacyV5Operation where
+  operation : OperationId
+  request : CanonicalRequest
+  startRevision : Nat
+  endRevision : Nat
+
+private structure LegacyV5Snapshot where
+  ledger : LedgerId
+  events : List Replay.Event
+  eventOperations : List String
+  state : Replay.State
+  operations : List LegacyV5Operation
+
+private def legacyV5EventArtifactDigest? : LegacyV5.Event → Option String
+  | .validationPassed _ _ digest => some digest
+  | .evidenceRecorded evidence => some evidence.artifactDigest
+  | .externalOperationRecorded attempt => some attempt.artifactDigest
+  | _ => none
+
+private def convertLegacyV5Events (events : List LegacyV5.Event) :
+    Except OpenError (List Replay.Event × Array Replay.VerifiedState) := do
+  let initial ← match Replay.replay [] Replay.emptyState with
+    | .ok state => .ok state
+    | .error error => .error (.corrupt
+        s!"current empty state is invalid during legacy conversion: {repr error}")
+  let mut verified := initial
+  let mut converted := []
+  let mut states := #[initial]
+  for event in events do
+    let current := event.toCurrentAt verified.state
+    verified ← match Replay.applyEvent current verified with
+      | .ok state => .ok state
+      | .error error => .error (.corrupt
+          s!"legacy v5 event is not valid under its compatibility mapping: {repr error}")
+    converted := converted ++ [current]
+    states := states.push verified
+  return (converted, states)
+
+private def validateLegacyV5OperationJournal (db : _root_.SQLite)
+    (legacyEvents : List LegacyV5.Event) (events : List Replay.Event)
+    (eventOperations : Array String) (states : Array Replay.VerifiedState) :
+    IO (Except OpenError (List LegacyV5Operation)) := do
+  let statement ← db.prepare "
+    SELECT operation_id, request_payload, payload_digest, result_digest,
+           start_revision, end_revision, history_digest, receipt
+    FROM operations ORDER BY CAST(start_revision AS INTEGER), operation_id"
+  let mut expectedStart := 0
+  let mut operations := []
+  while ← statement.step do
+    let operationId ← statement.columnText 0
+    let requestPayload ← statement.columnBlob 1
+    let payloadDigest ← statement.columnText 2
+    let resultDigest ← statement.columnText 3
+    let startRevision ← match
+        parseNat "legacy v5 operation start revision" (← statement.columnText 4) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let endRevision ← match
+        parseNat "legacy v5 operation end revision" (← statement.columnText 5) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let historyDigest ← statement.columnText 6
+    let receipt ← match decode (α := Policy.Update.Receipt)
+        "legacy v5 operation receipt" (← statement.columnBlob 7) with
+      | .ok receipt => pure receipt
+      | .error error => return .error error
+    let legacyRequest ← match decode (α := LegacyV5.CanonicalRequest)
+        "legacy v5 canonical operation request" requestPayload with
+      | .ok request => pure request
+      | .error error => return .error error
+    unless startRevision = expectedStart && startRevision < endRevision &&
+        endRevision ≤ events.length do
+      return .error (.corrupt
+        s!"legacy v5 operation range is not contiguous at {operationId}")
+    unless receipt.operation.value = operationId &&
+        receipt.payloadDigest = payloadDigest &&
+        receipt.resultDigest = resultDigest &&
+        (← DurableFilesystem.digest requestPayload) = payloadDigest do
+      return .error (.corrupt
+        s!"legacy v5 operation receipt binding is invalid at {operationId}")
+    for index in [startRevision:endRevision] do
+      unless eventOperations[index]? = some operationId do
+        return .error (.corrupt
+          s!"legacy v5 event is not bound to operation {operationId}")
+    unless LegacyV5.eventDigest (legacyEvents.take endRevision) = historyDigest do
+      return .error (.corrupt
+        s!"legacy v5 operation history is invalid at {operationId}")
+    let prior ← match states[startRevision]? with
+      | some state => pure state
+      | none => return .error (.corrupt
+          s!"legacy v5 operation source state is missing at {operationId}")
+    let result ← match states[endRevision]? with
+      | some state => pure state
+      | none => return .error (.corrupt
+          s!"legacy v5 operation result state is missing at {operationId}")
+    let reconstructed ← match
+        LegacyV5.State.fromCurrent (legacyEvents.take endRevision) result.state with
+      | .ok state => pure state
+      | .error error => return .error (.corrupt error)
+    unless LegacyV5.stateDigest reconstructed = resultDigest do
+      return .error (.corrupt
+        s!"legacy v5 operation result is not derived from history at {operationId}")
+    let command := legacyRequest.command.toCurrentAt prior.state
+    let storedEvents := events.drop startRevision |>.take (endRevision - startRevision)
+    unless storedTransactionMatches command prior.state result.state storedEvents do
+      return .error (.corrupt
+        s!"legacy v5 operation request does not derive its event range at {operationId}")
+    let requiredDigests := (legacyEvents.drop startRevision
+      |>.take (endRevision - startRevision)
+      |>.filterMap legacyV5EventArtifactDigest?)
+      |>.filter (·.startsWith "sha3-256:") |>.eraseDups
+    let requestDigests := legacyRequest.artifacts.map (·.1)
+    unless requiredDigests.all requestDigests.contains &&
+        requestDigests.all requiredDigests.contains &&
+        legacyRequest.artifacts.eraseDups.length = legacyRequest.artifacts.length do
+      return .error (.corrupt
+        s!"legacy v5 operation request artifact binding is invalid at {operationId}")
+    operations := operations ++ [{
+      operation := ⟨operationId⟩
+      request := { command, artifacts := legacyRequest.artifacts }
+      startRevision
+      endRevision }]
+    expectedStart := endRevision
+  unless expectedStart = events.length &&
+      eventOperations.size = events.length do
+    return .error (.corrupt
+      "legacy v5 operation journal does not cover the complete event history")
+  return .ok operations
+
+private def readLegacyV5Snapshot (db : _root_.SQLite) :
+    IO (Except OpenError LegacyV5Snapshot) := do
+  let (ledger, head, historyDigest) ← match ←
+      readMetadataAt db legacyV5SchemaVersion with
+    | .ok metadata => pure metadata
+    | .error error => return .error error
+  let integrity ← verifySQLiteIntegrity db
+  if let .error error := integrity then return .error error
+  unless ← currentSchemaSupported db do
+    return .error (.corrupt "legacy v5 schema fingerprint is not canonical")
+  let eventRows ← db.prepare
+    "SELECT revision, payload, operation_id FROM events ORDER BY revision"
+  let mut events : Array LegacyV5.Event := #[]
+  let mut eventOperations : Array String := #[]
+  let mut expected := 1
+  while ← eventRows.step do
+    let revision := (← eventRows.columnInt64 0).toInt.toNat
+    unless revision = expected do
+      return .error (.corrupt s!"legacy v5 event revision gap at {expected}")
+    let event ← match decode (α := LegacyV5.Event)
+        "legacy v5 event" (← eventRows.columnBlob 1) with
+      | .ok event => pure event
+      | .error error => return .error error
+    events := events.push event
+    eventOperations := eventOperations.push (← eventRows.columnText 2)
+    expected := expected + 1
+  unless events.size = head.value &&
+      LegacyV5.eventDigest events.toList = historyDigest.value do
+    return .error (.corrupt "legacy v5 event history binding is invalid")
+  let projectionRow ← db.prepare "
+    SELECT revision, history_digest, state_digest, payload
+    FROM projection WHERE singleton = 1"
+  unless ← projectionRow.step do
+    return .error (.corrupt "legacy v5 projection is missing")
+  let projectionRevision ← match
+      parseNat "legacy v5 projection revision" (← projectionRow.columnText 0) with
+    | .ok revision => pure revision
+    | .error error => return .error error
+  let projectionHistory ← projectionRow.columnText 1
+  let projectionStateDigest ← projectionRow.columnText 2
+  let projection ← match decode (α := LegacyV5.ProjectionObservation)
+      "legacy v5 projection" (← projectionRow.columnBlob 3) with
+    | .ok projection => pure projection
+    | .error error => return .error error
+  let state ← match projection.payload with
+    | .decoded state => pure state
+    | .decodeFailed fault =>
+        return .error (.corrupt s!"legacy v5 projection is undecodable: {repr fault}")
+  unless projectionRevision = head.value &&
+      projection.reference.revision == head &&
+      projectionHistory = historyDigest.value &&
+      projection.reference.historyDigest.value = historyDigest.value &&
+      projectionStateDigest = LegacyV5.stateDigest state &&
+      projection.reference.stateDigest.value = projectionStateDigest &&
+      state.revision == head do
+    return .error (.corrupt "legacy v5 projection binding is invalid")
+  let (convertedEvents, states) ← match convertLegacyV5Events events.toList with
+    | .ok converted => pure converted
+    | .error error => return .error error
+  let convertedState ← match states[events.size]? with
+    | some state => pure state.state
+    | none => return .error (.corrupt "legacy v5 converted head is missing")
+  let reconstructed ← match LegacyV5.State.fromCurrent events.toList convertedState with
+    | .ok reconstructed => pure reconstructed
+    | .error error => return .error (.corrupt error)
+  unless reconstructed = state do
+    return .error (.corrupt
+      "legacy v5 projection is not the state derived from authoritative events")
+  let operations ← match ← validateLegacyV5OperationJournal db events.toList
+      convertedEvents eventOperations states with
+    | .ok operations => pure operations
+    | .error error => return .error error
+  let artifacts ← db.prepare "SELECT digest, size, payload FROM artifacts ORDER BY digest"
+  let mut artifactDigests := []
+  while ← artifacts.step do
+    let digest ← artifacts.columnText 0
+    let size ← match parseNat "legacy v5 artifact size" (← artifacts.columnText 1) with
+      | .ok value => pure value
+      | .error error => return .error error
+    let payload ← artifacts.columnBlob 2
+    unless payload.size = size && (← DurableFilesystem.digest payload) = digest do
+      return .error (.corrupt
+        s!"legacy v5 artifact payload is not content-addressed at {digest}")
+    artifactDigests := digest :: artifactDigests
+  let requiredArtifacts := (events.toList.filterMap legacyV5EventArtifactDigest?)
+    |>.filter (·.startsWith "sha3-256:") |>.eraseDups
+  unless requiredArtifacts.all artifactDigests.contains &&
+      artifactDigests.all requiredArtifacts.contains &&
+      artifactDigests.eraseDups.length = artifactDigests.length do
+    return .error (.corrupt
+      "legacy v5 artifact table does not exactly match authoritative events")
+  return .ok {
+    ledger
+    events := convertedEvents
+    eventOperations := eventOperations.toList
+    state := convertedState
+    operations }
+
+def legacyV5Supported (db : _root_.SQLite) : IO Bool := do
+  try
+    return (← readLegacyV5Snapshot db).isOk
+  catch _ => return false
+
+def migrateLegacyV5 (db : _root_.SQLite) (_sourceDigest : String) : IO Unit := do
+  let legacy ← match ← readLegacyV5Snapshot db with
+    | .ok snapshot => pure snapshot
+    | .error error => throwOpen error
+  let events := legacy.events
+  let historyDigest := Replay.eventDigest events
+  let ledger : Replay.LedgerImage := {
+    id := legacy.ledger
+    events
+    storedHead := legacy.state.revision
+    storedHistoryDigest := historyDigest }
+  let projection := Application.Service.projectionFor ledger legacy.state
+  db.exec "
+    DELETE FROM events;
+    DELETE FROM operations;
+    DELETE FROM projection;
+    DELETE FROM projection_repairs;"
+  for (event, index) in events.zipIdx do
+    let eventStatement ← db.prepare
+      "INSERT INTO events (revision, payload, operation_id) VALUES (?, ?, ?)"
+    eventStatement.bindInt64 1 (Int64.ofInt (index + 1))
+    eventStatement.bindBlob 2 (toBinary event)
+    eventStatement.bindText 3 legacy.eventOperations[index]!
+    eventStatement.exec
+  let metadata ← db.prepare "
+    UPDATE metadata
+    SET schema_version=?, head_revision=?, history_digest=?
+    WHERE singleton=1"
+  metadata.bindText 1 (toString schemaVersion)
+  metadata.bindText 2 (toString legacy.state.revision.value)
+  metadata.bindText 3 historyDigest.value
+  metadata.exec
+  let projectionStatement ← db.prepare
+    "INSERT INTO projection VALUES (1, ?, ?, ?, ?)"
+  projectionStatement.bindText 1 (toString projection.reference.revision.value)
+  projectionStatement.bindText 2 projection.reference.historyDigest.value
+  projectionStatement.bindText 3 projection.reference.stateDigest.value
+  projectionStatement.bindBlob 4 (toBinary projection)
+  projectionStatement.exec
+  let verified ← match Replay.verifyLedger ledger with
+    | .ok verified => pure verified
+    | .error error =>
+        throw (IO.userError s!"converted legacy v5 ledger is invalid: {repr error}")
+  for migrated in legacy.operations do
+    let requestPayload := toBinary migrated.request
+    let payloadDigest ← DurableFilesystem.digest requestPayload
+    let result ← match Replay.replayAt verified ⟨migrated.endRevision⟩ with
+      | .ok state => pure state
+      | .error error =>
+          throw (IO.userError s!"converted legacy v5 result is unavailable: {repr error}")
+    let resultDigest := Replay.stateDigest result.state
+    let operationHistory := Replay.eventDigest (events.take migrated.endRevision)
+    let receipt : Policy.Update.Receipt := {
+      operation := migrated.operation
+      payloadDigest
+      resultDigest := resultDigest.value }
+    let operationStatement ← db.prepare "
+      INSERT INTO operations
+        (operation_id, request_payload, payload_digest, result_digest,
+         start_revision, end_revision, history_digest, receipt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    operationStatement.bindText 1 migrated.operation.value
+    operationStatement.bindBlob 2 requestPayload
+    operationStatement.bindText 3 payloadDigest
+    operationStatement.bindText 4 resultDigest.value
+    operationStatement.bindText 5 (toString migrated.startRevision)
+    operationStatement.bindText 6 (toString migrated.endRevision)
+    operationStatement.bindText 7 operationHistory.value
+    operationStatement.bindBlob 8 (toBinary receipt)
+    operationStatement.exec
+
 private def readArtifactRefs (db : _root_.SQLite) :
     IO (Except OpenError (List DurableFilesystem.ArtifactRef)) := do
   let statement ← db.prepare "SELECT digest, size, payload FROM artifacts ORDER BY digest"
@@ -545,6 +869,13 @@ private def requiredFileArtifacts (events : List Replay.Event) : List String :=
 
 def artifactRoot (path : System.FilePath) : System.FilePath :=
   path.parent.getD "." / s!"{path.fileName.getD "ledger"}.artifacts"
+
+def artifactsSupportedAt (path : System.FilePath) (db : _root_.SQLite) : IO Bool := do
+  let references ← match ← readArtifactRefs db with
+    | .ok references => pure references
+    | .error _ => return false
+  let reconciliation ← DurableFilesystem.reconcile (artifactRoot path) references
+  return reconciliation.missing.isEmpty && reconciliation.mismatched.isEmpty
 
 private def loadAuthoritativeFrom (path : System.FilePath) (db : _root_.SQLite) :
     IO (Except OpenError Projection.Store) := do

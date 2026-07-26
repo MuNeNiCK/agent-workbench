@@ -767,7 +767,10 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
     | "record-external-operation" => do
         let externalOperation : String ←
           jsonField json "externalOperation" String
+        let target : String ← jsonField json "target" String
         let artifactDigest : String ← jsonField json "artifactDigest" String
+        let expectedRemoteArtifactDigest : Option String ←
+          jsonField json "expectedRemoteArtifactDigest" (Option String)
         let workValue ← jsonOptionalFieldD json "work" Nat
         let kindName : String ← jsonField json "kind" String
         let kind ← parseExternalOperationKind kindName
@@ -775,13 +778,19 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
           operation := ⟨externalOperation⟩
           work := workValue.map (⟨·⟩)
           kind
+          target := .confirmed target
           artifactDigest
+          remotePrecondition := {
+            expectedArtifactDigest := expectedRemoteArtifactDigest }
           state := .prepared
         }
     | "advance-external-operation" => do
         let externalOperation : String ←
           jsonField json "externalOperation" String
+        let target : String ← jsonField json "target" String
         let artifactDigest : String ← jsonField json "artifactDigest" String
+        let expectedRemoteArtifactDigest : Option String ←
+          jsonField json "expectedRemoteArtifactDigest" (Option String)
         let workValue ← jsonOptionalFieldD json "work" Nat
         let kindName : String ← jsonField json "kind" String
         let stateName : String ← jsonField json "state" String
@@ -800,7 +809,10 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
           operation := ⟨externalOperation⟩
           work := workValue.map (⟨·⟩)
           kind
+          target := .confirmed target
           artifactDigest
+          remotePrecondition := {
+            expectedArtifactDigest := expectedRemoteArtifactDigest }
           state
           observation
           disposition

@@ -63,6 +63,10 @@ def inspect (path : System.FilePath) : IO Inspection := do
     if observed.schemaVersion = SQLite.predecessorSchemaVersion &&
         (← SQLite.predecessorV2Supported db) then
       return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
+    if observed.schemaVersion = SQLite.legacyV5SchemaVersion &&
+        (← SQLite.legacyV5Supported db) &&
+        (← SQLite.artifactsSupportedAt path db) then
+      return .updateRequired { source := observed, targetVersion := SQLite.schemaVersion }
     return .unsupported observed
 
 private def stagedPath (path : System.FilePath) (digest : String) : System.FilePath :=
@@ -201,7 +205,8 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
         | .valid => return receipt
         | _ => throw <| IO.userError "adopted update backup is unavailable"
     | none => throw <| IO.userError "update source changed after inspection"
-  unless plan.source.schemaVersion = SQLite.predecessorSchemaVersion &&
+  unless (plan.source.schemaVersion = SQLite.predecessorSchemaVersion ||
+      plan.source.schemaVersion = SQLite.legacyV5SchemaVersion) &&
       plan.targetVersion = SQLite.schemaVersion do
     throw <| IO.userError "unsupported update transition"
   let sourceBytes ← IO.FS.readBinFile path
@@ -211,24 +216,32 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
   try
     let db ← _root_.SQLite.openWith staged { mode := .readWrite, threading := some .fullmutex }
     db.transaction (mode := .immediate) do
-      unless ← SQLite.predecessorV2Supported db do
-        throw <| IO.userError "predecessor storage is not safely migratable"
-      db.exec "
-        ALTER TABLE projection_repairs RENAME TO old_projection_repairs;
-        CREATE TABLE projection_repairs (
-          ledger_id TEXT NOT NULL,
-          observed_digest TEXT NOT NULL,
-          head_revision TEXT NOT NULL,
-          history_digest TEXT NOT NULL,
-          adopted_digest TEXT NOT NULL,
-          PRIMARY KEY (ledger_id, observed_digest, head_revision, history_digest)
-        );
-        INSERT INTO projection_repairs
-          (ledger_id, observed_digest, head_revision, history_digest, adopted_digest)
-        SELECT metadata.ledger_id, repair.observed_digest, repair.head_revision,
-               repair.history_digest, repair.adopted_digest
-        FROM old_projection_repairs AS repair JOIN metadata ON metadata.singleton = 1;
-        DROP TABLE old_projection_repairs;"
+      if plan.source.schemaVersion = SQLite.predecessorSchemaVersion then
+        unless ← SQLite.predecessorV2Supported db do
+          throw <| IO.userError "predecessor v2 storage is not safely migratable"
+        db.exec "
+          ALTER TABLE projection_repairs RENAME TO old_projection_repairs;
+          CREATE TABLE projection_repairs (
+            ledger_id TEXT NOT NULL,
+            observed_digest TEXT NOT NULL,
+            head_revision TEXT NOT NULL,
+            history_digest TEXT NOT NULL,
+            adopted_digest TEXT NOT NULL,
+            PRIMARY KEY (ledger_id, observed_digest, head_revision, history_digest)
+          );
+          INSERT INTO projection_repairs
+            (ledger_id, observed_digest, head_revision, history_digest, adopted_digest)
+          SELECT metadata.ledger_id, repair.observed_digest, repair.head_revision,
+                 repair.history_digest, repair.adopted_digest
+          FROM old_projection_repairs AS repair JOIN metadata ON metadata.singleton = 1;
+          DROP TABLE old_projection_repairs;"
+      else if plan.source.schemaVersion = SQLite.legacyV5SchemaVersion then
+        unless (← SQLite.legacyV5Supported db) &&
+            (← SQLite.artifactsSupportedAt path db) do
+          throw <| IO.userError "predecessor v5 storage is not safely migratable"
+        SQLite.migrateLegacyV5 db plan.source.digest
+      else
+        throw <| IO.userError "unsupported predecessor storage"
       let provenance ← db.prepare "
         INSERT INTO update_provenance VALUES (1, ?, ?, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET
@@ -241,11 +254,12 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
       provenance.bindText 3 backup.digest
       provenance.bindText 4 (toString backup.size)
       provenance.exec
-      let version ← db.prepare
-        "UPDATE metadata SET schema_version = ? WHERE singleton = 1 AND schema_version = ?"
-      version.bindText 1 (toString plan.targetVersion)
-      version.bindText 2 (toString plan.source.schemaVersion)
-      version.exec
+      if plan.source.schemaVersion != SQLite.legacyV5SchemaVersion then
+        let version ← db.prepare
+          "UPDATE metadata SET schema_version = ? WHERE singleton = 1 AND schema_version = ?"
+        version.bindText 1 (toString plan.targetVersion)
+        version.bindText 2 (toString plan.source.schemaVersion)
+        version.exec
     let stagedDb ← _root_.SQLite.openWith staged
       { mode := .readonly, threading := some .fullmutex }
     stagedDb.transaction do
@@ -254,6 +268,8 @@ private def applyUnlocked (path backupRoot : System.FilePath) (plan : Plan)
       match ← SQLite.inspectFromAt stagedDb SQLite.schemaVersion with
       | .error error => throw <| IO.userError s!"staged update failed integrity: {repr error}"
       | .ok _ => pure ()
+      unless ← SQLite.artifactsSupportedAt path stagedDb do
+        throw <| IO.userError "staged update artifact reconciliation failed"
     let target ← point staged
     unless target.schemaVersion = plan.targetVersion do
       throw <| IO.userError "staged update has the wrong schema version"
@@ -309,6 +325,14 @@ private def restoreUnlocked (path backupRoot : System.FilePath)
         { mode := .readonly, threading := some .fullmutex }
       unless ← db.transaction (SQLite.predecessorV2Supported db) do
         throw <| IO.userError "staged predecessor backup failed integrity"
+    else if receipt.source.schemaVersion = SQLite.legacyV5SchemaVersion then
+      let db ← _root_.SQLite.openWith staged
+        { mode := .readonly, threading := some .fullmutex }
+      let supported ← db.transaction do
+        return (← SQLite.legacyV5Supported db) &&
+          (← SQLite.artifactsSupportedAt path db)
+      unless supported do
+        throw <| IO.userError "staged legacy v5 backup failed integrity"
     else
       let db ← _root_.SQLite.openWith staged
         { mode := .readonly, threading := some .fullmutex }

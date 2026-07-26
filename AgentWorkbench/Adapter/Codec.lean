@@ -59,6 +59,8 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Eviden
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.AttemptState
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.OperationKind
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemoteObservation
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemotePrecondition
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemoteTarget
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.Attempt
 
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RelatedWorkKind

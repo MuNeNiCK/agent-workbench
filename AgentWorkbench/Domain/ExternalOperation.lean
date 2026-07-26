@@ -26,11 +26,22 @@ structure RemoteObservation where
   artifactDigest : Option String
 deriving DecidableEq, Repr, BEq
 
+structure RemotePrecondition where
+  expectedArtifactDigest : Option String := none
+deriving DecidableEq, Repr, BEq
+
+inductive RemoteTarget
+  | confirmed (identity : String)
+  | unresolved
+deriving DecidableEq, Repr, BEq
+
 structure Attempt where
   operation : OperationId
   work : Option WorkId := none
   kind : OperationKind := .publication
+  target : RemoteTarget
   artifactDigest : String
+  remotePrecondition : RemotePrecondition := {}
   state : AttemptState
   observation : Option RemoteObservation := none
   disposition : Option String := none
@@ -43,37 +54,78 @@ def RemoteObservation.wellFormed (observation : RemoteObservation) : Bool :=
 def RemoteObservation.isAbsent (observation : RemoteObservation) : Bool :=
   observation.artifactDigest.isNone
 
-def RemoteObservation.matches (expected : String)
-    (observation : RemoteObservation) : Bool :=
-  observation.wellFormed && observation.artifactDigest == some expected
+def RemotePrecondition.wellFormed (precondition : RemotePrecondition) : Bool :=
+  precondition.expectedArtifactDigest.all (fun digest => !digest.isEmpty)
 
-def RemoteObservation.conflicts (expected : String)
+def RemotePrecondition.satisfiedBy (precondition : RemotePrecondition)
     (observation : RemoteObservation) : Bool :=
   observation.wellFormed &&
-    observation.artifactDigest.any (fun digest => digest != expected)
+    observation.artifactDigest == precondition.expectedArtifactDigest
+
+def RemoteTarget.wellFormed : RemoteTarget → Bool
+  | .confirmed identity => !identity.isEmpty
+  | .unresolved => true
+
+def RemoteTarget.dispatchIdentity? : RemoteTarget → Option String
+  | .confirmed identity => some identity
+  | .unresolved => none
+
+def RemoteObservation.forTarget (target : String)
+    (observation : RemoteObservation) : Bool :=
+  observation.wellFormed && observation.identity == target
+
+def RemoteObservation.matchesAttempt (attempt : Attempt)
+    (observation : RemoteObservation) : Bool :=
+  observation.wellFormed &&
+    (match attempt.target with
+    | .confirmed target => observation.identity == target
+    | .unresolved => true) &&
+    observation.artifactDigest == some attempt.artifactDigest
+
+def RemoteObservation.conflictsWithAttempt (attempt : Attempt)
+    (observation : RemoteObservation) : Bool :=
+  observation.wellFormed &&
+    (match attempt.target with
+    | .confirmed target => observation.identity == target
+    | .unresolved => true) &&
+    observation.artifactDigest.any (fun digest => digest != attempt.artifactDigest)
 
 def Attempt.wellFormed (attempt : Attempt) : Bool :=
-  !attempt.operation.value.isEmpty && !attempt.artifactDigest.isEmpty &&
+  !attempt.operation.value.isEmpty && attempt.target.wellFormed &&
+    !attempt.artifactDigest.isEmpty && attempt.remotePrecondition.wellFormed &&
     (attempt.kind != .release || attempt.work.isSome) &&
     match attempt.state, attempt.observation, attempt.disposition with
     | .prepared, none, none
     | .dispatched, none, none
     | .uncertain, none, none => true
     | .retryable, some observation, none =>
-        observation.wellFormed && observation.isAbsent
+        observation.wellFormed &&
+          (match attempt.target with
+          | .confirmed target => observation.identity == target
+          | .unresolved => true) &&
+          observation.isAbsent
     | .succeeded, some observation, none =>
-        observation.matches attempt.artifactDigest
-    | .failed, none, none => true
+        observation.matchesAttempt attempt
     | .failed, some observation, some disposition =>
-        observation.wellFormed && !disposition.isEmpty
+        observation.wellFormed &&
+          (match attempt.target with
+          | .confirmed target => observation.identity == target
+          | .unresolved => true) &&
+          !disposition.isEmpty
+    | .failed, none, some disposition =>
+        (match attempt.target with
+        | .unresolved => true
+        | .confirmed _ => false) && !disposition.isEmpty
     | .conflict, some observation, none =>
-        observation.conflicts attempt.artifactDigest
+        observation.conflictsWithAttempt attempt
     | _, _, _ => false
 
 def sameIntent (current next : Attempt) : Bool :=
   current.operation == next.operation &&
     current.work == next.work && current.kind == next.kind &&
-    current.artifactDigest == next.artifactDigest
+    current.target == next.target &&
+    current.artifactDigest == next.artifactDigest &&
+    current.remotePrecondition == next.remotePrecondition
 
 def transitionAllowed (current next : Attempt) : Bool :=
   sameIntent current next && next.wellFormed &&
@@ -92,6 +144,11 @@ def transitionAllowed (current next : Attempt) : Bool :=
         next.observation == current.observation &&
           next.disposition.any (fun reason => !reason.isEmpty)
     | _, _ => false
+
+def authorizedTransition (current next : Attempt) : Bool :=
+  current.target.dispatchIdentity?.isSome &&
+    next.target.dispatchIdentity?.isSome &&
+    transitionAllowed current next
 
 def requiresReconciliation (attempt : Attempt) : Bool :=
   attempt.state == .dispatched || attempt.state == .uncertain

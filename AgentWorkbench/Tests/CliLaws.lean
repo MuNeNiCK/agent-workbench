@@ -153,12 +153,16 @@ def lifecycleRequests : List String := [
     ("externalOperation", toJson "publish-fixture"),
     ("work", toJson (some 1 : Option Nat)),
     ("kind", toJson "release"),
+    ("target", toJson "remote-fixture"),
+    ("expectedRemoteArtifactDigest", toJson (none : Option String)),
     ("artifactDigest", toJson "sha256:artifact")
   ],
   request 18 "dispatch-external-operation" "advance-external-operation" [
     ("externalOperation", toJson "publish-fixture"),
     ("work", toJson (some 1 : Option Nat)),
     ("kind", toJson "release"),
+    ("target", toJson "remote-fixture"),
+    ("expectedRemoteArtifactDigest", toJson (none : Option String)),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "dispatched"),
     ("observationIdentity", toJson (none : Option String)),
@@ -169,6 +173,8 @@ def lifecycleRequests : List String := [
     ("externalOperation", toJson "publish-fixture"),
     ("work", toJson (some 1 : Option Nat)),
     ("kind", toJson "release"),
+    ("target", toJson "remote-fixture"),
+    ("expectedRemoteArtifactDigest", toJson (none : Option String)),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "uncertain"),
     ("observationIdentity", toJson (none : Option String)),
@@ -179,6 +185,8 @@ def lifecycleRequests : List String := [
     ("externalOperation", toJson "publish-fixture"),
     ("work", toJson (some 1 : Option Nat)),
     ("kind", toJson "release"),
+    ("target", toJson "remote-fixture"),
+    ("expectedRemoteArtifactDigest", toJson (none : Option String)),
     ("artifactDigest", toJson "sha256:artifact"),
     ("state", toJson "succeeded"),
     ("observationIdentity", toJson (some "remote-fixture" : Option String)),
@@ -265,6 +273,8 @@ def testAggregateLifecycle (cli root : System.FilePath) : IO Unit := do
     ("externalOperation", toJson "release-aggregate"),
     ("work", toJson (some 1 : Option Nat)),
     ("kind", toJson "release"),
+    ("target", toJson "release:aggregate"),
+    ("expectedRemoteArtifactDigest", toJson (none : Option String)),
     ("artifactDigest", toJson "sha256:aggregate")]
   applySources cli root state [
     request 1 "aggregate-plan" "plan-completion" [

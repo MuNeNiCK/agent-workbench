@@ -491,6 +491,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
         .error (.invalidTransition "evidence requires requirement links, producer, and observation time")
   | .recordExternalOperation _ attempt =>
       if attempt.state == .prepared && attempt.wellFormed &&
+          attempt.target.dispatchIdentity?.isSome &&
           attempt.work.all (fun work =>
             state.work.any fun unit => unit.id == work && unit.status == .open) &&
           !state.externalOperations.any (·.operation == attempt.operation) then
@@ -501,7 +502,7 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
   | .advanceExternalOperation _ attempt =>
       match state.externalOperations.find? (·.operation == attempt.operation) with
       | some current =>
-          if ExternalOperation.transitionAllowed current attempt then
+          if ExternalOperation.authorizedTransition current attempt then
             .ok ⟨[.externalOperationAdvanced attempt], by simp⟩
           else
             .error (.invalidTransition

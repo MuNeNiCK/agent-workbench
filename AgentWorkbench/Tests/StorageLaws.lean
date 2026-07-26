@@ -1,7 +1,9 @@
 import AgentWorkbench.Adapter.Update
+import AgentWorkbench.Adapter.ExternalOperation
 
 open AgentWorkbench
 open AgentWorkbench.Domain
+open SQLite.Blob
 
 namespace AgentWorkbench.Tests.StorageLaws
 
@@ -95,6 +97,7 @@ def testRecoveryAndRetry (root : System.FilePath) : IO Unit := do
     "fresh-process reconstruction did not recover the exact committed store"
   let unrelated : Domain.ExternalOperation.Attempt := {
     operation := ⟨"unrelated-after-bootstrap"⟩
+    target := .confirmed "remote:unrelated-after-bootstrap"
     artifactDigest := "proof:unrelated"
     state := .prepared }
   match ← Adapter.SQLite.mutate ledger ⟨"unrelated"⟩ ⟨1⟩
@@ -206,6 +209,7 @@ def testConcurrentInspection (root : System.FilePath) : IO Unit := do
     let revision := before.ledger.storedHead
     let attempt : Domain.ExternalOperation.Attempt := {
       operation := ⟨s!"inspect-race-{index}"⟩
+      target := .confirmed s!"remote:inspect-race-{index}"
       artifactDigest := s!"proof:{index}"
       state := .prepared }
     let inspection ← IO.asTask (Adapter.SQLite.inspect ledger)
@@ -263,6 +267,7 @@ def testReadOnlyFaultDetection (root : System.FilePath) : IO Unit := do
   let _ ← load projectionLedger
   let laterAttempt : Domain.ExternalOperation.Attempt := {
     operation := ⟨"after-projection-repair"⟩
+    target := .confirmed "remote:after-projection-repair"
     artifactDigest := "proof:after-projection-repair"
     state := .prepared }
   let advanced ← match ← Adapter.SQLite.mutate projectionLedger ⟨"after-projection-repair"⟩
@@ -340,6 +345,7 @@ def testArtifactsAndEvidence (root : System.FilePath) : IO Unit := do
   expect (duplicate == reference) "exact artifact retry changed its identity"
   let operation : Domain.ExternalOperation.Attempt := {
     operation := ⟨"artifact-operation"⟩
+    target := .confirmed "remote:artifact-operation"
     artifactDigest := reference.digest
     state := .prepared }
   match ← Adapter.SQLite.mutate ledger ⟨"artifact-event-missing"⟩
@@ -916,6 +922,7 @@ def testExternalOperationReconciliation (root : System.FilePath) : IO Unit := do
   let initialized ← bootstrap ledger
   let intent : Domain.ExternalOperation.Attempt := {
     operation := ⟨"publish-artifact"⟩
+    target := .confirmed "immutable-remote-object"
     artifactDigest := "proof:release-artifact"
     state := .prepared }
   let prepared ← mutate ledger "publish-artifact-intent"
@@ -979,6 +986,171 @@ def testExternalOperationReconciliation (root : System.FilePath) : IO Unit := do
   expect ((← load ledger) == recovered)
     "conflicting reconciliation retry changed the completed ledger"
 
+structure RemoteFixture where
+  objects : IO.Ref (List (String × String))
+  dispatches : IO.Ref Nat
+  loseResponse : IO.Ref Bool
+  failBeforeEffect : IO.Ref Bool
+  failObservation : IO.Ref Bool
+
+def remoteObservation (fixture : RemoteFixture) (target : String) :
+    IO Domain.ExternalOperation.RemoteObservation := do
+  if ← fixture.failObservation.get then
+    fixture.failObservation.set false
+    throw <| IO.userError "injected observation failure"
+  return {
+    identity := target
+    artifactDigest := (← fixture.objects.get).lookup target }
+
+def remotePort (fixture : RemoteFixture) : Adapter.ExternalOperation.Port := {
+  observe := remoteObservation fixture
+  dispatch := fun _operation target artifactDigest precondition => do
+    if ← fixture.failBeforeEffect.get then
+      fixture.failBeforeEffect.set false
+      throw <| IO.userError "injected failure before remote effect"
+    let before ← remoteObservation fixture target
+    unless precondition.satisfiedBy before do
+      return .observed before
+    fixture.dispatches.modify (· + 1)
+    fixture.objects.modify fun objects =>
+      (target, artifactDigest) :: objects.filter (fun entry => entry.1 != target)
+    if ← fixture.loseResponse.get then
+      fixture.loseResponse.set false
+      return .responseLost
+    return .observed {
+      identity := target
+      artifactDigest := some artifactDigest }
+}
+
+def testExternalOperationBoundaryFaults (root : System.FilePath) : IO Unit := do
+  let ledger := root / "external-operation-boundary.sqlite3"
+  Adapter.SQLite.initializeStore ledger
+  let initialized ← bootstrap ledger
+  let objects ← IO.mkRef ([] : List (String × String))
+  let dispatches ← IO.mkRef 0
+  let loseResponse ← IO.mkRef true
+  let failBeforeEffect ← IO.mkRef false
+  let failObservation ← IO.mkRef false
+  let fixture : RemoteFixture := {
+    objects, dispatches, loseResponse, failBeforeEffect, failObservation }
+  let port := remotePort fixture
+  let prepared : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"boundary-publication"⟩
+    target := .confirmed "immutable:release-v1"
+    artifactDigest := "sha256:release-v1"
+    remotePrecondition := { expectedArtifactDigest := none }
+    state := .prepared }
+  let dispatched := { prepared with state := .dispatched }
+  let preparedRecord ← mutate ledger "boundary-prepare"
+    initialized.store.ledger.storedHead.value
+    (.recordExternalOperation initialized.store.ledger.storedHead prepared)
+  let dispatchedRecord ← mutate ledger "boundary-dispatch"
+    preparedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation preparedRecord.store.ledger.storedHead dispatched)
+  let uncertain ← match ← Adapter.ExternalOperation.dispatch ledger port prepared.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"response-loss dispatch failed: {repr error}"
+  expect (uncertain.state == .uncertain &&
+      Domain.ExternalOperation.requiresReconciliation uncertain)
+    "acceptance followed by response loss did not become uncertain"
+  expect ((← dispatches.get) == 1)
+    "the response-loss fixture did not execute exactly one remote effect"
+  let uncertainRecord ← mutate ledger "boundary-uncertain"
+    dispatchedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation dispatchedRecord.store.ledger.storedHead uncertain)
+  match ← Adapter.ExternalOperation.dispatch ledger port prepared.operation with
+  | .error .invalidAttempt => pure ()
+  | other => throw <| IO.userError s!"retry bypassed reconciliation: {repr other}"
+  expect ((← dispatches.get) == 1)
+    "a retry before reconciliation duplicated the remote effect"
+
+  failObservation.set true
+  let stillUncertain ← match ←
+      Adapter.ExternalOperation.reconcile ledger port prepared.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"observation failure escaped: {repr error}"
+  expect (stillUncertain.state == .uncertain)
+    "failure during reconciliation authorized a terminal transition"
+  let succeeded ← match ←
+      Adapter.ExternalOperation.reconcile ledger port prepared.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"matching reconciliation failed: {repr error}"
+  expect (succeeded.state == .succeeded &&
+      succeeded.observation.any (fun observation =>
+        prepared.target.dispatchIdentity? == some observation.identity) &&
+      (← dispatches.get) == 1)
+    "matching immutable remote state did not complete without duplication"
+  let succeededRecord ← mutate ledger "boundary-succeeded"
+    uncertainRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation uncertainRecord.store.ledger.storedHead succeeded)
+
+  let failurePrepared : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"failure-before-effect"⟩
+    target := .confirmed "immutable:release-v2"
+    artifactDigest := "sha256:release-v2"
+    state := .prepared }
+  let failurePreparedRecord ← mutate ledger "failure-before-effect-prepare"
+    succeededRecord.store.ledger.storedHead.value
+    (.recordExternalOperation succeededRecord.store.ledger.storedHead failurePrepared)
+  let beforeFailure := { failurePrepared with state := .dispatched }
+  let failureDispatchedRecord ← mutate ledger "failure-before-effect-dispatch"
+    failurePreparedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation failurePreparedRecord.store.ledger.storedHead beforeFailure)
+  failBeforeEffect.set true
+  let unknown ← match ←
+      Adapter.ExternalOperation.dispatch ledger port beforeFailure.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"pre-effect fault escaped: {repr error}"
+  expect (unknown.state == .uncertain)
+    "a port exception was asserted to be failure without reconciliation"
+  let unknownRecord ← mutate ledger "failure-before-effect-uncertain"
+    failureDispatchedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation failureDispatchedRecord.store.ledger.storedHead unknown)
+  let retryable ← match ←
+      Adapter.ExternalOperation.reconcile ledger port beforeFailure.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"absence reconciliation failed: {repr error}"
+  expect (retryable.state == .retryable)
+    "observed absence did not authorize a retry"
+  let retryableRecord ← mutate ledger "failure-before-effect-retryable"
+    unknownRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation unknownRecord.store.ledger.storedHead retryable)
+
+  objects.modify (("immutable:occupied", "sha256:other") :: ·)
+  let collisionPrepared : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"immutable-collision"⟩
+    target := .confirmed "immutable:occupied"
+    artifactDigest := "sha256:new"
+    state := .prepared }
+  let collisionPreparedRecord ← mutate ledger "collision-prepare"
+    retryableRecord.store.ledger.storedHead.value
+    (.recordExternalOperation retryableRecord.store.ledger.storedHead collisionPrepared)
+  let collision := { collisionPrepared with state := .dispatched }
+  let _ ← mutate ledger "collision-dispatch"
+    collisionPreparedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation collisionPreparedRecord.store.ledger.storedHead collision)
+  let conflict ← match ←
+      Adapter.ExternalOperation.dispatch ledger port collision.operation with
+    | .ok attempt => pure attempt
+    | .error error => throw <| IO.userError s!"collision dispatch failed: {repr error}"
+  let objectsAfterCollision ← objects.get
+  expect (conflict.state == .conflict &&
+      collision.target.dispatchIdentity?.bind
+        (fun target => objectsAfterCollision.lookup target) == some "sha256:other")
+    "pre-existing immutable target was overwritten instead of preserved as conflict"
+  let fabricated : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"never-persisted"⟩
+    target := .confirmed "immutable:fabricated"
+    artifactDigest := "sha256:fabricated"
+    state := .dispatched }
+  match ← Adapter.ExternalOperation.dispatch ledger port fabricated.operation with
+  | .error .attemptMissing => pure ()
+  | other => throw <| IO.userError s!"unpersisted dispatch was authorized: {repr other}"
+  let objectsAfterFabricated ← objects.get
+  expect (fabricated.target.dispatchIdentity?.bind
+      (fun target => objectsAfterFabricated.lookup target) |>.isNone)
+    "an unpersisted attempt produced a remote side effect"
+
 def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let corruptions := [
     ("deleted", "DELETE FROM artifacts"),
@@ -994,6 +1166,7 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
     let reference ← Adapter.DurableFilesystem.stage artifactRoot s!"artifact-{name}".toUTF8
     let attempt : Domain.ExternalOperation.Attempt := {
       operation := ⟨s!"artifact-{name}"⟩
+      target := .confirmed s!"remote:artifact-{name}"
       artifactDigest := reference.digest
       state := .prepared }
     let recorded ← match ← Adapter.SQLite.mutate ledger ⟨s!"record-{name}"⟩
@@ -1033,7 +1206,10 @@ def testArtifactBindingsAndRace (root : System.FilePath) : IO Unit := do
   let initialized ← bootstrap raceLedger
   let reference ← Adapter.DurableFilesystem.stage raceRoot "race artifact".toUTF8
   let attempt : Domain.ExternalOperation.Attempt := {
-    operation := ⟨"artifact-race"⟩, artifactDigest := reference.digest, state := .prepared }
+    operation := ⟨"artifact-race"⟩
+    target := .confirmed "remote:artifact-race"
+    artifactDigest := reference.digest
+    state := .prepared }
   expectFailure
     (Adapter.SQLite.mutateWithHook raceLedger ⟨"artifact-race"⟩
       initialized.store.ledger.storedHead
@@ -1054,6 +1230,7 @@ def testFilesystemArtifactFaults (root : System.FilePath) : IO Unit := do
       s!"committed artifact {name}".toUTF8
     let attempt : Domain.ExternalOperation.Attempt := {
       operation := ⟨s!"artifact-file-{name}"⟩
+      target := .confirmed s!"remote:artifact-file-{name}"
       artifactDigest := reference.digest
       state := .prepared }
     let recorded ← match ← Adapter.SQLite.mutate ledger ⟨s!"record-file-{name}"⟩
@@ -1078,7 +1255,10 @@ def testFilesystemArtifactFaults (root : System.FilePath) : IO Unit := do
     | .error (.corrupt _) => pure ()
     | other => throw <| IO.userError s!"repair accepted {name} file artifact: {repr other}"
     let unrelated : Domain.ExternalOperation.Attempt := {
-      operation := ⟨s!"unrelated-{name}"⟩, artifactDigest := "proof:unrelated", state := .prepared }
+      operation := ⟨s!"unrelated-{name}"⟩
+      target := .confirmed s!"remote:unrelated-{name}"
+      artifactDigest := "proof:unrelated"
+      state := .prepared }
     match ← Adapter.SQLite.mutate ledger ⟨s!"unrelated-{name}"⟩
         recorded.store.ledger.storedHead
         (.recordExternalOperation recorded.store.ledger.storedHead unrelated) with
@@ -1148,7 +1328,6 @@ def testUpdateInspectionReadOnly (root : System.FilePath) : IO Unit := do
       "update inspection changed ledger bytes"
     expect ((← root.readDir).size == beforeEntries)
       "update inspection changed the directory entry set"
-
   let current := root / "inspect-current.sqlite3"
   Adapter.SQLite.initializeStore current
   check current
@@ -1161,6 +1340,319 @@ def testUpdateInspectionReadOnly (root : System.FilePath) : IO Unit := do
   let _ ← bootstrap unsupported
   makeUnsupportedSchema unsupported
   check unsupported
+
+def makeLegacyV5Ledger (ledger : System.FilePath) : IO Unit := do
+  Adapter.SQLite.initializeStore ledger
+  let artifactPayload := "legacy-v5-publication".toUTF8
+  let artifact ← Adapter.DurableFilesystem.stage
+    (Adapter.SQLite.artifactRoot ledger) artifactPayload
+  let accepted ← match Kernel.Decide.decide Application.Service.bootstrapCommand
+      Kernel.Replay.emptyState with
+    | .ok accepted => pure accepted
+    | .error error => throw <| IO.userError s!"legacy v5 bootstrap failed: {repr error}"
+  let (work, activation) ← match accepted.events with
+    | [.workInitialized work activation] => pure (work, activation)
+    | _ => throw <| IO.userError "legacy v5 bootstrap shape changed"
+  let prepared : Adapter.LegacyV5.Attempt := {
+    operation := ⟨"legacy-v5-publication"⟩
+    artifactDigest := artifact.digest
+    state := .prepared }
+  let attempt := { prepared with state := .dispatched }
+  let events : List Adapter.LegacyV5.Event := [
+    .workInitialized work activation,
+    .externalOperationRecorded prepared,
+    .externalOperationAdvanced attempt
+  ]
+  let requests : List Adapter.LegacyV5.CanonicalRequest := [
+    { command := .initializeWork ⟨0⟩ work activation, artifacts := [] },
+    { command := .recordExternalOperation ⟨1⟩ prepared
+      artifacts := [(artifact.digest, artifact.size)] },
+    { command := .advanceExternalOperation ⟨2⟩ attempt, artifacts := [] }
+  ]
+  let historyDigest := Adapter.LegacyV5.eventDigest events
+  let state : Adapter.LegacyV5.State := {
+    revision := ⟨3⟩
+    work := [work]
+    activations := [activation]
+    designs := []
+    designApprovals := []
+    decompositions := []
+    reviewPlans := []
+    authorityExceptions := []
+    claims := []
+    adjudications := []
+    reviewFindings := []
+    findingVerifications := []
+    corrections := []
+    authorityTransitions := []
+    evidence := []
+    externalOperations := [attempt]
+    obligations := []
+    lifecycle := []
+    returnTarget := none }
+  let stateDigest := Adapter.LegacyV5.stateDigest state
+  let fingerprint : Domain.Projection.ProjectionFingerprint := {
+    id := ⟨"projection-3"⟩
+    rawDigest := ⟨stateDigest⟩ }
+  let projection : Adapter.LegacyV5.ProjectionObservation := {
+    fingerprint
+    reference := {
+      fingerprint
+      ledger := ⟨ledger.toString⟩
+      revision := ⟨3⟩
+      historyDigest := ⟨historyDigest⟩
+      stateDigest := ⟨stateDigest⟩ }
+    payload := .decoded state }
+  let db ← _root_.SQLite.openWith ledger { mode := .readWrite, threading := some .fullmutex }
+  db.transaction (mode := .immediate) do
+    db.exec "DELETE FROM events; DELETE FROM operations; DELETE FROM projection; DELETE FROM artifacts;"
+    let metadata ← db.prepare "
+      UPDATE metadata SET schema_version='5', head_revision='3', history_digest=?
+      WHERE singleton=1"
+    metadata.bindText 1 historyDigest
+    metadata.exec
+    for (event, index) in events.zipIdx do
+      let operationId := s!"legacy-v5-operation-{index + 1}"
+      let statement ← db.prepare
+        "INSERT INTO events (revision, payload, operation_id) VALUES (?, ?, ?)"
+      statement.bindInt64 1 (Int64.ofInt (index + 1))
+      statement.bindBlob 2 (toBinary event)
+      statement.bindText 3 operationId
+      statement.exec
+      let request ← match requests[index]? with
+        | some request => pure request
+        | none => throw <| IO.userError "legacy v5 fixture request is missing"
+      let requestPayload := toBinary request
+      let payloadDigest ← Adapter.DurableFilesystem.digest requestPayload
+      let currentEvents := (events.take (index + 1)).map
+        Adapter.LegacyV5.Event.toCurrent
+      let currentState ← match Kernel.Replay.replay currentEvents Kernel.Replay.emptyState with
+        | .ok verified => pure verified.state
+        | .error error =>
+            throw (IO.userError s!"legacy v5 fixture replay failed: {repr error}")
+      let legacyState ← match
+          Adapter.LegacyV5.State.fromCurrent (events.take (index + 1)) currentState with
+        | .ok legacy => pure legacy
+        | .error error => throw <| IO.userError error
+      let resultDigest := Adapter.LegacyV5.stateDigest legacyState
+      let receipt : Policy.Update.Receipt := {
+        operation := ⟨operationId⟩
+        payloadDigest
+        resultDigest }
+      let operationStatement ← db.prepare "
+        INSERT INTO operations
+          (operation_id, request_payload, payload_digest, result_digest,
+           start_revision, end_revision, history_digest, receipt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      operationStatement.bindText 1 operationId
+      operationStatement.bindBlob 2 requestPayload
+      operationStatement.bindText 3 payloadDigest
+      operationStatement.bindText 4 resultDigest
+      operationStatement.bindText 5 (toString index)
+      operationStatement.bindText 6 (toString (index + 1))
+      operationStatement.bindText 7
+        (Adapter.LegacyV5.eventDigest (events.take (index + 1)))
+      operationStatement.bindBlob 8 (toBinary receipt)
+      operationStatement.exec
+    let projectionStatement ← db.prepare
+      "INSERT INTO projection VALUES (1, '3', ?, ?, ?)"
+    projectionStatement.bindText 1 historyDigest
+    projectionStatement.bindText 2 stateDigest
+    projectionStatement.bindBlob 3 (toBinary projection)
+    projectionStatement.exec
+    let artifactStatement ← db.prepare
+      "INSERT INTO artifacts (digest, size, payload) VALUES (?, ?, ?)"
+    artifactStatement.bindText 1 artifact.digest
+    artifactStatement.bindText 2 (toString artifact.size)
+    artifactStatement.bindBlob 3 artifactPayload
+    artifactStatement.exec
+
+def expectLegacyV5Unsupported (ledger : System.FilePath) (reason : String) : IO Unit := do
+  match ← Adapter.Update.inspect ledger with
+  | .unsupported point =>
+      expect (point.schemaVersion == Adapter.SQLite.legacyV5SchemaVersion) reason
+  | other => throw <| IO.userError s!"{reason}: {repr other}"
+
+def tamperLegacyV5Projection (ledger : System.FilePath) : IO Unit := do
+  let db ← _root_.SQLite.openWith ledger
+    { mode := .readWrite, threading := some .fullmutex }
+  db.transaction (mode := .immediate) do
+    let query ← db.prepare "SELECT payload FROM projection WHERE singleton=1"
+    unless ← query.step do throw <| IO.userError "legacy projection is missing"
+    let projection ← match
+        fromBinary (α := Adapter.LegacyV5.ProjectionObservation) (← query.columnBlob 0) with
+      | .ok projection => pure projection
+      | .error error => throw <| IO.userError error
+    let state ← match projection.payload with
+      | .decoded state => pure state
+      | .decodeFailed _ => throw <| IO.userError "legacy projection is not decoded"
+    let altered := { state with returnTarget := some ⟨999999⟩ }
+    let digest := Adapter.LegacyV5.stateDigest altered
+    let fingerprint := { projection.fingerprint with rawDigest := ⟨digest⟩ }
+    let alteredProjection : Adapter.LegacyV5.ProjectionObservation := {
+      fingerprint
+      reference := {
+        projection.reference with
+        fingerprint
+        stateDigest := ⟨digest⟩ }
+      payload := .decoded altered }
+    let update ← db.prepare
+      "UPDATE projection SET state_digest=?, payload=? WHERE singleton=1"
+    update.bindText 1 digest
+    update.bindBlob 2 (toBinary alteredProjection)
+    update.exec
+
+def tamperLegacyV5OperationResult (ledger : System.FilePath) : IO Unit := do
+  let db ← _root_.SQLite.openWith ledger
+    { mode := .readWrite, threading := some .fullmutex }
+  db.transaction (mode := .immediate) do
+    let query ← db.prepare
+      "SELECT receipt FROM operations WHERE operation_id='legacy-v5-operation-2'"
+    unless ← query.step do throw <| IO.userError "legacy operation is missing"
+    let receipt ← match
+        fromBinary (α := Policy.Update.Receipt) (← query.columnBlob 0) with
+      | .ok receipt => pure receipt
+      | .error error => throw <| IO.userError error
+    let changed := { receipt with resultDigest := "legacy-result-not-derived-from-history" }
+    let update ← db.prepare "
+      UPDATE operations SET result_digest=?, receipt=?
+      WHERE operation_id='legacy-v5-operation-2'"
+    update.bindText 1 changed.resultDigest
+    update.bindBlob 2 (toBinary changed)
+    update.exec
+
+def testLegacyV5CorruptionRejection (root : System.FilePath) : IO Unit := do
+  let projection := root / "legacy-v5-projection-tamper.sqlite3"
+  makeLegacyV5Ledger projection
+  tamperLegacyV5Projection projection
+  expectLegacyV5Unsupported projection
+    "legacy projection independent of event history was accepted"
+  let result := root / "legacy-v5-operation-result-tamper.sqlite3"
+  makeLegacyV5Ledger result
+  tamperLegacyV5OperationResult result
+  expectLegacyV5Unsupported result
+    "legacy operation result independent of event history was accepted"
+  let artifact := root / "legacy-v5-artifact-missing.sqlite3"
+  makeLegacyV5Ledger artifact
+  execSql artifact "DELETE FROM artifacts"
+  expectLegacyV5Unsupported artifact
+    "legacy event artifact authority was accepted without its artifact"
+  let durable := root / "legacy-v5-durable-object-missing.sqlite3"
+  makeLegacyV5Ledger durable
+  let payload := "legacy-v5-publication".toUTF8
+  let reference : Adapter.DurableFilesystem.ArtifactRef := {
+    digest := ← Adapter.DurableFilesystem.digest payload
+    size := payload.size }
+  IO.FS.removeFile (Adapter.DurableFilesystem.objectPath
+    (Adapter.SQLite.artifactRoot durable) reference)
+  expectLegacyV5Unsupported durable
+    "legacy durable artifact absence was accepted for update"
+
+def testLegacyV5ExplicitUpdate (root : System.FilePath) : IO Unit := do
+  let ledger := root / "legacy-v5.sqlite3"
+  let backups := root / "legacy-v5-backups"
+  makeLegacyV5Ledger ledger
+  let plan ← match ← Adapter.Update.inspect ledger with
+    | .updateRequired plan =>
+        expect (plan.source.schemaVersion == Adapter.SQLite.legacyV5SchemaVersion &&
+          plan.targetVersion == Adapter.SQLite.schemaVersion)
+          "legacy v5 update plan changed schema identities"
+        pure plan
+    | other => throw <| IO.userError s!"legacy v5 update was not planned: {repr other}"
+  let receipt ← Adapter.Update.apply ledger backups plan
+  expect (receipt.source == plan.source &&
+      receipt.target.schemaVersion == Adapter.SQLite.schemaVersion)
+    "legacy v5 update receipt changed the planned boundary"
+  let store ← load ledger
+  let state ← match (Application.Service.status store).value.currentState? with
+    | some state => pure state
+    | none => throw <| IO.userError "legacy v5 converted state is unavailable"
+  let pending ← match state.externalOperations.find?
+      (·.operation == ⟨"legacy-v5-publication"⟩) with
+    | some attempt => pure attempt
+    | none => throw <| IO.userError "legacy v5 external intent was lost"
+  expect (pending.target == .unresolved)
+    "legacy external intent acquired an invented dispatch target"
+  expect (pending.state == .dispatched)
+    "legacy response-loss attempt did not preserve its reconciliation-required state"
+  let observedLegacy : Adapter.LegacyV5.Attempt := {
+    operation := ⟨"legacy-v5-observed-retry"⟩
+    artifactDigest := pending.artifactDigest
+    state := .retryable
+    observation := some {
+      identity := "observed-object-is-not-an-authorized-target"
+      artifactDigest := none } }
+  let observedCurrent := Adapter.LegacyV5.Attempt.toCurrent observedLegacy
+  expect (observedCurrent.target == .unresolved &&
+      observedCurrent.target.dispatchIdentity?.isNone &&
+      observedCurrent.observation.any
+        (·.identity == "observed-object-is-not-an-authorized-target") &&
+      observedCurrent.wellFormed)
+    "legacy observation was promoted into dispatch-target authority"
+  let fabricatedSuccess := {
+    pending with
+    state := .succeeded
+    observation := some {
+      identity := "fabricated-success-authority"
+      artifactDigest := some pending.artifactDigest } }
+  match ← Adapter.SQLite.mutate ledger ⟨"unseen-unresolved-success"⟩ ⟨3⟩
+      (.advanceExternalOperation ⟨3⟩ fabricatedSuccess) with
+  | .error (.rejected _) => pure ()
+  | other => throw (IO.userError
+      s!"unresolved target authorized fabricated success: {repr other}")
+  let fabricatedFailure := {
+    pending with
+    state := .failed
+    observation := none
+    disposition := some "fabricated terminal failure" }
+  match ← Adapter.SQLite.mutate ledger ⟨"unseen-unresolved-failure"⟩ ⟨3⟩
+      (.advanceExternalOperation ⟨3⟩ fabricatedFailure) with
+  | .error (.rejected _) => pure ()
+  | other => throw (IO.userError
+      s!"unresolved target authorized observationless failure: {repr other}")
+  match ← Adapter.SQLite.mutate ledger ⟨"legacy-v5-operation-3"⟩ ⟨2⟩
+      (.advanceExternalOperation ⟨2⟩ pending) with
+  | .ok outcome =>
+      expect outcome.exactRetry
+        "legacy operation identity did not preserve exact-retry continuity"
+  | .error error =>
+      throw (IO.userError s!"legacy exact retry was rejected after update: {repr error}")
+  match ← Adapter.SQLite.mutate ledger ⟨"legacy-v5-operation-3"⟩ ⟨99⟩
+      (.advanceExternalOperation ⟨99⟩ pending) with
+  | .error .operationConflict => pure ()
+  | other =>
+      throw (IO.userError s!"legacy operation identity accepted a changed payload: {repr other}")
+  let artifact : Adapter.DurableFilesystem.ArtifactRef := {
+    digest := pending.artifactDigest
+    size := "legacy-v5-publication".toUTF8.size }
+  match ← Adapter.DurableFilesystem.verify (Adapter.SQLite.artifactRoot ledger) artifact with
+  | .valid => pure ()
+  | other =>
+      throw (IO.userError s!"legacy artifact authority was not preserved: {repr other}")
+  let remoteObjects ← IO.mkRef ([] : List (String × String))
+  let dispatches ← IO.mkRef 0
+  let loseResponse ← IO.mkRef false
+  let failBeforeEffect ← IO.mkRef false
+  let failObservation ← IO.mkRef false
+  let port := remotePort {
+    objects := remoteObjects
+    dispatches
+    loseResponse
+    failBeforeEffect
+    failObservation }
+  match ← Adapter.ExternalOperation.dispatch ledger port pending.operation with
+  | .error .invalidAttempt => pure ()
+  | other => throw <| IO.userError s!"unresolved legacy target was dispatched: {repr other}"
+  expect ((← dispatches.get) == 0 && (← remoteObjects.get).isEmpty)
+    "legacy v5 conversion produced an external side effect"
+  let restored ← Adapter.Update.restore ledger backups receipt
+  expect (restored.restored == receipt.source)
+    "legacy v5 restore did not recover the exact source point"
+  match ← Adapter.Update.inspect ledger with
+  | .updateRequired restoredPlan =>
+      expect (restoredPlan.source == receipt.source)
+        "restored legacy v5 source identity drifted"
+  | other => throw <| IO.userError s!"restored legacy v5 state is not recoverable: {repr other}"
 
 def testSchemaFingerprintsAndPredecessorMigration (root : System.FilePath) : IO Unit := do
   let predecessorV2 := root / "predecessor-v2.sqlite3"
@@ -1484,6 +1976,7 @@ partial def awaitWriterBoundary (reached : IO.Ref Bool) (remaining : Nat := 5000
 
 def replacementAttempt (operation : String) : Domain.ExternalOperation.Attempt := {
   operation := ⟨operation⟩
+  target := .confirmed s!"remote:{operation}"
   artifactDigest := s!"proof:{operation}"
   state := .prepared }
 
@@ -1712,12 +2205,15 @@ def main (args : List String) : IO Unit :=
     testReadOnlyFaultDetection root
     testArtifactsAndEvidence root
     testExternalOperationReconciliation root
+    testExternalOperationBoundaryFaults root
     testCorrectionPersistence root
     testReviewPurposePersistence root
     testFindingAttemptPersistence root
     testArtifactBindingsAndRace root
     testFilesystemArtifactFaults root
     testUpdateInspectionReadOnly root
+    testLegacyV5CorruptionRejection root
+    testLegacyV5ExplicitUpdate root
     testSchemaFingerprintsAndPredecessorMigration root
     testExplicitUpdateAndRestore root
     testPostRenameSyncFailure root
