@@ -88,7 +88,8 @@ def RemoteObservation.conflictsWithAttempt (attempt : Attempt)
     (match attempt.target with
     | .confirmed target => observation.identity == target
     | .unresolved => true) &&
-    observation.artifactDigest.any (fun digest => digest != attempt.artifactDigest)
+    (!attempt.remotePrecondition.satisfiedBy observation ||
+      observation.artifactDigest.any (fun digest => digest != attempt.artifactDigest))
 
 def Attempt.wellFormed (attempt : Attempt) : Bool :=
   !attempt.operation.value.isEmpty && attempt.target.wellFormed &&

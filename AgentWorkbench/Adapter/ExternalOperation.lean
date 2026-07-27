@@ -53,7 +53,7 @@ private def dispatchCurrent (port : Port)
     unless before.forTarget target do
       return .error .wrongTargetObservation
     if !attempt.remotePrecondition.satisfiedBy before then
-      return classifyObservation attempt target before
+      return .ok { attempt with state := .conflict, observation := some before }
     match ← port.dispatch attempt.operation target attempt.artifactDigest
         attempt.remotePrecondition with
     | .observed observation =>

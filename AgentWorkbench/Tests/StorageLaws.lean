@@ -1126,7 +1126,7 @@ def testExternalOperationBoundaryFaults (root : System.FilePath) : IO Unit := do
     retryableRecord.store.ledger.storedHead.value
     (.recordExternalOperation retryableRecord.store.ledger.storedHead collisionPrepared)
   let collision := { collisionPrepared with state := .dispatched }
-  let _ ← mutate ledger "collision-dispatch"
+  let collisionDispatchedRecord ← mutate ledger "collision-dispatch"
     collisionPreparedRecord.store.ledger.storedHead.value
     (.advanceExternalOperation collisionPreparedRecord.store.ledger.storedHead collision)
   let conflict ← match ←
@@ -1138,6 +1138,34 @@ def testExternalOperationBoundaryFaults (root : System.FilePath) : IO Unit := do
       collision.target.dispatchIdentity?.bind
         (fun target => objectsAfterCollision.lookup target) == some "sha256:other")
     "pre-existing immutable target was overwritten instead of preserved as conflict"
+
+  objects.modify (("immutable:same-digest", "sha256:same") :: ·)
+  let sameDigestPrepared : Domain.ExternalOperation.Attempt := {
+    operation := ⟨"immutable-same-digest-precondition-conflict"⟩
+    target := .confirmed "immutable:same-digest"
+    artifactDigest := "sha256:same"
+    remotePrecondition := { expectedArtifactDigest := none }
+    state := .prepared }
+  let sameDigestPreparedRecord ← mutate ledger "same-digest-conflict-prepare"
+    collisionDispatchedRecord.store.ledger.storedHead.value
+    (.recordExternalOperation collisionDispatchedRecord.store.ledger.storedHead
+      sameDigestPrepared)
+  let sameDigestDispatched := { sameDigestPrepared with state := .dispatched }
+  let _ ← mutate ledger "same-digest-conflict-dispatch"
+    sameDigestPreparedRecord.store.ledger.storedHead.value
+    (.advanceExternalOperation sameDigestPreparedRecord.store.ledger.storedHead
+      sameDigestDispatched)
+  let sameDigestConflict ← match ←
+      Adapter.ExternalOperation.dispatch ledger port sameDigestDispatched.operation with
+    | .ok attempt => pure attempt
+    | .error error =>
+        throw <| IO.userError s!"same-digest precondition dispatch failed: {repr error}"
+  expect (sameDigestConflict.state == .conflict &&
+      sameDigestConflict.observation.any
+        (fun observation => observation.artifactDigest == some "sha256:same") &&
+      (← dispatches.get) == 1)
+    "a same-digest object that violated the prepared precondition became success"
+
   let fabricated : Domain.ExternalOperation.Attempt := {
     operation := ⟨"never-persisted"⟩
     target := .confirmed "immutable:fabricated"
