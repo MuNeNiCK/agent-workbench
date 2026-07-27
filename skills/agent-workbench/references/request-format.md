@@ -13,9 +13,10 @@ Every request is a JSON object with:
 The supported commands and additional fields are:
 
 - `register-work`: `work`, `owner`, `outcome`, `completionBoundary`.
-- `register-follow-up`: `sourceWork`, `work`, `owner`, `outcome`,
+- `register-follow-up`: `sourceWork`, `work`, `activation`, `owner`, `outcome`,
   `completionBoundary`. The source must already be terminal. The new work keeps
-  an exact predecessor dependency instead of mutating the closed record.
+  an exact predecessor dependency and becomes the active work atomically
+  instead of mutating the closed record.
 - `register-suspended-activation`: `activation`, `work`, nullable `parent`,
   `reason`, `returnPoint`, `assumptions`, `resumeConditions`.
 - `suspend-work`: `work`, `activation`, `reason`, `returnPoint`,
@@ -48,11 +49,11 @@ The supported commands and additional fields are:
 - `adjudicate-finding-verification`: `finding`, `attempt`, `adjudicator`.
 - `record-user-correction`: `key`, `scope`, `statement`, nullable `work`,
   nullable `design`.
-- `record-kpt`: `key`, `scope`, `keep`, `problem`, `try`, optional nullable
-  `adoptedLearning`, nullable `work`, and nullable `design`. Without
-  `adoptedLearning`, the observations are durable context and close without
-  authority. With it, only the explicitly proposed learning remains open for a
-  separate authority decision.
+- `record-kpt`: `key`, `work`, `keep`, `problem`, `try`, and optional nullable
+  `learningCandidate`. The key must name a work-record slot in the accepted
+  completion plan. KPT data is durable non-authoritative context. A learning
+  changes authority only through a separate user correction and authority
+  transition.
 - `resolve-user-correction` or `reject-user-proposal`: `key`, `reason`.
 - `record-authority-transition`: `key`, `correction`, `target`,
   `authorityOperation`, `authorityKind`, `scope`, nullable `work`, nullable

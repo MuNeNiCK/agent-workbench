@@ -53,7 +53,7 @@ Use `suspend-work` to represent blocked work. A terminal work record is
 immutable; `register-follow-up` creates a successor work unit with an exact
 terminal predecessor when the outcome must be continued or reopened.
 
-KPT observations use `record-kpt`. Without `adoptedLearning`, they remain
-closed context. With an explicitly adopted learning, the resulting open
-statement still requires the ordinary caller-owned authority transition before
-it can change design, implementation, tests, or completion.
+KPT observations use `record-kpt` and remain a non-authoritative work record,
+including any `learningCandidate`. If the user later adopts that candidate,
+record the separate user correction and caller-owned authority transition
+before it can change design, implementation, tests, or completion.

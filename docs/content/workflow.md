@@ -43,8 +43,9 @@ exact terminal work.
 When a completion boundary names repository details, use
 `record-repository-evidence` to retain the repository, snapshot, commit, and
 unique changed-file list. KPT observations use `record-kpt`; observations alone
-remain context, and only an explicitly proposed learning proceeds to a separate
-authority decision.
+and any learning candidate remain non-authoritative work records. A later user
+decision to adopt the learning uses the separate correction and authority
+transition path.
 
 ## Export
 

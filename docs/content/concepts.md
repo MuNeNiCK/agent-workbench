@@ -38,9 +38,9 @@ bound to the exact revision, producer, command, repository snapshot, and
 artifact identity that produced it.
 
 Repository evidence can additionally retain the exact commit and changed-file
-set. KPT observations remain non-authoritative context unless the caller
-explicitly identifies an adopted learning and later records its authority
-effect.
+set. KPT observations and learning candidates remain non-authoritative work
+records. A separate user correction and authority transition records any later
+decision to give a learning normative effect.
 
 ## External operations
 

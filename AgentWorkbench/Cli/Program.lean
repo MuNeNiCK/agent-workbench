@@ -315,6 +315,7 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
     | "register-follow-up" => do
         let source : Nat ← jsonField json "sourceWork" Nat
         let id : Nat ← jsonField json "work" Nat
+        let activationId : Nat ← jsonField json "activation" Nat
         let owner : String ← jsonField json "owner" String
         let outcome : String ← jsonField json "outcome" String
         let completionBoundary : String ←
@@ -339,7 +340,13 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
           corrections := []
           workRecords := []
         }
-        pure <| .registerFollowUp revision ⟨source⟩ work plan
+        let activation : Work.Activation := {
+          id := ⟨activationId⟩
+          work := work.id
+          status := .active
+          readyToResume := false
+        }
+        pure <| .registerFollowUp revision ⟨source⟩ work activation plan
     | "register-suspended-activation" => do
         let id : Nat ← jsonField json "activation" Nat
         let work : Nat ← jsonField json "work" Nat
@@ -535,32 +542,24 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         }
     | "record-kpt" => do
         let key : String ← jsonField json "key" String
-        let scope : String ← jsonField json "scope" String
+        let work : Nat ← jsonField json "work" Nat
         let keep : List String ← jsonField json "keep" (List String)
         let problem : List String ← jsonField json "problem" (List String)
         let tryItems : List String ← jsonField json "try" (List String)
-        let adoptedLearning ← jsonOptionalFieldD json "adoptedLearning" String
-        let work : Option Nat ← jsonField json "work" (Option Nat)
-        let design : Option Nat ← jsonField json "design" (Option Nat)
+        let learningCandidate ←
+          jsonOptionalFieldD json "learningCandidate" String
         let observations := keep ++ problem ++ tryItems
-        unless !scope.isEmpty && !observations.isEmpty &&
+        unless !observations.isEmpty &&
             observations.all (fun item => !item.isEmpty) &&
-            adoptedLearning.all (fun learning => !learning.isEmpty) do
-          throw "KPT requires a scope, at least one nonempty observation, and a nonempty adopted learning when supplied"
-        let statement := String.intercalate "\n" <| [
+            learningCandidate.all (fun learning => !learning.isEmpty) do
+          throw "KPT requires at least one nonempty observation and a nonempty learning candidate when supplied"
+        let reference := String.intercalate "\n" <| [
           s!"keep={repr keep}",
           s!"problem={repr problem}",
           s!"try={repr tryItems}"
-        ] ++ adoptedLearning.toList.map fun learning =>
-          s!"adopted-learning={repr learning}"
-        pure <| .recordKpt revision {
-          key
-          scope := "kpt:" ++ scope
-          statement
-          resolved := false
-          work := work.map (⟨·⟩)
-          design := design.map (⟨·⟩)
-        } adoptedLearning.isNone
+        ] ++ learningCandidate.toList.map fun learning =>
+          s!"learning-candidate={repr learning}"
+        pure <| .linkWorkRecord revision ⟨work⟩ key reference
     | "resolve-user-correction" => do
         let key : String ← jsonField json "key" String
         let reason : String ← jsonField json "reason" String
@@ -1160,6 +1159,8 @@ private def exportClass (path : System.FilePath) (purpose className : String)
     (output : System.FilePath) : IO Unit := do
   if purpose.isEmpty then
     throw <| IO.userError "export purpose must not be empty"
+  if ← output.pathExists then
+    throw <| IO.userError "export output already exists"
   let store ← loadStore path
   let state ← currentState store
   let payload ← match className with

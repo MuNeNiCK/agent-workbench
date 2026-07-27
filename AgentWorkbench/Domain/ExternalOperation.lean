@@ -153,44 +153,6 @@ def authorizedTransition (current next : Attempt) : Bool :=
 def requiresReconciliation (attempt : Attempt) : Bool :=
   attempt.state == .dispatched || attempt.state == .uncertain
 
-inductive PrivateArtifactClass
-  | ledger
-  | evidence
-  | review
-  | correction
-  | backup
-  | design
-deriving DecidableEq, Repr, BEq
-
-structure PrivateArtifact where
-  kind : PrivateArtifactClass
-  digest : String
-deriving DecidableEq, Repr, BEq
-
-structure ExportSelection where
-  purpose : String
-  artifacts : List PrivateArtifact
-deriving DecidableEq, Repr
-
-def PrivateArtifact.wellFormed (artifact : PrivateArtifact) : Bool :=
-  !artifact.digest.isEmpty
-
-def ExportSelection.wellFormed (selection : ExportSelection) : Bool :=
-  !selection.purpose.isEmpty &&
-    selection.artifacts.all PrivateArtifact.wellFormed &&
-    selection.artifacts.eraseDups.length == selection.artifacts.length
-
-def selectForExport (selection : ExportSelection)
-    (available : List PrivateArtifact) : List PrivateArtifact :=
-  if selection.wellFormed then
-    available.filter selection.artifacts.contains
-  else
-    []
-
-theorem empty_selection_exports_nothing (available : List PrivateArtifact) :
-    selectForExport { purpose := "", artifacts := [] } available = [] := by
-  simp [selectForExport, ExportSelection.wellFormed]
-
 def UniqueOperations (attempts : List Attempt) : Prop :=
   (attempts.map (·.operation)).Nodup
 

@@ -476,28 +476,7 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
     "--state", state.toString, "init", "owner",
     "exercise public capability routes", "the selected public outcomes are durable"]
   applySources cli (root / "capability-requests") state [
-    request 1 "kpt-context" "record-kpt" [
-      ("key", toJson "kpt-context"),
-      ("scope", toJson "phase-34"),
-      ("keep", toJson ["retain caller adjudication"]),
-      ("problem", toJson ["public capability route was missing"]),
-      ("try", toJson ["add one bounded route"]),
-      ("adoptedLearning", toJson (none : Option String)),
-      ("work", toJson (some 1 : Option Nat)),
-      ("design", toJson (none : Option Nat))
-    ],
-    request 3 "kpt-adopted" "record-kpt" [
-      ("key", toJson "kpt-adopted"),
-      ("scope", toJson "phase-34"),
-      ("keep", toJson ["retain focused tests"]),
-      ("problem", toJson ([] : List String)),
-      ("try", toJson ["record explicit exports"]),
-      ("adoptedLearning", toJson
-        (some "one selected class per export" : Option String)),
-      ("work", toJson (some 1 : Option Nat)),
-      ("design", toJson (none : Option Nat))
-    ],
-    request 4 "capability-plan" "plan-completion" [
+    request 1 "capability-plan" "plan-completion" [
       ("work", toJson 1),
       ("relatedWork", toJson ([] : List Json)),
       ("phases", toJson ([] : List String)),
@@ -508,9 +487,28 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
       ("validations", toJson ([] : List String)),
       ("repositories", toJson ([] : List String)),
       ("corrections", toJson ([] : List String)),
-      ("workRecords", toJson ["repository-change"])
+      ("workRecords", toJson [
+        "kpt-context", "kpt-candidate", "repository-change"
+      ])
     ],
-    request 5 "repository-evidence" "record-repository-evidence" [
+    request 2 "kpt-context" "record-kpt" [
+      ("key", toJson "kpt-context"),
+      ("work", toJson 1),
+      ("keep", toJson ["retain caller adjudication"]),
+      ("problem", toJson ["public capability route was missing"]),
+      ("try", toJson ["add one bounded route"]),
+      ("learningCandidate", toJson (none : Option String))
+    ],
+    request 3 "kpt-adopted" "record-kpt" [
+      ("key", toJson "kpt-candidate"),
+      ("work", toJson 1),
+      ("keep", toJson ["retain focused tests"]),
+      ("problem", toJson ([] : List String)),
+      ("try", toJson ["record explicit exports"]),
+      ("learningCandidate", toJson
+        (some "one selected class per export" : Option String))
+    ],
+    request 4 "repository-evidence" "record-repository-evidence" [
       ("work", toJson 1),
       ("key", toJson "repository-change"),
       ("repository", toJson "agent-workbench"),
@@ -523,11 +521,10 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
     ]
   ]
   let status ← invoke cli #["--state", state.toString, "status"]
-  expect (status.stdout.contains "revision: 6" &&
-      status.stdout.contains "open-corrections: 1" &&
-      status.stdout.contains "correction: key=kpt-adopted" &&
-      !status.stdout.contains "correction: key=kpt-context")
-    "KPT context was promoted to authority or adopted learning was lost"
+  expect (status.stdout.contains "revision: 5" &&
+      status.stdout.contains "open-corrections: 0" &&
+      !status.stdout.contains "correction: key=kpt")
+    "KPT context or learning candidate was promoted to correction authority"
   let correctionExport := root / "correction-export.txt"
   let reviewExport := root / "review-export.txt"
   let ledgerExport := root / "ledger-export.txt"
@@ -543,14 +540,14 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
   let correctionText ← IO.FS.readFile correctionExport
   let reviewText ← IO.FS.readFile reviewExport
   let ledgerText ← IO.FS.readFile ledgerExport
-  expect (correctionText.contains "kpt-context" &&
-      correctionText.contains "kpt-adopted" &&
+  expect (!correctionText.contains "kpt-context" &&
       !reviewText.contains "kpt-context" &&
-      ledgerText.contains "class=ledger")
+      ledgerText.contains "kpt-context" &&
+      ledgerText.contains "kpt-candidate")
     s!"focused export included an unselected private class or lost selected data\ncorrection={correctionText}\nreview={reviewText}\nledger={ledgerText}"
   let diagnosis ← invoke cli #["--state", state.toString, "doctor"]
   expect (diagnosis.stdout.contains "diagnosis: healthy" &&
-      diagnosis.stdout.contains "revision: 6")
+      diagnosis.stdout.contains "revision: 5")
     "public read-only diagnosis did not report the current ledger"
 
   let blockedState := root / "blocked-work.sqlite3"
@@ -596,13 +593,19 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
     request 3 "reopen-as-follow-up" "register-follow-up" [
       ("sourceWork", toJson 1),
       ("work", toJson 2),
+      ("activation", toJson 2),
       ("owner", toJson "owner"),
       ("outcome", toJson "continue the completed outcome"),
       ("completionBoundary", toJson "the follow-up is independently complete")
     ]
   ]
   let followUpStatus ← invoke cli #["--state", followUpState.toString, "status"]
-  expect (followUpStatus.stdout.contains "revision: 5")
+  let followUpNext ← invoke cli #["--state", followUpState.toString, "next"]
+  expect (followUpStatus.stdout.contains "revision: 4" &&
+      followUpStatus.stdout.contains "work=2 activation=2" &&
+      followUpNext.stdout.contains "next: executable" &&
+      followUpNext.stdout.contains "action: continue" &&
+      followUpNext.stdout.contains "continue 4 2 2")
     "terminal predecessor and successor follow-up were not committed atomically"
 
 def makePredecessorV2 (ledger : System.FilePath) : IO Unit := do

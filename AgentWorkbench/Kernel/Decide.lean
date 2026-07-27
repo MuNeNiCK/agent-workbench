@@ -71,9 +71,8 @@ inductive Command
   | recordObligation (expectedRevision : Revision) (obligation : Evidence.Obligation)
   | completeWork (expectedRevision : Revision) (target : WorkId)
   | registerFollowUp (expectedRevision : Revision) (source : WorkId)
-      (work : Work.WorkUnit) (plan : Lifecycle.CompletionPlan)
-  | recordKpt (expectedRevision : Revision) (entry : Design.Correction)
-      (contextOnly : Bool)
+      (work : Work.WorkUnit) (activation : Work.Activation)
+      (plan : Lifecycle.CompletionPlan)
 deriving DecidableEq, Repr
 
 def Command.expectedRevision : Command → Revision
@@ -116,8 +115,7 @@ def Command.expectedRevision : Command → Revision
   | .advanceExternalOperation revision _
   | .recordObligation revision _
   | .completeWork revision _
-  | .registerFollowUp revision _ _ _
-  | .recordKpt revision _ _ => revision
+  | .registerFollowUp revision _ _ _ _ => revision
 
 structure DerivedEvents where
   events : List Event
@@ -539,10 +537,15 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
             .ok ⟨[.workCompleted target activation.id], by simp⟩
           else
             .error (.invalidTransition "completion obligations remain")
-  | .registerFollowUp _ source work plan =>
+  | .registerFollowUp _ source work activation plan =>
       let futureWork := state.work ++ [work]
       if work.status == .open && work.wellFormed &&
           !state.work.any (·.id == work.id) &&
+          Work.noActive state.activations &&
+          activation.work == work.id && activation.status == .active &&
+          !activation.readyToResume && activation.suspension.isNone &&
+          activation.parent.isNone && activation.confirmedBasis.isNone &&
+          !state.activations.any (·.id == activation.id) &&
           state.work.any (fun unit =>
             unit.id == source &&
               (unit.status == .closed || unit.status == .abandoned)) &&
@@ -551,25 +554,10 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
           Lifecycle.ValidPlan (futureWork.map (·.id)) plan &&
           !state.lifecycle.any (fun completion =>
             completion.plan.work == plan.work) then
-        .ok ⟨[.workRegistered work, .completionPlanned plan], by simp⟩
+        .ok ⟨[.followUpActivated work activation plan], by simp⟩
       else
         .error (.invalidTransition
-          "follow-up requires a new open work unit and one exact terminal predecessor")
-  | .recordKpt _ entry contextOnly =>
-      if entry.scope.startsWith "kpt:" &&
-          Design.correctionWellFormed entry && !entry.resolved &&
-          !state.corrections.any (·.key == entry.key) then
-        if contextOnly then
-          .ok ⟨[
-            .correctionRecorded entry,
-            .userCorrectionResolved entry.key
-              "KPT context recorded without authority transition" false
-          ], by simp⟩
-        else
-          .ok ⟨[.correctionRecorded entry], by simp⟩
-      else
-        .error (.invalidTransition
-          "KPT entry must be new, scoped, and explicitly classified as context or proposed learning")
+          "follow-up requires one new active work unit and one exact terminal predecessor")
 
 structure AcceptedTransaction where
   command : Command

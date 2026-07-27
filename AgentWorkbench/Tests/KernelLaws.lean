@@ -1127,28 +1127,6 @@ def main : IO Unit := do
     (.advanceExternalOperation succeededState.revision redispatched) succeededState
     "terminal external operation was retried"
 
-  let privateArtifacts : List Domain.ExternalOperation.PrivateArtifact := [
-    { kind := .ledger, digest := "sha256:ledger" },
-    { kind := .evidence, digest := "sha256:evidence" },
-    { kind := .review, digest := "sha256:review" },
-    { kind := .correction, digest := "sha256:correction" },
-    { kind := .backup, digest := "sha256:backup" },
-    { kind := .design, digest := "sha256:design" }]
-  expect (Domain.ExternalOperation.selectForExport
-      { purpose := "", artifacts := [] } privateArtifacts).isEmpty
-    "private artifacts were exported without a specific purpose"
-  let selected : Domain.ExternalOperation.PrivateArtifact :=
-    { kind := .evidence, digest := "sha256:evidence" }
-  let sameClassUnselected : Domain.ExternalOperation.PrivateArtifact :=
-    { kind := .evidence, digest := "sha256:other-evidence" }
-  let available := privateArtifacts ++ [sameClassUnselected]
-  let selection : Domain.ExternalOperation.ExportSelection :=
-    { purpose := "share one verification receipt", artifacts := [selected] }
-  expect (Domain.ExternalOperation.selectForExport selection available == [selected])
-    "positive export selection included an unselected private artifact"
-  expect (Domain.ExternalOperation.selectForExport
-      { selection with artifacts := [selected, selected] } available).isEmpty
-    "ambiguous duplicate export selection was accepted"
   expect (Domain.Work.resume [firstActivation] firstActivation.id).isNone
     "an active activation cannot resume"
   let suspended : Domain.Work.Activation :=

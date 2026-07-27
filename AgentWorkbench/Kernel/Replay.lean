@@ -278,6 +278,8 @@ inductive Event
   | externalOperationAdvanced (attempt : ExternalOperation.Attempt)
   | obligationRecorded (obligation : Evidence.Obligation)
   | workCompleted (work : WorkId) (activation : ActivationId)
+  | followUpActivated (work : Work.WorkUnit) (activation : Work.Activation)
+      (plan : Lifecycle.CompletionPlan)
 deriving DecidableEq, Repr
 
 private def applyUnchecked (event : Event) (state : State) : State :=
@@ -479,6 +481,12 @@ private def applyUnchecked (event : Event) (state : State) : State :=
         evidence := Evidence.invalidateEvidence state.evidence
         obligations := Evidence.invalidate state.obligations
         returnTarget }
+  | .followUpActivated work activation plan =>
+      { invalidated with
+        work := state.work ++ [work]
+        activations := state.activations ++ [activation]
+        lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan]
+        returnTarget := none }
 
 def completionRelatedWorkTerminal (work : List Work.WorkUnit)
     (requirements : List Lifecycle.RelatedWorkRequirement) : Bool :=
@@ -1026,6 +1034,25 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       | some current => current.id == activation &&
           completionApplicable work state
       | none => false
+  | .followUpActivated work activation plan =>
+      let futureWork := state.work ++ [work]
+      work.status == .open && work.wellFormed &&
+      !state.work.any (·.id == work.id) &&
+      Work.noActive state.activations &&
+      activation.work == work.id && activation.status == .active &&
+      !activation.readyToResume && activation.suspension.isNone &&
+      activation.parent.isNone && activation.confirmedBasis.isNone &&
+      !state.activations.any (·.id == activation.id) &&
+      plan.work == work.id &&
+      plan.relatedWork.length == 1 &&
+      plan.relatedWork.all (fun relation =>
+        relation.kind == .dependency &&
+        state.work.any (fun source =>
+          source.id == relation.work &&
+            (source.status == .closed || source.status == .abandoned))) &&
+      decide (Lifecycle.ValidPlan (futureWork.map (·.id)) plan) &&
+      !state.lifecycle.any (fun completion =>
+        completion.plan.work == plan.work)
 
 def verifyState (state : State) : Except DomainError VerifiedState :=
   if valid : ValidState state then
