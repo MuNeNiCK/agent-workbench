@@ -1192,15 +1192,16 @@ private def exportClass (path : System.FilePath) (purpose className : String)
         throw <| IO.userError
           "export class must be ledger, evidence, review, correction, backup, or design"
   if let some parent := output.parent then
-    IO.FS.createDirAll parent
+    Adapter.DurableFilesystem.ensureDirectory parent
   let content := String.intercalate "\n" [
     s!"purpose={purpose}",
     s!"class={className}",
     payload,
     ""
   ]
-  Adapter.DurableFilesystem.writeNew output content.toUTF8
-  IO.println s!"exported: class={className} output={output}"
+  let durability ← Adapter.DurableFilesystem.writeNew output content.toUTF8
+  IO.println <|
+    s!"exported: class={className} output={output} durability={durabilityText durability}"
 
 private def nextForPath (path : System.FilePath) : IO String := do
   match ← Adapter.SQLite.diagnose path with

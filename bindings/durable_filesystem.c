@@ -199,24 +199,72 @@ LEAN_EXPORT lean_obj_res aw_write_new_durable_file(
   const char *path = lean_string_cstr(path_obj);
   const uint8_t *bytes = lean_sarray_cptr(bytes_obj);
   size_t size = lean_sarray_size(bytes_obj);
-  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-  if (fd < 0) return aw_io_error("create new file");
+  size_t temporary_size = strlen(path) + sizeof(".XXXXXX");
+  char *temporary = malloc(temporary_size);
+  if (temporary == NULL) {
+    errno = ENOMEM;
+    return aw_io_error("allocate new file path");
+  }
+  snprintf(temporary, temporary_size, "%s.XXXXXX", path);
+  int fd = mkstemp(temporary);
+  if (fd < 0) {
+    free(temporary);
+    return aw_io_error("create staged new file");
+  }
+  if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+    int saved = errno;
+    close(fd);
+    unlink(temporary);
+    free(temporary);
+    errno = saved;
+    return aw_io_error("protect staged new file descriptor");
+  }
   if (aw_write_all(fd, bytes, size) != 0) {
     int saved = errno;
     close(fd);
-    unlink(path);
+    unlink(temporary);
+    free(temporary);
     errno = saved;
-    return aw_io_error("write new file");
+    return aw_io_error("write staged new file");
   }
   if (fsync(fd) != 0) {
     int saved = errno;
     close(fd);
+    unlink(temporary);
+    free(temporary);
     errno = saved;
-    return aw_io_error("flush new file");
+    return aw_io_error("flush staged new file");
   }
-  if (close(fd) != 0) return aw_io_error("close new file");
-  if (aw_fsync_parent(path) != 0) return aw_io_error("flush new file directory");
-  return lean_io_result_mk_ok(lean_box(0));
+  if (fchmod(fd, 0444) != 0) {
+    int saved = errno;
+    close(fd);
+    unlink(temporary);
+    free(temporary);
+    errno = saved;
+    return aw_io_error("seal staged new file");
+  }
+  if (close(fd) != 0) {
+    int saved = errno;
+    unlink(temporary);
+    free(temporary);
+    errno = saved;
+    return aw_io_error("close staged new file");
+  }
+  if (link(temporary, path) != 0) {
+    int saved = errno;
+    unlink(temporary);
+    free(temporary);
+    errno = saved;
+    return aw_io_error("publish new file");
+  }
+  uint32_t uncertain = 0;
+  if (unlink(temporary) != 0) uncertain = 1;
+  free(temporary);
+  const char *force_sync_failure = getenv("AW_TEST_FAIL_EXPORT_PARENT_FSYNC");
+  if ((force_sync_failure != NULL && strcmp(force_sync_failure, "1") == 0) ||
+      aw_fsync_parent(path) != 0)
+    uncertain = 1;
+  return lean_io_result_mk_ok(lean_box_uint32(uncertain));
 }
 
 LEAN_EXPORT lean_obj_res aw_replace_durable_file(

@@ -105,7 +105,8 @@ repository snapshot, and artifact identity.
 
 Use `export <purpose> <class> <output>` to export exactly one of `ledger`,
 `evidence`, `review`, `correction`, `backup`, or `design`. No class is exported
-implicitly.
+implicitly. Export never overwrites an existing path and reports whether
+publication durability is confirmed or uncertain.
 
 Use `doctor` for read-only diagnosis and `update inspect` for a dry-run schema
 check. Run `update apply` only with the exact printed plan. It creates and

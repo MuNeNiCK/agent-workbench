@@ -567,6 +567,18 @@ def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
   expect (repeatedExport.exitCode != 0 &&
       (← IO.FS.readFile correctionExport) == correctionText)
     "exclusive export overwrote an existing output"
+  let uncertainExport := root / "uncertain-export.txt"
+  let uncertainResult ← IO.Process.output {
+    cmd := cli.toString
+    args := #[
+      "--state", state.toString, "export", "phase-34",
+      "correction", uncertainExport.toString]
+    env := #[("AW_TEST_FAIL_EXPORT_PARENT_FSYNC", some "1")]
+  }
+  expect (uncertainResult.exitCode == 0 &&
+      uncertainResult.stdout.contains "durability=uncertain" &&
+      (← IO.FS.readFile uncertainExport) == correctionText)
+    "published export did not report uncertain directory durability exactly"
   let diagnosis ← invoke cli #["--state", state.toString, "doctor"]
   expect (diagnosis.stdout.contains "diagnosis: healthy" &&
       diagnosis.stdout.contains "revision: 8")

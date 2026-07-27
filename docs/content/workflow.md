@@ -57,6 +57,9 @@ sh <installed-skill-dir>/scripts/agent-workbench.sh export \
 ```
 
 The command never exports another class implicitly.
+It never overwrites an existing path. The result reports `confirmed` or
+`uncertain` publication durability; an uncertain result names a complete
+published file whose directory flush could not be confirmed.
 
 ## Complete
 
