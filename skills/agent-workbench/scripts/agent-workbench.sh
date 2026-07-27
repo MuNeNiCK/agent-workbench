@@ -56,7 +56,7 @@ run() {
   exec "$runtime" --state "$state" "$@"
 }
 
-source_root="$(CDPATH='' cd -- "$skill_dir/../.." 2>/dev/null && pwd -P || true)"
+source_root="$(CDPATH='' cd -- "$skill_dir/../.." 2>/dev/null && pwd -P)" || source_root=""
 if test -n "$source_root" && test -f "$source_root/lakefile.lean" &&
     test -x "$source_root/.lake/build/bin/agent-workbench"; then
   run "$source_root/.lake/build/bin/agent-workbench" "$@"
