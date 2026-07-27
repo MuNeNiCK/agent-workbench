@@ -305,7 +305,8 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
         before delete on correction_application_identity_links
         begin select raise(abort, 'correction application identity links are immutable'); end;
 
-        create trigger if not exists trg_remediation_binding_insert
+        drop trigger if exists trg_remediation_binding_insert;
+        create trigger trg_remediation_binding_insert
         before insert on finding_remediation_bindings
         for each row when
             new.project_id != (select project_id from findings where id = new.finding_id)
@@ -332,8 +333,18 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                 where f.id = new.finding_id
                   and f.status = 'open' and f.classification = 'valid'
                   and c.status = 'registered'
-                  and p.required = 1 and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and p.required = 1
+                  and (
+                    (
+                      p.stage = 'close-ready'
+                      and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    )
+                    or (
+                      p.stage = 'implementation-ready'
+                      and p.review_type = 'implementation_review'
+                      and f.finding_type = 'implementation_finding'
+                    )
+                  )
                   and not exists(
                       select 1 from correction_tokens token where token.closure_id=c.id
                   )
@@ -361,7 +372,8 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
         before delete on finding_remediation_bindings
         begin select raise(abort, 'finding remediation bindings are immutable'); end;
 
-        create trigger if not exists trg_remediation_recovery_epoch_insert
+        drop trigger if exists trg_remediation_recovery_epoch_insert;
+        create trigger trg_remediation_recovery_epoch_insert
         before insert on finding_remediation_recovery_epochs
         for each row when
             new.project_id != (select project_id from findings where id = new.finding_id)
@@ -388,8 +400,18 @@ pub(super) fn ensure_closure_lifecycle_schema(conn: &Connection) -> Result<()> {
                   and f.status = 'open' and f.classification = 'valid'
                   and c.status = 'registered'
                   and p.work_unit_id = new.work_unit_id
-                  and p.required = 1 and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and p.required = 1
+                  and (
+                    (
+                      p.stage = 'close-ready'
+                      and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    )
+                    or (
+                      p.stage = 'implementation-ready'
+                      and p.review_type = 'implementation_review'
+                      and f.finding_type = 'implementation_finding'
+                    )
+                  )
                   and w.status = 'open' and a.status = 'active'
                   and d.work_unit_id = new.work_unit_id
                   and d.depends_on_work_unit_id = new.work_unit_id

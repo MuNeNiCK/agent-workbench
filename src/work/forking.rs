@@ -456,8 +456,18 @@ pub(super) fn ensure_work_mutation_allowed(
             join review_runs r on r.id=f.review_run_id
             join review_plans p on p.id=r.review_plan_id
             where b.project_id = (select id from projects order by id limit 1)
-              and p.required=1 and p.stage='close-ready'
-              and p.review_type in ('implementation_review','design_implementation_diff')
+              and p.required=1
+              and (
+                (
+                  p.stage='close-ready'
+                  and p.review_type in ('implementation_review','design_implementation_diff')
+                )
+                or (
+                  p.stage='implementation-ready'
+                  and p.review_type='implementation_review'
+                  and f.finding_type='implementation_finding'
+                )
+              )
               and p.status not in ('exhausted','needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=c.id

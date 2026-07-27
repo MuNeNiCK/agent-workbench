@@ -378,8 +378,18 @@ pub fn begin_correction(root: &Path, closure_id: i64) -> Result<CorrectionBeginO
         .query_row(
             r#"
             select c.finding_id, c.affected_surfaces,
-                   p.required = 1 and p.stage = 'close-ready'
-                     and p.review_type in ('implementation_review', 'design_implementation_diff')
+                   p.required = 1
+                     and (
+                       (
+                         p.stage = 'close-ready'
+                         and p.review_type in ('implementation_review', 'design_implementation_diff')
+                       )
+                       or (
+                         p.stage = 'implementation-ready'
+                         and p.review_type = 'implementation_review'
+                         and f.finding_type = 'implementation_finding'
+                       )
+                     )
                      and not exists(
                        select 1 from correction_tokens token where token.closure_id=c.id
                      ),

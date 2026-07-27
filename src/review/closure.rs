@@ -140,8 +140,17 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             join review_runs r on r.id = f.review_run_id
             join review_plans p on p.id = r.review_plan_id
             where f.id = ?1 and p.project_id = ?2 and p.required = 1
-              and p.stage = 'close-ready'
-              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and (
+                (
+                  p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  p.stage = 'implementation-ready'
+                  and p.review_type = 'implementation_review'
+                  and f.finding_type = 'implementation_finding'
+                )
+              )
               and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from acceptance_records accepted
@@ -174,8 +183,18 @@ pub fn ready_closure(root: &Path, input: ClosureReady<'_>) -> Result<ClosureRead
             join review_runs selected_r on selected_r.id = selected_f.review_run_id
             join review_plans selected_p on selected_p.id = selected_r.review_plan_id
             where b.work_unit_id = ?1 and b.project_id = ?2
-              and selected_p.required = 1 and selected_p.stage = 'close-ready'
-              and selected_p.review_type in ('implementation_review', 'design_implementation_diff')
+              and selected_p.required = 1
+              and (
+                (
+                  selected_p.stage = 'close-ready'
+                  and selected_p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  selected_p.stage = 'implementation-ready'
+                  and selected_p.review_type = 'implementation_review'
+                  and selected_f.finding_type = 'implementation_finding'
+                )
+              )
               and selected_p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=selected_c.id
@@ -671,8 +690,18 @@ pub fn accept_finding_out_of_scope(
         join review_plans p on p.id = r.review_plan_id
         join closures c on c.finding_id = f.id and c.status = 'registered'
         where p.work_unit_id = ?1 and f.status = 'open' and f.classification = 'valid'
-          and p.required = 1 and p.stage = 'close-ready'
-          and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and p.required = 1
+          and (
+            (
+              p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            )
+            or (
+              p.stage = 'implementation-ready'
+              and p.review_type = 'implementation_review'
+              and f.finding_type = 'implementation_finding'
+            )
+          )
         "#,
         params![owner_work_unit_id],
         |row| row.get(0),
@@ -807,8 +836,18 @@ pub(super) fn ensure_review_finding_target(
           join work_unit_activations a on a.id = b.work_unit_activation_id and a.status = 'active'
           join review_runs r on r.id=f.review_run_id
           join review_plans p on p.id=r.review_plan_id
-          where p.required=1 and p.stage='close-ready'
-            and p.review_type in ('implementation_review','design_implementation_diff')
+          where p.required=1
+            and (
+              (
+                p.stage='close-ready'
+                and p.review_type in ('implementation_review','design_implementation_diff')
+              )
+              or (
+                p.stage='implementation-ready'
+                and p.review_type='implementation_review'
+                and f.finding_type='implementation_finding'
+              )
+            )
             and p.status not in ('exhausted','needs_user_decision')
             and not exists(
               select 1 from correction_tokens token where token.closure_id=c.id
@@ -863,8 +902,18 @@ pub(super) fn finding_is_remediation_eligible(
             join review_runs r on r.id = f.review_run_id
             join review_plans p on p.id = r.review_plan_id
             where f.id = ?1 and f.project_id = ?2
-              and p.required = 1 and p.stage = 'close-ready'
-              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.required = 1
+              and (
+                (
+                  p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  p.stage = 'implementation-ready'
+                  and p.review_type = 'implementation_review'
+                  and f.finding_type = 'implementation_finding'
+                )
+              )
               and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from acceptance_records accepted

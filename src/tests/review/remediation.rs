@@ -1,6 +1,213 @@
 use super::*;
 
 #[test]
+fn phase_implementation_review_finding_can_enter_scoped_remediation() {
+    let temp = tempfile::tempdir().unwrap();
+    init_project(temp.path()).unwrap();
+    let work = start_work(temp.path(), "phase implementation finding", None).unwrap();
+    let phase = create_phase(
+        temp.path(),
+        NewWorkPhase {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            key: "adapter",
+            title: "Adapter",
+            kind: "implementation",
+            order: 1,
+            reason: Some("review the completed implementation slice"),
+        },
+    )
+    .unwrap();
+    let plan = add_review_plan(
+        temp.path(),
+        NewReviewPlan {
+            work_unit_id: work.work_unit_id,
+            design_version_id: None,
+            review_type: "implementation_review",
+            required: true,
+            stage: "implementation-ready",
+            scope: Some("one implementation phase"),
+            clean_condition: None,
+            stop_condition: None,
+            review_policy_id: None,
+            review_scope_id: None,
+        },
+    )
+    .unwrap();
+    add_review_plan_target(
+        temp.path(),
+        NewReviewPlanTarget {
+            review_plan_id: plan.review_plan_id,
+            target_type: "phase",
+            design_version_id: None,
+            design_requirement_id: None,
+            task_id: None,
+            work_unit_id: None,
+            phase_id: Some(phase.phase_id),
+            repository_snapshot_id: None,
+            file_path: None,
+            symbol: None,
+        },
+    )
+    .unwrap();
+    let context = crate::review_context::review_context_ref_with_phase(
+        "implementation-review",
+        None,
+        Some(work.work_unit_id),
+        Some(phase.phase_id),
+    );
+    let run = add_review_run(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "fresh",
+            run_purpose: "new_unbiased_review",
+            target_ref: Some(&context),
+            prompt_deviations: None,
+            result_summary: Some("adapter finding"),
+            new_findings_count: 1,
+            carried_findings_checked: 0,
+            clean_run: false,
+            status: "completed",
+            agent_label: Some("phase-reviewer"),
+            external_agent_id: Some("phase-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("phase-review-output"),
+        },
+    )
+    .unwrap();
+    let finding = add_finding(
+        temp.path(),
+        NewFinding {
+            review_run_id: run.review_run_id,
+            finding_type: "implementation_finding",
+            severity: "critical",
+            description: "repair the reviewed adapter boundary",
+            design_requirement_id: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+    decide_finding(
+        temp.path(),
+        finding.finding_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "the phase implementation finding is valid",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    let closure = add_closure(
+        temp.path(),
+        NewClosure {
+            finding_id: finding.finding_id,
+            design_invariant: "the phase review can authorize a scoped code repair",
+            design_citations: None,
+            implementation_evidence: None,
+            affected_surfaces: Some("src/adapter.rs"),
+            same_invariant_search: None,
+            other_violations_found: None,
+            fix_plan: Some("repair only the reviewed adapter boundary"),
+            tests_or_gates: Some("cargo test"),
+            verification_plan: Some("independent finding-fix review"),
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let conn = open_ledger(&default_ledger_path(temp.path())).unwrap();
+    let routing: (String, String, String, i64) = conn
+        .query_row(
+            "select p.stage,p.review_type,f.finding_type,(select count(*) from correction_tokens token where token.closure_id=c.id) from findings f join review_runs r on r.id=f.review_run_id join review_plans p on p.id=r.review_plan_id join closures c on c.finding_id=f.id where f.id=?1",
+            [finding.finding_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        routing,
+        (
+            "implementation-ready".to_string(),
+            "implementation_review".to_string(),
+            "implementation_finding".to_string(),
+            0
+        )
+    );
+    drop(conn);
+
+    let activated = remediate_work(temp.path(), finding.finding_id).unwrap();
+    assert_eq!(activated.work_unit_id, work.work_unit_id);
+    assert_eq!(activated.binding_count, 1);
+    let status = project_status(temp.path()).unwrap();
+    assert_eq!(status.finding_remediations.len(), 1);
+    assert!(
+        status.finding_remediations[0]
+            .next_action
+            .contains(&format!(
+                "agent-workbench closure ready {}",
+                closure.closure_id
+            ))
+    );
+    let scope_error = start_work(temp.path(), "unrelated mutation", None).unwrap_err();
+    assert!(scope_error.to_string().contains("closure ready"));
+    let attempt = ready_closure(
+        temp.path(),
+        ClosureReady {
+            closure_id: closure.closure_id,
+            implementation_evidence: "the phase implementation finding is fixed",
+            tests_or_gates: "focused remediation test passes",
+            closed_by_commit: None,
+        },
+    )
+    .unwrap();
+    let verification = add_review_run_with_finding_result(
+        temp.path(),
+        NewReviewRun {
+            review_plan_id: plan.review_plan_id,
+            run_type: "resume",
+            run_purpose: "finding_fix_verification",
+            target_ref: Some(&attempt.context_ref),
+            prompt_deviations: None,
+            result_summary: Some("exact implementation-ready remediation is verified"),
+            new_findings_count: 0,
+            carried_findings_checked: 1,
+            clean_run: true,
+            status: "completed",
+            agent_label: Some("verification-reviewer"),
+            external_agent_id: Some("verification-reviewer"),
+            review_provenance: "external_agent",
+            review_provenance_ref: Some("implementation-ready-verification"),
+        },
+        Some("verified"),
+    )
+    .unwrap();
+    add_finding_verification(
+        temp.path(),
+        NewFindingVerification {
+            review_run_id: verification.review_run_id,
+            finding_id: finding.finding_id,
+            closure_id: closure.closure_id,
+            result: "verified",
+            notes: Some("the scoped remediation lifecycle completed"),
+        },
+    )
+    .unwrap();
+    adjudicate_verification(
+        temp.path(),
+        verification.review_run_id,
+        finding.finding_id,
+        closure.closure_id,
+        attempt.attempt_id,
+        AdjudicationInput {
+            decision: "accepted",
+            reason: "the exact implementation-ready remediation attempt is verified",
+            expected_current: "pending",
+        },
+    )
+    .unwrap();
+    assert!(list_findings(temp.path(), Some("open")).unwrap().is_empty());
+}
+
+#[test]
 fn typed_close_ready_contract_routes_to_source_correction() {
     let temp = tempfile::tempdir().unwrap();
     init_project(temp.path()).unwrap();

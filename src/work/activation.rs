@@ -56,8 +56,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
             join closures c on c.finding_id = f.id and c.status = 'registered'
             where f.id = ?1 and f.project_id = ?2
               and f.status = 'open' and f.classification = 'valid'
-              and p.required = 1 and p.stage = 'close-ready'
-              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.required = 1
+              and (
+                (
+                  p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  p.stage = 'implementation-ready'
+                  and p.review_type = 'implementation_review'
+                  and f.finding_type = 'implementation_finding'
+                )
+              )
               and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=c.id
@@ -103,8 +113,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
             join review_runs r on r.id = f.review_run_id
             join review_plans p on p.id = r.review_plan_id
             where b.project_id = ?1
-              and p.required = 1 and p.stage = 'close-ready'
-              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.required = 1
+              and (
+                (
+                  p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  p.stage = 'implementation-ready'
+                  and p.review_type = 'implementation_review'
+                  and f.finding_type = 'implementation_finding'
+                )
+              )
               and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=c.id
@@ -142,8 +162,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
                 join closures c on c.finding_id = f.id and c.status = 'registered'
                 where p.work_unit_id = ?1 and f.project_id = ?2
                   and f.status = 'open' and f.classification = 'valid'
-                  and p.required = 1 and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and p.required = 1
+                  and (
+                    (
+                      p.stage = 'close-ready'
+                      and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    )
+                    or (
+                      p.stage = 'implementation-ready'
+                      and p.review_type = 'implementation_review'
+                      and f.finding_type = 'implementation_finding'
+                    )
+                  )
                   and p.status not in ('exhausted', 'needs_user_decision')
                   and not exists(
                     select 1 from correction_tokens token where token.closure_id=c.id
@@ -185,8 +215,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
         join review_plans p on p.id = r.review_plan_id
         join closures c on c.finding_id = f.id and c.status = 'registered'
         where f.project_id = ?1 and f.status = 'open' and f.classification = 'valid'
-          and p.required = 1 and p.stage = 'close-ready'
-          and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and p.required = 1
+          and (
+            (
+              p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            )
+            or (
+              p.stage = 'implementation-ready'
+              and p.review_type = 'implementation_review'
+              and f.finding_type = 'implementation_finding'
+            )
+          )
           and p.status not in ('exhausted', 'needs_user_decision')
           and not exists(
             select 1 from correction_tokens token where token.closure_id=c.id
@@ -298,8 +338,18 @@ pub fn remediate_work(root: &Path, finding_id: i64) -> Result<WorkRemediateOutco
         join closures c on c.finding_id = f.id and c.status = 'registered'
         where p.work_unit_id = ?1 and f.project_id = ?2
           and f.status = 'open' and f.classification = 'valid'
-          and p.required = 1 and p.stage = 'close-ready'
-          and p.review_type in ('implementation_review', 'design_implementation_diff')
+          and p.required = 1
+          and (
+            (
+              p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            )
+            or (
+              p.stage = 'implementation-ready'
+              and p.review_type = 'implementation_review'
+              and f.finding_type = 'implementation_finding'
+            )
+          )
           and p.status not in ('exhausted', 'needs_user_decision')
           and not exists(
             select 1 from correction_tokens token where token.closure_id=c.id

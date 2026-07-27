@@ -528,6 +528,16 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
                    on correction_token.closure_id=correction_closure.id
                  where correction_closure.finding_id=f.id
                    and correction_closure.status='registered'
+               ) and (
+                 (
+                   p.stage='close-ready'
+                   and p.review_type in ('implementation_review','design_implementation_diff')
+                 )
+                 or (
+                   p.stage='implementation-ready'
+                   and p.review_type='implementation_review'
+                   and f.finding_type='implementation_finding'
+                 )
                )
         from review_plans p
         join review_runs r on r.review_plan_id=p.id
@@ -565,8 +575,17 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
               where c.finding_id=f.id and c.status='ready_for_verification'
             ) then 6
             when not (
-              p.required=1 and p.stage='close-ready'
-              and p.review_type in ('implementation_review','design_implementation_diff')
+              p.required=1 and (
+                (
+                  p.stage='close-ready'
+                  and p.review_type in ('implementation_review','design_implementation_diff')
+                )
+                or (
+                  p.stage='implementation-ready'
+                  and p.review_type='implementation_review'
+                  and f.finding_type='implementation_finding'
+                )
+              )
             ) then 7
             else 8
           end,
@@ -579,8 +598,17 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
           end,
           case when
             f.classification='valid'
-            and p.stage='close-ready'
-            and p.review_type in ('implementation_review','design_implementation_diff')
+            and (
+              (
+                p.stage='close-ready'
+                and p.review_type in ('implementation_review','design_implementation_diff')
+              )
+              or (
+                p.stage='implementation-ready'
+                and p.review_type='implementation_review'
+                and f.finding_type='implementation_finding'
+              )
+            )
             and exists(
               select 1 from finding_remediation_bindings prior
               join work_unit_activations prior_a
@@ -593,8 +621,17 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
             ) then 1 else 0 end,
           case when
             f.classification='valid'
-            and p.stage='close-ready'
-            and p.review_type in ('implementation_review','design_implementation_diff')
+            and (
+              (
+                p.stage='close-ready'
+                and p.review_type in ('implementation_review','design_implementation_diff')
+              )
+              or (
+                p.stage='implementation-ready'
+                and p.review_type='implementation_review'
+                and f.finding_type='implementation_finding'
+              )
+            )
             and exists(
               select 1 from finding_remediation_bindings prior
               join work_unit_activations prior_a
@@ -632,12 +669,7 @@ fn owner_review_blocker(conn: &Connection, owner_id: i64) -> Result<Option<Phase
             let verification_run_id: Option<i64> = row.get(15)?;
             let verification_result = row.get::<_, Option<String>>(16)?;
             let implementation_surface = row.get::<_, bool>(17)?;
-            let implementation_eligible = stage == "close-ready"
-                && matches!(
-                    review_type.as_str(),
-                    "implementation_review" | "design_implementation_diff"
-                )
-                && implementation_surface;
+            let implementation_eligible = implementation_surface;
             Ok(PhaseBlocker {
                 kind: "required_review_finding".to_string(),
                 review_plan_id: Some(review_plan_id),

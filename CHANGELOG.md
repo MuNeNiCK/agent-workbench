@@ -1,5 +1,13 @@
 # Release history
 
+## v0.1.36 — 2026-07-27
+
+- Route required implementation-review findings created at an implementation-
+  ready boundary through the same scoped remediation and independent
+  verification lifecycle as close-ready implementation findings.
+- Keep design and decomposition findings on the source-correction path, and
+  refresh binding and terminal-recovery guards for existing managed projects.
+
 ## v0.1.35 — 2026-07-27
 
 - Keep closed work-unit history visible without letting its stale task

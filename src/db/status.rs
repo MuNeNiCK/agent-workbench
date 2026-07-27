@@ -384,8 +384,18 @@ pub(super) fn current_finding_remediations(conn: &Connection) -> Result<Vec<Find
         join finding_remediation_bindings b
           on b.finding_id = f.id and b.closure_id = c.id
          and b.work_unit_id = p.work_unit_id and b.work_unit_activation_id = a.id
-        where p.project_id = ?1 and p.required = 1 and p.stage = 'close-ready'
-          and p.review_type in ('implementation_review', 'design_implementation_diff')
+        where p.project_id = ?1 and p.required = 1
+          and (
+            (
+              p.stage = 'close-ready'
+              and p.review_type in ('implementation_review', 'design_implementation_diff')
+            )
+            or (
+              p.stage = 'implementation-ready'
+              and p.review_type = 'implementation_review'
+              and f.finding_type = 'implementation_finding'
+            )
+          )
           and p.status not in ('exhausted', 'needs_user_decision')
           and not exists(
             select 1 from correction_tokens token where token.closure_id=c.id
@@ -611,8 +621,18 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
             join review_plans p on p.id = r.review_plan_id
             join work_units w on w.id = p.work_unit_id
             where b.project_id = ?1
-              and p.required = 1 and p.stage = 'close-ready'
-              and p.review_type in ('implementation_review', 'design_implementation_diff')
+              and p.required = 1
+              and (
+                (
+                  p.stage = 'close-ready'
+                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                )
+                or (
+                  p.stage = 'implementation-ready'
+                  and p.review_type = 'implementation_review'
+                  and f.finding_type = 'implementation_finding'
+                )
+              )
               and p.status not in ('exhausted', 'needs_user_decision')
               and not exists(
                 select 1 from correction_tokens token where token.closure_id=c.id
@@ -717,6 +737,16 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                       on correction_token.closure_id=correction_closure.id
                     where correction_closure.finding_id=f.id
                       and correction_closure.status='registered'
+                ) and (
+                    (
+                        p.stage = 'close-ready'
+                        and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    )
+                    or (
+                        p.stage = 'implementation-ready'
+                        and p.review_type = 'implementation_review'
+                        and f.finding_type = 'implementation_finding'
+                    )
                 )
             from review_plans p
             join review_runs r on r.review_plan_id = p.id
@@ -729,8 +759,17 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
               and not exists(select 1 from legacy_claim_audits l where l.project_id=f.project_id and l.review_run_id=f.review_run_id and l.reviewer_resolution in ('unbound','ambiguous'))
               and not (
                   f.classification = 'valid'
-                  and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and (
+                      (
+                          p.stage = 'close-ready'
+                          and p.review_type in ('implementation_review', 'design_implementation_diff')
+                      )
+                      or (
+                          p.stage = 'implementation-ready'
+                          and p.review_type = 'implementation_review'
+                          and f.finding_type = 'implementation_finding'
+                      )
+                  )
                   and exists (
                       select 1 from closures c
                       join finding_remediation_bindings b
@@ -759,8 +798,17 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
               )
               and not (
                   f.classification = 'valid'
-                  and p.stage = 'close-ready'
-                  and p.review_type in ('implementation_review', 'design_implementation_diff')
+                  and (
+                      (
+                          p.stage = 'close-ready'
+                          and p.review_type in ('implementation_review', 'design_implementation_diff')
+                      )
+                      or (
+                          p.stage = 'implementation-ready'
+                          and p.review_type = 'implementation_review'
+                          and f.finding_type = 'implementation_finding'
+                      )
+                  )
                   and exists (
                       select 1
                       from closures current_c
@@ -790,8 +838,17 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
               )
               and not (
                   not (
-                    p.required = 1 and p.stage = 'close-ready'
-                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    p.required = 1 and (
+                        (
+                            p.stage = 'close-ready'
+                            and p.review_type in ('implementation_review', 'design_implementation_diff')
+                        )
+                        or (
+                            p.stage = 'implementation-ready'
+                            and p.review_type = 'implementation_review'
+                            and f.finding_type = 'implementation_finding'
+                        )
+                    )
                   )
                   and p.required = 1
                   and p.status not in ('exhausted', 'needs_user_decision')
@@ -837,8 +894,19 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                     when exists (
                         select 1 from closures c where c.finding_id = f.id and c.status = 'ready_for_verification'
                     ) then 6
-                    when not (p.required = 1 and p.stage = 'close-ready'
-                              and p.review_type in ('implementation_review', 'design_implementation_diff'))
+                    when not (
+                        p.required = 1 and (
+                            (
+                                p.stage = 'close-ready'
+                                and p.review_type in ('implementation_review', 'design_implementation_diff')
+                            )
+                            or (
+                                p.stage = 'implementation-ready'
+                                and p.review_type = 'implementation_review'
+                                and f.finding_type = 'implementation_finding'
+                            )
+                        )
+                    )
                          then 7
                     else 8
                 end,
@@ -851,8 +919,17 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                 end,
                 case when
                     f.classification = 'valid'
-                    and p.stage = 'close-ready'
-                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    and (
+                        (
+                            p.stage = 'close-ready'
+                            and p.review_type in ('implementation_review', 'design_implementation_diff')
+                        )
+                        or (
+                            p.stage = 'implementation-ready'
+                            and p.review_type = 'implementation_review'
+                            and f.finding_type = 'implementation_finding'
+                        )
+                    )
                     and exists (
                         select 1 from finding_remediation_bindings prior
                         join work_unit_activations prior_a on prior_a.id = prior.work_unit_activation_id
@@ -864,8 +941,17 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                     ) then 1 else 0 end,
                 case when
                     f.classification = 'valid'
-                    and p.stage = 'close-ready'
-                    and p.review_type in ('implementation_review', 'design_implementation_diff')
+                    and (
+                        (
+                            p.stage = 'close-ready'
+                            and p.review_type in ('implementation_review', 'design_implementation_diff')
+                        )
+                        or (
+                            p.stage = 'implementation-ready'
+                            and p.review_type = 'implementation_review'
+                            and f.finding_type = 'implementation_finding'
+                        )
+                    )
                     and exists (
                         select 1 from finding_remediation_bindings prior
                         join work_unit_activations prior_a on prior_a.id = prior.work_unit_activation_id
@@ -902,12 +988,7 @@ pub(crate) fn current_phase_blocker(conn: &Connection) -> Result<Option<PhaseBlo
                 let implementation_surface = row.get::<_, bool>(18)?;
                 let review_type = row.get::<_, String>(2)?;
                 let stage = row.get::<_, String>(3)?;
-                let implementation_eligible = stage == "close-ready"
-                    && matches!(
-                        review_type.as_str(),
-                        "implementation_review" | "design_implementation_diff"
-                    )
-                    && implementation_surface;
+                let implementation_eligible = implementation_surface;
                 Ok(PhaseBlocker {
                     kind: "required_review_finding".to_string(),
                     review_plan_id: Some(review_plan_id),
