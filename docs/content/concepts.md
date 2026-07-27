@@ -21,6 +21,9 @@ point.
 
 Aggregate work may have ordered phases and dependencies. A rescope changes the
 outcome or owner. A split creates genuinely independent work lifecycles.
+Blocked work is a suspension with explicit resume conditions. Closed work is
+not rewritten; continuing the outcome creates a successor follow-up tied to the
+terminal predecessor.
 
 ## Design and decomposition
 
@@ -33,6 +36,11 @@ Historical or rejected approaches are not converted into inverse requirements.
 Evidence records a positive observation required by the accepted design. It is
 bound to the exact revision, producer, command, repository snapshot, and
 artifact identity that produced it.
+
+Repository evidence can additionally retain the exact commit and changed-file
+set. KPT observations remain non-authoritative context unless the caller
+explicitly identifies an adopted learning and later records its authority
+effect.
 
 ## External operations
 

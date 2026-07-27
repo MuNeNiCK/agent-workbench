@@ -75,7 +75,16 @@ complete_fixture() {
     (cd "$project/nested" && awb apply "$request_file" >/dev/null)
   done < "$root/scripts/fixtures/skill-lifecycle.ndjson"
 
-  (cd "$project/nested" && awb status) | grep -F "active: none" >/dev/null
+  (
+    cd "$project/nested"
+    awb status | grep -F "active: none" >/dev/null
+    awb doctor | grep -F "diagnosis: healthy" >/dev/null
+    awb update inspect | grep -F "update: current" >/dev/null
+    awb export "skill-product-$marker" correction \
+      "$fixture/$(basename -- "$project")-correction-export.txt" >/dev/null
+  )
+  grep -F "class=correction" \
+    "$fixture/$(basename -- "$project")-correction-export.txt" >/dev/null
   with_state="$(cd "$project" && "$tool" "$entry")"
   backup="$fixture/$(basename -- "$project")-state"
   mv "$project/.agent-workbench" "$backup"

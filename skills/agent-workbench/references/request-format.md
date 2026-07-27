@@ -13,6 +13,9 @@ Every request is a JSON object with:
 The supported commands and additional fields are:
 
 - `register-work`: `work`, `owner`, `outcome`, `completionBoundary`.
+- `register-follow-up`: `sourceWork`, `work`, `owner`, `outcome`,
+  `completionBoundary`. The source must already be terminal. The new work keeps
+  an exact predecessor dependency instead of mutating the closed record.
 - `register-suspended-activation`: `activation`, `work`, nullable `parent`,
   `reason`, `returnPoint`, `assumptions`, `resumeConditions`.
 - `suspend-work`: `work`, `activation`, `reason`, `returnPoint`,
@@ -45,6 +48,11 @@ The supported commands and additional fields are:
 - `adjudicate-finding-verification`: `finding`, `attempt`, `adjudicator`.
 - `record-user-correction`: `key`, `scope`, `statement`, nullable `work`,
   nullable `design`.
+- `record-kpt`: `key`, `scope`, `keep`, `problem`, `try`, optional nullable
+  `adoptedLearning`, nullable `work`, and nullable `design`. Without
+  `adoptedLearning`, the observations are durable context and close without
+  authority. With it, only the explicitly proposed learning remains open for a
+  separate authority decision.
 - `resolve-user-correction` or `reject-user-proposal`: `key`, `reason`.
 - `record-authority-transition`: `key`, `correction`, `target`,
   `authorityOperation`, `authorityKind`, `scope`, nullable `work`, nullable
@@ -68,6 +76,10 @@ The supported commands and additional fields are:
 - `pass-validation`: `work`, `key`, `artifactDigest`.
 - `classify-repository`: `work`, `key`, `snapshotDigest`.
 - `link-work-record`: `work`, `key`, `reference`.
+- `record-repository-evidence`: `work`, `key`, `repository`, `snapshot`,
+  `commit`, and nonempty unique `changedFiles`. It satisfies the same declared
+  work-record slot as `link-work-record`, while preserving the repository
+  observation as a validated canonical reference.
 - `record-obligation`: `work`, `key`, `commandProfile`, `invocation`,
   `repository`, `snapshot`, `artifactDigest`, `kind`, `requirements`,
   `expectedProducer`, `expectedObservation`, `design`, `designRevision`.

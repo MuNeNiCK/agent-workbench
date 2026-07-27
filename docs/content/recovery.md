@@ -25,12 +25,19 @@ rejected without changing state.
 Projection repair rebuilds derived state from the durable ledger. It does not
 invent missing events or modify the managed project.
 
+Run `doctor` for read-only integrity diagnosis. Run `update inspect` to obtain a
+dry-run schema plan. `update apply` accepts only that exact plan, writes a
+content-addressed backup, verifies the staged conversion, and prints the exact
+`update restore` arguments. Normal work commands never update storage.
+
 ## Uncertain external effects
 
 Do not blindly retry a release or another external operation after a timeout.
 First inspect the exact remote target, then record its identity and artifact
 digest. Continue only with a transition consistent with the prepared target,
-artifact, and remote precondition.
+artifact, and remote precondition. The Skill invokes the relevant external
+tool; the core validates and persists the sequence rather than embedding a
+generic network transport.
 
 ## Unsupported state
 

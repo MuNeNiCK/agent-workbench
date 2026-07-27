@@ -1,4 +1,5 @@
 import AgentWorkbench.Adapter.SQLite
+import AgentWorkbench.Adapter.Update
 import Lean.Data.Json
 
 namespace AgentWorkbench.Cli.Program
@@ -35,7 +36,12 @@ private def usage : String :=
     "  agent-workbench --state <path> next",
     "  agent-workbench --state <path> continue <revision> <work> <activation>",
     "  agent-workbench --state <path> resume <revision> <work> <activation>",
+    "  agent-workbench --state <path> doctor",
     "  agent-workbench --state <path> repair <revision> <history-hex> <observed-hex>",
+    "  agent-workbench --state <path> update inspect",
+    "  agent-workbench --state <path> update apply <source-schema> <source-digest> <target-schema>",
+    "  agent-workbench --state <path> update restore <source-schema> <source-digest> <backup-digest> <backup-size> <target-schema> <target-digest> <durability>",
+    "  agent-workbench --state <path> export <purpose> <ledger|evidence|review|correction|backup|design> <output>",
     "  agent-workbench --state <path> apply <request.json>"
   ]
 
@@ -306,6 +312,34 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
           outcome
           completionBoundary
         }
+    | "register-follow-up" => do
+        let source : Nat ← jsonField json "sourceWork" Nat
+        let id : Nat ← jsonField json "work" Nat
+        let owner : String ← jsonField json "owner" String
+        let outcome : String ← jsonField json "outcome" String
+        let completionBoundary : String ←
+          jsonField json "completionBoundary" String
+        let work : Work.WorkUnit := {
+          id := ⟨id⟩
+          status := .open
+          owner
+          outcome
+          completionBoundary
+        }
+        let plan : Lifecycle.CompletionPlan := {
+          work := work.id
+          relatedWork := [{ work := ⟨source⟩, kind := .dependency }]
+          phases := []
+          tasks := []
+          checklists := []
+          reviews := []
+          findings := []
+          validations := []
+          repositories := []
+          corrections := []
+          workRecords := []
+        }
+        pure <| .registerFollowUp revision ⟨source⟩ work plan
     | "register-suspended-activation" => do
         let id : Nat ← jsonField json "activation" Nat
         let work : Nat ← jsonField json "work" Nat
@@ -499,6 +533,34 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
           work := work.map (⟨·⟩)
           design := design.map (⟨·⟩)
         }
+    | "record-kpt" => do
+        let key : String ← jsonField json "key" String
+        let scope : String ← jsonField json "scope" String
+        let keep : List String ← jsonField json "keep" (List String)
+        let problem : List String ← jsonField json "problem" (List String)
+        let tryItems : List String ← jsonField json "try" (List String)
+        let adoptedLearning ← jsonOptionalFieldD json "adoptedLearning" String
+        let work : Option Nat ← jsonField json "work" (Option Nat)
+        let design : Option Nat ← jsonField json "design" (Option Nat)
+        let observations := keep ++ problem ++ tryItems
+        unless !scope.isEmpty && !observations.isEmpty &&
+            observations.all (fun item => !item.isEmpty) &&
+            adoptedLearning.all (fun learning => !learning.isEmpty) do
+          throw "KPT requires a scope, at least one nonempty observation, and a nonempty adopted learning when supplied"
+        let statement := String.intercalate "\n" <| [
+          s!"keep={repr keep}",
+          s!"problem={repr problem}",
+          s!"try={repr tryItems}"
+        ] ++ adoptedLearning.toList.map fun learning =>
+          s!"adopted-learning={repr learning}"
+        pure <| .recordKpt revision {
+          key
+          scope := "kpt:" ++ scope
+          statement
+          resolved := false
+          work := work.map (⟨·⟩)
+          design := design.map (⟨·⟩)
+        } adoptedLearning.isNone
     | "resolve-user-correction" => do
         let key : String ← jsonField json "key" String
         let reason : String ← jsonField json "reason" String
@@ -694,6 +756,25 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let work : Nat ← jsonField json "work" Nat
         let key : String ← jsonField json "key" String
         let reference : String ← jsonField json "reference" String
+        pure <| .linkWorkRecord revision ⟨work⟩ key reference
+    | "record-repository-evidence" => do
+        let work : Nat ← jsonField json "work" Nat
+        let key : String ← jsonField json "key" String
+        let repository : String ← jsonField json "repository" String
+        let snapshot : String ← jsonField json "snapshot" String
+        let commit : String ← jsonField json "commit" String
+        let changedFiles : List String ← jsonField json "changedFiles" (List String)
+        unless !repository.isEmpty && !snapshot.isEmpty && !commit.isEmpty &&
+            !changedFiles.isEmpty &&
+            changedFiles.all (fun file => !file.isEmpty) &&
+            changedFiles.eraseDups.length == changedFiles.length do
+          throw "repository evidence requires repository, snapshot, commit, and unique changed files"
+        let reference := String.intercalate "\n" [
+          s!"repository={repr repository}",
+          s!"snapshot={repr snapshot}",
+          s!"commit={repr commit}",
+          s!"changed-files={repr changedFiles}"
+        ]
         pure <| .linkWorkRecord revision ⟨work⟩ key reference
     | "record-obligation" => do
         let work : Nat ← jsonField json "work" Nat
@@ -962,6 +1043,160 @@ private def repair (path : System.FilePath) (revision : Nat)
       | .ok receipt => IO.println s!"repaired: {receipt.adoptedDigest}"
       | .error error => throw <| IO.userError s!"repair failed: {repr error}"
 
+private def backupRoot (path : System.FilePath) : System.FilePath :=
+  path.parent.getD "." / "backups"
+
+private def durabilityText :
+    Adapter.DurableFilesystem.ReplacementDurability → String
+  | .confirmed => "confirmed"
+  | .uncertain => "uncertain"
+
+private def parseDurability :
+    String → Except String Adapter.DurableFilesystem.ReplacementDurability
+  | "confirmed" => .ok .confirmed
+  | "uncertain" => .ok .uncertain
+  | _ => .error "durability must be confirmed or uncertain"
+
+private def doctor (path : System.FilePath) : IO Unit := do
+  match ← Adapter.SQLite.diagnose path with
+  | .error error => throw <| IO.userError s!"diagnosis failed: {repr error}"
+  | .ok (.healthy store) =>
+      IO.println <| String.intercalate "\n" [
+        "diagnosis: healthy",
+        s!"revision: {store.ledger.storedHead.value}",
+        s!"history-digest: {store.ledger.storedHistoryDigest.value}"
+      ]
+  | .ok (.projectionRepairRequired plan) =>
+      IO.println <| String.intercalate "\n" [
+        "diagnosis: projection-repair-required",
+        s!"revision: {plan.head.revision.value}",
+        s!"history-hex: {encodeHex plan.head.historyDigest.value}",
+        s!"observed-hex: {encodeHex plan.observedDigest}"
+      ]
+
+private def inspectUpdate (path : System.FilePath) : IO Unit := do
+  match ← Adapter.Update.inspect path with
+  | .current point =>
+      IO.println <| String.intercalate "\n" [
+        "update: current",
+        s!"schema: {point.schemaVersion}",
+        s!"digest: {point.digest}"
+      ]
+  | .unsupported point =>
+      throw <| IO.userError s!"update unsupported: schema={point.schemaVersion} digest={point.digest}"
+  | .updateRequired plan =>
+      IO.println <| String.intercalate "\n" [
+        "update: required",
+        s!"source-schema: {plan.source.schemaVersion}",
+        s!"source-digest: {plan.source.digest}",
+        s!"target-schema: {plan.targetVersion}",
+        s!"arguments: update apply {plan.source.schemaVersion} {plan.source.digest} {plan.targetVersion}"
+      ]
+
+private def applyUpdate (path : System.FilePath) (sourceSchema : Nat)
+    (sourceDigest : String) (targetSchema : Nat) : IO Unit := do
+  let supplied : Adapter.Update.Plan := {
+    source := { schemaVersion := sourceSchema, digest := sourceDigest }
+    targetVersion := targetSchema
+  }
+  match ← Adapter.Update.inspect path with
+  | .updateRequired current =>
+      unless current = supplied do
+        throw <| IO.userError "update rejected: supplied dry-run plan is stale"
+  | .current _ =>
+      throw <| IO.userError "update rejected: storage is already current"
+  | .unsupported point =>
+      throw <| IO.userError s!"update unsupported: schema={point.schemaVersion} digest={point.digest}"
+  let receipt ← Adapter.Update.apply path (backupRoot path) supplied
+  IO.println <| String.intercalate "\n" [
+    "updated: true",
+    s!"source-schema: {receipt.source.schemaVersion}",
+    s!"source-digest: {receipt.source.digest}",
+    s!"backup-digest: {receipt.backup.digest}",
+    s!"backup-size: {receipt.backup.size}",
+    s!"target-schema: {receipt.target.schemaVersion}",
+    s!"target-digest: {receipt.target.digest}",
+    s!"durability: {durabilityText receipt.targetDurability}",
+    s!"restore-arguments: update restore {receipt.source.schemaVersion} {receipt.source.digest} {receipt.backup.digest} {receipt.backup.size} {receipt.target.schemaVersion} {receipt.target.digest} {durabilityText receipt.targetDurability}"
+  ]
+
+private def restoreUpdate (path : System.FilePath) (sourceSchema : Nat)
+    (sourceDigest backupDigest : String) (backupSize targetSchema : Nat)
+    (targetDigest : String)
+    (durability : Adapter.DurableFilesystem.ReplacementDurability) : IO Unit := do
+  let receipt : Adapter.Update.Receipt := {
+    source := { schemaVersion := sourceSchema, digest := sourceDigest }
+    backup := { digest := backupDigest, size := backupSize }
+    target := { schemaVersion := targetSchema, digest := targetDigest }
+    targetDurability := durability
+  }
+  let restored ← Adapter.Update.restore path (backupRoot path) receipt
+  IO.println <| String.intercalate "\n" [
+    "restored: true",
+    s!"schema: {restored.restored.schemaVersion}",
+    s!"digest: {restored.restored.digest}",
+    s!"durability: {durabilityText restored.durability}"
+  ]
+
+private def currentState (store : Projection.Store) : IO Replay.State :=
+  match Projection.inspect store with
+  | .fresh _ projection =>
+      match projection.payload with
+      | .decoded state => pure state
+      | .decodeFailed reason =>
+          throw <| IO.userError s!"export unavailable: {repr reason}"
+  | _ => throw <| IO.userError "export unavailable: storage requires repair"
+
+private def backupSummary (path : System.FilePath) : IO String := do
+  let root := backupRoot path
+  if !(← root.pathExists) then return "[]"
+  let entries ← root.readDir
+  let names := entries.toList.filterMap fun entry =>
+    let name := entry.fileName
+    if name.startsWith "." then none else some name
+  return s!"{repr names}"
+
+private def exportClass (path : System.FilePath) (purpose className : String)
+    (output : System.FilePath) : IO Unit := do
+  if purpose.isEmpty then
+    throw <| IO.userError "export purpose must not be empty"
+  let store ← loadStore path
+  let state ← currentState store
+  let payload ← match className with
+    | "ledger" =>
+        pure s!"ledger={store.ledger.id.value}\nrevision={store.ledger.storedHead.value}\nhistory-digest={store.ledger.storedHistoryDigest.value}"
+    | "evidence" =>
+        pure s!"obligations={repr state.obligations}\nevidence={repr state.evidence}"
+    | "review" =>
+        pure <| String.intercalate "\n" [
+          s!"plans={repr state.reviewPlans}",
+          s!"claims={repr state.claims}",
+          s!"adjudications={repr state.adjudications}",
+          s!"findings={repr state.reviewFindings}",
+          s!"verifications={repr state.findingVerifications}"
+        ]
+    | "correction" =>
+        pure s!"corrections={repr state.corrections}\nauthority-transitions={repr state.authorityTransitions}"
+    | "backup" => backupSummary path
+    | "design" =>
+        pure <| String.intercalate "\n" [
+          s!"designs={repr state.designs}",
+          s!"approvals={repr state.designApprovals}",
+          s!"decompositions={repr state.decompositions}"
+        ]
+    | _ =>
+        throw <| IO.userError
+          "export class must be ledger, evidence, review, correction, backup, or design"
+  if let some parent := output.parent then
+    IO.FS.createDirAll parent
+  IO.FS.writeFile output <| String.intercalate "\n" [
+    s!"purpose={purpose}",
+    s!"class={className}",
+    payload,
+    ""
+  ]
+  IO.println s!"exported: class={className} output={output}"
+
 private def nextForPath (path : System.FilePath) : IO String := do
   match ← Adapter.SQLite.diagnose path with
   | .error error => throw <| IO.userError s!"state diagnosis failed: {repr error}"
@@ -1013,11 +1248,27 @@ private def dispatch (path : System.FilePath) : List String → IO Unit
       let work ← fromExcept (parseNat "work" work)
       let activation ← fromExcept (parseNat "activation" activation)
       resumeWork path revision work activation
+  | ["doctor"] => doctor path
   | ["repair", revision, historyHex, observedHex] => do
       let revision ← fromExcept (parseNat "revision" revision)
       let historyDigest ← fromExcept (decodeHex "history-hex" historyHex)
       let observedDigest ← fromExcept (decodeHex "observed-hex" observedHex)
       repair path revision historyDigest observedDigest
+  | ["update", "inspect"] => inspectUpdate path
+  | ["update", "apply", sourceSchema, sourceDigest, targetSchema] => do
+      let sourceSchema ← fromExcept (parseNat "source-schema" sourceSchema)
+      let targetSchema ← fromExcept (parseNat "target-schema" targetSchema)
+      applyUpdate path sourceSchema sourceDigest targetSchema
+  | ["update", "restore", sourceSchema, sourceDigest, backupDigest, backupSize,
+      targetSchema, targetDigest, durability] => do
+      let sourceSchema ← fromExcept (parseNat "source-schema" sourceSchema)
+      let backupSize ← fromExcept (parseNat "backup-size" backupSize)
+      let targetSchema ← fromExcept (parseNat "target-schema" targetSchema)
+      let durability ← fromExcept (parseDurability durability)
+      restoreUpdate path sourceSchema sourceDigest backupDigest backupSize
+        targetSchema targetDigest durability
+  | ["export", purpose, className, output] =>
+      exportClass path purpose className output
   | ["apply", request] => applyFile path request
   | ["help"] | ["--help"] | ["-h"] => IO.println usage
   | _ => throw <| IO.userError usage

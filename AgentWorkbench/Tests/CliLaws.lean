@@ -470,6 +470,193 @@ def testProjectionRepair (cli root : System.FilePath) : IO Unit := do
       status.stdout.contains "revision: 1")
     "revision-bound native repair did not restore current status"
 
+def testCapabilityDispositionRoutes (cli root : System.FilePath) : IO Unit := do
+  let state := root / "capability-disposition.sqlite3"
+  let _ ← invoke cli #[
+    "--state", state.toString, "init", "owner",
+    "exercise public capability routes", "the selected public outcomes are durable"]
+  applySources cli (root / "capability-requests") state [
+    request 1 "kpt-context" "record-kpt" [
+      ("key", toJson "kpt-context"),
+      ("scope", toJson "phase-34"),
+      ("keep", toJson ["retain caller adjudication"]),
+      ("problem", toJson ["public capability route was missing"]),
+      ("try", toJson ["add one bounded route"]),
+      ("adoptedLearning", toJson (none : Option String)),
+      ("work", toJson (some 1 : Option Nat)),
+      ("design", toJson (none : Option Nat))
+    ],
+    request 3 "kpt-adopted" "record-kpt" [
+      ("key", toJson "kpt-adopted"),
+      ("scope", toJson "phase-34"),
+      ("keep", toJson ["retain focused tests"]),
+      ("problem", toJson ([] : List String)),
+      ("try", toJson ["record explicit exports"]),
+      ("adoptedLearning", toJson
+        (some "one selected class per export" : Option String)),
+      ("work", toJson (some 1 : Option Nat)),
+      ("design", toJson (none : Option Nat))
+    ],
+    request 4 "capability-plan" "plan-completion" [
+      ("work", toJson 1),
+      ("relatedWork", toJson ([] : List Json)),
+      ("phases", toJson ([] : List String)),
+      ("tasks", toJson ([] : List String)),
+      ("checklists", toJson ([] : List String)),
+      ("reviews", toJson ([] : List Nat)),
+      ("findings", toJson ([] : List String)),
+      ("validations", toJson ([] : List String)),
+      ("repositories", toJson ([] : List String)),
+      ("corrections", toJson ([] : List String)),
+      ("workRecords", toJson ["repository-change"])
+    ],
+    request 5 "repository-evidence" "record-repository-evidence" [
+      ("work", toJson 1),
+      ("key", toJson "repository-change"),
+      ("repository", toJson "agent-workbench"),
+      ("snapshot", toJson "tree:phase-34"),
+      ("commit", toJson "commit:phase-34"),
+      ("changedFiles", toJson [
+        "AgentWorkbench/Cli/Program.lean",
+        "skills/agent-workbench/SKILL.md"
+      ])
+    ]
+  ]
+  let status ← invoke cli #["--state", state.toString, "status"]
+  expect (status.stdout.contains "revision: 6" &&
+      status.stdout.contains "open-corrections: 1" &&
+      status.stdout.contains "correction: key=kpt-adopted" &&
+      !status.stdout.contains "correction: key=kpt-context")
+    "KPT context was promoted to authority or adopted learning was lost"
+  let correctionExport := root / "correction-export.txt"
+  let reviewExport := root / "review-export.txt"
+  let ledgerExport := root / "ledger-export.txt"
+  let _ ← invoke cli #[
+    "--state", state.toString, "export", "phase-34",
+    "correction", correctionExport.toString]
+  let _ ← invoke cli #[
+    "--state", state.toString, "export", "phase-34",
+    "review", reviewExport.toString]
+  let _ ← invoke cli #[
+    "--state", state.toString, "export", "phase-34",
+    "ledger", ledgerExport.toString]
+  let correctionText ← IO.FS.readFile correctionExport
+  let reviewText ← IO.FS.readFile reviewExport
+  let ledgerText ← IO.FS.readFile ledgerExport
+  expect (correctionText.contains "kpt-context" &&
+      correctionText.contains "kpt-adopted" &&
+      !reviewText.contains "kpt-context" &&
+      ledgerText.contains "class=ledger")
+    s!"focused export included an unselected private class or lost selected data\ncorrection={correctionText}\nreview={reviewText}\nledger={ledgerText}"
+  let diagnosis ← invoke cli #["--state", state.toString, "doctor"]
+  expect (diagnosis.stdout.contains "diagnosis: healthy" &&
+      diagnosis.stdout.contains "revision: 6")
+    "public read-only diagnosis did not report the current ledger"
+
+  let blockedState := root / "blocked-work.sqlite3"
+  let _ ← invoke cli #[
+    "--state", blockedState.toString, "init", "owner",
+    "wait for an external decision", "the decision is available"]
+  applySources cli (root / "blocked-request") blockedState [
+    request 1 "block-by-suspension" "suspend-work" [
+      ("work", toJson 1),
+      ("activation", toJson 1),
+      ("reason", toJson "external decision is missing"),
+      ("returnPoint", toJson "resume decision handling"),
+      ("assumptions", toJson ["the decision remains external"]),
+      ("resumeConditions", toJson ["the decision is recorded"])
+    ]
+  ]
+  let blockedNext ← invoke cli #["--state", blockedState.toString, "next"]
+  expect (blockedNext.stdout.contains "next: blocked" &&
+      blockedNext.stdout.contains "no activation is ready to resume")
+    "blocked work remained executable without satisfying resume conditions"
+
+  let followUpState := root / "follow-up.sqlite3"
+  let _ ← invoke cli #[
+    "--state", followUpState.toString, "init", "owner",
+    "deliver the first outcome", "the first outcome is complete"]
+  applySources cli (root / "follow-up-requests") followUpState [
+    request 1 "first-plan" "plan-completion" [
+      ("work", toJson 1),
+      ("relatedWork", toJson ([] : List Json)),
+      ("phases", toJson ([] : List String)),
+      ("tasks", toJson ([] : List String)),
+      ("checklists", toJson ([] : List String)),
+      ("reviews", toJson ([] : List Nat)),
+      ("findings", toJson ([] : List String)),
+      ("validations", toJson ([] : List String)),
+      ("repositories", toJson ([] : List String)),
+      ("corrections", toJson ([] : List String)),
+      ("workRecords", toJson ([] : List String))
+    ],
+    request 2 "first-complete" "complete-work" [
+      ("work", toJson 1)
+    ],
+    request 3 "reopen-as-follow-up" "register-follow-up" [
+      ("sourceWork", toJson 1),
+      ("work", toJson 2),
+      ("owner", toJson "owner"),
+      ("outcome", toJson "continue the completed outcome"),
+      ("completionBoundary", toJson "the follow-up is independently complete")
+    ]
+  ]
+  let followUpStatus ← invoke cli #["--state", followUpState.toString, "status"]
+  expect (followUpStatus.stdout.contains "revision: 5")
+    "terminal predecessor and successor follow-up were not committed atomically"
+
+def makePredecessorV2 (ledger : System.FilePath) : IO Unit := do
+  let changed ← IO.Process.output {
+    cmd := "sqlite3"
+    args := #[ledger.toString, "
+      ALTER TABLE projection_repairs RENAME TO current_projection_repairs;
+      CREATE TABLE projection_repairs (
+        observed_digest TEXT NOT NULL,
+        head_revision TEXT NOT NULL,
+        history_digest TEXT NOT NULL,
+        adopted_digest TEXT NOT NULL,
+        PRIMARY KEY (observed_digest, head_revision, history_digest)
+      );
+      INSERT INTO projection_repairs
+        (observed_digest, head_revision, history_digest, adopted_digest)
+      SELECT observed_digest, head_revision, history_digest, adopted_digest
+      FROM current_projection_repairs;
+      DROP TABLE current_projection_repairs;
+      INSERT INTO update_provenance
+        (singleton, source_schema, source_digest, backup_digest, backup_size)
+      VALUES (1, '1', 'historical-source', 'historical-backup', '0');
+      UPDATE metadata SET schema_version = '2' WHERE singleton = 1;"]
+  }
+  expect (changed.exitCode == 0)
+    s!"public update predecessor setup failed: {changed.stderr}"
+
+def argumentsAfter (marker output : String) : IO (Array String) :=
+  match output.splitOn "\n" |>.find? (·.startsWith marker) with
+  | some line =>
+      pure ((line.drop marker.length).toString.splitOn " ").toArray
+  | none => throw <| IO.userError s!"missing command arguments: {marker}"
+
+def testPublicUpdateAndRestore (cli root : System.FilePath) : IO Unit := do
+  let state := root / "public-update.sqlite3"
+  let _ ← invoke cli #[
+    "--state", state.toString, "init", "owner",
+    "exercise update recovery", "the original state is restorable"]
+  makePredecessorV2 state
+  let inspection ← invoke cli #["--state", state.toString, "update", "inspect"]
+  let applyArgs ← argumentsAfter "arguments: " inspection.stdout
+  let updated ← invoke cli <| #["--state", state.toString] ++ applyArgs
+  expect (updated.stdout.contains "updated: true" &&
+      updated.stdout.contains "backup-digest:")
+    "public update did not report its content-addressed backup"
+  let restoreArgs ← argumentsAfter "restore-arguments: " updated.stdout
+  let restored ← invoke cli <| #["--state", state.toString] ++ restoreArgs
+  expect (restored.stdout.contains "restored: true" &&
+      restored.stdout.contains "schema: 2")
+    "public restore did not recover the exact predecessor"
+  let requiredAgain ← invoke cli #["--state", state.toString, "update", "inspect"]
+  expect (requiredAgain.stdout.contains "update: required")
+    "restored predecessor was not recoverable through the same dry-run path"
+
 def runFixture (cli root project state : System.FilePath)
     (sourceName source tool : String) : IO Unit := do
   IO.FS.createDirAll project
@@ -536,6 +723,8 @@ def run : IO Unit := IO.FS.withTempDir fun root => do
   testAggregateLifecycle cli root
   testRecoveryDetails cli root
   testProjectionRepair cli root
+  testCapabilityDispositionRoutes cli root
+  testPublicUpdateAndRestore cli root
   IO.println "cli laws: pass"
 
 end AgentWorkbench.Tests.CliLaws

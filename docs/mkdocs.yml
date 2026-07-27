@@ -10,6 +10,7 @@ nav:
   - Overview: index.md
   - Installation: installation.md
   - Concepts: concepts.md
+  - Capability coverage: capabilities.md
   - Workflow: workflow.md
   - Reviews: reviews.md
   - Recovery: recovery.md

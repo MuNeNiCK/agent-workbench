@@ -25,4 +25,5 @@ Prebuilt releases from `v0.2.1` target Linux x86_64 as a static executable and
 do not require a host-provided glibc. Source builds use the toolchain pinned in
 `lean-toolchain`.
 
-Continue with [Installation](installation.md) and [Workflow](workflow.md).
+Continue with [Installation](installation.md), [Capability coverage](capabilities.md),
+and [Workflow](workflow.md).

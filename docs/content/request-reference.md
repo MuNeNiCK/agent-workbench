@@ -12,13 +12,16 @@ Every mutation request begins with:
 
 The CLI accepts commands for:
 
-- work registration, suspension, readiness, resume, and completion;
+- work registration, suspension, readiness, resume, terminal-predecessor
+  follow-up, and completion;
 - design import, approval, decomposition, and authority transitions;
 - review plans, claims, caller adjudications, findings, closure, and
   verification;
 - aggregate completion plans, phases, tasks, checklists, rescope, and split;
 - evidence obligations and observations;
-- repository classification and work records;
+- repository classification, exact commit and changed-file evidence, and work
+  records;
+- KPT context and explicitly proposed learning;
 - external operation preparation, dispatch, uncertainty, reconciliation, and
   completion.
 

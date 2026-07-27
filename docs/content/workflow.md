@@ -35,6 +35,28 @@ Every request contains a unique operation identity, the exact expected
 revision, and one supported command. An exact retry returns the same receipt.
 Reusing an operation identity with changed content is rejected.
 
+Blocked work uses the ordinary suspension request with a reason, return point,
+assumptions, and resume conditions. A completed record is immutable. To reopen
+its outcome, create a `register-follow-up` work unit whose predecessor is the
+exact terminal work.
+
+When a completion boundary names repository details, use
+`record-repository-evidence` to retain the repository, snapshot, commit, and
+unique changed-file list. KPT observations use `record-kpt`; observations alone
+remain context, and only an explicitly proposed learning proceeds to a separate
+authority decision.
+
+## Export
+
+Export one private class at a time:
+
+```bash
+sh <installed-skill-dir>/scripts/agent-workbench.sh export \
+  <purpose> <ledger|evidence|review|correction|backup|design> <output>
+```
+
+The command never exports another class implicitly.
+
 ## Complete
 
 Before completion, record the accepted design and decomposition, required

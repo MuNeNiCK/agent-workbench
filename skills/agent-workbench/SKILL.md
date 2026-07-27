@@ -58,6 +58,11 @@ An active work item returns `continue`. A resumable item returns `resume`.
 Projection damage returns `repair`. Each command rechecks the current state and
 rejects a stale action.
 
+Use `suspend-work` with an explicit reason and resume conditions when work is
+blocked. Reopening a terminal outcome creates a new `register-follow-up` work
+unit tied to the exact terminal predecessor; it never rewrites the closed
+record.
+
 ## Mutations
 
 Design, review, decomposition, evidence, and completion mutations use one typed
@@ -76,6 +81,11 @@ Read [request-format.md](references/request-format.md) for the supported request
 shapes. Read [native-workflow.md](references/native-workflow.md) for the normal
 design-to-completion sequence.
 
+Repository evidence uses `record-repository-evidence` when commits and changed
+files are part of the accepted completion boundary. A KPT uses `record-kpt`:
+observations without an explicitly adopted learning close as context, while an
+adopted learning remains subject to a separate authority transition.
+
 ## Review authority
 
 Review claims are advisory. The caller records a separate adjudication with a
@@ -89,9 +99,21 @@ turn a rejected or removed approach into a permanent inverse requirement or an
 absence test. Evidence must retain its exact revision, producer, observation,
 repository snapshot, and artifact identity.
 
+## Explicit exports and recovery
+
+Use `export <purpose> <class> <output>` to export exactly one of `ledger`,
+`evidence`, `review`, `correction`, `backup`, or `design`. No class is exported
+implicitly.
+
+Use `doctor` for read-only diagnosis and `update inspect` for a dry-run schema
+check. Run `update apply` only with the exact printed plan. It creates and
+reports a content-addressed backup and exact `update restore` arguments.
+
 ## Errors
 
 Unknown commands, malformed JSON, stale revisions, invalid transitions, and
 state corruption fail with a non-zero exit. Do not retry a changed request
 under the same operation identity. On an uncertain external effect, reconcile
-the remote observation before retrying.
+the remote observation before retrying. The Skill performs the external tool
+call; Workbench records the prepared intent before that call and its exact
+observed, uncertain, retryable, failed, or conflicting result afterward.

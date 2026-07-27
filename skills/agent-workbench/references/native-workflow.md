@@ -27,9 +27,12 @@ the project-relative state path internally.
 12. Record the two fresh clean work-level review claims and the caller's separate
     adjudications.
 13. Record current validation obligations and their exact evidence.
-14. For a release operation, preserve its work, kind, and artifact identity
-    through dispatch; reconcile an uncertain result against a remote
-    observation before reporting success.
+14. For a release operation, first record the prepared intent, then record the
+    dispatched state before the Skill invokes the external tool. Record the
+    returned observation. A timeout or lost response becomes `uncertain`;
+    inspect the exact remote target and record the reconciled observation before
+    retrying or reporting success. The core records and validates this sequence;
+    it does not provide a generic remote-service transport.
 15. Complete the active work.
 16. Start a fresh process and run `status` and `next` to verify recovery and
     the terminal state.
@@ -45,3 +48,12 @@ a real successor design may change the design.
 The final conformance and quality plans must freeze the same repository
 snapshot and artifact. Validation obligation and evidence identities must
 match that frozen pair exactly.
+
+Use `suspend-work` to represent blocked work. A terminal work record is
+immutable; `register-follow-up` creates a successor work unit with an exact
+terminal predecessor when the outcome must be continued or reopened.
+
+KPT observations use `record-kpt`. Without `adoptedLearning`, they remain
+closed context. With an explicitly adopted learning, the resulting open
+statement still requires the ordinary caller-owned authority transition before
+it can change design, implementation, tests, or completion.
