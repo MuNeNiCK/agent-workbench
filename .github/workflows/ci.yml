@@ -25,10 +25,14 @@ jobs:
           .lake/build/bin/storage-laws
           .lake/build/bin/workflow-laws
           .lake/build/bin/cli-laws
+          scripts/test-skill-product.sh .lake/build/bin/agent-workbench
       - name: Check release tooling
         run: |
           shellcheck scripts/build-release-assets.sh
           shellcheck scripts/test-release-binary.sh
+          shellcheck scripts/test-skill-product.sh
+          shellcheck scripts/fixtures/curl-release.sh
+          shellcheck skills/agent-workbench/scripts/agent-workbench.sh
 
   static-release:
     runs-on: ubuntu-latest

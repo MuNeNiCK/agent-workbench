@@ -5,8 +5,8 @@
 At the beginning of every session:
 
 ```bash
-agent-workbench --state <state-path> status
-agent-workbench --state <state-path> next
+sh <installed-skill-dir>/scripts/agent-workbench.sh status
+sh <installed-skill-dir>/scripts/agent-workbench.sh next
 ```
 
 `status` is read-only. `next` prints one revision-bound action or one concrete
@@ -16,7 +16,7 @@ command.
 ## Initialize
 
 ```bash
-agent-workbench --state <state-path> init \
+sh <installed-skill-dir>/scripts/agent-workbench.sh init \
   <owner> <outcome> <completion-boundary>
 ```
 
@@ -28,7 +28,7 @@ The response includes the new revision. Run `next` and then its printed
 Write one JSON request and apply it:
 
 ```bash
-agent-workbench --state <state-path> apply request.json
+sh <installed-skill-dir>/scripts/agent-workbench.sh apply request.json
 ```
 
 Every request contains a unique operation identity, the exact expected

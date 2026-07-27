@@ -1,6 +1,7 @@
 # Native workflow
 
-Use only the native executable and an explicit state path.
+Run every command through the Skill wrapper. It selects the pinned runtime and
+the project-relative state path internally.
 
 1. Run `init` with the work owner, outcome, and completion boundary.
 2. Run `next`, then run its exact revision-bound command.
@@ -19,6 +20,10 @@ Use only the native executable and an explicit state path.
     reasoned dispositions for the reported shared records and dependencies.
 11. Complete each phase only after its dependencies, assigned tasks, and
     phase-scoped reviews are ready.
+    A confirmed implementation defect found by a phase-scoped review uses the
+    same bounded finding closure and independent verification lifecycle as a
+    work-level implementation defect. Do not translate it into a Markdown
+    source correction merely because the phase is not yet close-ready.
 12. Record the two fresh clean work-level review claims and the caller's separate
     adjudications.
 13. Record current validation obligations and their exact evidence.

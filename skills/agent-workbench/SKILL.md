@@ -1,34 +1,45 @@
 ---
 name: agent-workbench
-description: Use when a coding agent needs durable work, design, review, evidence, interruption, recovery, and completion state through the native Agent Workbench CLI.
+description: Use when a coding agent needs durable work, design, review, evidence, interruption, recovery, and completion state through Agent Workbench.
 license: MIT
 ---
 
 # Agent Workbench
 
-Use the native `agent-workbench` executable directly. The Skill is guidance
-only; it does not bootstrap, download, wrap, or route the product.
-
-## State
-
-Choose an explicit state file. Private Workbench metadata belongs under a
-project state area by default, but the user may place it elsewhere:
+Use the wrapper bundled with this Skill:
 
 ```sh
-agent-workbench --state .agent-workbench/state.sqlite3 init \
+sh <installed-skill-dir>/scripts/agent-workbench.sh <args>
+```
+
+The wrapper acquires the pinned static Linux x86_64 runtime, verifies its
+published checksum, caches it, and invokes it. In a source checkout it uses the
+already-built Lean executable. Users do not separately install or operate the
+runtime.
+
+## Project state
+
+Run the wrapper from the managed project. It resolves the project root and keeps
+private state at `.agent-workbench/state.sqlite3`. An existing state file is
+found by walking parent directories; a fresh Git worktree uses its Git root,
+and a non-Git project uses the current directory.
+
+```sh
+sh <installed-skill-dir>/scripts/agent-workbench.sh init \
   <owner> <outcome> <completion-boundary>
 ```
 
-Never inspect or edit the SQLite file directly. Managed-project source and its
-toolchain are independent of the Workbench state location.
+Never inspect or edit the SQLite file directly. The using repository—not
+Workbench and not an individual agent—decides whether `.agent-workbench` is
+ignored, tracked, copied, or shared.
 
 ## Recover before acting
 
 At the beginning of work and after interruption, run:
 
 ```sh
-agent-workbench --state <state-path> status
-agent-workbench --state <state-path> next
+sh <installed-skill-dir>/scripts/agent-workbench.sh status
+sh <installed-skill-dir>/scripts/agent-workbench.sh next
 ```
 
 `status` is read-only. `next` returns either one revision-bound executable
@@ -39,7 +50,7 @@ A state initialized by an older or interrupted setup may return a
 revision-bound `start` command:
 
 ```sh
-agent-workbench --state <state-path> start \
+sh <installed-skill-dir>/scripts/agent-workbench.sh start \
   <revision> <owner> <outcome> <completion-boundary>
 ```
 
@@ -53,7 +64,7 @@ Design, review, decomposition, evidence, and completion mutations use one typed
 JSON request per transaction:
 
 ```sh
-agent-workbench --state <state-path> apply <request.json>
+sh <installed-skill-dir>/scripts/agent-workbench.sh apply <request.json>
 ```
 
 Every request contains a unique `operation`, the exact `expectedRevision`, a

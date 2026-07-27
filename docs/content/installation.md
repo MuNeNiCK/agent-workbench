@@ -1,29 +1,5 @@
 # Installation
 
-## Install the native CLI
-
-Download the pinned release, verify it through the published checksum file,
-and install the executable:
-
-```bash
-version=v0.2.1
-gh release download "$version" \
-  --repo MuNeNiCK/agent-workbench \
-  --pattern "agent-workbench-$version-linux-x86_64-static.tar.gz" \
-  --pattern "agent-workbench-$version-checksums.txt"
-grep "agent-workbench-$version-linux-x86_64-static.tar.gz" \
-  "agent-workbench-$version-checksums.txt" | sha256sum -c -
-tar -xzf "agent-workbench-$version-linux-x86_64-static.tar.gz"
-install -Dm755 agent-workbench "$HOME/.local/bin/agent-workbench"
-agent-workbench --version
-```
-
-The expected output is:
-
-```text
-agent-workbench 0.2.1
-```
-
 ## Install the Agent Skill
 
 ```bash
@@ -31,8 +7,13 @@ gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.1 \
   --scope user --agent <target-agent>
 ```
 
-The Skill contains operating guidance, not another copy of the runtime. The
-agent invokes the native executable installed above.
+Then ask the coding agent to use `$agent-workbench` for the project. The Skill
+acquires the pinned static Linux x86_64 runtime, verifies the release checksum,
+caches it, and invokes it. There is no separate CLI or Lean installation.
+
+Workbench state is created under the managed project's `.agent-workbench`
+directory. The repository's own policy decides whether that directory is
+ignored, tracked, copied, or shared.
 
 ## Build from source
 

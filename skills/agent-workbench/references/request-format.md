@@ -76,10 +76,12 @@ The supported commands and additional fields are:
   `artifactDigest`, `kind`, `requirements`, `producer`, `observedAt`,
   `design`, `designRevision`.
 - `record-external-operation`: `externalOperation`, optional nullable `work`,
-  `kind`, `artifactDigest`.
+  `kind`, `target`, `artifactDigest`, and optional nullable
+  `expectedRemoteArtifactDigest`.
 - `advance-external-operation`: `externalOperation`, optional nullable `work`,
-  `kind`, `artifactDigest`, `state`, nullable `observationIdentity`, nullable
-  `observedArtifactDigest`, nullable `disposition`.
+  `kind`, `target`, `artifactDigest`, optional nullable
+  `expectedRemoteArtifactDigest`, `state`, nullable `observationIdentity`,
+  nullable `observedArtifactDigest`, and nullable `disposition`.
 - `complete-work`: `work`.
 
 Purposes are `design`, `decomposition`, `design-conformance`, and
@@ -90,8 +92,11 @@ Purposes are `design`, `decomposition`, `design-conformance`, and
 Review observations contain `key`, `kind`, `summary`, and `evidence`.
 Observation kinds are `risk` and `proposal`. Dispositions contain
 `observation`, `decision`, `reason`, optional `changesAuthority`, and nullable
-`successorDesign`. Disposition decisions are `accepted`, `rejected`,
-`rescoped`, `deferred`, and `needs-evidence`.
+`successorDesign`, plus optional `adoptionRationale`. An adoption rationale
+contains `necessity`, `simplerAlternativesInsufficient`, `boundedScope`, and
+`complexityCost`; it is required when a proposal is accepted. Disposition
+decisions are `accepted`, `rejected`, `rescoped`, `deferred`, and
+`needs-evidence`.
 
 Each `relatedWork` entry contains numeric `work` and `kind`, where `kind` is
 `child` or `dependency`.

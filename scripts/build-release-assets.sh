@@ -24,10 +24,31 @@ test -x "$binary"
 test "$("$binary" --version)" = "agent-workbench $version"
 file "$binary" | grep -F "ELF 64-bit LSB executable"
 file "$binary" | grep -F "statically linked"
+test -x skills/agent-workbench/scripts/agent-workbench.sh
+scripts/test-skill-product.sh "$binary"
 
 epoch="$(git show -s --format=%ct HEAD)"
 stage="$(mktemp -d)"
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
+state_area_created=false
+if ! test -d "$root/.agent-workbench"; then
+  mkdir "$root/.agent-workbench"
+  state_area_created=true
+fi
+private_fixture="$(mktemp -d "$root/.agent-workbench/release-boundary.XXXXXX")"
+cleanup() {
+  rm -rf "$stage" "$private_fixture"
+  if test "$state_area_created" = true; then
+    rmdir "$root/.agent-workbench" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+private_marker="private-release-boundary-$(basename -- "$private_fixture")"
+for class in ledger evidence review correction backup design; do
+  mkdir "$private_fixture/$class"
+  printf '%s\n' "$private_marker:$class" > "$private_fixture/$class/private.txt"
+done
+
 mkdir -p "$out" "$stage/binary" "$stage/skill/agent-workbench" "$stage/docs"
 
 cp "$binary" "$stage/binary/agent-workbench"
@@ -53,6 +74,21 @@ source_archive="$out/agent-workbench-$tag-source.tar.gz"
 git archive --format=tar HEAD -- \
   . ':(exclude).agent-workbench' ':(exclude).agent-workbench/**' \
   | gzip -n > "$source_archive"
+
+for archive in \
+    "$out/agent-workbench-$tag-linux-x86_64-static.tar.gz" \
+    "$out/agent-workbench-$tag-skill.tar.gz" \
+    "$out/agent-workbench-$tag-docs.tar.gz" \
+    "$source_archive"; do
+  if tar -tzf "$archive" | grep -F ".agent-workbench" >/dev/null; then
+    echo "private state path leaked into release archive: $archive" >&2
+    exit 1
+  fi
+  if gzip -cd "$archive" | grep -aF "$private_marker" >/dev/null; then
+    echo "private state content leaked into release archive: $archive" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "$stage/verify"
 tar -xzf "$out/agent-workbench-$tag-linux-x86_64-static.tar.gz" -C "$stage/verify"

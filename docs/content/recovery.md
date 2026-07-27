@@ -5,8 +5,8 @@
 Run:
 
 ```bash
-agent-workbench --state <state-path> status
-agent-workbench --state <state-path> next
+sh <installed-skill-dir>/scripts/agent-workbench.sh status
+sh <installed-skill-dir>/scripts/agent-workbench.sh next
 ```
 
 Possible actions include:
@@ -28,8 +28,9 @@ invent missing events or modify the managed project.
 ## Uncertain external effects
 
 Do not blindly retry a release or another external operation after a timeout.
-First inspect the remote system, then record the observed identity and artifact
-digest. Continue only with a transition consistent with that observation.
+First inspect the exact remote target, then record its identity and artifact
+digest. Continue only with a transition consistent with the prepared target,
+artifact, and remote precondition.
 
 ## Unsupported state
 

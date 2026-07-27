@@ -4,8 +4,8 @@
 
 Each supported release publishes:
 
-- a static Linux x86_64 native binary archive;
-- an Agent Skill archive;
+- an Agent Skill archive containing the runtime bootstrap and pinned version;
+- a static Linux x86_64 native runtime archive acquired internally by the Skill;
 - a documentation archive;
 - a source archive;
 - release metadata containing the exact commit and implementation;
@@ -31,7 +31,6 @@ Debian environments before creating the GitHub Release.
 
 ## Updating
 
-Download and verify the new binary archive, then replace the installed
-executable. Reinstall or update the Skill from the same tag when its operating
-guidance changes. Existing state must be opened only by a release that supports
-its stored schema.
+Update the installed Skill to the new tag. Its wrapper downloads and verifies
+the matching runtime on first use. Existing state must be opened only by a
+release that supports its stored schema.

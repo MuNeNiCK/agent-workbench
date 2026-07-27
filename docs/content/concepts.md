@@ -1,15 +1,16 @@
 # Concepts
 
-## Explicit state
+## Project state
 
-Each invocation names a state file:
+The Agent Skill resolves the managed project and uses:
 
 ```text
---state .agent-workbench/state.sqlite3
+.agent-workbench/state.sqlite3
 ```
 
 Workbench state is private project metadata. Do not inspect or edit the SQLite
-database directly.
+database directly. The repository's policy controls whether the complete
+`.agent-workbench` area is tracked or ignored.
 
 ## Work and activation
 
