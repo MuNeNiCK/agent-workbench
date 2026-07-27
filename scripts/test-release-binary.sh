@@ -13,7 +13,7 @@ binary="$directory/$(basename -- "$input")"
 test -x "$binary"
 file "$binary" | grep -F "ELF 64-bit LSB executable"
 file "$binary" | grep -F "statically linked"
-test "$("$binary" --version)" = "agent-workbench 0.2.1"
+test "$("$binary" --version)" = "agent-workbench 0.2.2"
 
 smoke() {
   image="$1"

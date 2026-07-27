@@ -51,11 +51,11 @@ jobs:
       - name: Validate packaged static executable
         run: |
           chmod +x "$RUNNER_TEMP/static/agent-workbench"
-          scripts/build-release-assets.sh v0.2.1 "$RUNNER_TEMP/dist" \
+          scripts/build-release-assets.sh v0.2.2 "$RUNNER_TEMP/dist" \
             "$RUNNER_TEMP/static/agent-workbench"
           mkdir "$RUNNER_TEMP/verify"
           tar -xzf \
-            "$RUNNER_TEMP/dist/agent-workbench-v0.2.1-linux-x86_64-static.tar.gz" \
+            "$RUNNER_TEMP/dist/agent-workbench-v0.2.2-linux-x86_64-static.tar.gz" \
             -C "$RUNNER_TEMP/verify"
           scripts/test-release-binary.sh \
             "$RUNNER_TEMP/verify/agent-workbench"

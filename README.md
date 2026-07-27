@@ -9,7 +9,7 @@ The Lean implementation is the default product from `v0.2.0`.
 ## Install
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.1 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.2 \
   --scope user --agent <target-agent>
 ```
 

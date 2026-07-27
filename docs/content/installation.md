@@ -3,7 +3,7 @@
 ## Install the Agent Skill
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.1 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.2 \
   --scope user --agent <target-agent>
 ```
 

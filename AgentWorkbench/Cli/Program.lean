@@ -12,7 +12,7 @@ open Lean
 abbrev Request := Application.Service.Request
 abbrev Response := Application.Service.Response
 
-def version : String := "0.2.1"
+def version : String := "0.2.2"
 
 def executeRequest :=
   Application.Service.executeRequest

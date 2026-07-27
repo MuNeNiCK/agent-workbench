@@ -21,7 +21,7 @@ automatically become a product requirement.
 
 ## Supported release
 
-Prebuilt releases from `v0.2.1` target Linux x86_64 as a static executable and
+Prebuilt releases from `v0.2.2` target Linux x86_64 as a static executable and
 do not require a host-provided glibc. Source builds use the toolchain pinned in
 `lean-toolchain`.
 

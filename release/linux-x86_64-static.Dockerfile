@@ -25,7 +25,7 @@ WORKDIR /src
 COPY . .
 RUN lake -KstaticRelease=true build \
  && test "$(.lake/build/bin/agent-workbench --version)" = \
-      "agent-workbench 0.2.1" \
+      "agent-workbench 0.2.2" \
  && file .lake/build/bin/agent-workbench | grep -F "statically linked"
 
 FROM build AS tested
