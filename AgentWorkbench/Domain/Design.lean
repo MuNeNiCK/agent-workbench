@@ -62,6 +62,22 @@ structure Correction where
   design : Option DesignId := none
 deriving DecidableEq, Repr
 
+structure KptEntry where
+  key : String
+  work : WorkId
+  keep : List String
+  problem : List String
+  tryItems : List String
+  learningCandidate : Option String := none
+deriving DecidableEq, Repr
+
+def kptWellFormed (entry : KptEntry) : Bool :=
+  !entry.key.isEmpty &&
+  !(entry.keep ++ entry.problem ++ entry.tryItems).isEmpty &&
+  (entry.keep ++ entry.problem ++ entry.tryItems).all
+    (fun observation => !observation.isEmpty) &&
+  entry.learningCandidate.all (fun learning => !learning.isEmpty)
+
 inductive AuthorityOperation
   | create
   | amend

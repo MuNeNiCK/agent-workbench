@@ -548,18 +548,14 @@ private def commandFromJson (json : Json) : Except String (OperationId × Decide
         let tryItems : List String ← jsonField json "try" (List String)
         let learningCandidate ←
           jsonOptionalFieldD json "learningCandidate" String
-        let observations := keep ++ problem ++ tryItems
-        unless !observations.isEmpty &&
-            observations.all (fun item => !item.isEmpty) &&
-            learningCandidate.all (fun learning => !learning.isEmpty) do
-          throw "KPT requires at least one nonempty observation and a nonempty learning candidate when supplied"
-        let reference := String.intercalate "\n" <| [
-          s!"keep={repr keep}",
-          s!"problem={repr problem}",
-          s!"try={repr tryItems}"
-        ] ++ learningCandidate.toList.map fun learning =>
-          s!"learning-candidate={repr learning}"
-        pure <| .linkWorkRecord revision ⟨work⟩ key reference
+        pure <| .recordKpt revision {
+          key
+          work := ⟨work⟩
+          keep
+          problem
+          tryItems
+          learningCandidate
+        }
     | "resolve-user-correction" => do
         let key : String ← jsonField json "key" String
         let reason : String ← jsonField json "reason" String
@@ -1159,13 +1155,13 @@ private def exportClass (path : System.FilePath) (purpose className : String)
     (output : System.FilePath) : IO Unit := do
   if purpose.isEmpty then
     throw <| IO.userError "export purpose must not be empty"
-  if ← output.pathExists then
-    throw <| IO.userError "export output already exists"
   let store ← loadStore path
   let state ← currentState store
   let payload ← match className with
-    | "ledger" =>
-        pure s!"ledger={store.ledger.id.value}\nrevision={store.ledger.storedHead.value}\nhistory-digest={store.ledger.storedHistoryDigest.value}"
+    | "ledger" => do
+        let digest ← Adapter.DurableFilesystem.digest
+          store.ledger.storedHistoryDigest.value.toUTF8
+        pure s!"ledger={store.ledger.id.value}\nrevision={store.ledger.storedHead.value}\nhistory-digest={digest}"
     | "evidence" =>
         pure s!"obligations={repr state.obligations}\nevidence={repr state.evidence}"
     | "review" =>
@@ -1177,7 +1173,14 @@ private def exportClass (path : System.FilePath) (purpose className : String)
           s!"verifications={repr state.findingVerifications}"
         ]
     | "correction" =>
-        pure s!"corrections={repr state.corrections}\nauthority-transitions={repr state.authorityTransitions}"
+        let kpt := store.ledger.events.filterMap fun
+          | .kptRecorded entry => some entry
+          | _ => none
+        pure <| String.intercalate "\n" [
+          s!"corrections={repr state.corrections}",
+          s!"authority-transitions={repr state.authorityTransitions}",
+          s!"kpt={repr kpt}"
+        ]
     | "backup" => backupSummary path
     | "design" =>
         pure <| String.intercalate "\n" [
@@ -1190,12 +1193,13 @@ private def exportClass (path : System.FilePath) (purpose className : String)
           "export class must be ledger, evidence, review, correction, backup, or design"
   if let some parent := output.parent then
     IO.FS.createDirAll parent
-  IO.FS.writeFile output <| String.intercalate "\n" [
+  let content := String.intercalate "\n" [
     s!"purpose={purpose}",
     s!"class={className}",
     payload,
     ""
   ]
+  Adapter.DurableFilesystem.writeNew output content.toUTF8
   IO.println s!"exported: class={className} output={output}"
 
 private def nextForPath (path : System.FilePath) : IO String := do

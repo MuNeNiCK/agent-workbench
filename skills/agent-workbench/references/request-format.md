@@ -50,10 +50,10 @@ The supported commands and additional fields are:
 - `record-user-correction`: `key`, `scope`, `statement`, nullable `work`,
   nullable `design`.
 - `record-kpt`: `key`, `work`, `keep`, `problem`, `try`, and optional nullable
-  `learningCandidate`. The key must name a work-record slot in the accepted
-  completion plan. KPT data is durable non-authoritative context. A learning
-  changes authority only through a separate user correction and authority
-  transition.
+  `learningCandidate`. KPT data is a durable non-authoritative context event;
+  it does not enter the completion plan or change review, validation, evidence,
+  or repository freshness. A learning changes authority only through a
+  separate user correction and authority transition.
 - `resolve-user-correction` or `reject-user-proposal`: `key`, `reason`.
 - `record-authority-transition`: `key`, `correction`, `target`,
   `authorityOperation`, `authorityKind`, `scope`, nullable `work`, nullable

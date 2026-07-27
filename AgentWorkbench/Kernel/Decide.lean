@@ -73,6 +73,7 @@ inductive Command
   | registerFollowUp (expectedRevision : Revision) (source : WorkId)
       (work : Work.WorkUnit) (activation : Work.Activation)
       (plan : Lifecycle.CompletionPlan)
+  | recordKpt (expectedRevision : Revision) (entry : Design.KptEntry)
 deriving DecidableEq, Repr
 
 def Command.expectedRevision : Command → Revision
@@ -115,7 +116,8 @@ def Command.expectedRevision : Command → Revision
   | .advanceExternalOperation revision _
   | .recordObligation revision _
   | .completeWork revision _
-  | .registerFollowUp revision _ _ _ _ => revision
+  | .registerFollowUp revision _ _ _ _
+  | .recordKpt revision _ => revision
 
 structure DerivedEvents where
   events : List Event
@@ -558,6 +560,13 @@ def deriveEvents (command : Command) (state : State) : Except DomainError Derive
       else
         .error (.invalidTransition
           "follow-up requires one new active work unit and one exact terminal predecessor")
+  | .recordKpt _ entry =>
+      if Design.kptWellFormed entry &&
+          state.work.any (·.id == entry.work) then
+        .ok ⟨[.kptRecorded entry], by simp⟩
+      else
+        .error (.invalidTransition
+          "KPT context requires an existing work unit and nonempty observations")
 
 structure AcceptedTransaction where
   command : Command

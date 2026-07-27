@@ -280,6 +280,7 @@ inductive Event
   | workCompleted (work : WorkId) (activation : ActivationId)
   | followUpActivated (work : Work.WorkUnit) (activation : Work.Activation)
       (plan : Lifecycle.CompletionPlan)
+  | kptRecorded (entry : Design.KptEntry)
 deriving DecidableEq, Repr
 
 private def applyUnchecked (event : Event) (state : State) : State :=
@@ -487,6 +488,7 @@ private def applyUnchecked (event : Event) (state : State) : State :=
         activations := state.activations ++ [activation]
         lifecycle := state.lifecycle ++ [Lifecycle.initializeState plan]
         returnTarget := none }
+  | .kptRecorded _ => invalidated
 
 def completionRelatedWorkTerminal (work : List Work.WorkUnit)
     (requirements : List Lifecycle.RelatedWorkRequirement) : Bool :=
@@ -1053,6 +1055,9 @@ def eventApplicable (event : Event) (state : State) : Bool :=
       decide (Lifecycle.ValidPlan (futureWork.map (·.id)) plan) &&
       !state.lifecycle.any (fun completion =>
         completion.plan.work == plan.work)
+  | .kptRecorded entry =>
+      Design.kptWellFormed entry &&
+      state.work.any (·.id == entry.work)
 
 def verifyState (state : State) : Except DomainError VerifiedState :=
   if valid : ValidState state then

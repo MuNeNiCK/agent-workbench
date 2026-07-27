@@ -20,6 +20,10 @@ private opaque stageDurableFile (temporary final : @& String)
 @[extern "aw_create_durable_directory"]
 private opaque createDurableDirectory (path : @& String) : IO Unit
 
+@[extern "aw_write_new_durable_file"]
+private opaque writeNewDurableFile (path : @& String) (bytes : @& ByteArray) :
+  IO Unit
+
 @[extern "aw_replace_durable_file"]
 private opaque replaceDurableFile (staged current : @& String) : IO UInt32
 
@@ -63,6 +67,9 @@ def stage (root : System.FilePath) (bytes : ByteArray) : IO ArtifactRef := do
   | .missing => throw <| IO.userError "durable artifact adoption produced no object"
   | .mismatch observed =>
       throw <| IO.userError s!"durable artifact digest mismatch: {observed}"
+
+def writeNew (path : System.FilePath) (bytes : ByteArray) : IO Unit :=
+  writeNewDurableFile path.toString bytes
 
 def replace (staged current : System.FilePath) : IO ReplacementDurability := do
   if (← replaceDurableFile staged.toString current.toString) = 0 then

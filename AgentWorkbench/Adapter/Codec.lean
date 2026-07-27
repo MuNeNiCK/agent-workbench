@@ -35,6 +35,7 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Approval
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.TraceItem
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Decomposition
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Correction
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.KptEntry
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityOperation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityLifetime
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityKind

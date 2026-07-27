@@ -194,6 +194,31 @@ LEAN_EXPORT lean_obj_res aw_stage_durable_file(
   return lean_io_result_mk_ok(lean_box_uint32(existed));
 }
 
+LEAN_EXPORT lean_obj_res aw_write_new_durable_file(
+    b_lean_obj_arg path_obj, b_lean_obj_arg bytes_obj) {
+  const char *path = lean_string_cstr(path_obj);
+  const uint8_t *bytes = lean_sarray_cptr(bytes_obj);
+  size_t size = lean_sarray_size(bytes_obj);
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (fd < 0) return aw_io_error("create new file");
+  if (aw_write_all(fd, bytes, size) != 0) {
+    int saved = errno;
+    close(fd);
+    unlink(path);
+    errno = saved;
+    return aw_io_error("write new file");
+  }
+  if (fsync(fd) != 0) {
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    return aw_io_error("flush new file");
+  }
+  if (close(fd) != 0) return aw_io_error("close new file");
+  if (aw_fsync_parent(path) != 0) return aw_io_error("flush new file directory");
+  return lean_io_result_mk_ok(lean_box(0));
+}
+
 LEAN_EXPORT lean_obj_res aw_replace_durable_file(
     b_lean_obj_arg staged_obj, b_lean_obj_arg current_obj) {
   const char *staged = lean_string_cstr(staged_obj);

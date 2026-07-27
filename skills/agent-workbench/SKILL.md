@@ -84,8 +84,9 @@ design-to-completion sequence.
 Repository evidence uses `record-repository-evidence` when commits and changed
 files are part of the accepted completion boundary. A KPT uses `record-kpt`:
 its observations and optional learning candidate remain a non-authoritative
-work record. If the user later adopts a learning, record that separate decision
-through the correction and authority-transition path.
+context event and do not change planning or evidence freshness. If the user
+later adopts a learning, record that separate decision through the correction
+and authority-transition path.
 
 ## Review authority
 
