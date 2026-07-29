@@ -1,101 +1,61 @@
-import AgentWorkbench.Application.Service
+import AgentWorkbench.Kernel.Decide
 import SQLite.Blob.Deriving
 
 namespace AgentWorkbench.Adapter.Codec
 
 open SQLite.Blob
 
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.WorkId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ActivationId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.DesignId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewPlanId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.CompletionEpoch
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.OperationId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.LedgerId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ProjectionId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Digest
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.StageId
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Revision
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.SourceId
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.SourceKind
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Source
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.CallerDecision
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.DesignRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.WorkRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.TaskRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceRef
 
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.WorkStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ActivationStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewClaim
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.OwnerDecision
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceKind
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Role
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AssuranceKind
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AssuranceMethod
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AssuranceObligation
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AssuranceSelection
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Authority
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.ComplexityRationale
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Item
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AcceptedRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.OperatingInstruction
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.NonAuthoritativeKind
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.NonAuthoritativeRecord
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.EffectContent
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Effect
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Package
 
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.WorkUnit
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.ReadinessBasis
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.SuspensionContext
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Activation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Requirement
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.DesignVersion
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Approval
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.TraceItem
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Decomposition
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Correction
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.KptEntry
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityOperation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityLifetime
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityKind
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AuthorityTransition
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.DerivationBasis
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.CompletionTarget
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.CompletionMember
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Unit
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Phase
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.TaskState
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Task
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.ReturnAssumption
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.ReturnPoint
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Work.Focus
+
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Spec
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Result
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.FormalSpec
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.FormalResult
+
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Purpose
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.FrozenScope
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Plan
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.AuthorityException
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Scope
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Request
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.ObservationKind
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Observation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Claim
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.ObservationDecision
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.AdoptionRationale
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.ObservationDisposition
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Adjudication
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.ClosureAttempt
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.VerificationResult
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Finding
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Verification
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Obligation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Evidence
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.AttemptState
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.OperationKind
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemoteObservation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemotePrecondition
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.RemoteTarget
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ExternalOperation.Attempt
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Result
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Decision
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Review.Disposition
 
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RelatedWorkKind
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ItemStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.FindingStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ValidationStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RepositoryStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CorrectionStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.WorkRecordStatus
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RelatedWorkRequirement
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.PhaseSpec
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChangeKind
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChangeCause
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ResultingScope
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ScopeChange
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CompletionPlan
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.PhaseRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.TaskRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ChecklistRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.FindingRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.ValidationRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.RepositoryRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CorrectionRecord
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.WorkRecordLink
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Lifecycle.CompletionState
-
-deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Replay.State
-deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Replay.Event
-deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Decide.Command
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.DecodeFault
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.ProjectionFingerprint
-deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Projection.ProjectionRef
-deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Projection.ProjectionPayload
-deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.Projection.ProjectionObservation
-deriving instance ToBinary, FromBinary for AgentWorkbench.Policy.Update.Receipt
+deriving instance ToBinary, FromBinary for AgentWorkbench.Kernel.State
 
 end AgentWorkbench.Adapter.Codec

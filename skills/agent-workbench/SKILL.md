@@ -1,122 +1,119 @@
 ---
 name: agent-workbench
-description: Use when a coding agent needs durable work, design, review, evidence, interruption, recovery, and completion state through Agent Workbench.
+description: Use when a coding agent needs durable work, accepted design, proportional assurance, review decisions, interruption, recovery, and exact completion state.
 license: MIT
 ---
 
 # Agent Workbench
 
-Use the wrapper bundled with this Skill:
+Run every project action through:
 
 ```sh
-sh <installed-skill-dir>/scripts/agent-workbench.sh <args>
+sh <installed-skill-dir>/scripts/agent-workbench.sh <action> [arguments...]
 ```
 
-The wrapper acquires the pinned static Linux x86_64 runtime, verifies its
-published checksum, caches it, and invokes it. In a source checkout it uses the
-already-built Lean executable. Users do not separately install or operate the
-runtime.
+The Skill acquires and verifies the native runtime itself. It acquires the
+pinned portable Lean tool only after a formal assurance is selected. The user
+does not install or operate either tool and does not provide glibc.
 
-## Project state
+## Recover first
 
-Run the wrapper from the managed project. It resolves the project root and keeps
-private state at `.agent-workbench/state.sqlite3`. An existing state file is
-found by walking parent directories; a fresh Git worktree uses its Git root,
-and a non-Git project uses the current directory.
+At the beginning of a session and after interruption, run `status` and `next`.
+Both describe the project in project language. Do not inspect or edit
+`.agent-workbench/state.sqlite3`; the using repository decides whether the
+whole `.agent-workbench` directory is tracked or ignored.
+
+Initialize a project with one outcome and its first concrete task:
 
 ```sh
 sh <installed-skill-dir>/scripts/agent-workbench.sh init \
-  <owner> <outcome> <completion-boundary>
+  "<outcome>" "<first task>"
 ```
 
-Never inspect or edit the SQLite file directly. The using repository—not
-Workbench and not an individual agent—decides whether `.agent-workbench` is
-ignored, tracked, copied, or shared.
+## Authority
 
-## Recover before acting
+Classify each source effect before recording it:
 
-At the beginning of work and after interruption, run:
+- `record-design` records caller-stated design;
+- `propose-design` records an ordinary or complexity-adding agent proposal
+  without authority;
+- `accept-design` records the caller's reasoned acceptance;
+- `accept-complex-design` additionally records necessity, why a simpler option
+  is insufficient, bounded scope, and maintenance cost;
+- `record-instruction` records an immediately binding operating instruction;
+- `record-question` and `reject-proposal` remain non-authoritative context.
 
-```sh
-sh <installed-skill-dir>/scripts/agent-workbench.sh status
-sh <installed-skill-dir>/scripts/agent-workbench.sh next
-```
+One statement may require more than one of these effects. A rejected approach
+does not become an inverse requirement or an absence test.
 
-`status` is read-only. `next` returns either one revision-bound executable
-command with its constraints or one concrete blocker. Run the printed command;
-do not reconstruct a different action.
+When one caller source contains a design clause, operating instruction,
+question, and/or new Work request, use `record-source-effects` once so the
+classified effects share one source and commit atomically.
 
-A state initialized by an older or interrupted setup may return a
-revision-bound `start` command:
+## Work and assurance
 
-```sh
-sh <installed-skill-dir>/scripts/agent-workbench.sh start \
-  <revision> <owner> <outcome> <completion-boundary>
-```
+Use `add-task` for a small fix. Use `add-task-for-design` when the task
+implements accepted design. Phase assignment is optional presentation only and
+never affects readiness or completion.
 
-An active work item returns `continue`. A resumable item returns `resume`.
-Projection damage returns `repair`. Each command rechecks the current state and
-rejects a stale action.
+Each accepted DesignItem selects `formal`, `evidence`, `mixed`, or `none`.
+For non-formal observations, use `add-evidence` then `record-evidence`.
 
-Use `suspend-work` with an explicit reason and resume conditions when work is
-blocked. Reopening a terminal outcome creates a new `register-follow-up` work
-unit tied to the exact terminal predecessor; it never rewrites the closed
-record.
+For formal assurance:
 
-## Mutations
+1. Create project-domain-only modules under `.agent-workbench/formal/` or
+   another caller-selected project path.
+2. Run `preview-formal` against the still-unaccepted design, its selected
+   modules, and a project-domain oracle that prints concrete meaning examples.
+   A product adapter is optional and is used only for external implementation
+   conformance.
+3. Request a fresh exact design review with `request-design-review`, then
+   record the clean result or every observation.
+4. Let the caller accept or reject the reviewed design with a recorded reason.
+5. Add the implementation Task. The verified result selected by
+   `preview-formal` remains reusable for that exact accepted design.
+6. If a declared product surface later changes, run
+   `formal-check <assurance-key>` again. It reads the selected artifacts from
+   project state; the caller cannot substitute a different target at check time.
 
-Design, review, decomposition, evidence, and completion mutations use one typed
-JSON request per transaction:
+`formal-check` is the only public route that can produce a formal result. It
+checks the actual module closure, hashes sources, oleans, implementation
+surfaces and oracle, and, when selected, compares every input-only case with an
+ordinary product-boundary adapter. Expected results must not appear in cases or
+adapters.
 
-```sh
-sh <installed-skill-dir>/scripts/agent-workbench.sh apply <request.json>
-```
+When the oracle and product disagree, `preview-formal` records and presents the
+counterexample instead of discarding it. The checked formal meaning can then be
+reviewed and accepted before the product is corrected. Work completion remains
+blocked until `formal-check` observes passing product conformance.
 
-Every request contains a unique `operation`, the exact `expectedRevision`, a
-supported `command`, and that command's fields. The native CLI parses the
-request, while the authoritative Lean transition kernel decides acceptance.
-The CLI does not duplicate policy.
+If a repository change is outside every declared implementation surface, do
+not rerun unrelated proofs merely because some file changed. Request a bounded
+`reuse` Review over the changed artifact to decide whether the surface
+declaration remains complete. A clean reuse decision preserves the existing
+formal result and Review identities; uncertainty is limited to that binding.
 
-Read [request-format.md](references/request-format.md) for the supported request
-shapes. Read [native-workflow.md](references/native-workflow.md) for the normal
-design-to-completion sequence.
+## Review and interruption
 
-Repository evidence uses `record-repository-evidence` when commits and changed
-files are part of the accepted completion boundary. A KPT uses `record-kpt`:
-its observations and optional learning candidate remain a non-authoritative
-context event and do not change planning or evidence freshness. If the user
-later adopts a learning, record that separate decision through the correction
-and authority-transition path.
+Reviews are advisory. Use `request-review` and `record-review`, then let the
+caller use `resolve-review` with a reason. A complexity-adding proposal also
+requires necessity, why a simpler option is insufficient, bounded scope, and
+maintenance cost through `adopt-complex-review-proposal`. Ordinary proposals
+use `adopt-review-proposal`; in both cases the caller owns adoption.
 
-## Review authority
+Use `correct-review` with the intended outcome, Task, and artifact to supersede
+a mistaken target without relinking history.
+Use `interrupt` for urgent work and `return` to restore the saved outcome.
+If a saved assumption changed, use `replan-return` with the caller's selected
+outcome and reason; silent retargeting is rejected.
+Use `start-work` and `switch-work` for independent work without an automatic
+return plan.
 
-Review claims are advisory. The caller records a separate adjudication with a
-reason and remains responsible for adoption. Review observations do not become
-requirements merely because a reviewer raised them.
+## Completion
 
-## Validation
+Run `complete`. It succeeds only when every positive member of the current
+accepted completion boundary is current and satisfied. Creating unrelated
+tasks, reviews, phases, proofs, or evidence never changes that result.
 
-Record positive observations required by the current accepted design. Do not
-turn a rejected or removed approach into a permanent inverse requirement or an
-absence test. Evidence must retain its exact revision, producer, observation,
-repository snapshot, and artifact identity.
-
-## Explicit exports and recovery
-
-Use `export <purpose> <class> <output>` to export exactly one of `ledger`,
-`evidence`, `review`, `correction`, `backup`, or `design`. No class is exported
-implicitly. Export never overwrites an existing path and reports whether
-publication durability is confirmed or uncertain.
-
-Use `doctor` for read-only diagnosis and `update inspect` for a dry-run schema
-check. Run `update apply` only with the exact printed plan. It creates and
-reports a content-addressed backup and exact `update restore` arguments.
-
-## Errors
-
-Unknown commands, malformed JSON, stale revisions, invalid transitions, and
-state corruption fail with a non-zero exit. Do not retry a changed request
-under the same operation identity. On an uncertain external effect, reconcile
-the remote observation before retrying. The Skill performs the external tool
-call; Workbench records the prepared intent before that call and its exact
-observed, uncertain, retryable, failed, or conflicting result afterward.
+See [request-format.md](references/request-format.md) for action signatures and
+[native-workflow.md](references/native-workflow.md) for the normal sequence.

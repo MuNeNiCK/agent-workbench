@@ -1,34 +1,30 @@
-# Request reference
+# Project action reference
 
-Every mutation request begins with:
+All actions run through the installed Skill wrapper. The agent supplies
+caller-visible descriptions; operation tokens, revisions, links, storage
+fields, and retry receipts are private.
 
-```json
-{
-  "operation": "unique-operation-id",
-  "expectedRevision": 1,
-  "command": "command-name"
-}
-```
+The public action groups are:
 
-The CLI accepts commands for:
+- recovery: `status`, `next`, `complete`;
+- work: `init`, `start-work`, `switch-work`, `add-task`,
+  `add-task-for-design`, `finish-task`;
+- design authority: `record-design`, `propose-design`,
+  `request-design-review`, `accept-design`,
+  `accept-complex-design`, `retire-design`,
+  `record-instruction`, `record-question`, `reject-proposal`,
+  `record-source-effects`;
+- assurance: `add-evidence`, `record-evidence`, `preview-formal`,
+  `formal-check`;
+- review: `request-review`, `record-review`, `record-clean-review`,
+  `resolve-review`, `adopt-review-proposal`,
+  `adopt-complex-review-proposal`, `correct-review`;
+- interruption: `interrupt`, `return`, `replan-return`; and
+- optional presentation: `assign-phase`, `rename-phase`, `order-phase`.
 
-- work registration, suspension, readiness, resume, terminal-predecessor
-  follow-up, and completion;
-- design import, approval, decomposition, and authority transitions;
-- review plans, claims, caller adjudications, findings, closure, and
-  verification;
-- aggregate completion plans, phases, tasks, checklists, rescope, and split;
-- evidence obligations and observations;
-- repository classification, exact commit and changed-file evidence, and work
-  records;
-- KPT context and explicitly proposed learning;
-- external operation preparation, dispatch, uncertainty, reconciliation, and
-  completion.
+Roles are `goal`, `functional`, `non-functional`, `constraint`, `decision`,
+`structure`, `fact`, and `boundary`. Assurance choices are `formal`,
+`evidence`, `mixed`, and `none`.
 
-Use the exact field shapes in the installed Skill reference
-`references/request-format.md`. Required lists must be present; omission is not
-interpreted as an empty list.
-
-Supported review purposes are `design`, `decomposition`,
-`design-conformance`, and `implementation-quality`. Review claims are `clean`
-or `findings`; caller decisions are `accepted` or `rejected`.
+See the installed Skill's `references/request-format.md` for exact positional
+signatures.

@@ -1,22 +1,31 @@
 # Reviews and caller authority
 
-A review claim is advisory. It can report `clean` or `findings`, but it cannot
-change product authority by itself.
+Reviewers produce observations, not product authority. Each review is bound to
+one outcome, the exact design versions and Task it examined, its purpose, and
+its artifact. Later bookkeeping revisions of the same outcome do not invalidate
+it; changing an examined design or Task does. Its result cannot complete
+another outcome.
 
-The caller separately records a decision with a non-empty reason. Evaluate each
-observation:
+The caller records one disposition and a reason for each observation:
+`accepted`, `rejected`, `rescoped`, `deferred`, or `needs-evidence`.
+`deferred` and `needs-evidence` may later receive a final disposition.
 
-- accept a concrete defect when its invariant, affected surface, and failure
-  path are demonstrated;
-- reject a speculative proposal that is not required by the accepted outcome;
-- rescope only when the accepted outcome actually changes;
-- request evidence when the claim is not yet decidable.
+Adopting a reviewer proposal that adds a concept, abstraction, mechanism, or
+mode also records:
 
-Do not promote an unresolved consideration into a requirement merely because
-it appears in a formal design document. Do not add a test asserting that a
-rejected or removed implementation approach is absent. Tests should exercise
-required positive behavior.
+- why it is necessary for the current accepted requirement;
+- why the simpler alternative is insufficient;
+- the bounded scope being added; and
+- expected maintenance cost.
 
-When a blocking finding is fixed, verify the exact remediation artifact with a
-reviewer independent of the original reviewer. The caller still decides
-whether to accept that verification.
+The caller adopts an ordinary reviewed proposal with
+`adopt-review-proposal`. Complexity-adding proposals use
+`adopt-complex-review-proposal`; the reviewer never owns adoption.
+
+Rejecting a proposal ends that proposal's authority. It does not create an
+absence test or a permanent prohibition.
+
+If a review was requested for the wrong Work, `correct-review` preserves the
+old review as history, removes it from the mistaken completion boundary, and
+creates a fresh review from the intended Work's current Task, Design scope, and
+caller-visible artifact.

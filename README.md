@@ -1,46 +1,43 @@
 # Agent Workbench
 
-Agent Workbench is a Lean-verified state machine and native CLI for durable
-coding-agent work. It keeps work, design, review, evidence, interruption,
-recovery, and completion state outside the managed project's implementation.
+Agent Workbench is one Agent Skill for carrying accepted project design through
+implementation, assurance, review, interruption, and exact completion without
+depending on chat memory.
 
-The Lean implementation is the default product from `v0.2.0`.
+Lean is used where it changes the user's development workflow: selected
+project-domain rules become executable contracts and proofs. After a local
+design correction, unchanged accepted assurance remains reusable while the
+affected design, implementation surface, and review are revisited.
 
 ## Install
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.2 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.3 \
   --scope user --agent <target-agent>
 ```
 
-Then ask the agent:
+Then ask the agent to use `$agent-workbench` in the project. The Skill acquires
+and verifies its Linux x86_64 runtime itself. It downloads the portable pinned
+Lean tool only when the project selects formal assurance. Users do not install
+or operate a separate CLI, Lean toolchain, or glibc runtime.
 
-```text
-Use $agent-workbench for this project and initialize its state.
-```
-
-That is the complete product installation. The Skill downloads the pinned,
-statically linked Linux x86_64 runtime, verifies its published checksum, caches
-it internally, and stores project state under `.agent-workbench`. Users do not
-install Lean or a separate CLI.
+Project memory is stored under `.agent-workbench`. The using repository—not
+Agent Workbench—decides whether that directory is tracked, ignored, or shared.
 
 ## Build from source
 
-Requirements: Git, a C toolchain, and the Lean toolchain selected by
-`lean-toolchain`.
+Use the toolchain pinned by `lean-toolchain`:
 
 ```bash
 lake build
-.lake/build/bin/kernel-laws
-.lake/build/bin/storage-laws
-.lake/build/bin/workflow-laws
-.lake/build/bin/cli-laws
+lake test
+scripts/test-skill.sh .lake/build/bin/agent-workbench
 ```
 
-## Documentation
+Release validation additionally exercises the packaged formal tool through the
+installed Skill route.
 
-User and operator documentation is published at
-<https://munenick.github.io/agent-workbench/>.
+Documentation is published at <https://munenick.github.io/agent-workbench/>.
 
 ## License
 

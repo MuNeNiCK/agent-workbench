@@ -1,61 +1,56 @@
 namespace AgentWorkbench.Domain
 
-structure WorkId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure ActivationId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure DesignId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure ReviewId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure ReviewPlanId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure CompletionEpoch where
-  value : Nat
-deriving DecidableEq, Repr, BEq, Ord
-
-def CompletionEpoch.next (epoch : CompletionEpoch) : CompletionEpoch :=
-  ⟨epoch.value + 1⟩
-
-structure EvidenceId where
-  value : Nat
-deriving DecidableEq, Repr, BEq
-
-structure OperationId where
+structure SourceId where
   value : String
 deriving DecidableEq, Repr, BEq
 
-structure LedgerId where
-  value : String
+inductive SourceKind
+  | caller
+  | agent
+  | reviewer
+  | repository
+  | document
 deriving DecidableEq, Repr, BEq
 
-structure ProjectionId where
-  value : String
+structure Source where
+  id : SourceId
+  kind : SourceKind
+  description : String
 deriving DecidableEq, Repr, BEq
 
-structure Digest where
-  value : String
+structure CallerDecision where
+  source : Source
+  reason : String
 deriving DecidableEq, Repr, BEq
 
-structure StageId where
-  value : Nat
+def CallerDecision.wellFormed (decision : CallerDecision) : Bool :=
+  decision.source.kind == .caller &&
+    !decision.source.id.value.isEmpty &&
+    !decision.reason.isEmpty
+
+structure DesignRef where
+  key : String
+  version : Nat
 deriving DecidableEq, Repr, BEq
 
-structure Revision where
-  value : Nat
-deriving DecidableEq, Repr, BEq, Ord
+structure WorkRef where
+  key : String
+  version : Nat
+deriving DecidableEq, Repr, BEq
 
-def Revision.next (revision : Revision) : Revision :=
-  ⟨revision.value + 1⟩
+structure TaskRef where
+  key : String
+  version : Nat
+deriving DecidableEq, Repr, BEq
+
+structure ReviewRef where
+  key : String
+  version : Nat
+deriving DecidableEq, Repr, BEq
+
+structure EvidenceRef where
+  key : String
+  version : Nat
+deriving DecidableEq, Repr, BEq
 
 end AgentWorkbench.Domain

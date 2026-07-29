@@ -19,20 +19,21 @@ jobs:
           test: false
           use-mathlib-cache: false
           build-args: "--wfail"
-      - name: Run executable laws
+      - name: Run component tests
         run: |
-          .lake/build/bin/kernel-laws
-          .lake/build/bin/storage-laws
-          .lake/build/bin/workflow-laws
-          .lake/build/bin/cli-laws
-          scripts/test-skill-product.sh .lake/build/bin/agent-workbench
+          lake test
+          scripts/test-skill.sh .lake/build/bin/agent-workbench
       - name: Check release tooling
         run: |
           shellcheck scripts/build-release-assets.sh
           shellcheck scripts/test-release-binary.sh
-          shellcheck scripts/test-skill-product.sh
-          shellcheck scripts/fixtures/curl-release.sh
+          shellcheck scripts/test-skill.sh
+          shellcheck scripts/test-support/curl-release.sh
+          shellcheck scripts/test-support/sha256sum-delay.sh
           shellcheck skills/agent-workbench/scripts/agent-workbench.sh
+          shellcheck skills/agent-workbench/scripts/formal-check.sh
+          shellcheck skills/agent-workbench/scripts/formal-tool.sh
+          shellcheck scripts/test-formal-tool-asset.sh
 
   static-release:
     runs-on: ubuntu-latest
@@ -48,14 +49,37 @@ jobs:
           outputs: type=local,dest=${{ runner.temp }}/static
           cache-from: type=gha,scope=lean-4.30.0-musl
           cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
+      - name: Build portable formal tool
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: release/linux-x86_64-static.Dockerfile
+          target: formal-tool-artifact
+          outputs: type=local,dest=${{ runner.temp }}/formal
+          cache-from: type=gha,scope=lean-4.30.0-musl
+          cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
       - name: Validate packaged static executable
         run: |
           chmod +x "$RUNNER_TEMP/static/agent-workbench"
-          scripts/build-release-assets.sh v0.2.2 "$RUNNER_TEMP/dist" \
-            "$RUNNER_TEMP/static/agent-workbench"
+          scripts/build-release-assets.sh v0.2.3 "$RUNNER_TEMP/dist" \
+            "$RUNNER_TEMP/static/agent-workbench" \
+            "$RUNNER_TEMP/formal/agent-workbench-formal-tool"
           mkdir "$RUNNER_TEMP/verify"
           tar -xzf \
-            "$RUNNER_TEMP/dist/agent-workbench-v0.2.2-linux-x86_64-static.tar.gz" \
+            "$RUNNER_TEMP/dist/agent-workbench-v0.2.3-linux-x86_64-static.tar.gz" \
             -C "$RUNNER_TEMP/verify"
           scripts/test-release-binary.sh \
             "$RUNNER_TEMP/verify/agent-workbench"
+      - name: Validate installed formal route without host glibc
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$RUNNER_TEMP/static:/runtime:ro" \
+            -v "$RUNNER_TEMP/dist:/dist:ro" \
+            -w /src \
+            alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+            sh -ec '
+              apk add --no-cache coreutils curl git sqlite tar util-linux
+              scripts/test-skill.sh /runtime/agent-workbench \
+                /dist/agent-workbench-v0.2.3-formal-tool-linux-x86_64.tar.gz
+            '

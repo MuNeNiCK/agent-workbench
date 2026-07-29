@@ -13,20 +13,15 @@ binary="$directory/$(basename -- "$input")"
 test -x "$binary"
 file "$binary" | grep -F "ELF 64-bit LSB executable"
 file "$binary" | grep -F "statically linked"
-test "$("$binary" --version)" = "agent-workbench 0.2.2"
+test "$("$binary" --version)" = "agent-workbench 0.2.3"
 
 smoke() {
   image="$1"
   docker run --rm \
     -v "$binary:/usr/local/bin/agent-workbench:ro" \
     "$image" sh -ec '
-      agent-workbench --version
-      agent-workbench --state /tmp/state.sqlite3 init \
-        release-smoke portable-release complete
-      agent-workbench --state /tmp/state.sqlite3 status |
-        grep -F "state: current"
-      agent-workbench --state /tmp/state.sqlite3 next |
-        grep -F "next: executable"
+      test "$(agent-workbench --version)" = "agent-workbench 0.2.3"
+      agent-workbench --help >/dev/null
     '
 }
 

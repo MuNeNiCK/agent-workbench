@@ -1,28 +1,21 @@
 # Agent Workbench
 
-Agent Workbench gives coding agents durable state for work that spans design,
-implementation, review, interruption, and recovery. The product is a native
-CLI backed by a Lean transition kernel and a project-local SQLite state file.
+Agent Workbench gives a coding agent durable project memory for accepted
+design, implementation work, assurance, review decisions, interruption, and
+completion.
 
-It does not replace the managed project's source tree, issue tracker, build
-system, or tests. It records the accepted work boundary and the positive
-evidence needed to decide whether that work is complete.
+Its Lean support is for the project using the Skill. A project may express selected
+acceptance-critical behavior as project-domain Lean contracts, proofs, and an
+executable oracle. When design changes locally, declared dependencies identify
+the affected scope; unrelated accepted assurance does not need a whole-project
+review again.
 
-## What the Lean version changes
+Non-formal requirements remain first-class. Performance, deployment, UX,
+third-party behavior, and human judgement can use explicit external Evidence
+instead of being forced into propositions.
 
-Starting with `v0.2.0`, Lean is the default implementation. Acceptance-critical
-transitions are decided by one typed kernel. The SQLite adapter persists the
-accepted events, and read-only commands recover the same state in a fresh
-process.
-
-Reviewers provide observations. The caller remains responsible for accepting
-or rejecting them and records the reason. A review comment does not
-automatically become a product requirement.
-
-## Supported release
-
-Prebuilt releases from `v0.2.2` target Linux x86_64 as a static executable and
-do not require a host-provided glibc. Source builds use the toolchain pinned in
-`lean-toolchain`.
+The Skill keeps its state under `.agent-workbench` and stays outside product
+code. SQLite is only the private atomic persistence mechanism; it does not
+define the user workflow.
 
 Continue with [Installation](installation.md) and [Workflow](workflow.md).

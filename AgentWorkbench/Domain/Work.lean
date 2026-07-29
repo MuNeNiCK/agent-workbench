@@ -1,190 +1,125 @@
-import AgentWorkbench.Domain.Identity
-import AgentWorkbench.Domain.Facts
+import AgentWorkbench.Domain.Design
 
 namespace AgentWorkbench.Domain.Work
 
 open AgentWorkbench.Domain
 
-structure WorkUnit where
-  id : WorkId
-  status : WorkStatus
-  owner : String := ""
+inductive DerivationBasis
+  | design (items : List Design.AcceptedRef)
+  | workBoundary (work : WorkRef)
+deriving DecidableEq, Repr, BEq
+
+def DerivationBasis.wellFormed (basis : DerivationBasis) : Bool :=
+  match basis with
+  | .design items =>
+      !items.isEmpty &&
+        (items.map (·.ref)).Nodup &&
+        items.all (fun item => !item.ref.key.isEmpty)
+  | .workBoundary work => !work.key.isEmpty
+
+inductive CompletionTarget
+  | taskSatisfied (task : TaskRef)
+  | assurance (description : String)
+  | reviewResolved (review : ReviewRef)
+  | externalObservation (evidence : EvidenceRef)
+deriving DecidableEq, Repr, BEq
+
+structure CompletionMember where
+  target : CompletionTarget
+  basis : DerivationBasis
+deriving DecidableEq, Repr, BEq
+
+def CompletionTarget.wellFormed : CompletionTarget → Bool
+  | .taskSatisfied task => !task.key.isEmpty
+  | .assurance key => !key.isEmpty
+  | .reviewResolved review => !review.key.isEmpty
+  | .externalObservation evidence => !evidence.key.isEmpty
+
+def CompletionMember.wellFormedFor (work : WorkRef)
+    (member : CompletionMember) : Bool :=
+  member.target.wellFormed && member.basis.wellFormed &&
+    match member.basis with
+    | .design _ => true
+    | .workBoundary selected => selected.key == work.key
+
+structure Unit where
+  ref : WorkRef
   outcome : String
-  completionBoundary : String
-deriving DecidableEq, Repr
+  completionBoundary : List CompletionMember
+  authority : CallerDecision
+deriving DecidableEq, Repr, BEq
 
-def WorkUnit.wellFormed (work : WorkUnit) : Bool :=
-  !work.owner.isEmpty && !work.outcome.isEmpty &&
-  !work.completionBoundary.isEmpty
+def Unit.wellFormed (work : Unit) : Bool :=
+  !work.ref.key.isEmpty &&
+    !work.outcome.isEmpty &&
+    !work.completionBoundary.isEmpty &&
+    work.completionBoundary.all (CompletionMember.wellFormedFor work.ref) &&
+    work.authority.wellFormed
 
-structure ReadinessBasis where
-  design : DesignId
-  designRevision : Revision
-  decompositionKey : String
-  decompositionDigest : String
-  repositorySnapshot : String
-  obligationKeys : List String
-  evidenceRevision : Revision
-  reviewPlan : ReviewPlanId
-deriving DecidableEq, Repr
+structure Phase where
+  key : String
+  name : String
+  displayOrder : Nat
+deriving DecidableEq, Repr, BEq
 
-structure SuspensionContext where
-  reason : String
-  returnPoint : String
-  assumptions : List String
-  resumeConditions : List String
-  basis : Option ReadinessBasis := none
-deriving DecidableEq, Repr
+inductive TaskState
+  | pending
+  | satisfied
+deriving DecidableEq, Repr, BEq
 
-def SuspensionContext.wellFormed (context : SuspensionContext) : Bool :=
-  !context.reason.isEmpty && !context.returnPoint.isEmpty &&
-  !context.assumptions.isEmpty && !context.resumeConditions.isEmpty &&
-  context.assumptions.all (fun assumption => !assumption.isEmpty) &&
-  context.resumeConditions.all (fun condition => !condition.isEmpty)
+structure Task where
+  ref : TaskRef
+  work : WorkRef
+  description : String
+  basis : DerivationBasis
+  designScope : List Design.AcceptedRef
+  phase : Option String
+  state : TaskState
+deriving DecidableEq, Repr, BEq
 
-def SuspensionContext.readinessWellFormed (context : SuspensionContext) : Bool :=
-  context.wellFormed &&
-  context.basis.any (fun basis =>
-    !basis.decompositionKey.isEmpty && !basis.decompositionDigest.isEmpty &&
-      !basis.repositorySnapshot.isEmpty && !basis.obligationKeys.isEmpty &&
-      basis.obligationKeys.all (fun key => !key.isEmpty))
+def Task.wellFormed (task : Task) : Bool :=
+  !task.ref.key.isEmpty &&
+    !task.work.key.isEmpty &&
+    !task.description.isEmpty &&
+    task.basis.wellFormed &&
+    (task.designScope.map (·.ref)).Nodup &&
+    task.designScope.all (fun item => !item.ref.key.isEmpty) &&
+    task.phase.all (fun phase => !phase.isEmpty) &&
+    match task.basis with
+    | .design items => task.designScope == items
+    | .workBoundary selectedWork => task.work.key == selectedWork.key
 
-structure Activation where
-  id : ActivationId
-  work : WorkId
-  status : ActivationStatus
-  readyToResume : Bool
-  suspension : Option SuspensionContext := none
-  parent : Option ActivationId := none
-  confirmedBasis : Option ReadinessBasis := none
-deriving DecidableEq, Repr
+inductive ReturnAssumption
+  | design (item : DesignRef)
+  | workBoundary (work : WorkRef)
+deriving DecidableEq, Repr, BEq
 
-def activeActivations (activations : List Activation) : List Activation :=
-  activations.filter (fun activation => activation.status == .active)
+def ReturnAssumption.wellFormed : ReturnAssumption → Bool
+  | .design item => !item.key.isEmpty
+  | .workBoundary work => !work.key.isEmpty
 
-def AtMostOneActive (activations : List Activation) : Prop :=
-  (activeActivations activations).length ≤ 1
+structure ReturnPoint where
+  work : WorkRef
+  task : Option TaskRef
+  assumptions : List ReturnAssumption
+deriving DecidableEq, Repr, BEq
 
-def UniqueWorkIds (work : List WorkUnit) : Prop :=
-  (work.map (·.id)).Nodup
+def ReturnPoint.wellFormed (point : ReturnPoint) : Bool :=
+  !point.work.key.isEmpty &&
+    point.task.all (fun task => !task.key.isEmpty) &&
+    !point.assumptions.isEmpty &&
+    point.assumptions.Nodup &&
+    point.assumptions.all ReturnAssumption.wellFormed
 
-def UniqueActivationIds (activations : List Activation) : Prop :=
-  (activations.map (·.id)).Nodup
+structure Focus where
+  work : WorkRef
+  task : Option TaskRef
+  returnPoint : Option ReturnPoint
+deriving DecidableEq, Repr, BEq
 
-def OwnersPresent (work : List WorkUnit) : Prop :=
-  (work.all WorkUnit.wellFormed) = true
-
-def ActiveReferencesOpenWork (work : List WorkUnit) (activations : List Activation) : Prop :=
-  (activations.all fun activation =>
-    activation.status != .active ||
-      work.any fun unit => unit.id == activation.work && unit.status == .open) = true
-
-def ActivationsReferenceWork (work : List WorkUnit) (activations : List Activation) : Prop :=
-  (activations.all fun activation => work.any (·.id == activation.work)) = true
-
-def NonterminalActivationsReferenceOpenWork (work : List WorkUnit)
-    (activations : List Activation) : Prop :=
-  (activations.all fun activation =>
-    activation.status == .closed ||
-      work.any fun unit => unit.id == activation.work && unit.status == .open) = true
-
-def ValidWorkState (work : List WorkUnit) (activations : List Activation) : Prop :=
-  UniqueWorkIds work ∧
-  UniqueActivationIds activations ∧
-  OwnersPresent work ∧
-  AtMostOneActive activations ∧
-  ActiveReferencesOpenWork work activations ∧
-  ActivationsReferenceWork work activations ∧
-  NonterminalActivationsReferenceOpenWork work activations
-
-theorem single_active_activation {activations : List Activation}
-    (valid : AtMostOneActive activations) :
-    (activeActivations activations).length ≤ 1 := by
-  exact valid
-
-def noActive (activations : List Activation) : Bool :=
-  (activeActivations activations).isEmpty
-
-def activeFor (activations : List Activation) (work : WorkId) : Option Activation :=
-  activations.find? fun activation =>
-    activation.work == work && activation.status == .active
-
-def workIsOpen (work : List WorkUnit) (target : WorkId) : Bool :=
-  work.any fun unit => unit.id == target && unit.status == .open
-
-def closeWork (work : List WorkUnit) (target : WorkId) : List WorkUnit :=
-  work.map fun unit =>
-    if unit.id == target then { unit with status := .closed } else unit
-
-def closeActivation (activations : List Activation) (target : ActivationId) : List Activation :=
-  activations.map fun activation =>
-    if activation.id == target then { activation with status := .closed } else activation
-
-def resumable (activations : List Activation) (id : ActivationId) : Bool :=
-  noActive activations && activations.any fun activation =>
-    activation.id == id &&
-    activation.status == .suspended &&
-    activation.readyToResume &&
-    activation.suspension.any SuspensionContext.wellFormed
-
-def suspend (activations : List Activation) (id : ActivationId)
-    (context : SuspensionContext) : Option (List Activation) :=
-  if context.wellFormed && activations.any (fun activation =>
-      activation.id == id && activation.status == .active) then
-    some <| activations.map fun activation =>
-      if activation.id == id then
-        { activation with
-          status := .suspended
-          readyToResume := false
-          suspension := some context
-          confirmedBasis := none }
-      else activation
-  else
-    none
-
-def markResumeReady (activations : List Activation) (id : ActivationId)
-    (basis : ReadinessBasis) :
-    Option (List Activation) :=
-  if noActive activations && activations.any (fun activation =>
-      activation.id == id && activation.status == .suspended &&
-        activation.suspension.any (fun context =>
-          context.wellFormed && context.basis == some basis)) then
-    some <| activations.map fun activation =>
-      if activation.id == id then
-        { activation with readyToResume := true, confirmedBasis := some basis }
-      else activation
-  else
-    none
-
-def reviseSuspension (activations : List Activation) (id : ActivationId)
-    (context : SuspensionContext) : Option (List Activation) :=
-  if context.readinessWellFormed && activations.any (fun activation =>
-      activation.id == id && activation.status == .suspended) then
-    some <| activations.map fun activation =>
-      if activation.id == id then
-        { activation with
-          suspension := some context
-          readyToResume := false
-          confirmedBasis := none }
-      else activation
-  else
-    none
-
-def resume (activations : List Activation) (id : ActivationId) : Option (List Activation) :=
-  if resumable activations id then
-    some <| activations.map fun activation =>
-      if activation.id == id then
-        { activation with status := .active, readyToResume := false }
-      else activation
-  else
-    none
-
-theorem resume_requires_readiness {activations : List Activation} {id : ActivationId}
-    {resumed : List Activation} (accepted : resume activations id = some resumed) :
-    resumable activations id = true := by
-  unfold resume at accepted
-  split at accepted
-  · assumption
-  · contradiction
+def Focus.wellFormed (focus : Focus) : Bool :=
+  !focus.work.key.isEmpty &&
+    focus.task.all (fun task => !task.key.isEmpty) &&
+    focus.returnPoint.all ReturnPoint.wellFormed
 
 end AgentWorkbench.Domain.Work

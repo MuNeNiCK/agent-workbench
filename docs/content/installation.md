@@ -1,34 +1,29 @@
 # Installation
 
-## Install the Agent Skill
-
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.2 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.3 \
   --scope user --agent <target-agent>
 ```
 
-Then ask the coding agent to use `$agent-workbench` for the project. The Skill
-acquires the pinned static Linux x86_64 runtime, verifies the release checksum,
-caches it, and invokes it. There is no separate CLI or Lean installation.
+Ask the coding agent to use `$agent-workbench` for the project. The Skill:
 
-Workbench state is created under the managed project's `.agent-workbench`
-directory. The repository's own policy decides whether that directory is
-ignored, tracked, copied, or shared.
+1. resolves the project root;
+2. downloads the matching static Linux x86_64 runtime on first use;
+3. verifies the published SHA-256 checksum; and
+4. creates project memory under `.agent-workbench` after `init`.
 
-## Build from source
+If formal assurance is selected, the first `formal-check` separately downloads
+and verifies the pinned portable Lean 4.30.0 tool. Ordinary work does not incur
+that download. Neither runtime requires host glibc, and the user does not
+operate Lean directly.
 
-Install Git, a C toolchain, and `elan`. Clone the default `lean` branch, then:
+The Skill does not change `.gitignore`, Git configuration, or the index.
+
+## Source build
 
 ```bash
 lake build
 .lake/build/bin/agent-workbench --version
-```
-
-Run all executable laws before using a source build:
-
-```bash
-.lake/build/bin/kernel-laws
-.lake/build/bin/storage-laws
-.lake/build/bin/workflow-laws
-.lake/build/bin/cli-laws
+lake test
+scripts/test-skill.sh .lake/build/bin/agent-workbench
 ```

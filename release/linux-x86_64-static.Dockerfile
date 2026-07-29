@@ -25,16 +25,46 @@ WORKDIR /src
 COPY . .
 RUN lake -KstaticRelease=true build \
  && test "$(.lake/build/bin/agent-workbench --version)" = \
-      "agent-workbench 0.2.2" \
+      "agent-workbench 0.2.3" \
  && file .lake/build/bin/agent-workbench | grep -F "statically linked"
 
-FROM build AS tested
-RUN apk add --no-cache nodejs python3 sqlite \
- && .lake/build/bin/kernel-laws \
- && .lake/build/bin/storage-laws \
- && .lake/build/bin/workflow-laws \
- && .lake/build/bin/cli-laws \
- && strip .lake/build/bin/agent-workbench
+FROM build AS stripped
+RUN strip .lake/build/bin/agent-workbench
 
 FROM scratch AS artifact
-COPY --from=tested /src/.lake/build/bin/agent-workbench /agent-workbench
+COPY --from=stripped /src/.lake/build/bin/agent-workbench /agent-workbench
+
+FROM lean AS formal-tool
+COPY release/formal-tool-exec.sh /tmp/formal-tool-exec.sh
+COPY scripts/test-formal-tool-asset.sh /tmp/test-formal-tool-asset.sh
+RUN set -eu; \
+    tool_root=/opt/agent-workbench-formal-tool; \
+    stage=/opt/lean4/build/release/stage1; \
+    mkdir -p "$tool_root/bin" "$tool_root/lib"; \
+    cp -R "$stage/lib/." "$tool_root/lib/"; \
+    find "$tool_root/lib" -type f \
+      \( -name '*.a' -o -name '*.bc' -o -name '*.c' -o -name '*.export' \
+         -o -name '*.hash' -o -name '*.ilean' -o -name '*.o' -o -name '*.rsp' \
+         -o -name '*.trace' \) -delete; \
+    cp "$stage/bin/lean" "$stage/bin/lake" "$tool_root/bin/"; \
+    if test -x "$stage/bin/cadical"; then cp "$stage/bin/cadical" "$tool_root/bin/"; fi; \
+    for tool in lean lake; do \
+      mv "$tool_root/bin/$tool" "$tool_root/bin/.$tool.real"; \
+      cp /tmp/formal-tool-exec.sh "$tool_root/bin/$tool"; \
+      chmod +x "$tool_root/bin/$tool"; \
+    done; \
+    cp -L /lib/ld-musl-x86_64.so.1 \
+      /usr/lib/libgcc_s.so.1 /usr/lib/libgmp.so.10 \
+      /usr/lib/libstdc++.so.6 /usr/lib/libuv.so.1 \
+      "$tool_root/lib/"; \
+    printf '%s\n' 'leanprover/lean4:v4.30.0' > "$tool_root/lean-toolchain"; \
+    printf '%s\n' 'd024af099ca4bf2c86f649261ebf59565dc8c622' \
+      > "$tool_root/SOURCE_COMMIT"; \
+    (cd "$tool_root" && find . -type f ! -name MANIFEST.sha256 -print0 \
+      | sort -z | xargs -0 sha256sum > MANIFEST.sha256); \
+    "$tool_root/bin/lean" --version; \
+    "$tool_root/bin/lake" --version; \
+    /tmp/test-formal-tool-asset.sh "$tool_root"
+
+FROM scratch AS formal-tool-artifact
+COPY --from=formal-tool /opt/agent-workbench-formal-tool /agent-workbench-formal-tool

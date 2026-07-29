@@ -1,49 +1,61 @@
 # Concepts
 
-## Project state
+## Design Package
 
-The Agent Skill resolves the managed project and uses:
+A Design Package distinguishes:
 
-```text
-.agent-workbench/state.sqlite3
-```
+- caller-stated project design awaiting explicit acceptance;
+- accepted goals, requirements, constraints, decisions, structure, and facts;
+- binding caller operating instructions;
+- agent proposals and unresolved questions; and
+- rejected proposals retained only as context.
 
-Workbench state is private project metadata. Do not inspect or edit the SQLite
-database directly. The repository's policy controls whether the complete
-`.agent-workbench` area is tracked or ignored.
+A rejection does not create an inverse requirement or a test that a discarded
+approach is absent. Tasks and assurance come from accepted design or the
+accepted Work boundary.
 
-## Work and activation
+Agent proposals distinguish ordinary corrections from additions that increase
+product complexity. Only the latter require a recorded necessity,
+simpler-alternative analysis, bounded scope, and maintenance cost.
 
-A work item names one coherent outcome and its completion boundary. An
-activation represents the currently executing interval. Interruptions suspend
-one activation and may start another; recovery preserves the exact return
-point.
+Each accepted design statement selects `formal`, `evidence`, `mixed`, or
+`none`. Dependencies are explicit so a later correction invalidates only the
+declared affected scope.
 
-Aggregate work may have ordered phases and dependencies. A rescope changes the
-outcome or owner. A split creates genuinely independent work lifecycles.
-Blocked work is a suspension with explicit resume conditions. Closed work is
-not rewritten; continuing the outcome creates a successor follow-up tied to the
-terminal predecessor.
+## Work, Task, and Phase
 
-## Design and decomposition
+Work is one caller outcome with a positive completion boundary. A Task is one
+executable unit within that Work and may freeze the accepted design versions it
+implements.
 
-An accepted design is immutable. A reviewed decomposition connects its
-requirements to implementation work, tasks, checklists, and validation gates.
-Historical or rejected approaches are not converted into inverse requirements.
+Phase is optional display metadata: a name and order for grouping Tasks. It has
+no lifecycle, dependency, review, readiness, or completion effect. A small fix
+does not need a Phase.
 
-## Evidence
+## Assurance
 
-Evidence records a positive observation required by the accepted design. It is
-bound to the exact revision, producer, command, repository snapshot, and
-artifact identity that produced it.
+Formal assurance records the exact checked Lean modules, imported closure,
+oracle, generated artifacts, and declared product implementation surfaces. If a
+declared surface changes, the public Skill requires `formal-check` again.
+Pure logical contracts select Lean contract/proof modules plus a project-domain
+oracle that exposes concrete meaning examples. External product conformance
+additionally selects product surfaces and an input-only adapter/case set.
 
-Repository evidence can additionally retain the exact commit and changed-file
-set. KPT observations and learning candidates remain non-authoritative context
-events and do not alter planning, readiness, or evidence freshness. A separate
-user correction and authority transition records any later decision to give a
-learning normative effect.
+External Evidence records a positive observation, method, environment,
+acceptance condition, trusted boundary, and artifact identity.
 
-## External operations
+## Review and completion
 
-Release and other external operations retain their work, kind, and artifact
-identity. If the result is uncertain, observe the remote state before retrying.
+A review freezes the outcome identity, exact design versions, Task, purpose,
+and artifact it examined.
+Reviewer observations are advisory. The caller accepts, rejects, rescopes,
+defers, or requests evidence with a reason.
+
+Completion is computed from the current Work boundary. Unrelated Tasks, Phases,
+reviews, proofs, or Evidence do not become completion conditions.
+
+## Project memory
+
+State is stored in `.agent-workbench/state.sqlite3`. Do not edit it directly.
+The repository using Agent Workbench controls all Git treatment of
+`.agent-workbench`.

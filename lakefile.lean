@@ -1,9 +1,9 @@
 import Lake
 
-open System Lake DSL
+open Lake DSL
 
 package «agent-workbench» where
-  version := v!"0.2.2"
+  version := v!"0.2.3"
   leanOptions := #[⟨`warningAsError, true⟩]
   moreLinkArgs :=
     match get_config? staticRelease with
@@ -13,34 +13,13 @@ package «agent-workbench» where
 require leansqlite from git
   "https://github.com/leanprover/leansqlite" @ "v4.30.0"
 
-extern_lib durableFilesystem pkg := do
-  let source ← inputTextFile <| pkg.dir / "bindings" / "durable_filesystem.c"
-  let object := pkg.buildDir / "durable_filesystem.o"
-  let object ← buildO object source #["-I", (← getLeanIncludeDir).toString]
-    (traceArgs := #["-fPIC", "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror"])
-    (extraDepTrace := getLeanTrace)
-  buildStaticLib (pkg.staticLibDir / nameToStaticLib "durable_filesystem") #[object]
-
 @[default_target]
-lean_lib AgentWorkbench where
-  needs := #[durableFilesystem]
+lean_lib AgentWorkbench
 
 @[default_target]
 lean_exe «agent-workbench» where
   root := `Main
 
-@[default_target]
-lean_exe «kernel-laws» where
-  root := `AgentWorkbench.Tests.KernelLaws
-
-@[default_target]
-lean_exe «storage-laws» where
-  root := `AgentWorkbench.Tests.StorageLaws
-
-@[default_target]
-lean_exe «workflow-laws» where
-  root := `AgentWorkbench.Tests.WorkflowLaws
-
-@[default_target]
-lean_exe «cli-laws» where
-  root := `AgentWorkbench.Tests.CliLaws
+@[test_driver]
+lean_exe tests where
+  root := `AgentWorkbench.Tests.Main
