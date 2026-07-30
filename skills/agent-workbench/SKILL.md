@@ -57,7 +57,11 @@ implements accepted design. Phase assignment is optional presentation only and
 never affects readiness or completion.
 
 Each accepted DesignItem selects `formal`, `evidence`, `mixed`, or `none`.
-For non-formal observations, use `add-evidence` then `record-evidence`.
+For non-formal observations, use `add-evidence` then `record-evidence`. When
+the same Evidence key is selected by more than one Design, supply the optional
+Design key to both operations; Workbench binds currentness to that exact
+Design basis. `status` and `next` render that Design selector whenever it is
+needed, so do not guess between same-key obligations.
 
 For formal assurance:
 
@@ -73,7 +77,9 @@ For formal assurance:
 5. Add the implementation Task. The verified result selected by
    `preview-formal` remains reusable for that exact accepted design.
 6. If a declared product surface later changes, run
-   `formal-check <assurance-key>` again. It reads the selected artifacts from
+   `formal-check <assurance-key> [design-key]` again. Supply the Design key
+   when more than one current Design uses the same assurance key. It reads
+   the selected artifacts from
    project state; the caller cannot substitute a different target at check time.
 
 `formal-check` is the only public route that can produce a formal result. It
@@ -85,13 +91,18 @@ adapters.
 When the oracle and product disagree, `preview-formal` records and presents the
 counterexample instead of discarding it. The checked formal meaning can then be
 reviewed and accepted before the product is corrected. Work completion remains
-blocked until `formal-check` observes passing product conformance.
+blocked until `formal-check` observes passing product conformance. An adapter
+timeout, process failure, malformed JSON, or output-limit failure is recorded
+as an execution failure, never as a semantic counterexample. An oracle failure
+produces no reviewable formal result.
 
 If a repository change is outside every declared implementation surface, do
 not rerun unrelated proofs merely because some file changed. Request a bounded
 `reuse` Review over the changed artifact to decide whether the surface
 declaration remains complete. A clean reuse decision preserves the existing
 formal result and Review identities; uncertainty is limited to that binding.
+A stale binding makes only its assurance claim pending; `status`, `next`, and
+unrelated project work remain available.
 
 ## Review and interruption
 
@@ -101,11 +112,29 @@ requires necessity, why a simpler option is insufficient, bounded scope, and
 maintenance cost through `adopt-complex-review-proposal`. Ordinary proposals
 use `adopt-review-proposal`; in both cases the caller owns adoption.
 
+Keep reviewer execution provenance distinct:
+
+- Resume an existing reviewer context only to continue the same Review lineage,
+  such as completing an interrupted inspection or explaining its observations.
+- A requested fresh Review uses a different reviewer execution with no inherited
+  implementation or prior-Review context. Do not resume a prior reviewer and
+  record that result as fresh.
+- Verification by a resumed reviewer may confirm its earlier observation, but
+  it does not replace a required fresh Review of the corrected exact artifact.
+
+Workbench records the exact Review scope and reviewer identity; it cannot
+inspect an agent runtime's hidden context. The operating agent must preserve
+this distinction when it starts or resumes the external reviewer.
+
 Use `correct-review` with the intended outcome, Task, and artifact to supersede
 a mistaken target without relinking history.
-Use `interrupt` for urgent work and `return` to restore the saved outcome.
+Use `interrupt` for urgent work and finish its selected boundary before using
+`return` to restore the saved outcome.
 If a saved assumption changed, use `replan-return` with the caller's selected
 outcome and reason; silent retargeting is rejected.
+The caller may also use that explicit, reasoned operation to replace a pending
+return plan before the interrupting Work is complete; ordinary `return` cannot
+abandon unfinished Work.
 Use `start-work` and `switch-work` for independent work without an automatic
 return plan.
 

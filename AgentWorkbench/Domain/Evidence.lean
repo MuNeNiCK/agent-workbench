@@ -111,6 +111,33 @@ structure FormalResult where
   previewIdentity : String
 deriving DecidableEq, Repr, BEq
 
+structure FormalResultIdentity where
+  key : String
+  design : DesignRef
+  previewIdentity : String
+deriving DecidableEq, Repr, BEq
+
+def FormalResult.identity (result : FormalResult) : FormalResultIdentity :=
+  { key := result.spec.key
+    design := result.spec.design
+    previewIdentity := result.previewIdentity }
+
+inductive ConformanceOutcome
+  | notSelected
+  | conformant
+  | counterexample
+  | executionFailure
+deriving DecidableEq, Repr, BEq
+
+def FormalResult.conformanceOutcome
+    (result : FormalResult) : ConformanceOutcome :=
+  match result.spec.adapter, result.conformancePassed with
+  | none, none => .notSelected
+  | some _, some true => .conformant
+  | some _, some false => .counterexample
+  | some _, none => .executionFailure
+  | none, some _ => .executionFailure
+
 def FormalResult.currentFor (result : FormalResult)
     (currentSpec : FormalSpec) (currentDesign : List DesignRef) : Bool :=
   result.spec == currentSpec &&
@@ -126,14 +153,14 @@ def FormalResult.currentFor (result : FormalResult)
         currentSpec.adapter, result.conformancePassed with
     | some _, some artifact, none, none => !artifact.isEmpty
     | some _, some artifact, some _, some _ => !artifact.isEmpty
+    | some _, some artifact, some _, none => !artifact.isEmpty
     | _, _, _, _ => false
 
 def FormalResult.conformsFor (result : FormalResult)
     (currentSpec : FormalSpec) (currentDesign : List DesignRef) : Bool :=
   result.currentFor currentSpec currentDesign &&
-    match currentSpec.adapter, result.conformancePassed with
-    | none, none => true
-    | some _, some passed => passed
-    | _, _ => false
+    match result.conformanceOutcome with
+    | .notSelected | .conformant => true
+    | .counterexample | .executionFailure => false
 
 end AgentWorkbench.Domain.Evidence

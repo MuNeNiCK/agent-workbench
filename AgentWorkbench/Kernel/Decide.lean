@@ -137,34 +137,103 @@ def affectedDesigns (state : State) : List AffectedDesign :=
 def currentDesignRefs (state : State) : List DesignRef :=
   (currentDesignItems state).map (·.ref)
 
-private def latestUnacceptedFormalDesign? (state : State) (key : String) :
-    Option Design.Item :=
-  state.design.designItems.reverse.find? fun item =>
-    item.authority == .unaccepted &&
-      item.assurance.obligations.any fun obligation =>
-        obligation.key == key && obligation.method == .formal
+private def formalDesignSelectable (state : State) (assuranceKey : String)
+    (design : DesignRef) : Bool :=
+  (currentDesignRefs state).contains design ||
+    (state.design.designItems.reverse.find? (·.ref.key == design.key)
+      |>.any fun item =>
+        item.ref == design &&
+          item.authority == .unaccepted &&
+          item.assurance.obligations.any fun obligation =>
+              obligation.key == assuranceKey &&
+              obligation.method == .formal)
+
+def formalSpecCurrent (state : State) (spec : Evidence.FormalSpec) : Bool :=
+  state.formalSpecs.reverse.find? (fun candidate =>
+    candidate.key == spec.key && candidate.design == spec.design)
+    |>.any (· == spec)
 
 def selectedFormalSpecs (state : State) (key : String) :
     List Evidence.FormalSpec :=
-  let matching := state.formalSpecs.filter (·.key == key)
-  let accepted := matching.filter fun spec =>
-    (currentDesignRefs state).contains spec.design
-  match latestUnacceptedFormalDesign? state key with
-  | none => accepted
-  | some candidate =>
-      let proposed := matching.filter (·.design == candidate.ref)
-      if proposed.isEmpty then accepted else proposed
+  state.formalSpecs.filter fun spec =>
+    spec.key == key &&
+      formalSpecCurrent state spec &&
+      formalDesignSelectable state key spec.design
+
+def selectedFormalSpecsForDesign (state : State) (key designKey : String) :
+    List Evidence.FormalSpec :=
+  let candidates :=
+    (selectedFormalSpecs state key).filter (·.design.key == designKey)
+  let selectedAccepted :=
+    state.work.find? (·.ref == state.focus.work) |>.bind fun work =>
+      work.completionBoundary.findSome? fun member =>
+        match member.target, member.basis with
+        | .assurance selectedKey, .design [accepted] =>
+            if selectedKey == key && accepted.ref.key == designKey then
+              some accepted.ref
+            else
+              none
+        | _, _ => none
+  match selectedAccepted with
+  | some design => candidates.filter (·.design == design)
+  | none =>
+      let accepted := candidates.filter fun spec =>
+        (currentDesignRefs state).contains spec.design
+      if !accepted.isEmpty then accepted
+      else
+        let latestUnaccepted :=
+          state.design.designItems.reverse.find? fun item =>
+            item.ref.key == designKey &&
+              item.authority == .unaccepted &&
+              item.assurance.obligations.any fun obligation =>
+                obligation.key == key && obligation.method == .formal
+        match latestUnaccepted with
+        | some item => candidates.filter (·.design == item.ref)
+        | none => []
+
+def selectedFormalSpecsForCompletion (state : State) (key : String) :
+    List Evidence.FormalSpec :=
+  match state.work.find? (·.ref == state.focus.work) with
+  | none => []
+  | some work =>
+      work.completionBoundary.filterMap fun member =>
+        match member.target, member.basis with
+        | .assurance selectedKey, .design [accepted] =>
+            if selectedKey != key then none
+            else
+              state.formalSpecs.reverse.find? fun spec =>
+                spec.key == key && spec.design == accepted.ref &&
+                  formalSpecCurrent state spec &&
+                  formalDesignSelectable state key spec.design
+        | _, _ => none
+
+def selectedFormalSpecsForPreview (state : State) (key designKey : String) :
+    List Evidence.FormalSpec :=
+  let candidates :=
+    (selectedFormalSpecs state key).filter (·.design.key == designKey)
+  let latestUnaccepted :=
+    state.design.designItems.reverse.find? fun item =>
+      item.ref.key == designKey &&
+        item.authority == .unaccepted &&
+        item.assurance.obligations.any fun obligation =>
+          obligation.key == key && obligation.method == .formal
+  match latestUnaccepted with
+  | some item => candidates.filter (·.design == item.ref)
+  | none => candidates
+
+def latestFormalResultForSpec? (state : State)
+    (spec : Evidence.FormalSpec) : Option Evidence.FormalResult :=
+  state.formalResults.reverse.find? fun result =>
+    result.currentFor spec [spec.design]
 
 def formalResultsRequiringVerification (state : State) :
-    List Evidence.FormalResult :=
-  let current := currentDesignRefs state
-  let activeSpecs := state.formalSpecs.filter fun spec =>
-    current.contains spec.design ||
-      (latestUnacceptedFormalDesign? state spec.key).any
-        (·.ref == spec.design)
-  activeSpecs.filterMap fun spec =>
-    state.formalResults.reverse.find? fun result =>
-      result.currentFor spec [spec.design]
+  List Evidence.FormalResult :=
+  state.formalSpecs.filterMap fun spec =>
+    if formalSpecCurrent state spec &&
+        formalDesignSelectable state spec.key spec.design then
+      latestFormalResultForSpec? state spec
+    else
+      none
 
 def workCurrent (state : State) (work : WorkRef) : Bool :=
   state.work.any (·.ref == work) &&
@@ -183,6 +252,12 @@ def evidenceSpecCurrent (state : State) (spec : Evidence.Spec) : Bool :=
   state.evidenceSpecs.any (·.ref == spec.ref) &&
     !state.evidenceSpecs.any fun candidate =>
       candidate.ref.key == spec.ref.key &&
+        (match spec.basis, candidate.basis with
+        | .design prior, .design next =>
+            prior.map (·.ref.key) == next.map (·.ref.key)
+        | .workBoundary prior, .workBoundary next =>
+            prior.key == next.key
+        | _, _ => false) &&
         candidate.ref.version > spec.ref.version
 
 def reviewScopeCurrent (state : State) (scope : Review.Scope) : Bool :=
@@ -215,6 +290,7 @@ def reviewRequestCurrent (state : State) (request : Review.Request) : Bool :=
   state.reviewRequests.any (·.ref == request.ref) &&
     !(state.reviewRequests.any fun candidate =>
       candidate.ref.key == request.ref.key &&
+        candidate.scope.work.key == request.scope.work.key &&
         candidate.ref.version > request.ref.version) &&
     reviewScopeCurrent state request.scope
 
@@ -231,22 +307,43 @@ def evidenceResultCurrent (state : State) (result : Evidence.Result) : Bool :=
       (state.work.filterMap fun work =>
         if workCurrent state work.ref then some work.ref else none)
 
-def assuranceSatisfied (state : State) (key : String) : Bool :=
-  (Evidence.selectedAssurance (currentDesignItems state)).any fun assurance =>
-    assurance.key == key &&
-      assurance.basis.wellFormed &&
+def selectedAssuranceForBasis? (state : State) (key : String)
+    (basis : Work.DerivationBasis) : Option Evidence.AssuranceSpec :=
+  (Evidence.selectedAssurance (currentDesignItems state)).find? fun assurance =>
+    assurance.key == key && assurance.basis == basis
+
+def assuranceSatisfiedForBasis (state : State) (key : String)
+    (basis : Work.DerivationBasis)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Bool :=
+  (selectedAssuranceForBasis? state key basis).any fun assurance =>
+    basis.wellFormed &&
       match assurance.method with
       | .formal =>
-          state.formalResults.any fun result =>
-            result.spec.key == key &&
-              state.formalSpecs.any fun spec =>
-                spec.key == key &&
-                  result.conformsFor spec (currentDesignRefs state)
+          match basis with
+          | .design [selected] =>
+              (state.formalSpecs.reverse.find? fun spec =>
+                spec.key == key && spec.design == selected.ref &&
+                  formalSpecCurrent state spec)
+                |>.bind (latestFormalResultForSpec? state)
+                |>.any fun result =>
+                  !staleFormalResultIdentities.contains result.identity &&
+                    result.conformsFor result.spec (currentDesignRefs state)
+          | _ => false
       | .evidence =>
           state.evidenceResults.any fun result =>
             result.spec.ref.key == key &&
+              result.spec.basis == basis &&
               result.passed &&
               evidenceResultCurrent state result
+
+def assuranceSatisfied (state : State) (key : String)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Bool :=
+  (Evidence.selectedAssurance (currentDesignItems state)).any fun assurance =>
+    assurance.key == key &&
+      assuranceSatisfiedForBasis state key assurance.basis
+        staleFormalResultIdentities
 
 def reviewResolved (state : State) (review : ReviewRef) : Bool :=
   match state.reviewRequests.find? (·.ref == review) with
@@ -257,7 +354,9 @@ def reviewResolved (state : State) (review : ReviewRef) : Bool :=
           result.resolvedBy request state.reviewDispositions
 
 def completionMemberSatisfied (state : State) (work : WorkRef)
-    (member : Work.CompletionMember) : Bool :=
+    (member : Work.CompletionMember)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Bool :=
   member.wellFormedFor work &&
     basisCurrent state member.basis &&
     match member.target with
@@ -268,7 +367,9 @@ def completionMemberSatisfied (state : State) (work : WorkRef)
             candidate.state == .satisfied &&
             candidate.wellFormed &&
             taskCurrent state candidate
-    | .assurance key => assuranceSatisfied state key
+    | .assurance key =>
+        assuranceSatisfiedForBasis state key member.basis
+          staleFormalResultIdentities
     | .reviewResolved review => reviewResolved state review
     | .externalObservation evidence =>
         state.evidenceResults.any fun result =>
@@ -276,7 +377,9 @@ def completionMemberSatisfied (state : State) (work : WorkRef)
             result.passed &&
             evidenceResultCurrent state result
 
-def missingCompletion (state : State) (work : WorkRef) :
+def missingCompletion (state : State) (work : WorkRef)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
     List Work.CompletionMember :=
   match state.work.find? (·.ref == work) with
   | none => []
@@ -284,16 +387,19 @@ def missingCompletion (state : State) (work : WorkRef) :
       if workCurrent state selected.ref && selected.wellFormed then
         selected.completionBoundary.filter fun member =>
           !completionMemberSatisfied state selected.ref member
+            staleFormalResultIdentities
       else
         []
 
-def currentlyComplete (state : State) (work : WorkRef) : Bool :=
+def currentlyComplete (state : State) (work : WorkRef)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Bool :=
   workCurrent state work &&
     (state.work.find? (·.ref == work)).any fun selected =>
       selected.wellFormed &&
-        (missingCompletion state work).isEmpty
+        (missingCompletion state work staleFormalResultIdentities).isEmpty
 
-private def rebaseBoundary (prior next : WorkRef)
+def rebaseBoundary (prior next : WorkRef)
     (member : Work.CompletionMember) : Work.CompletionMember :=
   match member.basis with
   | .workBoundary selected =>
@@ -303,7 +409,7 @@ private def rebaseBoundary (prior next : WorkRef)
         member
   | .design _ => member
 
-private def reviseFocusedWork (state : State)
+def reviseFocusedWork (state : State)
     (change :
       WorkRef → List Work.CompletionMember →
         List Work.CompletionMember) :
@@ -336,88 +442,126 @@ private def reviseFocusedWork (state : State)
                 focus := { state.focus with work := nextRef } },
               nextRef)
 
+def completionMemberReplacedByDesigns
+    (selected : List Design.AcceptedRef)
+    (member : Work.CompletionMember) : Bool :=
+  match member.target, member.basis with
+  | .assurance _, .design current =>
+      current.any fun item =>
+        selected.any (·.ref.key == item.ref.key)
+  | _, _ => false
+
+def retainUnreplacedCompletionMembers
+    (current : List Work.CompletionMember)
+    (selected : List Design.AcceptedRef) :
+    List Work.CompletionMember :=
+  current.filter fun member =>
+    !completionMemberReplacedByDesigns selected member
+
+def completionBoundaryForAddedTask (state : State) (selected : WorkRef)
+    (boundary : List Work.CompletionMember) (taskRef : TaskRef)
+    (designScope : List Design.AcceptedRef)
+    (basis : Work.DerivationBasis) : List Work.CompletionMember :=
+  let currentBoundary := boundary.filter fun member =>
+    match member.target with
+    | .taskSatisfied prior =>
+        state.tasks.find? (·.ref == prior) |>.any (taskCurrent state)
+    | _ => true
+  let assuranceMembers := designScope.flatMap fun accepted =>
+    match (currentDesignItems state).find? (·.ref == accepted.ref) with
+    | none => []
+    | some item =>
+        item.assurance.obligations.map fun obligation =>
+          { target := Work.CompletionTarget.assurance obligation.key
+            basis := Work.DerivationBasis.design [accepted] }
+  let retained :=
+    retainUnreplacedCompletionMembers currentBoundary designScope
+  { target := .taskSatisfied taskRef
+    basis :=
+      match basis with
+      | .workBoundary _ => .workBoundary selected
+      | .design items => .design items } :: assuranceMembers ++ retained
+
+def reviseFocusedWorkForTask (state : State) (taskRef : TaskRef)
+    (designScope : List Design.AcceptedRef)
+    (basis : Work.DerivationBasis) : Except String (State × WorkRef) :=
+  reviseFocusedWork state fun selected boundary =>
+    completionBoundaryForAddedTask state selected boundary taskRef
+      designScope basis
+
+def taskForAddedDesign (taskRef : TaskRef) (work : WorkRef)
+    (description : String) (basis : Work.DerivationBasis)
+    (designScope : List Design.AcceptedRef) : Work.Task :=
+  { ref := taskRef
+    work
+    description
+    basis :=
+      match basis with
+      | .workBoundary _ => .workBoundary work
+      | .design items => .design items
+    designScope
+    phase := none
+    state := .pending }
+
 def addTaskForDesign (state : State) (description : String)
-    (designKeys : List String) :
-    Except String State := do
-  if description.isEmpty then
-    throw "A task description is required."
+    (designKeys : List String) : Except String State :=
   let key := s!"task-{state.tasks.length + 1}"
   let taskRef : TaskRef := { key, version := 0 }
   let designScope :=
     (currentDesignItems state).filterMap fun item =>
       if designKeys.contains item.ref.key then item.acceptedRef? else none
-  if designScope.length != designKeys.eraseDups.length then
-    throw "One or more selected design statements are not accepted and current."
   let basis : Work.DerivationBasis :=
     if designScope.isEmpty then .workBoundary state.focus.work
     else .design designScope
-  let (revised, work) ← reviseFocusedWork state fun selected boundary =>
-    let currentBoundary := boundary.filter fun member =>
-      match member.target with
-      | .taskSatisfied prior =>
-          state.tasks.find? (·.ref == prior) |>.any (taskCurrent state)
-      | _ => true
-    let assuranceMembers := designScope.flatMap fun accepted =>
-      match (currentDesignItems state).find? (·.ref == accepted.ref) with
-      | none => []
-      | some item =>
-          item.assurance.obligations.map fun obligation =>
-            { target := Work.CompletionTarget.assurance obligation.key
-              basis := Work.DerivationBasis.design [accepted] }
-    let retained := currentBoundary.filter fun member =>
-      match member.target with
-      | .assurance key =>
-          !assuranceMembers.any fun assurance =>
-            assurance.target == .assurance key
-      | _ => true
-    { target := .taskSatisfied taskRef
-      basis :=
-        match basis with
-        | .workBoundary _ => .workBoundary selected
-        | .design items => .design items } :: assuranceMembers ++ retained
-  let task : Work.Task :=
-    { ref := taskRef
-      work
-      description
-      basis :=
-        match basis with
-        | .workBoundary _ => .workBoundary work
-        | .design items => .design items
-      designScope
-      phase := none
-      state := .pending }
-  if !task.wellFormed then
-    throw "The task is not valid for the current outcome."
-  pure
-    { revised with
-      tasks := revised.tasks ++ [task]
-      focus := { revised.focus with task := some taskRef } }
+  if description.isEmpty then
+    .error "A task description is required."
+  else if designScope.length != designKeys.eraseDups.length then
+    .error "One or more selected design statements are not accepted and current."
+  else
+    match reviseFocusedWorkForTask state taskRef designScope basis with
+    | .error message => .error message
+    | .ok (revised, work) =>
+        let task :=
+          taskForAddedDesign taskRef work description basis designScope
+        if !task.wellFormed then
+          .error "The task is not valid for the current outcome."
+        else
+          .ok
+            { revised with
+              tasks := revised.tasks ++ [task]
+              focus := { revised.focus with task := some taskRef } }
 
 def addTask (state : State) (description : String) : Except String State :=
   addTaskForDesign state description []
 
-def finishCurrentTask (state : State) : Except String State := do
-  let candidates := state.tasks.filter fun task =>
+def pendingTaskForRef? (state : State) (selected : TaskRef) :
+    Option Work.Task :=
+  state.tasks.find? fun task =>
     task.work.key == state.focus.work.key &&
       task.state == .pending &&
-      taskCurrent state task
-  let selected ← match state.focus.task with
-    | some task =>
-        match candidates.find? (·.ref == task) with
-        | some current => pure current
-        | none => throw "The selected task is not pending."
-    | none =>
-        match candidates with
-        | [task] => pure task
-        | [] => throw "No task is pending for the current outcome."
-        | _ => throw "More than one task is pending; select one task first."
-  pure
-    { state with
-      tasks := state.tasks.map fun task =>
-        if task.ref == selected.ref then
-          { task with state := .satisfied }
-        else
-          task }
+      taskCurrent state task &&
+      task.ref == selected
+
+def taskSelectedForFinish? (state : State) : Option Work.Task :=
+  let selectedMissingTask :=
+    (missingCompletion state state.focus.work).findSome? fun member =>
+      match member.target with
+      | .taskSatisfied task => some task
+      | _ => none
+  selectedMissingTask.bind fun selected =>
+    pendingTaskForRef? state selected
+
+def finishCurrentTask (state : State) : Except String State :=
+  match taskSelectedForFinish? state with
+  | none => .error "No task is pending for the current outcome."
+  | some selected =>
+      .ok
+        { state with
+          tasks := state.tasks.map fun task =>
+            if task.ref == selected.ref then
+              { task with state := .satisfied }
+            else
+              task }
 
 private def taskByDescription (state : State)
     (description : String) : Except String Work.Task :=
@@ -474,7 +618,8 @@ def orderPhase (state : State) (name : String) (displayOrder : Nat) :
 
 def addEvidence (state : State) (key observation method environment : String)
     (inputs : List String)
-    (acceptanceCondition trustedBoundary artifactIdentity : String) :
+    (acceptanceCondition trustedBoundary artifactIdentity : String)
+    (designKey : Option String := none) :
     Except String State := do
   if [key, observation, method, environment, acceptanceCondition,
       trustedBoundary, artifactIdentity].any String.isEmpty then
@@ -486,11 +631,25 @@ def addEvidence (state : State) (key observation method environment : String)
   let selectedWork ← match state.work.find? (·.ref == state.focus.work) with
     | some work => pure work
     | none => throw "The current outcome does not exist."
-  let selectedAssurance := selectedWork.completionBoundary.findSome? fun member =>
+  let selectedAssurances := selectedWork.completionBoundary.filterMap fun member =>
     match member.target, member.basis with
     | .assurance selectedKey, .design accepted =>
-        if selectedKey == key then some accepted else none
+        if selectedKey == key &&
+            designKey.all fun selected =>
+              accepted.any (·.ref.key == selected) then
+          some accepted
+        else
+          none
     | _, _ => none
+  let selectedAssurance ← match selectedAssurances with
+    | [accepted] => pure (some accepted)
+    | [] =>
+        if designKey.isSome then
+          throw "No selected Evidence obligation matches that Design."
+        else
+          pure none
+    | _ =>
+        throw "The Evidence obligation is ambiguous; select its Design key."
   let (revised, basis) ← match selectedAssurance with
     | some accepted =>
         pure (state, Work.DerivationBasis.design accepted)
@@ -517,20 +676,60 @@ def addEvidence (state : State) (key observation method environment : String)
     throw "The evidence description is invalid."
   return { revised with evidenceSpecs := revised.evidenceSpecs ++ [spec] }
 
+def evidenceSpecsSelectedByFocusedBoundary (state : State) (key : String)
+    (designKey : Option String := none) : List Evidence.Spec :=
+  let selectedWork := state.work.find? fun work =>
+    work.ref == state.focus.work && workCurrent state work.ref
+  selectedWork.toList.flatMap fun selectedWork =>
+  let selectedEvidenceRefs :=
+    selectedWork.completionBoundary.filterMap fun member =>
+      match member.target with
+      | .externalObservation evidence =>
+          if evidence.key == key && designKey.isNone then some evidence else none
+      | _ => none
+  let selectedEvidenceBases :=
+    selectedWork.completionBoundary.filterMap fun member =>
+      match member.target with
+      | .assurance selectedKey =>
+          if (designKey.isSome || selectedEvidenceRefs.isEmpty) &&
+              selectedKey == key &&
+              designKey.all fun selected =>
+                match member.basis with
+                | .design accepted =>
+                    accepted.any (·.ref.key == selected)
+                | .workBoundary _ => false then
+            match selectedAssuranceForBasis? state key member.basis with
+            | some assurance =>
+                if assurance.method == .evidence then some member.basis else none
+            | none => none
+          else
+            none
+      | _ => none
+  state.evidenceSpecs.filter fun spec =>
+    spec.ref.key == key &&
+      evidenceSpecCurrent state spec &&
+      (selectedEvidenceRefs.contains spec.ref ||
+        selectedEvidenceBases.contains spec.basis)
+
 def recordEvidence (state : State) (key observedValue : String)
-    (passed : Bool) : Except String State := do
+    (passed : Bool) (designKey : Option String := none) : Except String State :=
   if observedValue.isEmpty then
-    throw "An observed value is required."
-  let candidates := state.evidenceSpecs.filter fun spec =>
-    spec.ref.key == key && evidenceSpecCurrent state spec
-  let spec ← match candidates with
-    | [spec] => pure spec
-    | [] => throw "No current evidence description has that name."
-    | _ => throw "The evidence name is ambiguous."
-  let result : Evidence.Result := { spec, observedValue, passed }
-  if !result.wellFormed then
-    throw "The evidence result is invalid."
-  return { state with evidenceResults := state.evidenceResults ++ [result] }
+    .error "An observed value is required."
+  else if !(state.work.any fun work =>
+      work.ref == state.focus.work && workCurrent state work.ref) then
+    .error "The current outcome does not exist or has changed."
+  else
+    match evidenceSpecsSelectedByFocusedBoundary state key designKey with
+    | [spec] =>
+        let result : Evidence.Result := { spec, observedValue, passed }
+        if !result.wellFormed then
+          .error "The evidence result is invalid."
+        else
+          .ok
+            { state with
+              evidenceResults := state.evidenceResults ++ [result] }
+    | [] => .error "No current evidence description has that name."
+    | _ => .error "The evidence name is ambiguous."
 
 def selectFormal (state : State) (key designKey : String)
     (oracle : Option String)
@@ -566,63 +765,110 @@ def selectFormal (state : State) (key designKey : String)
     throw "The formal assurance description is incomplete."
   if state.formalSpecs.any (· == spec) then
     return state
+  if state.formalSpecs.any fun selected =>
+      selected.key == spec.key && selected.design == spec.design then
+    throw "That exact Design already has a different formal selection; record a successor Design to change its formal scope."
   return { state with formalSpecs := state.formalSpecs ++ [spec] }
 
-def recordFormalResult (state : State) (key toolIdentity : String)
-    (oracleArtifact : Option String)
-    (checkedClosure checkedArtifacts : List String)
-    (conformancePassed : Option Bool)
-    (semanticPreview previewIdentity : String) : Except String State := do
-  let candidates := selectedFormalSpecs state key
-  let spec ← match candidates with
-    | [spec] => pure spec
-    | [] => throw "No current formal assurance has that name."
-    | _ => throw "The formal assurance name is ambiguous."
-  let result : Evidence.FormalResult :=
-    { spec
-      toolIdentity
-      checkedClosure
-      checkedArtifacts
-      oracleArtifact
-      conformancePassed
-      semanticPreview
-      previewIdentity }
+def formalSpecsSelectedForRecording (state : State) (key : String)
+    (designKey : Option String := none)
+    (designVersion : Option Nat := none) : List Evidence.FormalSpec :=
+  match designKey, designVersion with
+  | some selected, some version =>
+      state.formalSpecs.filter fun spec =>
+        spec.key == key &&
+          spec.design == ({ key := selected, version } : DesignRef) &&
+          formalSpecCurrent state spec &&
+          formalDesignSelectable state key spec.design
+  | some selected, none => selectedFormalSpecsForDesign state key selected
+  | none, _ => selectedFormalSpecs state key
+
+def formalSpecForRecording (state : State) (key : String)
+    (designKey : Option String := none)
+    (designVersion : Option Nat := none) :
+    Except String Evidence.FormalSpec :=
+  match formalSpecsSelectedForRecording state key designKey designVersion with
+  | [spec] => .ok spec
+  | [] => .error "No current formal assurance has that name."
+  | _ => .error "The formal assurance name is ambiguous."
+
+def validateFormalResultForRecording
+    (result : Evidence.FormalResult) : Except String Unit := do
+  let spec := result.spec
   if !spec.wellFormed then
     throw "The selected formal scope is invalid."
-  if toolIdentity.isEmpty then
+  if result.toolIdentity.isEmpty then
     throw "The formal tool identity is missing."
-  if semanticPreview.isEmpty || previewIdentity.isEmpty then
+  if result.semanticPreview.isEmpty || result.previewIdentity.isEmpty then
     throw "The formal meaning preview identity is missing."
-  if !spec.modules.all checkedClosure.contains then
+  if !spec.modules.all result.checkedClosure.contains then
     throw "The checked module closure does not contain every selected module."
-  if checkedArtifacts.isEmpty ||
-      !checkedArtifacts.all (fun artifact => !artifact.isEmpty) then
+  if result.checkedArtifacts.isEmpty ||
+      !result.checkedArtifacts.all (fun artifact => !artifact.isEmpty) then
     throw "The checked formal artifact identity is incomplete."
-  match spec.oracle, oracleArtifact, spec.adapter, conformancePassed with
+  match spec.oracle, result.oracleArtifact, spec.adapter,
+      result.conformancePassed with
   | none, none, none, none => pure ()
   | some _, some artifact, none, none =>
       if artifact.isEmpty then throw "The checked oracle identity is missing."
   | some _, some artifact, some _, some _ =>
       if artifact.isEmpty then
         throw "The checked oracle identity is missing."
+  | some _, some artifact, some _, none =>
+      if artifact.isEmpty then
+        throw "The checked oracle identity is missing."
   | _, _, _, _ =>
       throw "The formal result does not match the selected assurance method."
-  if state.formalResults.contains result then
-    return state
-  return { state with formalResults := state.formalResults ++ [result] }
+
+def appendFormalResult (state : State)
+    (result : Evidence.FormalResult) : State :=
+  -- A repeated observation is still a new verification event. Move an
+  -- identical historical value to the end so latest-result selection cannot
+  -- leave a newer counterexample or execution failure authoritative.
+  {
+    state with
+    formalResults := state.formalResults.filter (· != result) ++ [result]
+  }
+
+def recordFormalResult (state : State) (key toolIdentity : String)
+    (oracleArtifact : Option String)
+    (checkedClosure checkedArtifacts : List String)
+    (conformancePassed : Option Bool)
+    (semanticPreview previewIdentity : String)
+    (designKey : Option String := none)
+    (designVersion : Option Nat := none) : Except String State :=
+  match formalSpecForRecording state key designKey designVersion with
+  | .error message => .error message
+  | .ok spec =>
+      let result : Evidence.FormalResult :=
+        { spec
+          toolIdentity
+          checkedClosure
+          checkedArtifacts
+          oracleArtifact
+          conformancePassed
+          semanticPreview
+          previewIdentity }
+      match validateFormalResultForRecording result with
+      | .error message => .error message
+      | .ok _ => .ok (appendFormalResult state result)
 
 private def designReviewArtifacts? (state : State)
-    (candidate : Design.Item) : Option (List String) :=
+    (candidate : Design.Item)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
+    Option (List String) :=
   let formalKeys := candidate.assurance.obligations.filterMap fun obligation =>
     if obligation.method == .formal then some obligation.key else none
   if formalKeys.isEmpty then
     some [candidate.statement]
   else
     let results := formalKeys.filterMap fun key =>
-      state.formalResults.reverse.find? fun result =>
-        result.spec.key == key &&
-          result.spec.design == candidate.ref &&
-          result.currentFor result.spec [candidate.ref]
+      (state.formalSpecs.find? fun spec =>
+        spec.key == key && spec.design == candidate.ref)
+        |>.bind (latestFormalResultForSpec? state)
+        |>.filter fun result =>
+          !staleFormalResultIdentities.contains result.identity
     if results.length != formalKeys.length then
       none
     else
@@ -678,7 +924,9 @@ def recordDesign (state : State) (source : Source) (key statement : String)
 
 def acceptDesign (state : State) (key : String)
     (decision : CallerDecision)
-    (complexity : Option Design.ComplexityRationale := none) :
+    (complexity : Option Design.ComplexityRationale := none)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
     Except String State := do
   let candidate ← match
       (state.design.designItems.filter (·.ref.key == key)).reverse.head? with
@@ -691,7 +939,8 @@ def acceptDesign (state : State) (key : String)
             throw "That design statement is caller-retired."
     | none => throw "No design statement has that name."
   let meaningReviewed :=
-    (designReviewArtifacts? state candidate).any fun artifacts =>
+    (designReviewArtifacts? state candidate
+      staleFormalResultIdentities).any fun artifacts =>
       state.reviewRequests.any fun request =>
         request.scope.purpose == .designMeaning &&
           request.scope.design == [candidate.ref] &&
@@ -702,12 +951,11 @@ def acceptDesign (state : State) (key : String)
   let formalReady :=
     candidate.assurance.obligations.all fun obligation =>
       if obligation.method == .formal then
-        state.formalSpecs.any fun spec =>
-          spec.key == obligation.key &&
-            spec.design == candidate.ref &&
-            state.formalResults.any fun result =>
-              result.spec == spec &&
-                result.currentFor spec [candidate.ref]
+        (state.formalSpecs.find? fun spec =>
+          spec.key == obligation.key && spec.design == candidate.ref)
+          |>.bind (latestFormalResultForSpec? state)
+          |>.any fun result =>
+            !staleFormalResultIdentities.contains result.identity
       else
         true
   if !formalReady then
@@ -813,7 +1061,9 @@ def requestReview (state : State) (key artifact : String)
     throw "The review scope is invalid."
   return { revised with reviewRequests := revised.reviewRequests ++ [request] }
 
-def requestDesignReview (state : State) (key designKey : String) :
+def requestDesignReview (state : State) (key designKey : String)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
     Except String State := do
   if key.isEmpty || designKey.isEmpty then
     throw "The design review request is incomplete."
@@ -827,7 +1077,8 @@ def requestDesignReview (state : State) (key designKey : String) :
             throw "That design statement is already caller-accepted."
         | .retiredByCaller _ =>
             throw "That design statement is caller-retired."
-  let artifacts ← match designReviewArtifacts? state candidate with
+  let artifacts ← match
+      designReviewArtifacts? state candidate staleFormalResultIdentities with
     | some artifacts => pure artifacts
     | none =>
         throw "Run the proposed design's selected formal assurance before requesting its review."
@@ -854,56 +1105,78 @@ def requestDesignReview (state : State) (key designKey : String) :
     throw "The design review scope is invalid."
   return { revised with reviewRequests := revised.reviewRequests ++ [request] }
 
+def selectedReviewRequests (state : State) (reviewKey : String) :
+    List Review.Request :=
+  match state.work.find? (·.ref == state.focus.work) with
+  | none => []
+  | some work =>
+      if !workCurrent state work.ref then []
+      else
+        work.completionBoundary.filterMap fun member =>
+          match member.target with
+          | .reviewResolved review =>
+              if review.key != reviewKey then none
+              else
+                state.reviewRequests.find? fun request =>
+                  request.ref == review && reviewRequestCurrent state request
+          | _ => none
+
 def recordReviewResult (state : State) (reviewKey reviewer : String)
-    (observation : Review.Observation) : Except String State := do
-  let requests := state.reviewRequests.filter fun request =>
-    request.ref.key == reviewKey && reviewRequestCurrent state request
-  let request ← match requests with
-    | [request] => pure request
-    | [] => throw "No current review has that name."
-    | _ => throw "The review name is ambiguous."
-  let existing := state.reviewResults.find? (·.review == request.ref)
-  let result : Review.Result ← match existing with
-    | none =>
-        pure
+    (observation : Review.Observation) : Except String State :=
+  match selectedReviewRequests state reviewKey with
+  | [] => .error "No current review has that name."
+  | _ :: _ :: _ => .error "The review name is ambiguous."
+  | [request] =>
+      let existing := state.reviewResults.find? (·.review == request.ref)
+      let result : Except String Review.Result :=
+        match existing with
+        | none =>
+            .ok
+              { review := request.ref
+                scope := request.scope
+                reviewer
+                observations := [observation] }
+        | some result =>
+            if result.reviewer != reviewer then
+              .error "Additional observations must come from the same reviewer."
+            else if result.observations.any (·.key == observation.key) then
+              .error "That review observation already exists."
+            else
+              .ok
+                { result with
+                  observations := result.observations ++ [observation] }
+      match result with
+      | .error message => .error message
+      | .ok checked =>
+          if !checked.exactFor request then
+            .error "The review result does not match its requested scope."
+          else
+            let results :=
+              match existing with
+              | none => state.reviewResults ++ [checked]
+              | some prior =>
+                  state.reviewResults.map fun candidate =>
+                    if candidate == prior then checked else candidate
+            .ok { state with reviewResults := results }
+
+def recordCleanReview (state : State) (reviewKey reviewer : String) :
+    Except String State :=
+  match selectedReviewRequests state reviewKey with
+  | [request] =>
+      if state.reviewResults.any (·.review == request.ref) then
+        .error "A result already exists for that review scope."
+      else
+        let result : Review.Result :=
           { review := request.ref
             scope := request.scope
             reviewer
-            observations := [observation] }
-    | some result =>
-        if result.reviewer != reviewer then
-          throw "Additional observations must come from the same reviewer."
-        if result.observations.any (·.key == observation.key) then
-          throw "That review observation already exists."
-        pure { result with observations := result.observations ++ [observation] }
-  if !result.exactFor request then
-    throw "The review result does not match its requested scope."
-  let results :=
-    match existing with
-    | none => state.reviewResults ++ [result]
-    | some prior =>
-        state.reviewResults.map fun candidate =>
-          if candidate == prior then result else candidate
-  pure { state with reviewResults := results }
-
-def recordCleanReview (state : State) (reviewKey reviewer : String) :
-    Except String State := do
-  let requests := state.reviewRequests.filter fun request =>
-    request.ref.key == reviewKey && reviewRequestCurrent state request
-  let request ← match requests with
-    | [request] => pure request
-    | [] => throw "No current review has that name."
-    | _ => throw "The review name is ambiguous."
-  if state.reviewResults.any (·.review == request.ref) then
-    throw "A result already exists for that review scope."
-  let result : Review.Result :=
-    { review := request.ref
-      scope := request.scope
-      reviewer
-      observations := [] }
-  if !result.exactFor request then
-    throw "The clean review result does not match its requested scope."
-  pure { state with reviewResults := state.reviewResults ++ [result] }
+            observations := [] }
+        if !result.exactFor request then
+          .error "The clean review result does not match its requested scope."
+        else
+          .ok { state with reviewResults := state.reviewResults ++ [result] }
+  | [] => .error "No current review has that name."
+  | _ => .error "The review name is ambiguous."
 
 def recordReviewDisposition (state : State) (reviewKey observationKey : String)
     (decision : Review.Decision) (caller : CallerDecision)
@@ -912,8 +1185,8 @@ def recordReviewDisposition (state : State) (reviewKey observationKey : String)
     Except String State := do
   let results := state.reviewResults.filter fun result =>
     result.review.key == reviewKey &&
-      state.reviewRequests.any fun request =>
-        request.ref == result.review && reviewRequestCurrent state request
+      (selectedReviewRequests state reviewKey).any fun request =>
+        request.ref == result.review
   let result ← match results with
     | [result] => pure result
     | [] => throw "No current review result has that name."
@@ -936,9 +1209,13 @@ def recordReviewDisposition (state : State) (reviewKey observationKey : String)
 
 def adoptReviewProposal (state : State) (reviewKey observationKey
     successorKey : String) (caller : CallerDecision)
-    (complexity : Option Review.ComplexityRationale := none) :
+    (complexity : Option Review.ComplexityRationale := none)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
     Except String State := do
-  let state ← acceptDesign state successorKey caller complexity
+  let state ←
+    acceptDesign state successorKey caller complexity
+      staleFormalResultIdentities
   let successors :=
     (currentDesignItems state).filterMap fun item =>
       if item.ref.key == successorKey then item.acceptedRef? else none
@@ -1023,7 +1300,7 @@ def interrupt (state : State) (nextWork : WorkRef)
     match state.focus.returnPoint with
     | some _ =>
         .callerDecision
-          "Return to the saved outcome first, or explicitly replace the return plan."
+          "Return after finishing the interrupting outcome, or use replan-return with the caller's selected outcome and reason to replace the return plan."
     | none =>
         let selectedTask : Option Work.Task :=
           match state.focus.task with
@@ -1091,23 +1368,30 @@ inductive ReturnResult
   | invalid (reason : String)
 deriving DecidableEq, Repr, BEq
 
-def returnFromInterruption (state : State) : ReturnResult :=
+def returnFromInterruption (state : State)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : ReturnResult :=
   match state.focus.returnPoint with
   | none => .invalid "No interruption return point is pending."
   | some point =>
-      let changed := point.assumptions.filter fun assumption =>
-        match assumption with
-        | .design item => !(currentDesignRefs state).contains item
-        | .workBoundary work => !workCurrent state work
-      if changed.isEmpty then
-        .accepted
-          { state with
-            focus :=
-              { work := point.work
-                task := point.task
-                returnPoint := none } }
+      if !currentlyComplete state state.focus.work
+          staleFormalResultIdentities then
+        .invalid
+          "The interrupting outcome is not complete; finish its selected boundary before returning."
       else
-        .replanRequired changed
+        let changed := point.assumptions.filter fun assumption =>
+          match assumption with
+          | .design item => !(currentDesignRefs state).contains item
+          | .workBoundary work => !workCurrent state work
+        if changed.isEmpty then
+          .accepted
+            { state with
+              focus :=
+                { work := point.work
+                  task := point.task
+                  returnPoint := none } }
+        else
+          .replanRequired changed
 
 def replanReturnByOutcome (state : State) (outcome : String)
     (caller : CallerDecision) : Except String State := do
@@ -1123,10 +1407,21 @@ def replanReturnByOutcome (state : State) (outcome : String)
   let selectedTask :=
     state.tasks.reverse.find? fun task =>
       task.work.key == selected.ref.key && taskCurrent state task
+  let nextRef : WorkRef :=
+    { key := selected.ref.key, version := selected.ref.version + 1 }
+  let successor : Work.Unit :=
+    { selected with
+      ref := nextRef
+      completionBoundary :=
+        selected.completionBoundary.map (rebaseBoundary selected.ref nextRef)
+      authority := caller }
+  if !successor.wellFormed then
+    throw "The caller-selected return outcome is invalid."
   pure
     { state with
+      work := state.work ++ [successor]
       focus :=
-        { work := selected.ref
+        { work := nextRef
           task := selectedTask.map (·.ref)
           returnPoint := none } }
 
@@ -1190,7 +1485,10 @@ def correctReviewTarget (state : State)
                 basis := .workBoundary nextRef } :: withoutMistake
             else
               withoutMistake
-          { work with ref := nextRef, completionBoundary := boundary }
+          { work with
+            ref := nextRef
+            completionBoundary := boundary
+            authority := correction.caller }
         match successors.find? (·.ref.key == intendedWork.key) with
         | none => .invalid "The intended outcome could not be revised."
         | some intendedSuccessor =>
@@ -1268,14 +1566,18 @@ inductive NextAction
   | cannotAdvance (reason : String)
 deriving DecidableEq, Repr, BEq
 
-def nextAction (state : State) : Option NextAction :=
+def nextAction (state : State)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Option NextAction :=
   if !state.wellFormed then
     some (.cannotAdvance "The recorded project state is invalid.")
   else
-    match (missingCompletion state state.focus.work).head? with
+    match (missingCompletion state state.focus.work
+      staleFormalResultIdentities).head? with
     | some member => some (.satisfy member)
     | none =>
-        if !currentlyComplete state state.focus.work then
+        if !currentlyComplete state state.focus.work
+            staleFormalResultIdentities then
           some (.cannotAdvance "The current outcome has no valid completion boundary.")
         else
           match state.focus.returnPoint with

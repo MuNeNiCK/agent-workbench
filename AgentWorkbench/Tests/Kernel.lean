@@ -315,14 +315,22 @@ def testReviewTargetCorrection : IO Unit := do
     "Review correction edited history instead of creating a successor"
   let currentReviews :=
     corrected.reviewRequests.filter (Kernel.reviewRequestCurrent corrected)
-  expect (currentReviews.length == 1)
-    "Review correction left an ambiguous current Review"
-  let current ← match currentReviews with
+  expect (currentReviews.length == 2)
+    "Review correction globally invalidated the other Work's Review lineage"
+  let selectedReviews := Kernel.selectedReviewRequests corrected "target-review"
+  let current ← match selectedReviews with
     | [request] => pure request
     | _ => throw <| IO.userError "corrected Review is unavailable"
   expect (current.scope.artifacts == ["src/b"] &&
       current.scope.work.key == corrected.focus.work.key)
     "corrected Review did not select the intended Work and artifact"
+  let correctedWork ← match
+      corrected.work.find? (·.ref == corrected.focus.work) with
+    | some work => pure work
+    | none => throw <| IO.userError "corrected Work is unavailable"
+  expect
+    (correctedWork.authority.reason == "The Review belongs to feature B.")
+    "Review correction discarded the caller decision"
   let erroneousCurrent :=
     corrected.work.find? fun work =>
       work.ref.key == initialState.focus.work.key &&
@@ -357,13 +365,33 @@ def testInterruptionAndReturn : IO Unit := do
     "interruption failed"
   expect interrupted.focus.returnPoint.isSome
     "interruption lost the saved return point"
+  match Kernel.returnFromInterruption interrupted with
+  | .invalid _ => pure ()
+  | _ =>
+      throw <| IO.userError
+        "unfinished interrupting Work returned to the saved outcome"
+  let earlyReplanned ← unwrap
+    (Kernel.replanReturnByOutcome interrupted
+      "deliver the selected change"
+      (decision "early-replan"
+        "Caller explicitly replaced the unfinished urgent return plan."))
+    "explicit unfinished return-plan replacement failed"
+  let earlyReplannedWork ← match
+      earlyReplanned.work.find? (·.ref == earlyReplanned.focus.work) with
+    | some work => pure work
+    | none => throw <| IO.userError "explicitly replanned Work is unavailable"
+  expect
+    (earlyReplanned.focus.returnPoint.isNone &&
+      earlyReplannedWork.authority.reason ==
+        "Caller explicitly replaced the unfinished urgent return plan.")
+    "explicit unfinished return-plan replacement lost caller authority"
   let beforeSecond := interrupted
   match Kernel.interrupt interrupted initialState.focus.work
       initialState.focus.task with
   | .callerDecision reason =>
       expect
         (reason ==
-          "Return to the saved outcome first, or explicitly replace the return plan.")
+          "Return after finishing the interrupting outcome, or use replan-return with the caller's selected outcome and reason to replace the return plan.")
         "second interruption did not report the exact caller decision"
       expect (interrupted == beforeSecond)
         "second interruption changed the existing return plan"
@@ -411,6 +439,8 @@ def testChangedInterruptionAssumptionRequiresReplan : IO Unit := do
     (Kernel.startInterruption selected "repair urgent issue" "apply urgent fix"
       (decision "urgent" "Handle urgent work."))
     "design-scoped interruption failed"
+  let urgentFinished ← unwrap (Kernel.finishCurrentTask interrupted)
+    "changed-assumption urgent Task completion failed"
   let successorSource := source "return-design-v2"
   let successor : Design.Item :=
     { first with
@@ -422,10 +452,10 @@ def testChangedInterruptionAssumptionRequiresReplan : IO Unit := do
         .acceptedByCaller
           { source := successorSource, reason := "Caller corrected the return rule." } }
   let changed :=
-    { interrupted with
+    { urgentFinished with
       design :=
         { effects :=
-            interrupted.design.effects ++
+            urgentFinished.design.effects ++
               [{ source := successorSource, content := .design successor }] } }
   match Kernel.returnFromInterruption changed with
   | .replanRequired assumptions =>
@@ -438,6 +468,13 @@ def testChangedInterruptionAssumptionRequiresReplan : IO Unit := do
     "bounded return replan failed"
   expect replanned.focus.returnPoint.isNone
     "bounded replan left a stale return point"
+  let replannedWork ← match replanned.work.find? (·.ref == replanned.focus.work) with
+    | some work => pure work
+    | none => throw <| IO.userError "replanned Work was not retained"
+  expect
+    (replannedWork.authority.reason ==
+      "Use the caller-selected corrected outcome.")
+    "bounded replan discarded the caller decision"
 
 def acceptedFormalItem : Design.Item :=
   let selectedSource := source "formal-design"
@@ -483,6 +520,12 @@ def testFormalMeaningAndConformance : IO Unit := do
   let corrected := { counterexample with conformancePassed := some true }
   expect (corrected.conformsFor spec [item.ref])
     "corrected product did not restore conformance"
+  let executionFailure := { counterexample with conformancePassed := none }
+  expect
+    (executionFailure.conformanceOutcome == .executionFailure &&
+      executionFailure.currentFor spec [item.ref] &&
+      !executionFailure.conformsFor spec [item.ref])
+    "external execution failure became conformance or a counterexample"
   let history : AgentWorkbench.Kernel.State :=
     { initialState with
       design :=
@@ -491,10 +534,141 @@ def testFormalMeaningAndConformance : IO Unit := do
       formalResults := [counterexample, corrected] }
   expect (Kernel.formalResultsRequiringVerification history == [corrected])
     "historical formal result displaced the latest verified artifact identity"
+  let basis : Work.DerivationBasis := .design [{ ref := item.ref }]
+  expect (Kernel.assuranceSatisfiedForBasis history spec.key basis)
+    "latest passing formal result did not satisfy its exact Design basis"
+  let counterexampleHistory :=
+    { history with formalResults := [corrected, counterexample] }
+  expect
+    (!Kernel.assuranceSatisfiedForBasis counterexampleHistory spec.key basis)
+    "older pass satisfied completion after a newer counterexample"
+  let failedHistory :=
+    { history with formalResults := [corrected, executionFailure] }
+  expect
+    (!Kernel.assuranceSatisfiedForBasis failedHistory spec.key basis)
+    "older pass satisfied completion after a newer execution failure"
+  let refreshed ← unwrap
+    (Kernel.recordFormalResult failedHistory spec.key corrected.toolIdentity
+      corrected.oracleArtifact corrected.checkedClosure
+      corrected.checkedArtifacts corrected.conformancePassed
+      corrected.semanticPreview corrected.previewIdentity)
+    "repeated formal verification failed"
+  expect
+    (Kernel.formalResultsRequiringVerification refreshed == [corrected])
+    "repeating an identical pass left a newer execution failure authoritative"
+  expect (Kernel.assuranceSatisfiedForBasis refreshed spec.key basis)
+    "repeating an identical pass did not restore exact-basis completion"
   let changedSurface :=
     { spec with implementationSurfaces := ["bin/inventory-v2"] }
   expect (!corrected.currentFor changedSurface [item.ref])
     "changed declared implementation surface retained a stale formal result"
+
+  let evidenceSource := source "same-key-evidence"
+  let evidenceItem : Design.Item :=
+    { ref := { key := "latency", version := 0 }
+      predecessor := none
+      statement := "Latency satisfies the selected threshold."
+      role := .nonFunctionalRequirement
+      source := evidenceSource
+      dependencies := []
+      assurance :=
+        { kind := .evidence
+          obligations :=
+            [{ key := "inventory"
+               method := .evidence
+               description := "Observe latency." }] }
+      authority :=
+        .acceptedByCaller
+          { source := evidenceSource, reason := "Caller accepted latency." } }
+  let formalAccepted ← match item.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "formal item is not accepted"
+  let evidenceAccepted ← match evidenceItem.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "evidence item is not accepted"
+  let evidenceSpec : Evidence.Spec :=
+    { ref := { key := "inventory", version := 0 }
+      observation := "Latency remains below the threshold."
+      method := "measure latency"
+      environment := "test"
+      inputs := []
+      acceptanceCondition := "below threshold"
+      trustedBoundary := "monotonic clock"
+      artifactIdentity := "latency-artifact"
+      basis := .design [evidenceAccepted] }
+  let sameKeyState : AgentWorkbench.Kernel.State :=
+    { initialState with
+      design :=
+        { effects :=
+            [{ source := item.source, content := .design item },
+             { source := evidenceItem.source, content := .design evidenceItem }] }
+      evidenceSpecs := [evidenceSpec]
+      evidenceResults :=
+        [{ spec := evidenceSpec
+           observedValue := "below threshold"
+           passed := true }] }
+  let formalMember : Work.CompletionMember :=
+    { target := .assurance "inventory"
+      basis := .design [formalAccepted] }
+  expect
+    (!Kernel.completionMemberSatisfied sameKeyState
+      initialState.focus.work formalMember)
+    "same-key Evidence from another Design satisfied a formal completion member"
+
+  let summarySource := source "same-key-formal"
+  let summaryItem : Design.Item :=
+    { ref := { key := "inventory-summary", version := 0 }
+      predecessor := none
+      statement := "Inventory summaries preserve reservation availability."
+      role := .functionalRequirement
+      source := summarySource
+      dependencies := []
+      assurance :=
+        { kind := .formal
+          obligations :=
+            [{ key := "inventory"
+               method := .formal
+               description := "Check inventory summary availability." }] }
+      authority :=
+        .acceptedByCaller
+          { source := summarySource, reason := "Caller accepted summary." } }
+  let summaryAccepted ← match summaryItem.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "summary item is not accepted"
+  let summarySpec :=
+    { spec with
+      design := summaryItem.ref
+      modules := ["Inventory.Summary"]
+      oracle := some "Inventory.SummaryOracle"
+      implementationSurfaces := ["bin/inventory-summary"]
+      adapter := some "test/observe-inventory-summary" }
+  let formalResult :=
+    { corrected with previewIdentity := "formal-result:inventory" }
+  let summaryResult : Evidence.FormalResult :=
+    { formalResult with
+      spec := summarySpec
+      checkedClosure := ["Inventory.Summary"]
+      previewIdentity := "formal-result:inventory-summary" }
+  let isolatedState : AgentWorkbench.Kernel.State :=
+    { initialState with
+      design :=
+        { effects :=
+            [{ source := item.source, content := .design item },
+             { source := summaryItem.source, content := .design summaryItem }] }
+      formalSpecs := [spec, summarySpec]
+      formalResults := [formalResult, summaryResult] }
+  let summaryBasis : Work.DerivationBasis := .design [summaryAccepted]
+  expect
+    (!Kernel.assuranceSatisfiedForBasis isolatedState "inventory" basis
+      [formalResult.identity] &&
+      Kernel.assuranceSatisfiedForBasis isolatedState "inventory"
+        summaryBasis [formalResult.identity])
+    "stale identity for one same-key Design invalidated another Design binding"
+  expect
+    ((Kernel.selectedFormalSpecs isolatedState "inventory").length == 2 &&
+      Kernel.selectedFormalSpecsForDesign isolatedState "inventory"
+        summaryItem.ref.key == [summarySpec])
+    "same-key formal selection could not resolve an exact Design"
 
 def testFormalApprovalAndCompletion : IO Unit := do
   let base ← unwrap (Kernel.finishCurrentTask initialState)
@@ -524,6 +698,15 @@ def testFormalApprovalAndCompletion : IO Unit := do
   | .error _ => pure ()
   | .ok _ =>
       throw <| IO.userError "formal design was accepted before exact fresh Review"
+  match Kernel.requestDesignReview verified "stale-design-inventory"
+      "inventory"
+      [{ key := "inventory"
+         design := { key := "inventory", version := 0 }
+         previewIdentity := "sha256:preview" }] with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "stale formal artifacts entered a design meaning Review"
   let requested ← unwrap
     (Kernel.requestDesignReview verified "design-inventory" "inventory")
     "formal design Review request failed"
@@ -559,6 +742,266 @@ def acceptedItem (key statement : String) (version : Nat := 0)
     authority :=
       .acceptedByCaller
         { source := selectedSource, reason := "Caller accepted this exact meaning." } }
+
+def testSameKeyFormalSuccessorSelection : IO Unit := do
+  let assurance : Design.AssuranceSelection :=
+    { kind := .formal
+      obligations :=
+        [{ key := "inventory"
+           method := .formal
+           description := "Check the selected inventory meaning." }] }
+  let predecessor :=
+    acceptedItem "inventory" "Inventory meaning v1."
+      (assurance := assurance)
+  let successor : Design.Item :=
+    { predecessor with
+      ref := { key := "inventory", version := 1 }
+      predecessor := some predecessor.ref
+      statement := "Inventory meaning v2."
+      source := source "inventory-successor" .caller
+      authority := .unaccepted }
+  let predecessorSpec : Evidence.FormalSpec :=
+    { key := "inventory"
+      design := predecessor.ref
+      modules := ["Inventory.V1"]
+      oracle := some "Inventory.V1Oracle"
+      implementationSurfaces := [] }
+  let successorSpec : Evidence.FormalSpec :=
+    { predecessorSpec with
+      design := successor.ref
+      modules := ["Inventory.V2"]
+      oracle := some "Inventory.V2Oracle" }
+  let state : AgentWorkbench.Kernel.State :=
+    { initialState with
+      design :=
+        { effects :=
+            [{ source := predecessor.source, content := .design predecessor },
+             { source := successor.source, content := .design successor }] }
+      formalSpecs := [predecessorSpec, successorSpec] }
+  expect
+    (Kernel.selectedFormalSpecsForPreview state "inventory" "inventory" ==
+      [successorSpec])
+    "same-key formal successor did not displace its accepted predecessor during preview"
+  expect
+    (Kernel.selectedFormalSpecsForDesign state "inventory" "inventory" ==
+      [predecessorSpec])
+    "accepted formal completion was retargeted to a same-key proposal"
+
+def testSameKeyEvidenceBasisSelection : IO Unit := do
+  let evidenceAssurance : Design.AssuranceSelection :=
+    { kind := .evidence
+      obligations :=
+        [{ key := "checkout-evidence"
+           method := .evidence
+           description := "Observe the exact checkout rule." }] }
+  let checkout :=
+    acceptedItem "checkout" "Checkout preserves the selected invariant."
+      (assurance := evidenceAssurance)
+  let namedLikeEvidence :=
+    acceptedItem "checkout-evidence" "Checkout evidence is retained."
+      (assurance := evidenceAssurance)
+  let finished ← unwrap (Kernel.finishCurrentTask initialState)
+    "initial Evidence fixture Task completion failed"
+  let based : AgentWorkbench.Kernel.State :=
+    { finished with
+      design :=
+        { effects :=
+            [{ source := checkout.source, content := .design checkout },
+             { source := namedLikeEvidence.source,
+               content := .design namedLikeEvidence }] } }
+  let tasked ← unwrap
+    (Kernel.addTaskForDesign based "implement both checkout rules"
+      ["checkout", "checkout-evidence"])
+    "same-key Evidence Task selection failed"
+  match Kernel.addEvidence tasked "checkout-evidence" "Observe checkout."
+      "run checkout observation" "supported host" []
+      "observation passes" "ordinary process" "sha256:ambiguous" with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "same-key Evidence selection silently chose the first Design basis"
+  let firstSelected ← unwrap
+    (Kernel.addEvidence tasked "checkout-evidence" "Observe checkout."
+      "run checkout observation" "supported host" []
+      "observation passes" "ordinary process" "sha256:checkout"
+      (some "checkout"))
+    "first exact Evidence selection failed"
+  let secondSelected ← unwrap
+    (Kernel.addEvidence firstSelected "checkout-evidence"
+      "Observe checkout evidence." "run evidence observation" "supported host"
+      [] "observation passes" "ordinary process" "sha256:checkout-evidence"
+      (some "checkout-evidence"))
+    "second exact Evidence selection failed"
+  let firstRecorded ← unwrap
+    (Kernel.recordEvidence secondSelected "checkout-evidence"
+      "checkout passed" true (some "checkout"))
+    "first exact Evidence result failed"
+  let bothRecorded ← unwrap
+    (Kernel.recordEvidence firstRecorded "checkout-evidence"
+      "checkout evidence passed" true (some "checkout-evidence"))
+    "second exact Evidence result failed"
+  let checkoutAccepted ← match checkout.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "checkout acceptance is unavailable"
+  let evidenceAccepted ← match namedLikeEvidence.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "Evidence acceptance is unavailable"
+  expect
+    (Kernel.assuranceSatisfiedForBasis bothRecorded "checkout-evidence"
+        (.design [checkoutAccepted]) &&
+      Kernel.assuranceSatisfiedForBasis bothRecorded "checkout-evidence"
+        (.design [evidenceAccepted]))
+    "same-key Evidence results did not satisfy both exact Design bases"
+  let laterTask ← unwrap
+    (Kernel.addTaskForDesign bothRecorded "extend only checkout" ["checkout"])
+    "later exact-basis Task selection failed"
+  let selectedWork ← match laterTask.work.find? (·.ref == laterTask.focus.work) with
+    | some work => pure work
+    | none => throw <| IO.userError "later Task Work is unavailable"
+  let firstMember : Work.CompletionMember :=
+    { target := .assurance "checkout-evidence"
+      basis := .design [checkoutAccepted] }
+  let secondMember : Work.CompletionMember :=
+    { target := .assurance "checkout-evidence"
+      basis := .design [evidenceAccepted] }
+  expect
+    (selectedWork.completionBoundary.contains firstMember &&
+      selectedWork.completionBoundary.contains secondMember)
+    "later Task erased an unrelated same-key assurance basis"
+  let laterFinished ← unwrap (Kernel.finishCurrentTask laterTask)
+    "focused later Task completion failed"
+  let earlierFinished ← unwrap (Kernel.finishCurrentTask laterFinished)
+    "unique earlier pending Task was not recoverable after the focus completed"
+  expect
+    ((earlierFinished.tasks.filter (·.state == .pending)).isEmpty)
+    "sequential Task additions left an unreachable pending Task"
+
+def testGeneralLineageAndPublicRecovery : IO Unit := do
+  let evidenceAssurance : Design.AssuranceSelection :=
+    { kind := .evidence
+      obligations :=
+        [{ key := "shared"
+           method := .evidence
+           description := "Observe the selected lineage." }] }
+  let predecessor :=
+    acceptedItem "lineage" "Lineage v1." (assurance := evidenceAssurance)
+  let successorAssurance : Design.AssuranceSelection :=
+    { kind := .evidence
+      obligations :=
+        [{ key := "replacement"
+           method := .evidence
+           description := "Observe the successor lineage." }] }
+  let successor :=
+    acceptedItem "lineage" "Lineage v2." 1 (some predecessor.ref)
+      (assurance := successorAssurance)
+  let predecessorAccepted ← match predecessor.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "predecessor acceptance is unavailable"
+  let successorAccepted ← match successor.acceptedRef? with
+    | some accepted => pure accepted
+    | none => throw <| IO.userError "successor acceptance is unavailable"
+  let baseWork ← match initialState.work with
+    | [work] => pure work
+    | _ => throw <| IO.userError "lineage Work is unavailable"
+  let staleMember : Work.CompletionMember :=
+    { target := .assurance "shared", basis := .design [predecessorAccepted] }
+  let based : AgentWorkbench.Kernel.State :=
+    { initialState with
+      design :=
+        { effects :=
+            [{ source := predecessor.source, content := .design predecessor },
+             { source := successor.source, content := .design successor }] }
+      work :=
+        [{ baseWork with
+            completionBoundary := staleMember :: baseWork.completionBoundary }] }
+  let tasked ← unwrap
+    (Kernel.addTaskForDesign based "implement the successor lineage" ["lineage"])
+    "successor lineage Task selection failed"
+  let selectedWork ← match tasked.work.find? (·.ref == tasked.focus.work) with
+    | some work => pure work
+    | none => throw <| IO.userError "successor lineage Work is unavailable"
+  let successorMember : Work.CompletionMember :=
+    { target := .assurance "replacement", basis := .design [successorAccepted] }
+  expect
+    (!selectedWork.completionBoundary.contains staleMember &&
+      selectedWork.completionBoundary.contains successorMember)
+    "successor Task retained an impossible predecessor assurance"
+
+  let withSecond ← unwrap (Kernel.addTask initialState "second pending task")
+    "second pending Task creation failed"
+  let withThird ← unwrap (Kernel.addTask withSecond "third pending task")
+    "third pending Task creation failed"
+  let thirdDone ← unwrap (Kernel.finishCurrentTask withThird)
+    "third pending Task was not publicly finishable"
+  let secondDone ← unwrap (Kernel.finishCurrentTask thirdDone)
+    "completion-selected second Task was not publicly finishable"
+  let allDone ← unwrap (Kernel.finishCurrentTask secondDone)
+    "completion-selected first Task was not publicly finishable"
+  expect ((allDone.tasks.filter (·.state == .pending)).isEmpty)
+    "three pending Tasks left an unreachable completion member"
+
+def testEvidenceAndReviewStayOnSelectedWork : IO Unit := do
+  let workEvidence ← unwrap
+    (Kernel.addEvidence initialState "shared"
+      "Observe the Work boundary." "observe work" "host" []
+      "work passes" "process" "sha256:work")
+    "Work-bound Evidence selection failed"
+  let design :=
+    acceptedItem "design-evidence" "Observe the Design basis."
+      (assurance :=
+        { kind := .evidence
+          obligations :=
+            [{ key := "shared"
+               method := .evidence
+               description := "Observe the Design basis." }] })
+  let withDesign : AgentWorkbench.Kernel.State :=
+    { workEvidence with
+      design :=
+        { effects := [{ source := design.source, content := .design design }] } }
+  let tasked ← unwrap
+    (Kernel.addTaskForDesign withDesign "implement evidence design"
+      ["design-evidence"])
+    "Design Evidence Task selection failed"
+  let selected ← unwrap
+    (Kernel.addEvidence tasked "shared" "Observe the Design basis."
+      "observe design" "host" [] "design passes" "process" "sha256:design"
+      (some "design-evidence"))
+    "Design-bound Evidence selection failed"
+  expect (selected.evidenceSpecs.all (Kernel.evidenceSpecCurrent selected))
+    "same-key Evidence crossed its Work/Design basis kind"
+  let workRecorded ← unwrap
+    (Kernel.recordEvidence selected "shared" "work passed" true)
+    "exact Work-bound Evidence result was retargeted"
+  let bothRecorded ← unwrap
+    (Kernel.recordEvidence workRecorded "shared" "design passed" true
+      (some "design-evidence"))
+    "exact Design-bound Evidence result was retargeted"
+  expect (bothRecorded.evidenceResults.length == 2 &&
+      (bothRecorded.evidenceResults.map (·.spec.basis)).eraseDups.length == 2)
+    "same-key Evidence did not preserve both exact basis kinds"
+
+  let firstRequested ← unwrap
+    (Kernel.requestReview initialState "shared-review" "work-a" .implementation)
+    "first Work Review request failed"
+  let firstReviewed ← unwrap
+    (Kernel.recordCleanReview firstRequested "shared-review" "reviewer-a")
+    "first Work Review result failed"
+  let secondWork ← unwrap
+    (Kernel.startWork firstReviewed "second outcome" "second task"
+      (decision "second-work" "Start the second Work."))
+    "second Work creation failed"
+  let secondRequested ← unwrap
+    (Kernel.requestReview secondWork "shared-review" "work-b" .implementation)
+    "same-key second Work Review request failed"
+  let secondReviewed ← unwrap
+    (Kernel.recordCleanReview secondRequested "shared-review" "reviewer-b")
+    "same-key second Work Review result was retargeted"
+  expect
+    (secondReviewed.reviewRequests.all
+        (Kernel.reviewRequestCurrent secondReviewed) &&
+      (Kernel.selectedReviewRequests secondReviewed "shared-review").length == 1 &&
+      secondReviewed.reviewResults.length == 2)
+    "same Review key crossed Work lineage or became ambiguous"
 
 def testLocalImpactAndReuse : IO Unit := do
   let inventory0 := acceptedItem "inventory" "Inventory rule v1."
@@ -703,6 +1146,22 @@ def testBoundedReuseReview : IO Unit := do
       formalResults := [result] }
   expect (base.wellFormed && Kernel.currentlyComplete base base.focus.work)
     "bounded reuse fixture is not complete before an unrelated change"
+  expect (!Kernel.currentlyComplete base base.focus.work
+    [result.identity])
+    "stale formal assurance remained usable by Kernel completion"
+  let saved : Work.ReturnPoint :=
+    { work := base.focus.work
+      task := base.focus.task
+      assumptions := [.workBoundary base.focus.work] }
+  let staleInterrupt :=
+    { base with
+      focus := { base.focus with returnPoint := some saved } }
+  match Kernel.returnFromInterruption staleInterrupt
+      [result.identity] with
+  | .invalid _ => pure ()
+  | _ =>
+      throw <| IO.userError
+        "stale selected assurance allowed return from interrupting Work"
   let requested ← unwrap
     (Kernel.requestReview base "inventory-reuse" "notes.txt" .reuseDecision)
     "bounded reuse Review request failed"
@@ -731,6 +1190,10 @@ def run : IO Unit := do
   testChangedInterruptionAssumptionRequiresReplan
   testFormalMeaningAndConformance
   testFormalApprovalAndCompletion
+  testSameKeyFormalSuccessorSelection
+  testSameKeyEvidenceBasisSelection
+  testGeneralLineageAndPublicRecovery
+  testEvidenceAndReviewStayOnSelectedWork
   testLocalImpactAndReuse
   testBoundedReuseReview
   IO.println "kernel tests: pass"

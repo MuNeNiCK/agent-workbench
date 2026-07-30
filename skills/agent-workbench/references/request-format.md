@@ -31,12 +31,12 @@ record-source-effects <design-key|-> <role> <assurance>
   <outcome|-> <first-task|-> [dependency-key...]
 
 add-evidence <key> <observation> <method> <environment> <input,...|->
-  <acceptance-condition> <trusted-boundary> <artifact>
-record-evidence <key> <observed-value> <pass|fail>
+  <acceptance-condition> <trusted-boundary> <artifact> [design-key]
+record-evidence <key> <observed-value> <pass|fail> [design-key]
 
 preview-formal <assurance-key> <design-key> <oracle-module> <module,...>
   <implementation-surface,...|-> <adapter|-> <case,...|->
-formal-check <assurance-key>
+formal-check <assurance-key> [design-key]
 
 request-review <key> <design|implementation|reuse> <artifact>
 record-review <review> <reviewer> <observation> <risk|proposal>

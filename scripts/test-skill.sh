@@ -30,6 +30,15 @@ test_bin="$test_area/bin"
 hash_bin="$test_area/hash-bin"
 mkdir -p "$skill" "$release" "$test_bin" "$hash_bin"
 cp -R "$root/skills/agent-workbench/." "$skill/"
+grep -F "Resume an existing reviewer context only to continue the same Review lineage" \
+  "$skill/SKILL.md" >/dev/null
+grep -F "A requested fresh Review uses a different reviewer execution with no inherited" \
+  "$skill/SKILL.md" >/dev/null
+grep -F "Do not resume a prior reviewer and" "$skill/SKILL.md" >/dev/null
+grep -F "<artifact> [design-key]" \
+  "$skill/references/request-format.md" >/dev/null
+grep -F "record-evidence <key> <observed-value> <pass|fail> [design-key]" \
+  "$skill/references/request-format.md" >/dev/null
 version="$(sed -n '1{s/[[:space:]]//g;p;}' "$skill/CLI_VERSION")"
 runtime_asset="agent-workbench-$version-linux-x86_64-static.tar.gz"
 formal_asset="agent-workbench-$version-formal-tool-linux-x86_64.tar.gz"
@@ -61,7 +70,10 @@ awb() {
 
 review_design() {
   design_key="$1"
-  awb request-design-review "design-$design_key" "$design_key" >/dev/null
+  if ! awb request-design-review "design-$design_key" "$design_key" >/dev/null; then
+    awb status >&2
+    return 1
+  fi
   awb record-clean-review "design-$design_key" reviewer >/dev/null
 }
 
@@ -178,6 +190,124 @@ sha256sum "$runtime_dir/agent-workbench" |
   fi
   awb add-task "apply the recovered change" >/dev/null
 )
+mv "$runtime_dir/agent-workbench.real" "$runtime_dir/agent-workbench"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+
+# Distinct argv vectors that collided under the former free-text separator must
+# not share a pending wrapper intention.
+mv "$runtime_dir/agent-workbench" "$runtime_dir/agent-workbench.real"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  'directory="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")" && pwd -P)"' \
+  'if test "${1:-}" = add-evidence && test ! -e "$directory/injected-separator"; then' \
+  '  "$directory/agent-workbench.real" "$@"' \
+  '  : > "$directory/injected-separator"' \
+  '  exit 75' \
+  'fi' \
+  'exec "$directory/agent-workbench.real" "$@"' \
+  > "$runtime_dir/agent-workbench"
+chmod +x "$runtime_dir/agent-workbench"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+(
+  cd "$project"
+  separator="$(printf '\037')"
+  first_key="alpha${separator}beta"
+  second_observation="beta${separator}gamma"
+  set +e
+  awb add-evidence "$first_key" gamma observe host - passes process \
+    sha256:separator >/dev/null 2>&1
+  first_status=$?
+  changed_report="$(
+    awb add-evidence alpha "$second_observation" observe host - passes process \
+      sha256:separator 2>&1
+  )"
+  changed_status=$?
+  set -e
+  test "$first_status" -eq 75
+  test "$changed_status" -ne 0
+  printf '%s\n' "$changed_report" |
+    grep -F "retry it unchanged" >/dev/null
+  awb add-evidence "$first_key" gamma observe host - passes process \
+    sha256:separator >/dev/null
+)
+mv "$runtime_dir/agent-workbench.real" "$runtime_dir/agent-workbench"
+rm -f "$runtime_dir/injected-separator"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+
+# Stale currentness crosses the process boundary through a file, so a payload
+# larger than one Linux argv/environment string does not disable public reads.
+mv "$runtime_dir/agent-workbench" "$runtime_dir/agent-workbench.real"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  'directory="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")" && pwd -P)"' \
+  'case "${1:-}" in' \
+  '  formal-artifacts)' \
+  '    index=0' \
+  '    while test "$index" -lt 2500; do' \
+  '      printf '"'"'{"assurance":"shared","design":"rule","version":0,"result":"preview:%s"}\tmissing-%s=sha256:%064d\n'"'"' "$index" "$index" 0' \
+  '      index=$((index + 1))' \
+  '    done' \
+  '    exit 0' \
+  '    ;;' \
+  '  status)' \
+  '    selected="${AGENT_WORKBENCH_STALE_FORMAL_RESULT_IDENTITIES_FILE:-}"' \
+  '    test -s "$selected"' \
+  '    test "$(wc -c < "$selected")" -gt 140000' \
+  '    test -z "${AGENT_WORKBENCH_STALE_FORMAL_RESULT_IDENTITIES:-}"' \
+  '    ;;' \
+  'esac' \
+  'exec "$directory/agent-workbench.real" "$@"' \
+  > "$runtime_dir/agent-workbench"
+chmod +x "$runtime_dir/agent-workbench"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+(
+  cd "$project"
+  awb status >/dev/null
+)
+mv "$runtime_dir/agent-workbench.real" "$runtime_dir/agent-workbench"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+
+# Stale-currentness collection fails closed. A partial producer result must
+# never reach the public operation as a valid stale projection.
+stale_failure_reached_runtime="$test_area/stale-failure-reached-runtime"
+mv "$runtime_dir/agent-workbench" "$runtime_dir/agent-workbench.real"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  'directory="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")" && pwd -P)"' \
+  'case "${1:-}" in' \
+  '  formal-artifacts)' \
+  '    printf '\''{"assurance":"partial","design":"rule","version":0,"result":"preview"}\tmissing=sha256:%064d\n'\'' 0' \
+  '    exit 9' \
+  '    ;;' \
+  '  status)' \
+  "    : > '$stale_failure_reached_runtime'" \
+  '    ;;' \
+  'esac' \
+  'exec "$directory/agent-workbench.real" "$@"' \
+  > "$runtime_dir/agent-workbench"
+chmod +x "$runtime_dir/agent-workbench"
+sha256sum "$runtime_dir/agent-workbench" |
+  sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+set +e
+(
+  cd "$project"
+  awb status >/dev/null 2>&1
+)
+stale_failure_status=$?
+set -e
+test "$stale_failure_status" -eq 9
+test ! -e "$stale_failure_reached_runtime"
 mv "$runtime_dir/agent-workbench.real" "$runtime_dir/agent-workbench"
 sha256sum "$runtime_dir/agent-workbench" |
   sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
@@ -393,6 +523,28 @@ if test -n "$formal_archive"; then
     '      | _, _ => throw <| IO.userError "invalid inventory input"' \
     '  | _ => throw <| IO.userError "invalid inventory input"' \
     > "$formal/Inventory/Oracle.lean"
+  printf '%s\n' \
+    'import Inventory.Proof' \
+    'import Lean.Data.Json' \
+    'def main : IO Unit :=' \
+    '  IO.println (Lean.Json.mkObj [(' \
+    '    "zeroQuantityAvailable", .bool (Inventory.canReserve 3 0))]).compress' \
+    > "$formal/Inventory/Summary.lean"
+  printf '%s\n' \
+    'import Inventory.Proof' \
+    'def main : IO Unit :=' \
+    '  throw <| IO.userError "oracle observation unavailable"' \
+    > "$formal/Inventory/Broken.lean"
+  printf '%s\n' \
+    'import Lean.Data.Json' \
+    'def main : IO Unit :=' \
+    "  IO.println (Lean.Json.str (String.ofList (List.replicate 1100000 'x'))).compress" \
+    > "$formal/Inventory/Huge.lean"
+  printf '%s\n' \
+    'import Lean.Data.Json' \
+    'def main : IO Unit :=' \
+    "  IO.println (Lean.Json.str (String.ofList (List.replicate 200000 'x'))).compress" \
+    > "$formal/Inventory/Large.lean"
   # shellcheck disable=SC2016
   printf '%s\n' \
     '#!/bin/sh' \
@@ -408,22 +560,47 @@ if test -n "$formal_archive"; then
     'here="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")/.." && pwd -P)"' \
     'exec "$here/bin/inventory"' \
     > "$formal/test/observe-inventory"
-  printf '%s\n' '5 3' > "$formal/test/case-available"
-  printf '%s\n' '2 4' > "$formal/test/case-unavailable"
   printf '%s\n' '3 3' > "$formal/test/case-equal"
+  printf '%s\n' 'invalid inventory input' > "$formal/test/case-invalid"
   chmod +x "$formal/bin/inventory" "$formal/test/observe-inventory"
   (
     cd "$formal"
     awb init "implement reservation availability" "prepare the boundary" >/dev/null
     awb finish-task >/dev/null
+    awb record-design inventory-incomplete-cases functional formal \
+      "Every selected reservation example has reviewable oracle meaning" >/dev/null
+    set +e
+    incomplete_report="$(
+      awb preview-formal inventory-incomplete-cases inventory-incomplete-cases \
+        Inventory.Oracle Inventory.Rule,Inventory.Proof bin/inventory \
+        test/observe-inventory test/case-equal,test/case-invalid 2>&1
+    )"
+    incomplete_status=$?
+    set -e
+    test "$incomplete_status" -ne 0
+    printf '%s\n' "$incomplete_report" |
+      grep -F "Example input (test/case-equal):" >/dev/null
+    printf '%s\n' "$incomplete_report" |
+      grep -F "Example input (test/case-invalid):" >/dev/null
+    incomplete_projection="$(awb status)"
+    printf '%s\n' "$incomplete_projection" |
+      grep -F "[assurance:inventory-incomplete-cases]" |
+      grep -F "preview pending" >/dev/null
+
     awb record-design inventory functional formal \
       "A reservation is available when quantity does not exceed stock" >/dev/null
-    failed_preview="$(awb preview-formal inventory inventory Inventory.Oracle \
+    comparison_report="$(awb preview-formal inventory inventory Inventory.Oracle \
       Inventory.Rule,Inventory.Proof bin/inventory \
       test/observe-inventory \
-      test/case-available,test/case-unavailable,test/case-equal)"
-    printf '%s\n' "$failed_preview" |
+      test/case-equal)"
+    printf '%s\n' "$comparison_report" |
       grep -F "Conformance: fail" >/dev/null
+    printf '%s\n' "$comparison_report" |
+      grep -E '^Checked module closure: .*Inventory\.Oracle' >/dev/null
+    printf '%s\n' "$comparison_report" |
+      grep -F 'source=d024af099ca4bf2c86f649261ebf59565dc8c622' >/dev/null
+    printf '%s\n' "$comparison_report" |
+      grep -E '^Oracle artifact: Inventory\.Oracle=sha256:[0-9a-f]{64}$' >/dev/null
     # shellcheck disable=SC2016
     printf '%s\n' \
       '#!/bin/sh' \
@@ -433,64 +610,159 @@ if test -n "$formal_archive"; then
       'printf '"'"'{"available":%s}\n'"'"' "$available"' \
       > bin/inventory
     chmod +x bin/inventory
-    passing_report="$(awb formal-check inventory)"
-    printf '%s\n' "$passing_report" |
+    restored_report="$(awb formal-check inventory)"
+    printf '%s\n' "$restored_report" |
       grep -F "Conformance: pass" >/dev/null
-    printf '%s\n' "$passing_report" |
-      grep -E '^Checked module closure: .*Inventory\.Oracle' >/dev/null
-    printf '%s\n' "$passing_report" |
-      grep -E '^Checked module closure: .*Inventory\.Proof' >/dev/null
-    printf '%s\n' "$passing_report" |
-      grep -E '^Checked module closure: .*Inventory\.Rule' >/dev/null
-    printf '%s\n' "$passing_report" |
-      grep -F 'source=d024af099ca4bf2c86f649261ebf59565dc8c622' >/dev/null
-    printf '%s\n' "$passing_report" |
-      grep -E '^Oracle artifact: Inventory\.Oracle=sha256:[0-9a-f]{64}$' >/dev/null
-    for artifact in \
-        Inventory/Oracle.lean Inventory/Proof.lean Inventory/Rule.lean \
-        bin/inventory test/observe-inventory \
-        test/case-available test/case-unavailable test/case-equal; do
-      printf '%s\n' "$passing_report" |
-        grep -E "^  $artifact=sha256:[0-9a-f]{64}$" >/dev/null
-    done
-    formal_projection="$(awb status)"
-    printf '%s\n' "$formal_projection" | grep -F "Checked closure:" >/dev/null
-    printf '%s\n' "$formal_projection" | grep -F "Checked artifacts:" >/dev/null
-    formal_identity="$(
-      printf '%s\n' "$formal_projection" |
-        sed -n 's/^    Preview identity: //p' |
-        sed -n '1p'
+
+    awb record-design inventory-summary functional formal \
+      "Zero quantity is available for every stock value" >/dev/null
+    summary_report="$(awb preview-formal inventory-summary inventory-summary \
+      Inventory.Summary Inventory.Rule,Inventory.Proof - - -)"
+    printf '%s\n' "$summary_report" |
+      grep -F "Lean oracle observations:" >/dev/null
+    printf '%s\n' "$summary_report" |
+      grep -F '"zeroQuantityAvailable":true' >/dev/null
+
+    awb record-design inventory-broken functional formal \
+      "The inventory oracle exposes reviewable meaning" >/dev/null
+    set +e
+    broken_report="$(
+      awb preview-formal inventory-broken inventory-broken Inventory.Broken \
+        Inventory.Rule,Inventory.Proof - - - 2>&1
     )"
-    test -n "$formal_identity"
+    broken_status=$?
+    set -e
+    test "$broken_status" -ne 0
+    printf '%s\n' "$broken_report" |
+      grep -F "the Lean oracle exited with status" >/dev/null
+    broken_projection="$(awb status)"
+    printf '%s\n' "$broken_projection" |
+      grep -F "[assurance:inventory-broken]" |
+      grep -F "preview pending" >/dev/null
+
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -eu' \
+      'printf "%s\n" "{not-json"' \
+      > test/observe-inventory
+    chmod +x test/observe-inventory
+    execution_report="$(awb formal-check inventory)"
+    printf '%s\n' "$execution_report" |
+      grep -F "Conformance: execution-failure" >/dev/null
+    printf '%s\n' "$execution_report" |
+      grep -F "Product adapter returned malformed JSON." >/dev/null
+    # shellcheck disable=SC2016
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -eu' \
+      'here="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")/.." && pwd -P)"' \
+      'exec "$here/bin/inventory"' \
+      > test/observe-inventory
+    chmod +x test/observe-inventory
+    awb formal-check inventory |
+      grep -F "Conformance: pass" >/dev/null
+
+    accept_design inventory "Caller accepted the reviewed inventory meaning."
+    accept_design inventory-summary \
+      "Caller accepted the reviewed inventory summary."
+    awb add-task-for-design "apply both inventory rules" \
+      inventory inventory-summary >/dev/null
+    awb finish-task >/dev/null
+    awb complete >/dev/null
+
+    printf '%s\n' '# changed inventory implementation' >> bin/inventory
+    printf '%s\n' '-- changed summary oracle' >> Inventory/Summary.lean
+    one_refreshed="$(awb formal-check inventory)"
+    printf '%s\n' "$one_refreshed" |
+      grep -F "Next:" |
+      grep -F "Zero quantity is available for every stock value" >/dev/null
+    if printf '%s\n' "$one_refreshed" |
+        grep -F "The current outcome is complete." >/dev/null; then
+      echo "refreshing one assurance hid another stale assurance" >&2
+      exit 1
+    fi
+    awb formal-check inventory-summary |
+      grep -F "The current outcome is complete." >/dev/null
+
+    rm -f .lake/build/lib/lean/Inventory/Summary.olean
+    rebuilt_same_result="$(awb formal-check inventory-summary)"
+    printf '%s\n' "$rebuilt_same_result" |
+      grep -F "The current outcome is complete." >/dev/null
 
     printf '%s\n' '# changed selected implementation surface' >> bin/inventory
-    set +e
-    stale_output="$(awb status 2>&1)"
-    stale_status=$?
-    set -e
-    test "$stale_status" -ne 0
-    printf '%s\n' "$stale_output" |
-      grep -F "formal assurance 'inventory' is stale" >/dev/null
+    stale_projection="$(awb status 2>&1)"
+    printf '%s\n' "$stale_projection" |
+      grep -F "Stale formal meaning (run formal-check inventory inventory):" \
+      >/dev/null
+    printf '%s\n' "$stale_projection" |
+      grep -F "[assurance:inventory]" |
+      grep -F "(pending)" >/dev/null
+    unrelated_projection="$(
+      awb start-work "continue unrelated implementation" \
+        "perform unrelated project action"
+    )"
+    printf '%s\n' "$unrelated_projection" |
+      grep -F "Next: perform unrelated project action" >/dev/null
 
+    awb record-design inventory functional formal \
+      "A corrected reservation remains available at equal stock" >/dev/null
+    successor_report="$(awb preview-formal inventory inventory Inventory.Oracle \
+      Inventory.Rule,Inventory.Proof bin/inventory \
+      test/observe-inventory test/case-equal)"
+    printf '%s\n' "$successor_report" |
+      grep -F "Design contract: A corrected reservation remains available at equal stock" \
+      >/dev/null
+
+    awb record-design inventory-large functional formal \
+      "The formal route retains a large bounded semantic observation" >/dev/null
+    awb preview-formal inventory-large inventory-large Inventory.Large \
+      Inventory.Rule - - - > large-preview.out
+    grep -F "Preview identity: formal-preview:sha256:" large-preview.out >/dev/null
+
+    awb record-design inventory-huge functional formal \
+      "The formal route rejects an oversized semantic observation" >/dev/null
+    set +e
+    huge_report="$(
+      awb preview-formal inventory-huge inventory-huge Inventory.Huge \
+        Inventory.Rule - - - 2>&1
+    )"
+    huge_status=$?
+    set -e
+    test "$huge_status" -ne 0
+    printf '%s\n' "$huge_report" |
+      grep -F "exceeded its output bound" >/dev/null
+    huge_projection="$(awb status)"
+    printf '%s\n' "$huge_projection" |
+      grep -F "[assurance:inventory-huge]" |
+      grep -F "preview pending" >/dev/null
+
+    mv "$runtime_dir/agent-workbench" "$runtime_dir/agent-workbench.real"
     # shellcheck disable=SC2016
     printf '%s\n' \
       '#!/bin/sh' \
       'set -eu' \
-      'read -r stock quantity' \
-      'if test "$quantity" -le "$stock"; then available=true; else available=false; fi' \
-      'printf '"'"'{"available":%s}\n'"'"' "$available"' \
-      > bin/inventory
-    chmod +x bin/inventory
-    awb formal-check inventory >/dev/null
-    accept_design inventory "Caller selected the reviewed inventory rule."
-    awb add-task-for-design "apply selected inventory rule" inventory >/dev/null
-    printf '%s\n' "unrelated project note" > notes.txt
-    awb request-review inventory-reuse reuse notes.txt >/dev/null
-    awb record-clean-review inventory-reuse reuse-reviewer >/dev/null
-    awb finish-task >/dev/null
-    reused_projection="$(awb status)"
-    printf '%s\n' "$reused_projection" |
-      grep -F "    Preview identity: $formal_identity" >/dev/null
+      'directory="$(CDPATH='"'"''"'"' cd -- "$(dirname -- "$0")" && pwd -P)"' \
+      'if test "${1:-}" = record-formal-result-files &&' \
+      '    test ! -e "$directory/formal-result-response-lost"; then' \
+      '  "$directory/agent-workbench.real" "$@"' \
+      '  : > "$directory/formal-result-response-lost"' \
+      '  exit 75' \
+      'fi' \
+      'exec "$directory/agent-workbench.real" "$@"' \
+      > "$runtime_dir/agent-workbench"
+    chmod +x "$runtime_dir/agent-workbench"
+    sha256sum "$runtime_dir/agent-workbench" |
+      sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
+    set +e
+    awb formal-check inventory inventory >/dev/null 2>&1
+    lost_formal_status=$?
+    set -e
+    test "$lost_formal_status" -eq 75
+    awb formal-check inventory inventory >/dev/null
+    mv "$runtime_dir/agent-workbench.real" "$runtime_dir/agent-workbench"
+    rm -f "$runtime_dir/formal-result-response-lost"
+    sha256sum "$runtime_dir/agent-workbench" |
+      sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
   )
   test -x "$formal_dir/agent-workbench-formal-tool/bin/lean"
   test -s "$formal_dir/formal-tool.sha256"

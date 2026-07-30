@@ -57,6 +57,15 @@ printf '%s\n' \
   > "$project/Inventory/Oracle.lean"
 (
   cd "$project"
-  "$lake" build Inventory:leanArts
+  "$lake" build --wfail Inventory:leanArts
   test "$("$lake" env lean --run Inventory/Oracle.lean)" = '{"remaining":7}'
+  printf '%s\n' \
+    'namespace Inventory' \
+    'theorem unfinished : True := by sorry' \
+    'end Inventory' \
+    > Inventory/Incomplete.lean
+  if "$lake" build --wfail +Inventory.Incomplete:olean >/dev/null 2>&1; then
+    echo "formal tool accepted an unfinished proof" >&2
+    exit 1
+  fi
 )

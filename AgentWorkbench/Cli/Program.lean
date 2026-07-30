@@ -40,6 +40,37 @@ private def expectedInstance : IO (Option String) := do
         throw <| IO.userError "The Skill provided an invalid project identity."
       pure (some value)
 
+private def parseFormalResultIdentity (value : String) :
+    Except String Evidence.FormalResultIdentity := do
+  let json ← Lean.Json.parse value
+  let key ← json.getObjValAs? String "assurance"
+  let designKey ← json.getObjValAs? String "design"
+  let designVersion ← json.getObjValAs? Nat "version"
+  let previewIdentity ← json.getObjValAs? String "result"
+  let identity : Evidence.FormalResultIdentity :=
+    { key
+      design := { key := designKey, version := designVersion }
+      previewIdentity }
+  if identity.key.isEmpty || identity.design.key.isEmpty ||
+      identity.previewIdentity.isEmpty then
+    throw "The stale formal-result identity is incomplete."
+  pure identity
+
+private def staleFormalResultIdentities :
+    IO (List Evidence.FormalResultIdentity) := do
+  match ← IO.getEnv
+      "AGENT_WORKBENCH_STALE_FORMAL_RESULT_IDENTITIES_FILE" with
+  | none => return []
+  | some selected =>
+      if selected.isEmpty then
+        throw <| IO.userError
+          "The Skill provided an invalid stale formal-result file."
+      let value ← IO.FS.readFile (System.FilePath.mk selected)
+      let encoded := (value.splitOn "\n").filter fun item => !item.isEmpty
+      match encoded.mapM parseFormalResultIdentity with
+      | .ok identities => return identities
+      | .error reason => throw <| IO.userError reason
+
 private def callerDecision (token reason : String) : CallerDecision :=
   let source : Source :=
     { id := ⟨token⟩
@@ -171,15 +202,25 @@ private def describeTaskRequirement (state : Kernel.State)
             else
               s!"update and accept the design required by: {task.description}"
 
-private def describeMember (state : Kernel.State)
+private def assuranceDesignKey? (basis : Work.DerivationBasis) : Option String :=
+  match basis with
+  | .design [accepted] => some accepted.ref.key
+  | _ => none
+
+def describeMember (state : Kernel.State)
     (member : Work.CompletionMember) : String :=
   match member.target with
   | .taskSatisfied task => describeTaskRequirement state task
   | .assurance key =>
-      (Evidence.selectedAssurance (Kernel.currentDesignItems state))
-        |>.find? (·.key == key)
-        |>.map (·.description)
-        |>.getD "the selected assurance"
+      match Kernel.selectedAssuranceForBasis? state key member.basis,
+          assuranceDesignKey? member.basis with
+      | some assurance, some designKey =>
+          match assurance.method with
+          | .formal =>
+              s!"run formal-check {key} {designKey} for: {assurance.description}"
+          | .evidence =>
+              s!"run add-evidence {key} ... {designKey}, then record-evidence {key} ... {designKey} for: {assurance.description}"
+      | _, _ => "satisfy the selected exact assurance"
   | .reviewResolved _ => "resolve the selected review observations"
   | .externalObservation evidence =>
       state.evidenceSpecs.find? (·.ref == evidence)
@@ -222,7 +263,19 @@ private def printReturnAssumption (state : Kernel.State)
           |>.getD "saved design statement"
       IO.println s!"  - Design: {statement}"
 
-private def printStatus (state : Kernel.State) : IO Unit := do
+private def printFormalMeaning (result : Evidence.FormalResult)
+    (stale : List Evidence.FormalResultIdentity) : IO Unit := do
+  if stale.contains result.identity then
+    IO.println s!"    Stale formal meaning (run formal-check {result.spec.key} {result.spec.design.key}):"
+  else
+    IO.println "    Verified formal meaning:"
+  IO.println result.semanticPreview
+  IO.println s!"    Preview identity: {result.previewIdentity}"
+  IO.println s!"    Checked closure: {String.intercalate ", " result.checkedClosure}"
+  IO.println s!"    Checked artifacts: {String.intercalate ", " result.checkedArtifacts}"
+
+private def printStatusWithStale (state : Kernel.State)
+    (stale : List Evidence.FormalResultIdentity) : IO Unit := do
   match currentWork? state with
   | none =>
       IO.println "The current outcome is unavailable."
@@ -248,14 +301,11 @@ private def printStatus (state : Kernel.State) : IO Unit := do
               IO.println s!"    Simpler option insufficient: {rationale.simplerAlternativeInsufficient}"
               IO.println s!"    Bounded scope: {rationale.boundedScope}"
               IO.println s!"    Maintenance cost: {rationale.maintenanceCost}"
-          for result in state.formalResults do
-            if result.spec.design == item.ref &&
-                result.currentFor result.spec [item.ref] then
-              IO.println "    Verified formal meaning:"
-              IO.println result.semanticPreview
-              IO.println s!"    Preview identity: {result.previewIdentity}"
-              IO.println s!"    Checked closure: {String.intercalate ", " result.checkedClosure}"
-              IO.println s!"    Checked artifacts: {String.intercalate ", " result.checkedArtifacts}"
+          for spec in state.formalSpecs do
+            if spec.design == item.ref then
+              match Kernel.latestFormalResultForSpec? state spec with
+              | some result => printFormalMeaning result stale
+              | none => pure ()
       let proposedDesign := state.design.designItems.filter fun item =>
         item.authority == .unaccepted &&
           !(state.design.designItems.any fun successor =>
@@ -266,23 +316,21 @@ private def printStatus (state : Kernel.State) : IO Unit := do
         for item in proposedDesign do
           IO.println s!"  - [design:{item.ref.key}] {roleName item.role}: {item.statement}"
           for obligation in item.assurance.obligations do
-            let result :=
-              if state.formalResults.any fun formal =>
-                  formal.spec.design == item.ref &&
-                    formal.spec.key == obligation.key &&
-                    formal.currentFor formal.spec [item.ref] then
-                "preview verified"
-              else
+            let latest :=
+              (state.formalSpecs.find? fun spec =>
+                spec.key == obligation.key && spec.design == item.ref)
+                |>.bind (Kernel.latestFormalResultForSpec? state)
+            let result := latest.map (fun formal =>
+              if stale.contains formal.identity then
                 "preview pending"
+              else
+                "preview verified") |>.getD "preview pending"
             IO.println s!"    [assurance:{obligation.key}] {obligation.description} ({result})"
-          for result in state.formalResults do
-            if result.spec.design == item.ref &&
-                result.currentFor result.spec [item.ref] then
-              IO.println "    Verified formal meaning:"
-              IO.println result.semanticPreview
-              IO.println s!"    Preview identity: {result.previewIdentity}"
-              IO.println s!"    Checked closure: {String.intercalate ", " result.checkedClosure}"
-              IO.println s!"    Checked artifacts: {String.intercalate ", " result.checkedArtifacts}"
+          for spec in state.formalSpecs do
+            if spec.design == item.ref then
+              match Kernel.latestFormalResultForSpec? state spec with
+              | some result => printFormalMeaning result stale
+              | none => pure ()
       let retiredDesign := state.design.designItems.filter fun item =>
         (match item.authority with
         | .retiredByCaller _ => true
@@ -353,16 +401,25 @@ private def printStatus (state : Kernel.State) : IO Unit := do
                     |>.map (·.statement)
                     |>.getD "selected design statement"
                 IO.println s!"      Design [design:{accepted.ref.key}]: {statement}"
-      let assurances := Evidence.selectedAssurance currentDesign
+      let assurances := work.completionBoundary.filterMap fun member =>
+        match member.target with
+        | .assurance key =>
+            Kernel.selectedAssuranceForBasis? state key member.basis
+        | _ => none
       unless assurances.isEmpty do
         IO.println "Required assurance:"
         for assurance in assurances do
           let result :=
-            if Kernel.assuranceSatisfied state assurance.key then
+            if Kernel.assuranceSatisfiedForBasis state assurance.key
+                assurance.basis stale then
               "satisfied"
             else
               "pending"
-          IO.println s!"  - [assurance:{assurance.key}] {assurance.description} ({result})"
+          let design :=
+            (assuranceDesignKey? assurance.basis)
+              |>.map (fun key => s!" [design:{key}]")
+              |>.getD ""
+          IO.println s!"  - [assurance:{assurance.key}]{design} {assurance.description} ({result})"
       let evidenceSpecs := state.evidenceSpecs.filter
         (Kernel.evidenceSpecCurrent state)
       unless evidenceSpecs.isEmpty do
@@ -428,23 +485,24 @@ private def printStatus (state : Kernel.State) : IO Unit := do
           IO.println "Saved return assumptions:"
           for assumption in point.assumptions do
             printReturnAssumption state assumption
-      match (Kernel.missingCompletion state work.ref).head? with
+      match (Kernel.missingCompletion state work.ref stale).head? with
       | none => IO.println "Completion: satisfied"
       | some member =>
           IO.println s!"Next required result: {describeMember state member}"
 
-private def printNext (state : Kernel.State) : IO Unit :=
-  match Kernel.nextAction state with
+private def printNextWithStale (recorded : Kernel.State)
+    (stale : List Evidence.FormalResultIdentity) : IO Unit := do
+  match Kernel.nextAction recorded stale with
   | none => IO.println "The current outcome is complete."
   | some (.satisfy member) =>
-      IO.println s!"Next: {describeMember state member}"
+      IO.println s!"Next: {describeMember recorded member}"
   | some .returnToSavedWork =>
       IO.println "Next: return to the saved outcome."
   | some (.replanReturn changed) => do
       IO.println "Next: choose the current outcome to resume with replan-return."
       IO.println "Changed saved assumptions:"
       for assumption in changed do
-        printReturnAssumption state assumption
+        printReturnAssumption recorded assumption
   | some (.cannotAdvance reason) =>
       IO.println s!"Cannot advance: {reason}"
 
@@ -456,10 +514,13 @@ private def load (path : System.FilePath) : IO Kernel.State := do
   | .error (.corrupt reason) =>
       throw <| IO.userError reason
 
+def mutationIntent (arguments : List String) : String :=
+  (Lean.toJson arguments).compress
+
 private def applyMutation (path : System.FilePath) (arguments : List String)
     (transition : Kernel.State → Except String Kernel.State) : IO Kernel.State := do
   let token ← privateToken
-  let intent := String.intercalate "\u001f" arguments
+  let intent := mutationIntent arguments
   match ← Adapter.SQLite.mutate path token intent
       (← expectedInstance) (← expectedRevision) transition with
   | .ok snapshot => return snapshot.state
@@ -473,8 +534,9 @@ private def applyMutation (path : System.FilePath) (arguments : List String)
       IO.eprintln "The project changed before this action was applied."
       match ← Adapter.SQLite.inspect path with
       | .ok snapshot =>
-          printStatus snapshot.state
-          printNext snapshot.state
+          let stale ← staleFormalResultIdentities
+          printStatusWithStale snapshot.state stale
+          printNextWithStale snapshot.state stale
       | .error .uninitialized =>
           IO.eprintln "Agent Workbench is not initialized in this project."
       | .error (.corrupt reason) => IO.eprintln reason
@@ -517,16 +579,52 @@ private def readJson (path : System.FilePath) : IO Lean.Json := do
   | .ok json => pure json
   | .error reason => throw <| IO.userError reason
 
-private def currentFormalSpec (state : Kernel.State) (key : String) :
+private def readBoundedFormalFile (path : System.FilePath)
+    (description : String) : IO String := do
+  let content ← IO.FS.readFile path
+  if content.toUTF8.size > 1048576 then
+    throw <| IO.userError s!"The {description} exceeds 1048576 bytes."
+  pure content
+
+private def readBoundedFormalLines (path : System.FilePath)
+    (description : String) : IO (List String) := do
+  let content ← readBoundedFormalFile path description
+  pure <| (content.splitOn "\n").filter fun item => !item.isEmpty
+
+def formalResultMutationIntentArguments
+    (key designKey designVersion tool oracle conformance previewIdentity : String)
+    (checkedClosure checkedArtifacts : List String)
+    (semanticPreview : String) : List String :=
+  ["record-formal-result-files", key, designKey, designVersion, tool, oracle,
+   String.intercalate "\n" checkedClosure,
+   String.intercalate "\n" checkedArtifacts,
+   conformance, semanticPreview, previewIdentity]
+
+private def currentFormalSpec (state : Kernel.State) (key : String)
+    (designKey : Option String := none) (preview : Bool := false) :
     Except String Evidence.FormalSpec :=
-  match Kernel.selectedFormalSpecs state key with
+  let candidates :=
+    match designKey, preview with
+    | none, false =>
+        let completion := Kernel.selectedFormalSpecsForCompletion state key
+        if !completion.isEmpty then completion
+        else Kernel.selectedFormalSpecs state key
+    | none, true => Kernel.selectedFormalSpecs state key
+    | some selected, true =>
+        Kernel.selectedFormalSpecsForPreview state key selected
+    | some selected, false =>
+        Kernel.selectedFormalSpecsForDesign state key selected
+  match candidates with
   | [spec] => .ok spec
   | [] => .error "No current formal selection has that assurance key."
-  | _ => .error "The current formal selection is ambiguous."
+  | _ =>
+      .error
+        "The current formal selection is ambiguous; select its Design key."
 
-private def printFormalPlanField (state : Kernel.State) (key field : String) :
+private def printFormalPlanField (state : Kernel.State) (key field : String)
+    (designKey : Option String := none) (preview : Bool := false) :
     IO Unit := do
-  let spec ← match currentFormalSpec state key with
+  let spec ← match currentFormalSpec state key designKey preview with
     | .ok spec => pure spec
     | .error reason => throw <| IO.userError reason
   match field with
@@ -543,15 +641,31 @@ private def printFormalPlanField (state : Kernel.State) (key field : String) :
       match state.design.designItems.find? (·.ref == spec.design) with
       | some item => IO.println item.statement
       | none => throw <| IO.userError "The selected design statement is unavailable."
+  | "design-key" => IO.println spec.design.key
+  | "design-version" => IO.println spec.design.version
   | _ => throw <| IO.userError "Unknown formal plan field."
+
+private def formalResultIdentityJson
+    (identity : Evidence.FormalResultIdentity) : String :=
+  (Lean.Json.mkObj
+    [("assurance", .str identity.key),
+     ("design", .str identity.design.key),
+     ("version", Lean.toJson identity.design.version),
+     ("result", .str identity.previewIdentity)]).compress
 
 private def printCurrentFormalArtifacts (state : Kernel.State) : IO Unit := do
   for result in Kernel.formalResultsRequiringVerification state do
+    let identity := formalResultIdentityJson result.identity
     for artifact in result.checkedArtifacts do
-      IO.println s!"{result.spec.key}\t{artifact}"
+      IO.println s!"{identity}\t{artifact}"
 
 def run (arguments : List String) : IO Unit := do
   let path ← statePath
+  -- Validate every projection input before any mutation can commit. All
+  -- post-mutation rendering below reuses this immutable observation.
+  let stale ← staleFormalResultIdentities
+  let printStatus := fun state => printStatusWithStale state stale
+  let printNext := fun state => printNextWithStale state stale
   match arguments with
   | ["--version"] =>
       IO.println "agent-workbench 0.2.3"
@@ -564,10 +678,28 @@ def run (arguments : List String) : IO Unit := do
         IO.println "match"
       else
         throw <| IO.userError "The product observation differs from the Lean oracle."
-  | ["formal-plan", key, field] =>
+  | ["validate-json-file", selected] =>
+      let _ ← readJson (System.FilePath.mk selected)
+      IO.println "valid"
+  | ["formal-plan", key, "completion", field] =>
       printFormalPlanField (← load path) key field
+  | ["formal-plan", key, designKey, "completion", field] =>
+      printFormalPlanField (← load path) key field (some designKey)
+  | ["formal-plan", key, designKey, "preview", field] =>
+      printFormalPlanField (← load path) key field (some designKey) true
   | ["formal-artifacts"] =>
       printCurrentFormalArtifacts (← load path)
+  | ["remaining-stale-formal-identities", key, designKey, version] =>
+      let designVersion ← match version.toNat? with
+        | some selected => pure selected
+        | none =>
+            throw <| IO.userError
+              "The selected formal Design version is invalid."
+      for identity in ← staleFormalResultIdentities do
+        if identity.key != key ||
+            identity.design != ({ key := designKey, version := designVersion } :
+              DesignRef) then
+          IO.println (formalResultIdentityJson identity)
   | ["state-revision"] =>
       IO.println (← Adapter.SQLite.inspect path >>= fun
         | .ok snapshot => pure snapshot.revision
@@ -587,7 +719,7 @@ def run (arguments : List String) : IO Unit := do
       let state ← match initialState token outcome firstTask with
         | .ok state => pure state
         | .error reason => throw <| IO.userError reason
-      let intent := String.intercalate "\u001f" arguments
+      let intent := mutationIntent arguments
       match ← Adapter.SQLite.initializeStore path token intent state with
       | .ok _ => printStatus state
       | .error .uninitialized =>
@@ -644,12 +776,26 @@ def run (arguments : List String) : IO Unit := do
         Kernel.addEvidence state key observation method environment
           (commaSeparated inputs) acceptanceCondition trustedBoundary artifactIdentity
       printNext state
+  | ["add-evidence", key, observation, method, environment, inputs,
+      acceptanceCondition, trustedBoundary, artifactIdentity, designKey] =>
+      let state ← applyMutation path arguments fun state =>
+        Kernel.addEvidence state key observation method environment
+          (commaSeparated inputs) acceptanceCondition trustedBoundary artifactIdentity
+          (some designKey)
+      printNext state
   | ["record-evidence", key, observedValue, result] =>
       let passed ← match parsePassed result with
         | .ok passed => pure passed
         | .error reason => throw <| IO.userError reason
       let state ← applyMutation path arguments fun state =>
         Kernel.recordEvidence state key observedValue passed
+      printNext state
+  | ["record-evidence", key, observedValue, result, designKey] =>
+      let passed ← match parsePassed result with
+        | .ok passed => pure passed
+        | .error reason => throw <| IO.userError reason
+      let state ← applyMutation path arguments fun state =>
+        Kernel.recordEvidence state key observedValue passed (some designKey)
       printNext state
   | ["select-formal", key, designKey, oracle, modules, surfaces,
       adapter, cases] =>
@@ -660,19 +806,57 @@ def run (arguments : List String) : IO Unit := do
           (commaSeparated modules) (commaSeparated surfaces)
           (commaSeparated cases) selectedAdapter
       printNext state
-  | ["record-formal-result", key, tool, oracle, closure, artifacts,
+  | ["record-formal-result", key, designKey, designVersion, tool, oracle,
+      closure, artifacts,
       conformance, semanticPreview, previewIdentity] =>
+      let version ← match designVersion.toNat? with
+        | some version => pure version
+        | none =>
+            throw <| IO.userError "The selected formal Design version is invalid."
       let oracleArtifact := if oracle == "-" then none else some oracle
       let conformancePassed ← match conformance with
         | "none" => pure none
         | "pass" => pure (some true)
         | "fail" => pure (some false)
+        | "execution-failure" => pure none
         | _ =>
-            throw <| IO.userError "Formal conformance must be none, pass, or fail."
+            throw <| IO.userError
+              "Formal conformance must be none, pass, fail, or execution-failure."
       let state ← applyMutation path arguments fun state =>
         Kernel.recordFormalResult state key tool oracleArtifact
           (commaSeparated closure) (commaSeparated artifacts)
           conformancePassed semanticPreview previewIdentity
+          (some designKey) (some version)
+      printNext state
+  | ["record-formal-result-files", key, designKey, designVersion, tool, oracle, closureFile,
+      artifactsFile, conformance, semanticPreviewFile, previewIdentity] =>
+      let version ← match designVersion.toNat? with
+        | some version => pure version
+        | none =>
+            throw <| IO.userError "The selected formal Design version is invalid."
+      let oracleArtifact := if oracle == "-" then none else some oracle
+      let conformancePassed ← match conformance with
+        | "none" => pure none
+        | "pass" => pure (some true)
+        | "fail" => pure (some false)
+        | "execution-failure" => pure none
+        | _ =>
+            throw <| IO.userError
+              "Formal conformance must be none, pass, fail, or execution-failure."
+      let checkedClosure ← readBoundedFormalLines
+        (System.FilePath.mk closureFile) "checked formal closure"
+      let checkedArtifacts ← readBoundedFormalLines
+        (System.FilePath.mk artifactsFile) "checked formal artifacts"
+      let semanticPreview ← readBoundedFormalFile
+        (System.FilePath.mk semanticPreviewFile) "formal semantic preview"
+      let semanticIntent :=
+        formalResultMutationIntentArguments key designKey designVersion tool oracle
+          conformance previewIdentity checkedClosure checkedArtifacts
+          semanticPreview
+      let state ← applyMutation path semanticIntent fun state =>
+        Kernel.recordFormalResult state key tool oracleArtifact
+          checkedClosure checkedArtifacts conformancePassed semanticPreview
+          previewIdentity (some designKey) (some version)
       printNext state
   | "record-design" :: key :: roleName :: assuranceName :: statement ::
       dependencyKeys =>
@@ -711,8 +895,10 @@ def run (arguments : List String) : IO Unit := do
   | ["accept-design", key, reason] =>
       let token ← privateToken
       let context ← sourceContext token
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
         Kernel.acceptDesign state key (callerDecision context reason)
+          none stale
       printNext state
   | ["accept-complex-design", key, reason, necessity, simpler, scope, cost] =>
       let token ← privateToken
@@ -722,9 +908,10 @@ def run (arguments : List String) : IO Unit := do
           simplerAlternativeInsufficient := simpler
           boundedScope := scope
           maintenanceCost := cost }
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
         Kernel.acceptDesign state key (callerDecision context reason)
-          (some rationale)
+          (some rationale) stale
       printNext state
   | ["retire-design", key, reason] =>
       let token ← privateToken
@@ -784,8 +971,9 @@ def run (arguments : List String) : IO Unit := do
           (callerDecision context "Interrupt the current outcome.")
       printNext state
   | ["return"] =>
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
-        match Kernel.returnFromInterruption state with
+        match Kernel.returnFromInterruption state stale with
         | .accepted returned => .ok returned
         | .replanRequired _ =>
             .error "The saved outcome changed; a caller replan decision is required."
@@ -806,8 +994,9 @@ def run (arguments : List String) : IO Unit := do
         Kernel.requestReview state key artifact purpose
       printNext state
   | ["request-design-review", key, designKey] =>
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
-        Kernel.requestDesignReview state key designKey
+        Kernel.requestDesignReview state key designKey stale
       printNext state
   | ["record-review", reviewKey, reviewer, observationKey, kindName,
       complexityName, summary, evidence] =>
@@ -842,9 +1031,10 @@ def run (arguments : List String) : IO Unit := do
       reason] =>
       let token ← privateToken
       let context ← sourceContext token
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
         Kernel.adoptReviewProposal state reviewKey observationKey successorKey
-          (callerDecision context reason)
+          (callerDecision context reason) none stale
       printNext state
   | ["adopt-complex-review-proposal", reviewKey, observationKey, successorKey,
       reason, necessity, simpler, scope, cost] =>
@@ -855,9 +1045,10 @@ def run (arguments : List String) : IO Unit := do
           simplerAlternativeInsufficient := simpler
           boundedScope := scope
           maintenanceCost := cost }
+      let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state =>
         Kernel.adoptReviewProposal state reviewKey observationKey successorKey
-          (callerDecision context reason) (some rationale)
+          (callerDecision context reason) (some rationale) stale
       printNext state
   | ["correct-review", mistakenKey, intendedOutcome, intendedTask,
       intendedArtifact, reason] =>
@@ -870,10 +1061,12 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | ["complete"] =>
       let state ← load path
-      if Kernel.currentlyComplete state state.focus.work then
+      let stale ← staleFormalResultIdentities
+      if Kernel.currentlyComplete state state.focus.work stale then
         IO.println "The current outcome is complete."
-      else
+      else do
         printNext state
+        IO.Process.exit 1
   | _ =>
       throw <| IO.userError
         "Unknown project action."

@@ -5,6 +5,17 @@ one outcome, the exact design versions and Task it examined, its purpose, and
 its artifact. Later bookkeeping revisions of the same outcome do not invalidate
 it; changing an examined design or Task does. Its result cannot complete
 another outcome.
+Reusing a Review key in another outcome starts a separate Work-scoped lineage;
+recording and disposition always resolve the exact ReviewRef selected by the
+focused completion boundary.
+
+A resumed reviewer retains context only to continue the same review lineage.
+A fresh review uses a different reviewer execution without inherited
+implementation or prior-review context. A resumed remediation confirmation is
+useful evidence, but it does not satisfy a selected fresh-review boundary.
+Workbench persists exact scope and reviewer identity; the Skill owns correct
+external reviewer orchestration because product state cannot inspect hidden
+agent context.
 
 The caller records one disposition and a reason for each observation:
 `accepted`, `rejected`, `rescoped`, `deferred`, or `needs-evidence`.

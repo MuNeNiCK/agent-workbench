@@ -36,7 +36,11 @@ does not need a Phase.
 
 Formal assurance records the exact checked Lean modules, imported closure,
 oracle, generated artifacts, and declared product implementation surfaces. If a
-declared surface changes, the public Skill requires `formal-check` again.
+declared surface changes, the affected assurance becomes pending and the public
+Skill requires `formal-check` again. `status`, `next`, and unrelated project
+work remain available. Stale-currentness identities cross the private process
+boundary through a bounded file, so their count cannot consume a single
+environment-string slot and disable those operations.
 Pure logical contracts select Lean contract/proof modules plus a project-domain
 oracle that exposes concrete meaning examples. External product conformance
 additionally selects product surfaces and an input-only adapter/case set.

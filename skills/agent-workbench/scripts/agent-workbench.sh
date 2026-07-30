@@ -52,8 +52,10 @@ operation() {
 
   intent="$(
     {
-      printf '%s\037' "$executor"
-      printf '%s\037' "$@"
+      printf '%s\000' "$executor"
+      for argument in "$@"; do
+        printf '%s\000' "$argument"
+      done
     } | sha256sum | sed -n 's/[[:space:]].*//p'
   )"
   if test -s "$pending"; then
@@ -122,8 +124,10 @@ preview_formal() {
   mkdir -p "$private_dir"
   public_intent="$(
     {
-      printf '%s\037' "preview-formal"
-      printf '%s\037' "$@"
+      printf '%s\000' "preview-formal"
+      for argument in "$@"; do
+        printf '%s\000' "$argument"
+      done
     } | sha256sum | sed -n 's/[[:space:]].*//p'
   )"
   stage="select"
@@ -144,7 +148,8 @@ preview_formal() {
   if test "$stage" = "select"; then
     if (cd "$root" &&
         AGENT_WORKBENCH_PENDING_FILE="pending-preview-select" \
-          operation "$runtime" select-formal "$assurance" "$design" "$@"); then
+          with_stale_formal_result_identities "$runtime" "$root" \
+            operation "$runtime" select-formal "$assurance" "$design" "$@"); then
       printf '%s\n%s\n' "$public_intent" "check" > "$progress_tmp"
       mv "$progress_tmp" "$progress"
     else
@@ -155,7 +160,9 @@ preview_formal() {
   fi
   if (cd "$root" &&
       AGENT_WORKBENCH_PENDING_FILE="pending-preview-check" \
-        operation "$script_dir/formal-check.sh" "$runtime" "$assurance"); then
+        with_stale_formal_result_identities "$runtime" "$root" \
+          operation "$script_dir/formal-check.sh" "$runtime" "$assurance" \
+            "$design" "preview"); then
     rm -f "$progress"
   else
     code=$?
@@ -164,36 +171,83 @@ preview_formal() {
   fi
 }
 
-verify_formal_artifacts() {
+inspect_stale_formal_result_identities() {
+  root="$1"
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r identity artifact; do
+    path="${artifact%=sha256:*}"
+    expected="${artifact##*=sha256:}"
+    case "$path" in
+      @formal-tool/*) continue ;;
+    esac
+    if test -z "$identity" || test "$path" = "$artifact" ||
+        ! printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$' ||
+        ! test -f "$root/$path"; then
+      printf '%s\n' "$identity"
+      continue
+    fi
+    actual_line="$(sha256sum "$root/$path")" || return $?
+    actual="${actual_line%% *}"
+    if test "$actual" != "$expected"; then
+      printf '%s\n' "$identity"
+    fi
+  done
+}
+
+stale_formal_result_identities() {
   runtime="$1"
   root="$2"
+  output="$3"
   state="$root/.agent-workbench/state.sqlite3"
-  records="$(
-    AGENT_WORKBENCH_STATE_PATH="$state" "$runtime" formal-artifacts
-  )"
-  test -n "$records" || return 0
-  tab="$(printf '\t')"
-  printf '%s\n' "$records" |
-    while IFS="$tab" read -r assurance artifact; do
-      path="${artifact%=sha256:*}"
-      expected="${artifact##*=sha256:}"
-      case "$path" in
-        @formal-tool/*) continue ;;
-      esac
-      if test -z "$assurance" || test "$path" = "$artifact" ||
-          ! printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$' ||
-          ! test -f "$root/$path"; then
-        echo "agent-workbench: formal assurance '$assurance' is stale; run formal-check $assurance" >&2
-        exit 1
-      fi
-      actual="$(
-        sha256sum "$root/$path" | sed -n 's/[[:space:]].*//p'
-      )"
-      if test "$actual" != "$expected"; then
-        echo "agent-workbench: formal assurance '$assurance' is stale; run formal-check $assurance" >&2
-        exit 1
-      fi
-    done
+  temporary="$(mktemp -d)"
+  artifacts="$temporary/formal-artifacts"
+  inspected="$temporary/inspected"
+  sorted="$temporary/sorted"
+  complete="$temporary/complete"
+  if AGENT_WORKBENCH_STATE_PATH="$state" "$runtime" formal-artifacts \
+      > "$artifacts" &&
+      inspect_stale_formal_result_identities "$root" \
+        < "$artifacts" > "$inspected" &&
+      sort -u "$inspected" > "$sorted" &&
+      sed '/^$/d' "$sorted" > "$complete" &&
+      mv "$complete" "$output"; then
+    code=0
+  else
+    code=$?
+  fi
+  rm -f "$artifacts" "$inspected" "$sorted" "$complete"
+  rmdir "$temporary"
+  return "$code"
+}
+
+with_stale_formal_result_identities() {
+  runtime="$1"
+  root="$2"
+  shift 2
+  stale_file="$(mktemp)"
+  state="$root/.agent-workbench/state.sqlite3"
+  if test -f "$state"; then
+    if stale_formal_result_identities "$runtime" "$root" "$stale_file"; then
+      :
+    else
+      code=$?
+      rm -f "$stale_file"
+      return "$code"
+    fi
+  else
+    : > "$stale_file"
+  fi
+  if test "${AGENT_WORKBENCH_WARN_STALE:-false}" = true &&
+      test -s "$stale_file"; then
+    echo "agent-workbench: formal assurance is stale; the affected claim requires formal-check" >&2
+  fi
+  if AGENT_WORKBENCH_STALE_FORMAL_RESULT_IDENTITIES_FILE="$stale_file" "$@"; then
+    code=0
+  else
+    code=$?
+  fi
+  rm -f "$stale_file"
+  return "$code"
 }
 
 run() {
@@ -205,23 +259,26 @@ run() {
       ;;
     status|next|complete)
       root="$(project_root)"
-      verify_formal_artifacts "$runtime" "$root"
       AGENT_WORKBENCH_STATE_PATH="$root/.agent-workbench/state.sqlite3" \
-        exec "$runtime" "$@"
+        AGENT_WORKBENCH_WARN_STALE=true \
+        with_stale_formal_result_identities "$runtime" "$root" "$runtime" "$@"
       ;;
-    request-design-review|accept-design|accept-complex-design)
+    request-design-review|accept-design|accept-complex-design|adopt-review-proposal|adopt-complex-review-proposal)
       root="$(project_root)"
-      verify_formal_artifacts "$runtime" "$root"
-      operation "$runtime" "$@"
+      with_stale_formal_result_identities "$runtime" "$root" \
+        operation "$runtime" "$@"
       ;;
-    select-formal|record-formal-result|formal-plan|formal-artifacts|state-revision|state-context|compare-json-files)
+    select-formal|record-formal-result|record-formal-result-files|formal-plan|formal-artifacts|remaining-stale-formal-identities|state-revision|state-context|compare-json-files|validate-json-file)
       echo "agent-workbench: this action is private to the verified formal route" >&2
       exit 1
       ;;
     formal-check)
       shift
+      test "$#" -ge 1 && test "$#" -le 2
       root="$(project_root)"
-      (cd "$root" && operation "$script_dir/formal-check.sh" "$runtime" "$@")
+      (cd "$root" &&
+        with_stale_formal_result_identities "$runtime" "$root" \
+          operation "$script_dir/formal-check.sh" "$runtime" "$@")
       ;;
     preview-formal)
       shift
@@ -229,7 +286,9 @@ run() {
       preview_formal "$runtime" "$@"
       ;;
     *)
-      operation "$runtime" "$@"
+      root="$(project_root)"
+      with_stale_formal_result_identities "$runtime" "$root" \
+        operation "$runtime" "$@"
       ;;
   esac
 }

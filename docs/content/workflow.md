@@ -47,7 +47,11 @@ source.
 ## Validate proportionally
 
 For an external observation, use `add-evidence`, perform the stated method, and
-record the actual result with `record-evidence`.
+record the actual result with `record-evidence`. If more than one selected
+Design uses the same Evidence key, provide the intended Design key to both
+operations so each exact obligation remains independently satisfiable.
+`status` and `next` include the exact Design selector required to resolve a
+pending same-key assurance.
 
 For formal behavior:
 
@@ -61,7 +65,8 @@ For formal behavior:
    exact accepted design;
 6. when the unchanged product disagrees with a corrected oracle, retain that
    counterexample, correct the product, and rerun
-   `formal-check <assurance-key>`; and
+   `formal-check <assurance-key> [design-key]` (the Design key resolves a
+   same-key assurance binding); and
 7. rerun the same check after any later declared product-surface change.
 
 The check reads the selected target from project memory. Input-only cases go to
@@ -83,9 +88,13 @@ explicit necessity, simpler-alternative analysis, bounded scope, and
 maintenance cost before adoption.
 
 `interrupt` atomically saves the current Work and Task before starting urgent
-work. `return` restores that point when its assumptions remain current.
+work. Finish the urgent Work's selected boundary before `return`; an unfinished
+interrupting Work cannot be abandoned through that route. `return` restores
+the saved point when its assumptions remain current.
 When they changed, `replan-return` requires the caller to select the current
-outcome and record a reason.
+outcome and record a reason. A caller may also use that explicit operation to
+replace a pending return plan without first completing the interrupting Work;
+`return` itself never abandons unfinished Work.
 For independent work without automatic return, use `start-work`; use
 `switch-work` to return by outcome description.
 `correct-review` moves no historical result; it removes the mistaken
@@ -93,4 +102,5 @@ completion selection and requests a new review for the intended outcome,
 current Task and Design scope, and intended artifact.
 
 Run `complete`. It reports completion only when every current positive boundary
-member is satisfied; otherwise `next` names the missing project result.
+member is satisfied and exits unsuccessfully otherwise; `next` names the
+missing project result.
