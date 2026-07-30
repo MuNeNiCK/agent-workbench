@@ -1501,6 +1501,30 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (relatedDesign ==
       .design ({ key := "relation-design", version := 0 } : DesignRef))
     "Design relation did not freeze the exact current candidate"
+  let acceptedRelationDesign :=
+    acceptedItem "ambiguous-relation-design" "Accepted relation meaning."
+  let proposedRelationDesign : Design.Item :=
+    { acceptedRelationDesign with
+      ref := { key := "ambiguous-relation-design", version := 1 }
+      predecessor := some acceptedRelationDesign.ref
+      statement := "Unaccepted successor relation meaning."
+      source := source "ambiguous-relation-design-successor" .agent
+      authority := .unaccepted }
+  let ambiguousRelationDesignState :=
+    { initialState with
+      design :=
+        { effects :=
+            ([{ source := acceptedRelationDesign.source
+                content := .design acceptedRelationDesign },
+              { source := proposedRelationDesign.source
+                content := .design proposedRelationDesign }] :
+              List Design.Effect) } }
+  match Kernel.resolveKPTRelation ambiguousRelationDesignState
+      (.design "ambiguous-relation-design") with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "a bare Design relation retargeted across accepted and proposed meanings"
   let deviationPending ← unwrap
     (Kernel.addEvidence corrected "deviated-evidence"
       "Observe the actual recommended route." "run exact argv"

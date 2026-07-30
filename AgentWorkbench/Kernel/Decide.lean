@@ -926,14 +926,17 @@ def resolveKPTRelation (state : State)
       | [] => .error "No current applicable Command Profile matches the KPT relation."
       | _ => .error "The KPT Command Profile relation is ambiguous."
   | .design key =>
-      let candidates := state.design.designItems.filter fun item =>
+      let acceptedCurrent := (currentDesignItems state).filter fun item =>
+        item.ref.key == key
+      let unacceptedCurrent := state.design.designItems.filter fun item =>
         item.ref.key == key &&
           !(state.design.designItems.any fun successor =>
             successor.ref.key == key &&
               successor.ref.version > item.ref.version) &&
           match item.authority with
-          | .retiredByCaller _ => false
-          | _ => true
+          | .unaccepted => true
+          | _ => false
+      let candidates := acceptedCurrent ++ unacceptedCurrent
       match candidates with
       | [item] => .ok (.design item.ref)
       | [] => .error "No current DesignItem matches the KPT relation."
@@ -1466,12 +1469,10 @@ def recordDesign
     { state with
       design := { effects := state.design.effects ++ [effect] } }
 
-def acceptDesign (state : State) (key : String)
-    (decision : CallerDecision)
-    (complexity : Option Design.ComplexityRationale := none)
+def designCandidateForAcceptance (state : State) (key : String)
     (staleFormalResultIdentities :
       List Evidence.FormalResultIdentity := []) :
-    Except String State := do
+    Except String Design.Item := do
   let candidate ← match
       (state.design.designItems.filter (·.ref.key == key)).reverse.head? with
     | some item =>
@@ -1504,23 +1505,36 @@ def acceptDesign (state : State) (key : String)
         true
   if !formalReady then
     throw "The proposed formal design requires a current verified formal result before caller acceptance."
+  pure candidate
+
+def stateWithAcceptedDesign (state : State) (candidate accepted : Design.Item) :
+    State :=
+  { state with
+    design :=
+      { effects := state.design.effects.map fun effect =>
+          match effect.content with
+          | .design item =>
+              if item.ref == candidate.ref then
+                { effect with content := .design accepted }
+              else
+                effect
+          | _ => effect } }
+
+def acceptDesign (state : State) (key : String)
+    (decision : CallerDecision)
+    (complexity : Option Design.ComplexityRationale := none)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) :
+    Except String State := do
+  let candidate ←
+    designCandidateForAcceptance state key staleFormalResultIdentities
   let accepted : Design.Item :=
     { candidate with
       complexityRationale := complexity
       authority := .acceptedByCaller decision }
   if !accepted.wellFormed then
     throw "The caller acceptance is invalid."
-  pure
-    { state with
-      design :=
-        { effects := state.design.effects.map fun effect =>
-            match effect.content with
-            | .design item =>
-                if item.ref == candidate.ref then
-                  { effect with content := .design accepted }
-                else
-                  effect
-            | _ => effect } }
+  pure (stateWithAcceptedDesign state candidate accepted)
 
 def acceptDesignWithKPT
     (state : State) (designKey : String)
