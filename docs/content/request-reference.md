@@ -36,3 +36,5 @@ profile, deviation, KPT, adoption, and atomic-conclusion actions.
 Command Profile argv is rendered as a lossless JSON vector. KPT actions carry
 a stable author name separate from per-action source provenance, and
 `kpt-history` exposes immutable succession and relations in project language.
+Evidence profile selection records a caller reason and cannot silently remove
+a required same-lineage binding. KPT adoption names the proposal author.

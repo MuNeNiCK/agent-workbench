@@ -108,6 +108,18 @@ def testEvidenceFacts : IO Unit := do
   let result : Evidence.Result :=
     { spec, observedValue := "42 ms", passed := true }
   expect spec.wellFormed "Evidence specification lost required observation facts"
+  let selection :=
+    decision "evidence-profile-selection" "Select the exact accepted route."
+  let selected :=
+    { spec with
+      commandProfile := some { key := "release-check", version := 0 }
+      commandProfileDecision := some selection }
+  expect selected.wellFormed
+    "an exact Evidence Command Profile selection was not well formed"
+  expect (!({ selected with commandProfileDecision := none }).wellFormed)
+    "an Evidence Command Profile acquired no caller selection authority"
+  expect (!({ spec with commandProfileDecision := some selection }).wellFormed)
+    "a caller selection decision existed without an exact Command Profile"
   expect result.wellFormed "Evidence result lost the selected observed value"
 
 def testComplexityDecisionFacts : IO Unit := do

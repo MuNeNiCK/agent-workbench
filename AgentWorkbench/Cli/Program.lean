@@ -567,6 +567,10 @@ private def printStatusWithStale (state : Kernel.State)
           | none => pure ()
           | some selected =>
               IO.println s!"    Command Profile: {selected.key}@{selected.version}"
+              match spec.commandProfileDecision with
+              | none => pure ()
+              | some decision =>
+                  IO.println s!"    Profile selection: caller-owned ({decision.reason})"
       let reviews := state.reviewRequests.filter (Kernel.reviewRequestCurrent state)
       unless reviews.isEmpty do
         IO.println "Current reviews:"
@@ -977,13 +981,13 @@ def run (arguments : List String) : IO Unit := do
         Kernel.recordKPT state (source context .agent) author none key
           category scope statement selectedRelation
       printNext state
-  | ["accept-kpt", key, scopeName, reason] =>
+  | ["accept-kpt", author, key, scopeName, reason] =>
       let token ← privateToken
       let context ← sourceContext token
       let accepted := callerDecision context reason
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
-        Kernel.acceptKPT state key scope accepted
+        Kernel.acceptKPT state key scope author accepted
       printNext state
   | "record-kpt-command-profile" :: author :: kptKey :: categoryName ::
       scopeName :: statement :: relation :: profileKey :: purpose ::
@@ -1060,13 +1064,18 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | ["add-evidence", key, observation, method, environment, inputs,
       acceptanceCondition, trustedBoundary, artifactIdentity, designKey,
-      commandProfileKey, profileScopeName] =>
+      commandProfileKey, profileScopeName, selectionReason] =>
       let selectedDesign := if designKey == "-" then none else some designKey
+      let token ← privateToken
+      let context ← sourceContext token
+      let selected :=
+        callerDecision context selectionReason
       let state ← applyMutation path arguments fun state => do
         let profileScope ← parseMemoryScope state profileScopeName
         Kernel.addEvidence state key observation method environment
           (commaSeparated inputs) acceptanceCondition trustedBoundary artifactIdentity
           selectedDesign (some commandProfileKey) (some profileScope)
+          (some selected)
       printNext state
   | ["record-evidence", key, observedValue, result] =>
       let passed ← match parsePassed result with

@@ -35,13 +35,16 @@ project-language description.
 
 Command Profiles record exact argv and optional project-relative cwd; they do
 not execute commands. Project and Work profiles remain jointly applicable
-until an EvidenceSpec selects one exact accepted profile.
+until an EvidenceSpec selects one exact accepted profile with an explicit
+caller reason. A later same-lineage EvidenceSpec cannot remove a required
+binding without another exact caller-selected accepted profile.
 
 Use KPT for durable `keep`, `problem`, and `try` learning that should survive
 restart without becoming a completion requirement. Caller-owned KPT stays
 visible when an agent proposes a correction. Pass the same stable author name
 for later corrections by that author; operation tokens remain separate source
-provenance. Use `kpt-history` to recover the immutable succession and
+provenance. Name that author when adopting the exact proposal against the
+current caller entry. Use `kpt-history` to recover the immutable succession and
 relations. Use an atomic KPT conclusion
 action when the same source also states an instruction, Design candidate, or
 Command Profile.

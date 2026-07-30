@@ -49,8 +49,16 @@ def testPersistence : IO Unit := do
         profileDecision.source (some profileDecision) "stored-check"
         "verify persisted state" .project ["lake", "test"] none .required)
       "stored Command Profile fixture failed"
+    let withEvidence ← unwrap
+      (AgentWorkbench.Kernel.addEvidence withProfile "stored-evidence"
+        "Observe the persisted route." "run exact argv" "host" []
+        "passes" "process" "sha256:stored" none (some "stored-check")
+        (some .project)
+        (some (decision "stored-selection"
+          "Persist the exact caller profile selection.")))
+      "stored Evidence Command Profile selection failed"
     let withKPT ← unwrap
-      (AgentWorkbench.Kernel.recordKPT withProfile profileDecision.source
+      (AgentWorkbench.Kernel.recordKPT withEvidence profileDecision.source
         "caller" (some profileDecision) "stored-lesson" .keep .project
         "The selected profile survives restart." none)
       "stored KPT fixture failed"
@@ -63,8 +71,9 @@ def testPersistence : IO Unit := do
       "Command Profile and KPT reopen failed"
     expect (memoryReopened == memoryCommitted &&
         memoryReopened.state.commandProfiles == withKPT.commandProfiles &&
+        memoryReopened.state.evidenceSpecs == withKPT.evidenceSpecs &&
         memoryReopened.state.kpt == withKPT.kpt)
-      "SQLite did not preserve exact Command Profile and KPT facts"
+      "SQLite did not preserve exact Evidence selection, Command Profile, and KPT facts"
 
     let committed ← expectMutation
       (← Adapter.SQLite.mutate path "neutral-change" "change"

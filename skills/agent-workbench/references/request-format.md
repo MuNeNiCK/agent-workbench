@@ -44,7 +44,7 @@ record-kpt <author> <key> <keep|problem|try> <project|work>
   <statement> <relation|->
 propose-kpt <author> <key> <keep|problem|try> <project|work>
   <statement> <relation|->
-accept-kpt <key> <project|work> <reason>
+accept-kpt <author> <key> <project|work> <reason>
 record-kpt-command-profile <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation|-> <profile-key> <purpose>
   <required|recommended|discouraged> <cwd|-> <argv>...
@@ -57,7 +57,7 @@ kpt-history <key> <project|work>
 
 add-evidence <key> <observation> <method> <environment> <input,...|->
   <acceptance-condition> <trusted-boundary> <artifact>
-  [design-key|- command-profile-key project|work]
+  [design-key|- command-profile-key project|work caller-selection-reason]
 record-evidence <key> <observed-value> <pass|fail> [design-key]
 
 preview-formal <assurance-key> <design-key> <oracle-module> <module,...>

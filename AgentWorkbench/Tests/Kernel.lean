@@ -941,6 +941,58 @@ def testGeneralLineageAndPublicRecovery : IO Unit := do
     "three pending Tasks left an unreachable completion member"
 
 def testEvidenceAndReviewStayOnSelectedWork : IO Unit := do
+  let workRequiredDecision :=
+    decision "work-required-profile" "Accept the required Work route."
+  let workRequired ← unwrap
+    (Kernel.recordCommandProfile initialState workRequiredDecision.source
+      (some workRequiredDecision) "work-required-check" "observe work"
+      .project ["tool", "required"] none .required)
+    "Work-basis required profile failed"
+  let workBound ← unwrap
+    (Kernel.addEvidence workRequired "required-work-evidence"
+      "Observe the required Work route." "run exact argv" "host" []
+      "passes" "process" "sha256:required-work" none
+      (some "work-required-check") (some .project)
+      (some (decision "select-work-required"
+        "Select the exact required Work route.")))
+    "Work-basis required Evidence binding failed"
+  let workCorrectionDecision :=
+    decision "correct-work-required" "Correct the required Work route."
+  let workCorrected ← unwrap
+    (Kernel.recordCommandProfile workBound workCorrectionDecision.source
+      (some workCorrectionDecision) "work-required-check" "observe work"
+      .project ["tool", "corrected"] none .required)
+    "Work-basis required profile correction failed"
+  match Kernel.addEvidence workCorrected "required-work-evidence"
+      "Observe an unbound replacement." "run another route" "host" []
+      "passes" "process" "sha256:unbound-work" with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "an unbound Work-basis Evidence superseded a required profile binding"
+  let workAlternateDecision :=
+    decision "work-alternate-profile" "Accept the exact alternate Work route."
+  let workAlternate ← unwrap
+    (Kernel.recordCommandProfile workCorrected workAlternateDecision.source
+      (some workAlternateDecision) "work-alternate-check" "observe work"
+      .project ["tool", "alternate"] none .recommended)
+    "Work-basis alternate profile failed"
+  let workRebound ← unwrap
+    (Kernel.addEvidence workAlternate "required-work-evidence"
+      "Observe the accepted alternate." "run exact argv" "host" []
+      "passes" "process" "sha256:alternate-work" none
+      (some "work-alternate-check") (some .project)
+      (some (decision "select-work-alternate"
+        "Select the exact caller-accepted alternate.")))
+    "caller-selected Work-basis alternate was rejected"
+  expect
+    (workRebound.evidenceSpecs.reverse.head?.any fun spec =>
+      spec.commandProfile ==
+          some ({ key := "work-alternate-check", version := 0 } :
+            CommandProfileRef) &&
+        spec.commandProfileDecision.isSome)
+    "Work-basis alternate lost its exact binding or caller selection"
+
   let workEvidence ← unwrap
     (Kernel.addEvidence initialState "shared"
       "Observe the Work boundary." "observe work" "host" []
@@ -962,6 +1014,36 @@ def testEvidenceAndReviewStayOnSelectedWork : IO Unit := do
     (Kernel.addTaskForDesign withDesign "implement evidence design"
       ["design-evidence"])
     "Design Evidence Task selection failed"
+  let designRequiredDecision :=
+    decision "design-required-profile" "Accept the required Design route."
+  let designRequired ← unwrap
+    (Kernel.recordCommandProfile tasked designRequiredDecision.source
+      (some designRequiredDecision) "design-required-check" "observe design"
+      .project ["tool", "design-required"] none .required)
+    "Design-basis required profile failed"
+  let designBound ← unwrap
+    (Kernel.addEvidence designRequired "shared" "Observe the Design basis."
+      "run exact argv" "host" [] "passes" "process"
+      "sha256:required-design" (some "design-evidence")
+      (some "design-required-check") (some .project)
+      (some (decision "select-design-required"
+        "Select the exact required Design route.")))
+    "Design-basis required Evidence binding failed"
+  let designCorrectionDecision :=
+    decision "correct-design-required" "Correct the required Design route."
+  let designCorrected ← unwrap
+    (Kernel.recordCommandProfile designBound designCorrectionDecision.source
+      (some designCorrectionDecision) "design-required-check" "observe design"
+      .project ["tool", "design-corrected"] none .required)
+    "Design-basis required profile correction failed"
+  match Kernel.addEvidence designCorrected "shared"
+      "Observe an unbound Design replacement." "run another route" "host" []
+      "passes" "process" "sha256:unbound-design"
+      (some "design-evidence") with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "an unbound Design-basis Evidence superseded a required profile binding"
   let selected ← unwrap
     (Kernel.addEvidence tasked "shared" "Observe the Design basis."
       "observe design" "host" [] "design passes" "process" "sha256:design"
@@ -1241,7 +1323,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   match Kernel.addEvidence sharedScopes "ambiguous-shared"
       "Observe a shared route." "run exact argv" "supported host" []
       "passes" "ordinary process" "sha256:ambiguous" none
-      (some "shared-check") with
+      (some "shared-check") none
+      (some (decision "ambiguous-selection" "Select one exact shared route.")) with
   | .error _ => pure ()
   | .ok _ =>
       throw <| IO.userError
@@ -1250,7 +1333,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (Kernel.addEvidence sharedScopes "selected-shared"
       "Observe the Work shared route." "run exact argv" "supported host" []
       "passes" "ordinary process" "sha256:shared-work" none
-      (some "shared-check") (some (.work sharedScopes.focus.work.key)))
+      (some "shared-check") (some (.work sharedScopes.focus.work.key))
+      (some (decision "shared-selection" "Select the exact Work route.")))
     "same-key Work profile selection failed"
   expect
     (selectedSharedWork.evidenceSpecs.reverse.head?.bind
@@ -1265,7 +1349,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     "agent Command Profile proposal failed"
   match Kernel.addEvidence proposed "proposal-evidence" "Observe proposal."
       "run selected argv" "supported host" [] "passes"
-      "ordinary process" "sha256:proposal" none (some "agent-check") with
+      "ordinary process" "sha256:proposal" none (some "agent-check") none
+      (some (decision "proposal-selection" "Select the proposed route.")) with
   | .error _ => pure ()
   | .ok _ =>
       throw <| IO.userError
@@ -1273,7 +1358,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let selectedGlobal ← unwrap
     (Kernel.addEvidence proposed "global-evidence" "Observe global command."
       "run selected argv" "supported host" [] "passes"
-      "ordinary process" "sha256:global" none (some "global-check"))
+      "ordinary process" "sha256:global" none (some "global-check") none
+      (some (decision "global-selection" "Select the exact global route.")))
     "global Command Profile Evidence selection failed"
   let globalRecorded ← unwrap
     (Kernel.recordEvidence selectedGlobal "global-evidence" "passed" true)
@@ -1288,7 +1374,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let selectedWork ← unwrap
     (Kernel.addEvidence globalRecorded "work-evidence" "Observe Work command."
       "run selected argv" "supported host" [] "passes"
-      "ordinary process" "sha256:work" none (some "work-check"))
+      "ordinary process" "sha256:work" none (some "work-check") none
+      (some (decision "work-selection" "Select the exact Work route.")))
     "Work Command Profile Evidence selection failed"
   let bothRecorded ← unwrap
     (Kernel.recordEvidence selectedWork "work-evidence" "passed" true)
@@ -1318,7 +1405,9 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (Kernel.addEvidence corrected "deviated-evidence"
       "Observe the actual recommended route." "run exact argv"
       "supported host" [] "passes" "ordinary process"
-      "sha256:deviated" none (some "work-check"))
+      "sha256:deviated" none (some "work-check") none
+      (some (decision "deviation-selection"
+        "Select the exact recommended route.")))
     "recommended deviation Evidence selection failed"
   let deviated ← unwrap
     (Kernel.recordCommandDeviation deviationPending "work-check"
@@ -1356,6 +1445,20 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       (·.ref.key == "standalone-lesson") |>.map (·.statement)) ==
         ["Keep using the accepted project route."])
     "an author could not supersede its own KPT entry"
+  let callerSupersessionDecision :=
+    decision "caller-supersedes-agent-kpt"
+      "Caller supersedes the exact current agent-only entry."
+  let callerSupersededStandalone ← unwrap
+    (Kernel.recordKPT correctedStandalone callerSupersessionDecision.source
+      "caller" (some callerSupersessionDecision) "standalone-lesson" .keep
+      .project "Use the caller-selected accepted project route." none)
+    "caller could not supersede an agent-only current KPT entry"
+  expect
+    (callerSupersededStandalone.kpt.reverse.head?.any fun entry =>
+      entry.predecessor ==
+          some ({ key := "standalone-lesson", version := 1 } : KPTRef) &&
+        entry.authority == .callerOwned callerSupersessionDecision)
+    "caller KPT supersession lost the exact agent-only predecessor"
   let kptDecision := decision "caller-kpt" "Retain the caller's Problem."
   let callerKPT ← unwrap
     (Kernel.recordKPT correctedStandalone kptDecision.source "caller"
@@ -1367,6 +1470,20 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       "review-bias" .try .project
       "Reuse the reviewer context anyway." (some "review-bias"))
     "agent KPT correction proposal failed"
+  expect
+    (agentKPT.kpt.reverse.head?.any fun candidate =>
+      candidate.predecessor ==
+        some ({ key := "review-bias", version := 0 } : KPTRef))
+    "an agent KPT correction did not bind the exact current caller entry"
+  let parallelKPT ← unwrap
+    (Kernel.recordKPT agentKPT (source "other-agent-kpt" .agent) "other-agent"
+      none "review-bias" .try .project "Use another fresh reviewer."
+      (some "review-bias"))
+    "parallel author KPT proposal failed"
+  expect
+    (((Kernel.pendingKPTCandidates parallelKPT).map (·.author)
+      |>.eraseDups) == ["codex", "other-agent"])
+    "parallel KPT authors were not exposed as exact adoption alternatives"
   let currentCallerKPT :=
     (Kernel.currentKPT agentKPT).find? (·.ref.key == "review-bias")
   expect
@@ -1376,7 +1493,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let adoptionDecision :=
     decision "kpt-adoption" "Adopt the exact agent-authored correction."
   let adoptedKPT ← unwrap
-    (Kernel.acceptKPT agentKPT "review-bias" .project adoptionDecision)
+    (Kernel.acceptKPT parallelKPT "review-bias" .project "codex"
+      adoptionDecision)
     "agent KPT adoption failed"
   expect
     (!(Kernel.pendingKPTCandidates adoptedKPT).any
@@ -1384,7 +1502,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       (Kernel.currentKPT adoptedKPT).any
         (·.statement == "Reuse the reviewer context anyway."))
     "an adopted KPT correction remained pending or failed to become current"
-  match Kernel.acceptKPT adoptedKPT "review-bias" .project adoptionDecision with
+  match Kernel.acceptKPT adoptedKPT "review-bias" .project "codex"
+      adoptionDecision with
   | .error _ => pure ()
   | .ok _ =>
       throw <| IO.userError "the same KPT candidate was adopted repeatedly"
@@ -1408,6 +1527,53 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (atomic.kpt.length == adoptedKPT.kpt.length + 1 &&
       atomic.commandProfiles.length == adoptedKPT.commandProfiles.length + 1)
     "atomic KPT and Command Profile did not commit both facts"
+  let instructionDecision :=
+    decision "atomic-kpt-instruction" "Record the lesson and instruction."
+  let instructed ← unwrap
+    (Kernel.recordKPTWithInstruction atomic instructionDecision "caller"
+      "instruction-lesson" .try .project
+      "Consult the accepted profile before validation." none
+      "Consult the accepted Command Profile before validation.")
+    "atomic KPT and instruction recording failed"
+  expect
+    (instructed.kpt.length == atomic.kpt.length + 1 &&
+      instructed.design.instructions.reverse.head?.any fun instruction =>
+        instruction.statement ==
+            "Consult the accepted Command Profile before validation." &&
+          instruction.authority == instructionDecision)
+    "atomic KPT and existing instruction route did not commit both facts"
+  let correctionDecision :=
+    decision "atomic-kpt-profile-correction"
+      "Correct the lesson and exact command route together."
+  let correctedAtomic ← unwrap
+    (Kernel.recordKPTWithCommandProfile instructed correctionDecision.source
+      "caller" (some correctionDecision) "stable-check" .try .project
+      "Use the corrected exact release route." (some "release-check")
+      "release-check" "verify the release"
+      ["lake", "test", "--", "all"] (some "validation")
+      .required)
+    "atomic KPT and successor Command Profile correction failed"
+  let correctedKPT ← match correctedAtomic.kpt.reverse.head? with
+    | some entry => pure entry
+    | none => throw <| IO.userError "corrected atomic KPT is missing"
+  let correctedProfile ← match correctedAtomic.commandProfiles.reverse.head? with
+    | some profile => pure profile
+    | none => throw <| IO.userError "corrected atomic profile is missing"
+  expect
+    (correctedKPT.predecessor ==
+        some ({ key := "stable-check", version := 0 } : KPTRef) &&
+      correctedKPT.scope == .project &&
+      correctedKPT.source == correctionDecision.source &&
+      correctedKPT.authority == .callerOwned correctionDecision &&
+      correctedProfile.predecessor ==
+        some ({ key := "release-check", version := 0 } : CommandProfileRef) &&
+      correctedProfile.scope == .project &&
+      correctedProfile.argv == ["lake", "test", "--", "all"] &&
+      correctedProfile.cwd == some "validation" &&
+      correctedProfile.disposition == .required &&
+      correctedProfile.source == correctionDecision.source &&
+      correctedProfile.authority == .acceptedByCaller correctionDecision)
+    "atomic correction lost exact predecessor, payload, source, or authority"
   match Kernel.recordKPTWithCommandProfile atomic atomicDecision.source
       "caller" (some atomicDecision) "invalid-atomic" .keep .project "Invalid." none
       "invalid-profile" "invalid" [] none .recommended with

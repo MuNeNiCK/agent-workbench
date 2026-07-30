@@ -33,6 +33,7 @@ structure Spec where
   artifactIdentity : String
   basis : Work.DerivationBasis
   commandProfile : Option CommandProfileRef := none
+  commandProfileDecision : Option CallerDecision := none
 deriving DecidableEq, Repr, BEq
 
 def Spec.wellFormed (spec : Spec) : Bool :=
@@ -44,7 +45,11 @@ def Spec.wellFormed (spec : Spec) : Bool :=
     !spec.acceptanceCondition.isEmpty &&
     !spec.trustedBoundary.isEmpty &&
     !spec.artifactIdentity.isEmpty &&
-    spec.basis.wellFormed
+    spec.basis.wellFormed &&
+    match spec.commandProfile, spec.commandProfileDecision with
+    | none, none => true
+    | some _, some decision => decision.wellFormed
+    | _, _ => false
 
 structure Result where
   spec : Spec

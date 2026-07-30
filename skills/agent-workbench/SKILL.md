@@ -58,7 +58,9 @@ Work scope, and `required`, `recommended`, or `discouraged` disposition.
 Repository and agent profiles remain proposals until the caller accepts them.
 Project and Work profiles both remain applicable; never invent precedence.
 When alternatives serve the same purpose, use the caller-selected exact key.
-Only `add-evidence` freezes that accepted profile into an EvidenceSpec.
+Only `add-evidence` freezes that accepted profile into an EvidenceSpec, with
+an explicit caller selection reason. A later same-lineage EvidenceSpec cannot
+silently remove a required binding.
 
 A required profile has no agent-reasoned bypass. Record a caller-authorized
 accepted replacement and select that exact profile instead. A recommended
@@ -71,6 +73,8 @@ or completion by itself. An agent-authored correction remains a parallel
 candidate until the caller adopts it; it cannot hide caller-owned KPT.
 Supply one stable project-language author identity across that author's KPT
 actions; per-action operation tokens are provenance, not author identity.
+Adoption names that author and is valid only for a proposal correcting the
+exact current caller entry.
 Use `kpt-history` to inspect immutable predecessors, relations, provenance, and
 authority after correction.
 Use the atomic KPT conclusion actions when the same source also records an

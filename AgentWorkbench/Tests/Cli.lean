@@ -224,7 +224,7 @@ def testProjectMemoryRendering : IO Unit := do
       "project-memory rendering KPT proposal fixture failed"
     let adopted ← unwrap
       (Kernel.acceptKPT proposal "review-context"
-        (.work proposal.focus.work.key)
+        (.work proposal.focus.work.key) "codex"
         (decision "adopt-kpt" "Adopt the exact correction."))
       "project-memory rendering KPT adoption fixture failed"
     expect adopted.wellFormed
@@ -239,7 +239,8 @@ def testProjectMemoryRendering : IO Unit := do
       #["add-evidence", "render-evidence",
         "Observe the exact rendered route.", "run exact argv",
         "supported host", "-", "passes", "ordinary process",
-        "sha256:render", "-", "shared-check", "work"]
+        "sha256:render", "-", "shared-check", "work",
+        "Select the exact Work route."]
       #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some "cli-project-memory"),
         ("AGENT_WORKBENCH_SOURCE_CONTEXT", some "cli-project-memory")]
     expect (delegated.exitCode == 0)
@@ -258,6 +259,8 @@ def testProjectMemoryRendering : IO Unit := do
     expect (status.exitCode == 0 &&
         status.stdout.contains s!"argv: {exactArgv}" &&
         status.stdout.contains "Scope: Work: deliver the selected change" &&
+        status.stdout.contains
+          "Profile selection: caller-owned (Select the exact Work route.)" &&
         status.stdout.contains "Author: codex" &&
         status.stdout.contains "Relation: review-context" &&
         !status.stdout.contains "work:")
