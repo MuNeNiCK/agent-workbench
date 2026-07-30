@@ -4,9 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  RELEASE_AUTOMATION_ROOT: ${{ github.event_name == 'workflow_dispatch' && '.release-automation' || '.' }}
 
 jobs:
   publish-linux-x86_64:
@@ -14,8 +28,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+      - name: Check out recovery automation
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-automation
       - uses: leanprover/lean-action@v1
         with:
           test: false
@@ -23,16 +43,21 @@ jobs:
           build-args: "--wfail"
       - name: Verify tag and installed workflow
         run: |
-          test "$(git describe --tags --exact-match HEAD)" = "$GITHUB_REF_NAME"
+          test "$(git describe --tags --exact-match HEAD)" = "$RELEASE_TAG"
+          test "$(git rev-parse "$RELEASE_TAG^{}")" = "$(git rev-parse HEAD)"
           test "$(.lake/build/bin/agent-workbench --version)" = \
-            "agent-workbench ${GITHUB_REF_NAME#v}"
+            "agent-workbench ${RELEASE_TAG#v}"
           lake test
       - uses: docker/setup-buildx-action@v3
+      - name: Select reproducible archive epoch
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" \
+            >> "$GITHUB_ENV"
       - name: Build static Linux executable
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: release/linux-x86_64-static.Dockerfile
+          file: ${{ env.RELEASE_AUTOMATION_ROOT }}/release/linux-x86_64-static.Dockerfile
           target: artifact
           outputs: type=local,dest=${{ runner.temp }}/static
           cache-from: type=gha,scope=lean-4.30.0-musl
@@ -41,27 +66,35 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: release/linux-x86_64-static.Dockerfile
-          target: formal-tool-artifact
+          file: ${{ env.RELEASE_AUTOMATION_ROOT }}/release/linux-x86_64-static.Dockerfile
+          target: formal-tool-archive
           outputs: type=local,dest=${{ runner.temp }}/formal
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           cache-from: type=gha,scope=lean-4.30.0-musl
           cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
       - name: Build release assets
+        env:
+          AGENT_WORKBENCH_RELEASE_SOURCE_ROOT: ${{ github.workspace }}
         run: |
           chmod +x "$RUNNER_TEMP/static/agent-workbench"
-          scripts/build-release-assets.sh "$GITHUB_REF_NAME" "$PWD/dist" \
+          "$RELEASE_AUTOMATION_ROOT/scripts/build-release-assets.sh" \
+            "$RELEASE_TAG" "$PWD/dist" \
             "$RUNNER_TEMP/static/agent-workbench" \
-            "$RUNNER_TEMP/formal/agent-workbench-formal-tool"
+            "$RUNNER_TEMP/formal/agent-workbench-formal-tool.tar.gz"
           mkdir "$RUNNER_TEMP/verify"
           tar -xzf \
-            "$PWD/dist/agent-workbench-$GITHUB_REF_NAME-linux-x86_64-static.tar.gz" \
+            "$PWD/dist/agent-workbench-$RELEASE_TAG-linux-x86_64-static.tar.gz" \
             -C "$RUNNER_TEMP/verify"
-          scripts/test-release-binary.sh \
+          "$RELEASE_AUTOMATION_ROOT/scripts/test-release-binary.sh" \
             "$RUNNER_TEMP/verify/agent-workbench"
       - name: Validate installed formal route without host glibc
+        env:
+          AGENT_WORKBENCH_TEST_SKILL: ${{ env.RELEASE_AUTOMATION_ROOT }}/scripts/test-skill.sh
         run: |
           docker run --rm \
-            -e GITHUB_REF_NAME \
+            -e RELEASE_TAG \
+            -e AGENT_WORKBENCH_TEST_SKILL \
             -v "$PWD:/src:ro" \
             -v "$RUNNER_TEMP/static:/runtime:ro" \
             -v "$PWD/dist:/dist:ro" \
@@ -69,14 +102,14 @@ jobs:
             alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
             sh -ec '
               apk add --no-cache coreutils curl git sqlite tar util-linux
-              scripts/test-skill.sh /runtime/agent-workbench \
-                "/dist/agent-workbench-$GITHUB_REF_NAME-formal-tool-linux-x86_64.tar.gz"
+              "$AGENT_WORKBENCH_TEST_SKILL" /runtime/agent-workbench \
+                "/dist/agent-workbench-$RELEASE_TAG-formal-tool-linux-x86_64.tar.gz"
             '
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$RELEASE_TAG" dist/* \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$RELEASE_TAG" \
             --notes-file RELEASE_NOTES.md

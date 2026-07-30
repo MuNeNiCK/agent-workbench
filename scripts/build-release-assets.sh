@@ -2,20 +2,22 @@
 set -eu
 
 if test "$#" -ne 4; then
-  echo "usage: $0 <v-tag> <output-directory> <static-binary> <formal-tool-directory>" >&2
+  echo "usage: $0 <v-tag> <output-directory> <static-binary> <formal-tool-archive>" >&2
   exit 2
 fi
 
 tag="$1"
 out="$2"
 binary="$3"
-formal_tool="$4"
+formal_tool_archive="$4"
 case "$tag" in
   v?*) ;;
   *) echo "tag must start with v" >&2; exit 2 ;;
 esac
 
-root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+default_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+root="${AGENT_WORKBENCH_RELEASE_SOURCE_ROOT:-$default_root}"
+root="$(CDPATH='' cd -- "$root" && pwd -P)"
 cd "$root"
 version="${tag#v}"
 test "$(sed -n 's/.*version := v!\"\([^\"]*\)\".*/\1/p' lakefile.lean |
@@ -26,7 +28,7 @@ test -x "$binary"
 test "$("$binary" --version)" = "agent-workbench $version"
 file "$binary" | grep -F "ELF 64-bit LSB executable"
 file "$binary" | grep -F "statically linked"
-scripts/test-formal-tool-asset.sh "$formal_tool"
+test -f "$formal_tool_archive"
 
 epoch="$(git show -s --format=%ct HEAD)"
 stage="$(mktemp -d)"
@@ -38,7 +40,19 @@ trap cleanup EXIT HUP INT TERM
 mkdir -p "$out" "$stage/binary" "$stage/formal"
 cp "$binary" "$stage/binary/agent-workbench"
 strip "$stage/binary/agent-workbench"
-cp -R "$formal_tool" "$stage/formal/agent-workbench-formal-tool"
+entries="$stage/formal-tool.entries"
+if ! tar -tzf "$formal_tool_archive" > "$entries"; then
+  echo "formal tool archive is unreadable" >&2
+  exit 1
+fi
+if grep -Ev '^agent-workbench-formal-tool(/|$)' "$entries" ||
+    grep -E '(^|/)\.\.(/|$)' "$entries"; then
+  echo "formal tool archive contains an unexpected path" >&2
+  exit 1
+fi
+tar -xzf "$formal_tool_archive" -C "$stage/formal"
+"$default_root/scripts/test-formal-tool-asset.sh" \
+  "$stage/formal/agent-workbench-formal-tool"
 
 archive() {
   directory="$1"
@@ -52,7 +66,7 @@ runtime_archive="agent-workbench-$tag-linux-x86_64-static.tar.gz"
 formal_archive="agent-workbench-$tag-formal-tool-linux-x86_64.tar.gz"
 
 archive "$stage/binary" "$runtime_archive" agent-workbench
-archive "$stage/formal" "$formal_archive" agent-workbench-formal-tool
+cp "$formal_tool_archive" "$out/$formal_archive"
 
 mkdir -p "$stage/verify"
 tar -xzf "$out/$runtime_archive" -C "$stage/verify"

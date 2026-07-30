@@ -66,5 +66,18 @@ RUN set -eu; \
     "$tool_root/bin/lake" --version; \
     /tmp/test-formal-tool-asset.sh "$tool_root"
 
-FROM scratch AS formal-tool-artifact
-COPY --from=formal-tool /opt/agent-workbench-formal-tool /agent-workbench-formal-tool
+FROM formal-tool AS formal-tool-archive-build
+ARG SOURCE_DATE_EPOCH
+RUN set -eu; \
+    test -n "$SOURCE_DATE_EPOCH"; \
+    apk add --no-cache gzip tar; \
+    mkdir -p /out; \
+    tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
+      --owner=0 --group=0 --numeric-owner \
+      -C /opt -cf - agent-workbench-formal-tool \
+      | gzip -n > /out/agent-workbench-formal-tool.tar.gz
+
+FROM scratch AS formal-tool-archive
+COPY --from=formal-tool-archive-build \
+  /out/agent-workbench-formal-tool.tar.gz \
+  /agent-workbench-formal-tool.tar.gz

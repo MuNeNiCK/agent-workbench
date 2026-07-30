@@ -40,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
+      - name: Select reproducible archive epoch
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" \
+            >> "$GITHUB_ENV"
       - name: Build static Linux executable
         uses: docker/build-push-action@v6
         with:
@@ -54,8 +58,10 @@ jobs:
         with:
           context: .
           file: release/linux-x86_64-static.Dockerfile
-          target: formal-tool-artifact
+          target: formal-tool-archive
           outputs: type=local,dest=${{ runner.temp }}/formal
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           cache-from: type=gha,scope=lean-4.30.0-musl
           cache-to: type=gha,mode=max,scope=lean-4.30.0-musl
       - name: Validate packaged static executable
@@ -63,7 +69,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/static/agent-workbench"
           scripts/build-release-assets.sh v0.2.3 "$RUNNER_TEMP/dist" \
             "$RUNNER_TEMP/static/agent-workbench" \
-            "$RUNNER_TEMP/formal/agent-workbench-formal-tool"
+            "$RUNNER_TEMP/formal/agent-workbench-formal-tool.tar.gz"
           mkdir "$RUNNER_TEMP/verify"
           tar -xzf \
             "$RUNNER_TEMP/dist/agent-workbench-v0.2.3-linux-x86_64-static.tar.gz" \
