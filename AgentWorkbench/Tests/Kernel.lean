@@ -9,6 +9,11 @@ open AgentWorkbench.Tests
 def testFlatCompletionAndPhase : IO Unit := do
   expect (!Kernel.currentlyComplete initialState initialState.focus.work)
     "pending flat Work reported completion"
+  match Kernel.addTask initialState "implement the selected change" with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "a duplicate current Task description entered the same Work"
   let phased ← unwrap
     (Kernel.assignPhase initialState "implement the selected change" "Delivery" 2)
     "Phase assignment failed"

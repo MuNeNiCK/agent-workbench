@@ -667,6 +667,12 @@ def taskForAddedDesign (taskRef : TaskRef) (work : WorkRef)
     phase := none
     state := .pending }
 
+def focusedWorkHasCurrentTaskDescription (state : State)
+    (description : String) : Bool :=
+  state.tasks.any fun task =>
+    task.work.key == state.focus.work.key &&
+      task.description == description && taskCurrent state task
+
 def addTaskForDesign (state : State) (description : String)
     (designKeys : List String) : Except String State :=
   let key := s!"task-{state.tasks.length + 1}"
@@ -679,6 +685,8 @@ def addTaskForDesign (state : State) (description : String)
     else .design designScope
   if description.isEmpty then
     .error "A task description is required."
+  else if focusedWorkHasCurrentTaskDescription state description then
+    .error "The current Work already has that Task."
   else if designScope.length != designKeys.eraseDups.length then
     .error "One or more selected design statements are not accepted and current."
   else
