@@ -1177,6 +1177,240 @@ def testBoundedReuseReview : IO Unit := do
   expect (Kernel.formalResultsRequiringVerification reviewed == [result])
     "clean bounded reuse Review replaced the reusable FormalResult identity"
 
+def testCommandProfileAndKPTInvariants : IO Unit := do
+  let globalDecision := decision "profile-global" "Use the accepted global check."
+  let withGlobal ← unwrap
+    (Kernel.recordCommandProfile initialState globalDecision.source
+      (some globalDecision) "global-check" "verify the implementation"
+      .project ["lake", "test"] none .required)
+    "global Command Profile recording failed"
+  let workDecision := decision "profile-work" "Use the accepted Work check."
+  let withWork ← unwrap
+    (Kernel.recordCommandProfile withGlobal workDecision.source
+      (some workDecision) "work-check" "verify the implementation"
+      (.work withGlobal.focus.work.key) ["lake", "build"] (some ".")
+      .recommended)
+    "Work Command Profile recording failed"
+  expect
+    ((Kernel.applicableCommandProfiles withWork "verify the implementation"
+      |>.map (·.ref.key)) == ["global-check", "work-check"])
+    "project and exact-Work Command Profiles acquired silent precedence"
+  let otherWorkDecision :=
+    decision "other-work" "Start the independent other Work."
+  let otherWork ← unwrap
+    (Kernel.startWork withWork "deliver another change" "implement another change"
+      otherWorkDecision)
+    "second Work creation failed"
+  expect
+    ((Kernel.applicableCommandProfiles otherWork "verify the implementation"
+      |>.map (·.ref.key)) == ["global-check"])
+    "an exact-Work Command Profile leaked into another Work"
+  let revisedBoundary ← unwrap
+    (Kernel.addTask withWork "revise the same Work boundary")
+    "same-Work boundary revision failed"
+  let workCorrectionDecision :=
+    decision "profile-work-correction" "Correct the same exact Work profile."
+  let correctedWorkScope ← unwrap
+    (Kernel.recordCommandProfile revisedBoundary
+      workCorrectionDecision.source (some workCorrectionDecision)
+      "work-check" "verify the implementation"
+      (.work revisedBoundary.focus.work.key) ["lake", "build", "AgentWorkbench"]
+      (some ".") .recommended)
+    "same-Work Command Profile correction failed"
+  expect
+    ((correctedWorkScope.commandProfiles.filter fun profile =>
+      profile.ref.key == "work-check" &&
+        Kernel.commandProfileCurrent correctedWorkScope profile).map
+          (·.ref.version) == [1])
+    "a Work boundary revision split one semantic Command Profile scope"
+  let proposed ← unwrap
+    (Kernel.recordCommandProfile withWork
+      (source "profile-proposal" .agent) none "agent-check"
+      "verify the implementation" .project ["lake", "env", "lean"]
+      none .recommended)
+    "agent Command Profile proposal failed"
+  match Kernel.addEvidence proposed "proposal-evidence" "Observe proposal."
+      "run selected argv" "supported host" [] "passes"
+      "ordinary process" "sha256:proposal" none (some "agent-check") with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "an unaccepted Command Profile was selected by Evidence"
+  let selectedGlobal ← unwrap
+    (Kernel.addEvidence proposed "global-evidence" "Observe global command."
+      "run selected argv" "supported host" [] "passes"
+      "ordinary process" "sha256:global" none (some "global-check"))
+    "global Command Profile Evidence selection failed"
+  let globalRecorded ← unwrap
+    (Kernel.recordEvidence selectedGlobal "global-evidence" "passed" true)
+    "global Command Profile Evidence recording failed"
+  let globalResult ← match globalRecorded.evidenceResults.reverse.head? with
+    | some result => pure result
+    | none => throw <| IO.userError "global Command Profile result is missing"
+  expect
+    (globalResult.spec.commandProfile ==
+      some ({ key := "global-check", version := 0 } : CommandProfileRef))
+    "Evidence did not retain the exact accepted Command Profile version"
+  let selectedWork ← unwrap
+    (Kernel.addEvidence globalRecorded "work-evidence" "Observe Work command."
+      "run selected argv" "supported host" [] "passes"
+      "ordinary process" "sha256:work" none (some "work-check"))
+    "Work Command Profile Evidence selection failed"
+  let bothRecorded ← unwrap
+    (Kernel.recordEvidence selectedWork "work-evidence" "passed" true)
+    "Work Command Profile Evidence recording failed"
+  let workResult ← match bothRecorded.evidenceResults.reverse.head? with
+    | some result => pure result
+    | none => throw <| IO.userError "Work Command Profile result is missing"
+  let correctedDecision :=
+    decision "profile-global-correction" "Correct only the global check."
+  let corrected ← unwrap
+    (Kernel.recordCommandProfile bothRecorded correctedDecision.source
+      (some correctedDecision) "global-check" "verify the implementation"
+      .project ["lake", "test", "--", "all"] none .required)
+    "Command Profile correction failed"
+  expect (!Kernel.evidenceResultCurrent corrected globalResult)
+    "a corrected Command Profile left its exact Evidence consumer current"
+  expect (Kernel.evidenceResultCurrent corrected workResult)
+    "a Command Profile correction invalidated an unrelated Evidence consumer"
+  match Kernel.recordCommandDeviation corrected "global-check"
+      ["lake", "build"] none "Use a faster route."
+      (source "required-deviation" .agent) with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "an agent reason bypassed a required Command Profile"
+  let deviationPending ← unwrap
+    (Kernel.addEvidence corrected "deviated-evidence"
+      "Observe the actual recommended route." "run exact argv"
+      "supported host" [] "passes" "ordinary process"
+      "sha256:deviated" none (some "work-check"))
+    "recommended deviation Evidence selection failed"
+  let deviated ← unwrap
+    (Kernel.recordCommandDeviation deviationPending "work-check"
+      ["lake", "build", "AgentWorkbench"] none "Narrow diagnostic."
+      (source "recommended-deviation" .agent))
+    "recommended Command Profile deviation failed"
+  expect (deviated.commandDeviations.length == 1 &&
+      deviated.commandDeviations.head?.bind (·.evidence) ==
+        some ({ key := "deviated-evidence", version := 0 } : EvidenceRef))
+    "recommended deviation was promoted into another authority mechanism"
+  match Kernel.recordEvidence deviated "deviated-evidence" "passed" true with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "deviated actual argv was recorded as if the recommended profile ran"
+  let completionBefore := Kernel.currentlyComplete deviated deviated.focus.work
+  let missingBefore := Kernel.missingCompletion deviated deviated.focus.work
+  let agentAuthor := source "standalone-agent-kpt" .agent
+  let standaloneKPT ← unwrap
+    (Kernel.recordKPT deviated agentAuthor none "standalone-lesson" .try
+      .project "Try the accepted project route." none)
+    "standalone agent KPT failed"
+  expect
+    ((Kernel.currentKPT standaloneKPT).any
+      (·.statement == "Try the accepted project route."))
+    "standalone agent-authored KPT was hidden as a caller correction"
+  let correctedStandalone ← unwrap
+    (Kernel.recordKPT standaloneKPT agentAuthor none "standalone-lesson"
+      .keep .project "Keep using the accepted project route."
+      (some "standalone-lesson"))
+    "agent KPT self-correction failed"
+  expect
+    (((Kernel.currentKPT correctedStandalone).filter
+      (·.ref.key == "standalone-lesson") |>.map (·.statement)) ==
+        ["Keep using the accepted project route."])
+    "an author could not supersede its own KPT entry"
+  let kptDecision := decision "caller-kpt" "Retain the caller's Problem."
+  let callerKPT ← unwrap
+    (Kernel.recordKPT correctedStandalone kptDecision.source (some kptDecision)
+      "review-bias" .problem .project
+      "A resumed reviewer carries implementation context." none)
+    "caller KPT recording failed"
+  let agentKPT ← unwrap
+    (Kernel.recordKPT callerKPT (source "agent-kpt" .agent) none
+      "review-bias" .try .project
+      "Reuse the reviewer context anyway." (some "review-bias"))
+    "agent KPT correction proposal failed"
+  let currentCallerKPT :=
+    (Kernel.currentKPT agentKPT).find? (·.ref.key == "review-bias")
+  expect
+    (currentCallerKPT.any
+      (·.statement == "A resumed reviewer carries implementation context."))
+    "an agent KPT correction hid the caller-owned KPT"
+  expect
+    (Kernel.currentlyComplete agentKPT agentKPT.focus.work == completionBefore &&
+      Kernel.missingCompletion agentKPT agentKPT.focus.work == missingBefore &&
+      agentKPT.work == deviated.work &&
+      agentKPT.tasks == deviated.tasks &&
+      agentKPT.evidenceSpecs == deviated.evidenceSpecs &&
+      agentKPT.reviewRequests == deviated.reviewRequests)
+    "KPT changed assurance, Review, next-action, or completion facts"
+  let atomicDecision :=
+    decision "atomic-kpt-profile" "Record one source and both conclusions."
+  let atomic ← unwrap
+    (Kernel.recordKPTWithCommandProfile agentKPT atomicDecision.source
+      (some atomicDecision) "stable-check" .keep .project
+      "The release check is stable." none "release-check"
+      "verify the release" ["lake", "test"] none .recommended)
+    "atomic KPT and Command Profile recording failed"
+  expect
+    (atomic.kpt.length == agentKPT.kpt.length + 1 &&
+      atomic.commandProfiles.length == agentKPT.commandProfiles.length + 1)
+    "atomic KPT and Command Profile did not commit both facts"
+  match Kernel.recordKPTWithCommandProfile atomic atomicDecision.source
+      (some atomicDecision) "invalid-atomic" .keep .project "Invalid." none
+      "invalid-profile" "invalid" [] none .recommended with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "an invalid atomic Command Profile committed its KPT half"
+  let designAtomic ← unwrap
+    (Kernel.recordKPTWithDesignCandidate atomic atomicDecision.source
+      (some atomicDecision) "design-lesson" .try .project
+      "Consider a bounded follow-up." none "follow-up-design"
+      "Add the bounded follow-up." .decision
+      { kind := .none, obligations := [] })
+    "atomic KPT and Design candidate recording failed"
+  expect
+    (designAtomic.design.designItems.reverse.find?
+      (·.ref.key == "follow-up-design") |>.any
+        (·.authority == .unaccepted))
+    "KPT created a caller-accepted Design without the ordinary review flow"
+  match Kernel.acceptDesignWithKPT designAtomic "follow-up-design"
+      atomicDecision "premature-lesson" .keep .project
+      "Do not bypass Design Review." none with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "KPT accompanied Design acceptance before exact Review prerequisites"
+  let reviewedCandidate ← unwrap
+    (Kernel.recordDesign initialState (source "accepted-kpt-design")
+      "accepted-kpt-design" "Accept the reviewed design with one KPT."
+      .decision { kind := .none, obligations := [] })
+    "KPT acceptance Design candidate failed"
+  let reviewRequested ← unwrap
+    (Kernel.requestDesignReview reviewedCandidate "accepted-kpt-review"
+      "accepted-kpt-design")
+    "KPT acceptance Design Review request failed"
+  let reviewClean ← unwrap
+    (Kernel.recordCleanReview reviewRequested "accepted-kpt-review"
+      "fresh-design-reviewer")
+    "KPT acceptance clean Design Review failed"
+  let acceptanceDecision :=
+    decision "accepted-kpt-decision" "Accept the reviewed design and lesson."
+  let acceptedWithKPT ← unwrap
+    (Kernel.acceptDesignWithKPT reviewClean "accepted-kpt-design"
+      acceptanceDecision "accepted-design-lesson" .keep .project
+      "The exact reviewed meaning was sufficient." none)
+    "atomic Design acceptance and KPT recording failed"
+  expect
+    ((Kernel.currentDesignRefs acceptedWithKPT).any
+      (·.key == "accepted-kpt-design") &&
+      (Kernel.currentKPT acceptedWithKPT).any
+        (·.ref.key == "accepted-design-lesson"))
+    "KPT could not accompany ordinary successful Design acceptance"
+
 def run : IO Unit := do
   testFlatCompletionAndPhase
   testPhaseGroupsTasksWithoutSemanticEffect
@@ -1196,6 +1430,7 @@ def run : IO Unit := do
   testEvidenceAndReviewStayOnSelectedWork
   testLocalImpactAndReuse
   testBoundedReuseReview
+  testCommandProfileAndKPTInvariants
   IO.println "kernel tests: pass"
 
 end AgentWorkbench.Tests.Kernel

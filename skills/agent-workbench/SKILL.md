@@ -50,6 +50,32 @@ When one caller source contains a design clause, operating instruction,
 question, and/or new Work request, use `record-source-effects` once so the
 classified effects share one source and commit atomically.
 
+## Command Profiles and KPT
+
+Command Profiles are durable, structured project facts, not a command runner.
+Record exact argv, optional project-relative cwd, purpose, project or current
+Work scope, and `required`, `recommended`, or `discouraged` disposition.
+Repository and agent profiles remain proposals until the caller accepts them.
+Project and Work profiles both remain applicable; never invent precedence.
+When alternatives serve the same purpose, use the caller-selected exact key.
+Only `add-evidence` freezes that accepted profile into an EvidenceSpec.
+
+A required profile has no agent-reasoned bypass. Record a caller-authorized
+accepted replacement and select that exact profile instead. A recommended
+profile may record an agent-reasoned deviation. A discouraged profile is
+guidance and never creates an absence test.
+
+KPT records `keep`, `problem`, and `try` as non-blocking project memory at
+project or current Work scope. It never changes assurance, Review, next action,
+or completion by itself. An agent-authored correction remains a parallel
+candidate until the caller adopts it; it cannot hide caller-owned KPT.
+Use the atomic KPT conclusion actions when the same source also records an
+instruction, an unaccepted Design candidate, or a Command Profile. A Design
+candidate still requires the ordinary fresh design Review and caller
+acceptance flow. `accept-design-with-kpt` may accompany that existing
+acceptance transition only after all ordinary review and assurance
+prerequisites already pass.
+
 ## Work and assurance
 
 Use `add-task` for a small fix. Use `add-task-for-design` when the task

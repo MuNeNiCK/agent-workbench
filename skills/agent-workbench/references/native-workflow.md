@@ -12,7 +12,9 @@
 6. Let the caller adopt or reject the reviewed design with a reason.
 7. Add tasks scoped to the accepted design they implement.
 8. Select only the assurance needed by each accepted design statement.
-9. Run formal checking or record positive external evidence as selected.
+9. Run formal checking or record positive external evidence as selected. When
+   Evidence uses a Command Profile, select its exact accepted profile key in
+   `add-evidence`; correcting that profile stales only its exact consumers.
 10. Request bounded implementation review. Resume a reviewer only within the
     same Review lineage; use a context-independent reviewer execution whenever
     the Review is fresh. Record observations; let the caller accept, reject,
@@ -30,6 +32,16 @@ replace the pending plan before interrupting Work is complete; ordinary
 For independent work, `start-work` keeps the prior outcome intact without an
 automatic return plan. `switch-work` selects either outcome by its
 project-language description.
+
+Command Profiles record exact argv and optional project-relative cwd; they do
+not execute commands. Project and Work profiles remain jointly applicable
+until an EvidenceSpec selects one exact accepted profile.
+
+Use KPT for durable `keep`, `problem`, and `try` learning that should survive
+restart without becoming a completion requirement. Caller-owned KPT stays
+visible when an agent proposes a correction. Use an atomic KPT conclusion
+action when the same source also states an instruction, Design candidate, or
+Command Profile.
 
 For formal external conformance, the adapter is test-side only, calls the same
 product boundary as an ordinary caller, and emits actual JSON observations. It

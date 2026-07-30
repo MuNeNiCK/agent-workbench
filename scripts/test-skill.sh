@@ -35,7 +35,7 @@ grep -F "Resume an existing reviewer context only to continue the same Review li
 grep -F "A requested fresh Review uses a different reviewer execution with no inherited" \
   "$skill/SKILL.md" >/dev/null
 grep -F "Do not resume a prior reviewer and" "$skill/SKILL.md" >/dev/null
-grep -F "<artifact> [design-key]" \
+grep -F "[design-key|- command-profile-key]" \
   "$skill/references/request-format.md" >/dev/null
 grep -F "record-evidence <key> <observed-value> <pass|fail> [design-key]" \
   "$skill/references/request-format.md" >/dev/null

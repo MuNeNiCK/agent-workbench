@@ -28,3 +28,8 @@ Roles are `goal`, `functional`, `non-functional`, `constraint`, `decision`,
 
 See the installed Skill's `references/request-format.md` for exact positional
 signatures.
+
+Command Profiles record exact argv/cwd guidance and can be selected only by an
+EvidenceSpec; they do not execute commands. KPT records durable project
+learning without changing completion. The installed reference includes the
+profile, deviation, KPT, adoption, and atomic-conclusion actions.

@@ -17,6 +17,9 @@ structure State where
   reviewRequests : List Review.Request
   reviewResults : List Review.Result
   reviewDispositions : List Review.Disposition
+  commandProfiles : List CommandProfile.Profile
+  commandDeviations : List CommandProfile.Deviation
+  kpt : List KPT.Entry
   focus : Work.Focus
 deriving DecidableEq, Repr, BEq
 
@@ -34,6 +37,13 @@ def State.wellFormed (state : State) : Bool :=
       !phase.key.isEmpty && !phase.name.isEmpty) &&
     state.evidenceSpecs.all Evidence.Spec.wellFormed &&
     (state.evidenceSpecs.map (·.ref)).Nodup &&
+    (state.evidenceSpecs.all fun spec =>
+      spec.commandProfile.all fun selected =>
+        state.commandProfiles.any fun profile =>
+          profile.ref == selected &&
+            match profile.authority with
+            | .proposed => false
+            | .acceptedByCaller _ => true) &&
     (state.evidenceResults.all fun result =>
       result.wellFormed &&
         state.evidenceSpecs.any (· == result.spec)) &&
@@ -53,6 +63,42 @@ def State.wellFormed (state : State) : Bool :=
         result.review == disposition.review &&
           result.observations.any
             (disposition.wellFormedFor ·)) &&
+    state.commandProfiles.all CommandProfile.Profile.wellFormed &&
+    (state.commandProfiles.map (·.ref)).Nodup &&
+    (state.commandProfiles.all fun profile =>
+      (match profile.scope with
+      | .project => true
+      | .work key =>
+          state.work.any (·.ref.key == key)) &&
+      profile.predecessor.all fun selected =>
+        state.commandProfiles.any fun prior =>
+          prior.ref == selected && prior.scope == profile.scope) &&
+    state.commandDeviations.all CommandProfile.Deviation.wellFormed &&
+    (state.commandDeviations.all fun deviation =>
+      state.commandProfiles.any fun profile =>
+        profile.ref == deviation.profile &&
+          profile.disposition == .recommended &&
+          match profile.authority with
+          | .proposed => false
+          | .acceptedByCaller _ => true) &&
+    (state.commandDeviations.all fun deviation =>
+      deviation.evidence.all fun selected =>
+        state.evidenceSpecs.any fun spec =>
+          spec.ref == selected &&
+            spec.commandProfile == some deviation.profile) &&
+    (state.commandDeviations.all fun deviation =>
+      deviation.evidence.all fun selected =>
+        !state.evidenceResults.any (·.spec.ref == selected)) &&
+    state.kpt.all KPT.Entry.wellFormed &&
+    (state.kpt.map (·.ref)).Nodup &&
+    (state.kpt.all fun entry =>
+      (match entry.scope with
+      | .project => true
+      | .work key =>
+          state.work.any (·.ref.key == key)) &&
+      entry.predecessor.all fun selected =>
+        state.kpt.any fun prior =>
+          prior.ref == selected && prior.scope == entry.scope) &&
     state.focus.wellFormed &&
     state.work.any (·.ref == state.focus.work)
 
@@ -240,6 +286,89 @@ def workCurrent (state : State) (work : WorkRef) : Bool :=
     !state.work.any fun candidate =>
       candidate.ref.key == work.key && candidate.ref.version > work.version
 
+def commandProfileCurrent (state : State)
+    (profile : CommandProfile.Profile) : Bool :=
+  state.commandProfiles.any (·.ref == profile.ref) &&
+    (match profile.authority with
+    | .proposed => false
+    | .acceptedByCaller _ => true) &&
+    !state.commandProfiles.any fun candidate =>
+      candidate.ref.key == profile.ref.key &&
+        candidate.scope == profile.scope &&
+        candidate.ref.version > profile.ref.version &&
+        match candidate.authority with
+        | .proposed => false
+        | .acceptedByCaller _ => true
+
+def memoryScopeApplicable (state : State) : MemoryScope → Bool
+  | .project => true
+  | .work key => key == state.focus.work.key
+
+def commandProfileApplicable (state : State)
+    (profile : CommandProfile.Profile) : Bool :=
+  commandProfileCurrent state profile &&
+    memoryScopeApplicable state profile.scope
+
+def applicableCommandProfiles (state : State) (purpose : String) :
+    List CommandProfile.Profile :=
+  state.commandProfiles.filter fun profile =>
+    profile.purpose == purpose && commandProfileApplicable state profile
+
+private def currentCallerKPT (state : State) : List KPT.Entry :=
+  state.kpt.filter fun entry =>
+    (match entry.authority with
+    | .nonAuthoritative => false
+    | .callerOwned _ => true) &&
+    !state.kpt.any fun successor =>
+      successor.ref.key == entry.ref.key &&
+        successor.scope == entry.scope &&
+        successor.ref.version > entry.ref.version &&
+        match successor.authority with
+        | .nonAuthoritative => false
+        | .callerOwned _ => true
+
+def currentKPT (state : State) : List KPT.Entry :=
+  let caller := currentCallerKPT state
+  let authored := state.kpt.filter fun entry =>
+    entry.authority == .nonAuthoritative &&
+      !(caller.any fun owned =>
+        owned.ref.key == entry.ref.key && owned.scope == entry.scope) &&
+      !(state.kpt.any fun successor =>
+        successor.ref.key == entry.ref.key &&
+          successor.scope == entry.scope &&
+          successor.source == entry.source &&
+          successor.authority == .nonAuthoritative &&
+          successor.ref.version > entry.ref.version)
+  caller ++ authored
+
+def relevantKPT (state : State) : List KPT.Entry :=
+  (currentKPT state).filter fun entry =>
+    memoryScopeApplicable state entry.scope
+
+def pendingCommandProfileProposals (state : State) :
+    List CommandProfile.Profile :=
+  state.commandProfiles.filter fun profile =>
+    profile.authority == .proposed &&
+      memoryScopeApplicable state profile.scope &&
+      !state.commandProfiles.any fun successor =>
+        successor.ref.key == profile.ref.key &&
+          successor.scope == profile.scope &&
+          successor.ref.version > profile.ref.version
+
+def pendingKPTCandidates (state : State) : List KPT.Entry :=
+  let caller := currentCallerKPT state
+  state.kpt.filter fun entry =>
+    entry.authority == .nonAuthoritative &&
+      memoryScopeApplicable state entry.scope &&
+      (caller.any fun owned =>
+        owned.ref.key == entry.ref.key && owned.scope == entry.scope) &&
+      !(state.kpt.any fun successor =>
+        successor.ref.key == entry.ref.key &&
+          successor.scope == entry.scope &&
+          successor.source == entry.source &&
+          successor.authority == .nonAuthoritative &&
+          successor.ref.version > entry.ref.version)
+
 def taskCurrent (state : State) (task : Work.Task) : Bool :=
   state.tasks.any (·.ref == task.ref) &&
     !(state.tasks.any fun candidate =>
@@ -250,7 +379,7 @@ def taskCurrent (state : State) (task : Work.Task) : Bool :=
 
 def evidenceSpecCurrent (state : State) (spec : Evidence.Spec) : Bool :=
   state.evidenceSpecs.any (·.ref == spec.ref) &&
-    !state.evidenceSpecs.any fun candidate =>
+    !(state.evidenceSpecs.any fun candidate =>
       candidate.ref.key == spec.ref.key &&
         (match spec.basis, candidate.basis with
         | .design prior, .design next =>
@@ -258,7 +387,10 @@ def evidenceSpecCurrent (state : State) (spec : Evidence.Spec) : Bool :=
         | .workBoundary prior, .workBoundary next =>
             prior.key == next.key
         | _, _ => false) &&
-        candidate.ref.version > spec.ref.version
+        candidate.ref.version > spec.ref.version) &&
+    spec.commandProfile.all fun selected =>
+      state.commandProfiles.find? (·.ref == selected)
+        |>.any (commandProfileCurrent state)
 
 def reviewScopeCurrent (state : State) (scope : Review.Scope) : Bool :=
   state.work.any fun work =>
@@ -616,10 +748,178 @@ def orderPhase (state : State) (name : String) (displayOrder : Nat) :
         if phase.name == name then { phase with displayOrder }
         else phase }
 
+private def nextCommandProfileRef (state : State) (key : String) :
+    CommandProfileRef :=
+  { key
+    version :=
+      (state.commandProfiles.filter (·.ref.key == key)).foldl
+        (fun next profile => max next (profile.ref.version + 1)) 0 }
+
+private def latestAcceptedCommandProfile? (state : State) (key : String)
+    (scope : MemoryScope) : Option CommandProfile.Profile :=
+  state.commandProfiles.reverse.find? fun profile =>
+    profile.ref.key == key && profile.scope == scope &&
+      commandProfileCurrent state profile
+
+def recordCommandProfile (state : State) (source : Source)
+    (decision : Option CallerDecision) (key purpose : String)
+    (scope : MemoryScope) (argv : List String) (cwd : Option String)
+    (disposition : CommandProfile.Disposition) : Except String State := do
+  let authority ← match decision with
+    | some accepted =>
+        if !accepted.wellFormed then
+          throw "A valid caller decision is required."
+        pure (CommandProfile.Authority.acceptedByCaller accepted)
+    | none =>
+        if source.kind == .caller then
+          throw "A caller decision is required for an authoritative Command Profile."
+        pure .proposed
+  let predecessor :=
+    (latestAcceptedCommandProfile? state key scope).map (·.ref)
+  let profile : CommandProfile.Profile :=
+    { ref := nextCommandProfileRef state key
+      predecessor
+      purpose
+      scope
+      argv
+      cwd
+      disposition
+      source
+      authority }
+  if !profile.wellFormed then
+    throw "The Command Profile is invalid."
+  pure { state with commandProfiles := state.commandProfiles ++ [profile] }
+
+def acceptCommandProfile (state : State) (key : String)
+    (scope : MemoryScope) (decision : CallerDecision) : Except String State := do
+  if !decision.wellFormed then
+    throw "A valid caller decision is required."
+  let candidate ← match
+      (pendingCommandProfileProposals state).filter fun profile =>
+        profile.ref.key == key && profile.scope == scope with
+    | [profile] => pure profile
+    | [] => throw "No proposed Command Profile matches that key and scope."
+    | _ => throw "The proposed Command Profile key and scope are ambiguous."
+  let accepted : CommandProfile.Profile :=
+    { candidate with
+      ref := nextCommandProfileRef state key
+      predecessor := some candidate.ref
+      authority := .acceptedByCaller decision }
+  if !accepted.wellFormed then
+    throw "The accepted Command Profile is invalid."
+  pure { state with commandProfiles := state.commandProfiles ++ [accepted] }
+
+def recordCommandDeviation (state : State) (profileKey : String)
+    (actualArgv : List String) (actualCwd : Option String)
+    (reason : String) (source : Source)
+    (evidenceKey : Option String := none) : Except String State := do
+  let candidates := state.commandProfiles.filter fun profile =>
+    profile.ref.key == profileKey && commandProfileApplicable state profile
+  let profile ← match candidates with
+    | [selected] => pure selected
+    | [] => throw "No accepted current Command Profile matches that key."
+    | _ =>
+        throw "The Command Profile is ambiguous; select an exact scoped profile."
+  if profile.disposition != .recommended then
+    throw "Only a recommended Command Profile records an agent-reasoned deviation."
+  let pendingEvidence := state.evidenceSpecs.filter fun spec =>
+    evidenceSpecCurrent state spec &&
+      spec.commandProfile == some profile.ref &&
+      evidenceKey.all (· == spec.ref.key) &&
+      (match spec.basis with
+      | .workBoundary selected => selected.key == state.focus.work.key
+      | .design selected =>
+          state.work.find? (·.ref == state.focus.work) |>.any fun work =>
+            work.completionBoundary.any fun member =>
+              member.target == .assurance spec.ref.key &&
+                member.basis == .design selected) &&
+      !state.evidenceResults.any fun result =>
+        result.spec == spec && evidenceResultCurrent state result
+  let selectedEvidence ← match pendingEvidence with
+    | [] =>
+        if evidenceKey.isSome then
+          throw "No pending EvidenceSpec matches that Command Profile."
+        pure none
+    | [spec] => pure (some spec.ref)
+    | _ =>
+        throw "More than one pending EvidenceSpec uses that profile; select its Evidence key."
+  let deviation : CommandProfile.Deviation :=
+    { profile := profile.ref
+      evidence := selectedEvidence
+      actualArgv
+      actualCwd
+      reason
+      source }
+  if !deviation.wellFormed then
+    throw "The Command Profile deviation is invalid."
+  pure
+    { state with
+      commandDeviations := state.commandDeviations ++ [deviation] }
+
+private def nextKPTRef (state : State) (key : String) : KPTRef :=
+  { key
+    version :=
+      (state.kpt.filter (·.ref.key == key)).foldl
+        (fun next entry => max next (entry.ref.version + 1)) 0 }
+
+def recordKPT (state : State) (source : Source)
+    (decision : Option CallerDecision) (key : String)
+    (category : KPT.Category) (scope : MemoryScope) (statement : String)
+    (relation : Option String := none) : Except String State := do
+  let authority ← match decision with
+    | some accepted =>
+        if !accepted.wellFormed then
+          throw "A valid caller decision is required."
+        pure (KPT.Authority.callerOwned accepted)
+    | none =>
+        if source.kind == .caller then
+          throw "A caller decision is required for caller-owned KPT."
+        pure .nonAuthoritative
+  let predecessor :=
+    match (currentCallerKPT state).reverse.find? fun entry =>
+        entry.ref.key == key && entry.scope == scope with
+    | some caller => some caller.ref
+    | none =>
+        state.kpt.reverse.find? (fun entry =>
+          entry.ref.key == key && entry.scope == scope &&
+            entry.source == source)
+          |>.map (·.ref)
+  let entry : KPT.Entry :=
+    { ref := nextKPTRef state key
+      predecessor
+      category
+      scope
+      statement
+      source
+      relation
+      authority }
+  if !entry.wellFormed then
+    throw "The KPT entry is invalid."
+  pure { state with kpt := state.kpt ++ [entry] }
+
+def acceptKPT (state : State) (key : String) (scope : MemoryScope)
+    (decision : CallerDecision) : Except String State := do
+  if !decision.wellFormed then
+    throw "A valid caller decision is required."
+  let candidate ← match (pendingKPTCandidates state).filter fun entry =>
+      entry.ref.key == key && entry.scope == scope with
+    | [entry] => pure entry
+    | [] => throw "No agent-authored KPT candidate matches that key and scope."
+    | _ => throw "The agent-authored KPT key and scope are ambiguous."
+  let accepted : KPT.Entry :=
+    { candidate with
+      ref := nextKPTRef state key
+      predecessor := some candidate.ref
+      authority := .callerOwned decision }
+  if !accepted.wellFormed then
+    throw "The adopted KPT entry is invalid."
+  pure { state with kpt := state.kpt ++ [accepted] }
+
 def addEvidence (state : State) (key observation method environment : String)
     (inputs : List String)
     (acceptanceCondition trustedBoundary artifactIdentity : String)
-    (designKey : Option String := none) :
+    (designKey : Option String := none)
+    (commandProfileKey : Option String := none) :
     Except String State := do
   if [key, observation, method, environment, acceptanceCondition,
       trustedBoundary, artifactIdentity].any String.isEmpty then
@@ -662,6 +962,17 @@ def addEvidence (state : State) (key observation method environment : String)
           { target := .externalObservation evidenceRef
             basis := .workBoundary selected } :: retained
         pure (revised, Work.DerivationBasis.workBoundary work)
+  let commandProfile ← match commandProfileKey with
+    | none => pure none
+    | some selectedKey =>
+        match revised.commandProfiles.filter fun profile =>
+            profile.ref.key == selectedKey &&
+              commandProfileApplicable revised profile with
+        | [profile] => pure (some profile.ref)
+        | [] =>
+            throw "No accepted current Command Profile matches that key."
+        | _ =>
+            throw "The Command Profile is ambiguous; select an exact scoped profile."
   let spec : Evidence.Spec :=
     { ref := evidenceRef
       observation
@@ -671,7 +982,8 @@ def addEvidence (state : State) (key observation method environment : String)
       acceptanceCondition
       trustedBoundary
       artifactIdentity
-      basis }
+      basis
+      commandProfile }
   if !spec.wellFormed then
     throw "The evidence description is invalid."
   return { revised with evidenceSpecs := revised.evidenceSpecs ++ [spec] }
@@ -721,6 +1033,10 @@ def recordEvidence (state : State) (key observedValue : String)
   else
     match evidenceSpecsSelectedByFocusedBoundary state key designKey with
     | [spec] =>
+        if state.commandDeviations.any (·.evidence == some spec.ref) then
+          .error
+            "The recorded actual route differs from this EvidenceSpec's Command Profile; select a caller-accepted exact alternate profile."
+        else
         let result : Evidence.Result := { spec, observedValue, passed }
         if !result.wellFormed then
           .error "The evidence result is invalid."
@@ -978,6 +1294,17 @@ def acceptDesign (state : State) (key : String)
                   effect
             | _ => effect } }
 
+def acceptDesignWithKPT (state : State) (designKey : String)
+    (decision : CallerDecision) (kptKey : String)
+    (category : KPT.Category) (scope : MemoryScope) (statement : String)
+    (relation : Option String := none)
+    (staleFormalResultIdentities :
+      List Evidence.FormalResultIdentity := []) : Except String State := do
+  let accepted ←
+    acceptDesign state designKey decision none staleFormalResultIdentities
+  recordKPT accepted decision.source (some decision) kptKey category scope
+    statement relation
+
 def retireDesign (state : State) (key : String)
     (decision : CallerDecision) : Except String State := do
   let current ← match (currentDesignItems state).filter (·.ref.key == key) with
@@ -1026,6 +1353,37 @@ def recordNonAuthoritative (state : State) (source : Source)
   pure
     { state with
       design := { effects := state.design.effects ++ [effect] } }
+
+def recordKPTWithCommandProfile (state : State) (source : Source)
+    (decision : Option CallerDecision) (kptKey : String)
+    (category : KPT.Category) (scope : MemoryScope) (statement : String)
+    (relation : Option String) (profileKey purpose : String)
+    (argv : List String) (cwd : Option String)
+    (disposition : CommandProfile.Disposition) : Except String State := do
+  let withKPT ←
+    recordKPT state source decision kptKey category scope statement relation
+  recordCommandProfile withKPT source decision profileKey purpose scope argv cwd
+    disposition
+
+def recordKPTWithInstruction (state : State) (decision : CallerDecision)
+    (key : String) (category : KPT.Category) (scope : MemoryScope)
+    (statement : String) (relation : Option String)
+    (instruction : String) : Except String State := do
+  let withKPT ← recordKPT state decision.source (some decision) key category
+    scope statement relation
+  recordInstruction withKPT decision instruction
+
+def recordKPTWithDesignCandidate (state : State) (source : Source)
+    (decision : Option CallerDecision) (kptKey : String)
+    (category : KPT.Category) (scope : MemoryScope) (statement : String)
+    (relation : Option String) (designKey designStatement : String)
+    (role : Design.Role) (assurance : Design.AssuranceSelection)
+    (dependencyKeys : List String := [])
+    (addsComplexity : Bool := false) : Except String State := do
+  let withKPT ←
+    recordKPT state source decision kptKey category scope statement relation
+  recordDesign withKPT source designKey designStatement role assurance
+    dependencyKeys addsComplexity
 
 def requestReview (state : State) (key artifact : String)
     (purpose : Review.Purpose) : Except String State := do

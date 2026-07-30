@@ -49,6 +49,9 @@ def initialState : Kernel.State :=
     reviewRequests := []
     reviewResults := []
     reviewDispositions := []
+    commandProfiles := []
+    commandDeviations := []
+    kpt := []
     focus := { work := workRef, task := some taskRef, returnPoint := none } }
 
 end AgentWorkbench.Tests

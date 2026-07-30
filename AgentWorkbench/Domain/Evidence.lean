@@ -1,4 +1,4 @@
-import AgentWorkbench.Domain.Work
+import AgentWorkbench.Domain.ProjectMemory
 
 namespace AgentWorkbench.Domain.Evidence
 
@@ -32,6 +32,7 @@ structure Spec where
   trustedBoundary : String
   artifactIdentity : String
   basis : Work.DerivationBasis
+  commandProfile : Option CommandProfileRef := none
 deriving DecidableEq, Repr, BEq
 
 def Spec.wellFormed (spec : Spec) : Bool :=

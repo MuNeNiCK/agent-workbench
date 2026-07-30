@@ -24,6 +24,12 @@ def testParsing : IO Unit := do
     "comma-separated project inputs did not parse"
   expect (AgentWorkbench.Cli.commaSeparated "-").isEmpty
     "optional empty list did not parse"
+  match AgentWorkbench.Cli.parseCommandDisposition "required" with
+  | .ok .required => pure ()
+  | _ => throw <| IO.userError "required Command Profile did not parse"
+  match AgentWorkbench.Cli.parseKPTCategory "problem" with
+  | .ok .problem => pure ()
+  | _ => throw <| IO.userError "KPT Problem category did not parse"
   let firstIntent :=
     AgentWorkbench.Cli.formalResultMutationIntentArguments
       "rule" "design" "0" "tool" "oracle" "pass" "preview:digest"
@@ -183,11 +189,108 @@ def testRepresentativeDelegation : IO Unit := do
         complete.stdout.contains "The current outcome is complete.")
       "satisfied Work did not report successful completion"
 
+def testProjectMemoryDelegation : IO Unit := do
+  IO.FS.withTempDir fun root => do
+    let path := root / "project-memory.sqlite3"
+    let _ ← match ← AgentWorkbench.Adapter.SQLite.initializeStore
+        path "memory-store" "initialize" initialState with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"project-memory CLI fixture initialization failed: {repr error}"
+    let environment token :=
+      #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some token),
+        ("AGENT_WORKBENCH_SOURCE_CONTEXT", some token)]
+    let profile ← runCliChild path
+      #["record-command-profile", "release-check", "verify the release",
+        "project", "required", "-", "Caller selected the exact check.",
+        "lake", "test"]
+      (environment "cli-profile")
+    expect (profile.exitCode == 0)
+      s!"Command Profile CLI delegation failed: {profile.stderr}"
+    let evidence ← runCliChild path
+      #["add-evidence", "release-observation", "Observe the release check.",
+        "run exact argv", "supported host", "-", "passes",
+        "ordinary process", "sha256:release", "-", "release-check"]
+      (environment "cli-profile-evidence")
+    expect (evidence.exitCode == 0)
+      s!"Evidence Command Profile selection failed: {evidence.stderr}"
+    let pendingNext ← runCliChild path #["next"]
+    expect (pendingNext.exitCode == 0 &&
+        pendingNext.stdout.contains
+          "Command Profile release-check@0 (lake test)")
+      "next did not name the exact Command Profile frozen by Evidence"
+    let recorded ← runCliChild path
+      #["record-evidence", "release-observation", "passed", "pass"]
+      (environment "cli-profile-result")
+    expect (recorded.exitCode == 0)
+      s!"Command Profile Evidence result failed: {recorded.stderr}"
+    let rejectedDeviation ← runCliChild path
+      #["record-command-deviation", "release-check", "release-observation", "-",
+        "Use another command.", "lake", "build"]
+      (environment "cli-required-deviation")
+    expect (rejectedDeviation.exitCode != 0 &&
+        rejectedDeviation.stderr.contains
+          "Only a recommended Command Profile")
+      "public CLI allowed an agent-reasoned required-profile deviation"
+    let kpt ← runCliChild path
+      #["record-kpt", "review-context", "problem", "work",
+        "A resumed reviewer retains implementation context.", "-"]
+      (environment "cli-kpt")
+    expect (kpt.exitCode == 0)
+      s!"KPT CLI delegation failed: {kpt.stderr}"
+    let proposedKPT ← runCliChild path
+      #["propose-kpt", "review-context", "try", "work",
+        "Reuse the reviewer context.", "review-context"]
+      (environment "cli-kpt-proposal")
+    expect (proposedKPT.exitCode == 0)
+      s!"KPT proposal CLI delegation failed: {proposedKPT.stderr}"
+    let atomic ← runCliChild path
+      #["record-kpt-command-profile", "stable-check", "keep", "project",
+        "The release check is stable.", "-", "diagnostic-check",
+        "diagnose the release", "recommended", "-", "lake", "build"]
+      (environment "cli-atomic-memory")
+    expect (atomic.exitCode == 0)
+      s!"atomic KPT and Command Profile CLI delegation failed: {atomic.stderr}"
+    let design ← runCliChild path
+      #["record-design", "learning-design", "decision", "none",
+        "Accept reviewed learning with its KPT."]
+      (environment "cli-learning-design")
+    expect (design.exitCode == 0)
+      s!"KPT acceptance Design recording failed: {design.stderr}"
+    let requested ← runCliChild path
+      #["request-design-review", "learning-design-review", "learning-design"]
+      (environment "cli-learning-review")
+    expect (requested.exitCode == 0)
+      s!"KPT acceptance Design Review request failed: {requested.stderr}"
+    let clean ← runCliChild path
+      #["record-clean-review", "learning-design-review", "fresh-reviewer"]
+      (environment "cli-learning-clean")
+    expect (clean.exitCode == 0)
+      s!"KPT acceptance clean Review failed: {clean.stderr}"
+    let accepted ← runCliChild path
+      #["accept-design-with-kpt", "learning-design",
+        "Caller accepted the reviewed learning.", "learning-lesson", "keep",
+        "project", "The reviewed learning is useful.", "-"]
+      (environment "cli-learning-accept")
+    expect (accepted.exitCode == 0)
+      s!"Design acceptance with KPT CLI delegation failed: {accepted.stderr}"
+    let status ← runCliChild path #["status"]
+    expect (status.exitCode == 0 &&
+        status.stdout.contains "Accepted Command Profiles:" &&
+        status.stdout.contains
+          "Command Profile: release-check@0" &&
+        status.stdout.contains
+          "A resumed reviewer retains implementation context." &&
+        status.stdout.contains "Agent-authored KPT candidates:")
+      "status lost durable Command Profile or KPT project language"
+
 def run : IO Unit := do
   testParsing
   testRendering
   testJsonValidation
   testRepresentativeDelegation
+  testProjectMemoryDelegation
   IO.println "cli tests: pass"
 
 end AgentWorkbench.Tests.Cli

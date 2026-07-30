@@ -42,9 +42,33 @@ def testPersistence : IO Unit := do
     expect (retriedInit == initialized)
       "exact initialization retry changed durable state"
 
+    let profileDecision :=
+      decision "stored-profile" "Persist the exact Command Profile."
+    let withProfile ← unwrap
+      (AgentWorkbench.Kernel.recordCommandProfile initialized.state
+        profileDecision.source (some profileDecision) "stored-check"
+        "verify persisted state" .project ["lake", "test"] none .required)
+      "stored Command Profile fixture failed"
+    let withKPT ← unwrap
+      (AgentWorkbench.Kernel.recordKPT withProfile profileDecision.source
+        (some profileDecision) "stored-lesson" .keep .project
+        "The selected profile survives restart." none)
+      "stored KPT fixture failed"
+    let memoryCommitted ← expectMutation
+      (← Adapter.SQLite.mutate path "project-memory" "project-memory"
+        (some initialized.storeId) (some initialized.revision)
+        (fun _ => .ok withKPT))
+      "Command Profile and KPT persistence failed"
+    let memoryReopened ← expectOpen (← Adapter.SQLite.inspect path)
+      "Command Profile and KPT reopen failed"
+    expect (memoryReopened == memoryCommitted &&
+        memoryReopened.state.commandProfiles == withKPT.commandProfiles &&
+        memoryReopened.state.kpt == withKPT.kpt)
+      "SQLite did not preserve exact Command Profile and KPT facts"
+
     let committed ← expectMutation
       (← Adapter.SQLite.mutate path "neutral-change" "change"
-        (some initialized.storeId) (some initialized.revision)
+        (some memoryCommitted.storeId) (some memoryCommitted.revision)
         (fun state =>
           .ok { state with
             design :=
@@ -55,18 +79,18 @@ def testPersistence : IO Unit := do
                          { kind := .question
                            statement := "Which external value is current?" } }] } }))
       "mutation failed"
-    expect (committed.revision == 1)
+    expect (committed.revision == 2)
       "accepted mutation was not committed atomically"
     let exactRetry ← expectMutation
       (← Adapter.SQLite.mutate path "neutral-change" "change"
-        (some initialized.storeId) (some initialized.revision)
+        (some memoryCommitted.storeId) (some memoryCommitted.revision)
         (fun state => .ok state))
       "exact mutation retry failed"
     expect (exactRetry == committed)
       "exact retry duplicated or changed the committed mutation"
 
     match ← Adapter.SQLite.mutate path "neutral-change" "different-intent"
-        (some initialized.storeId) (some initialized.revision)
+        (some memoryCommitted.storeId) (some memoryCommitted.revision)
         (fun state => .ok state) with
     | .error .intentConflict => pure ()
     | other =>

@@ -183,12 +183,55 @@ def testDesignPackageRoles : IO Unit := do
       [.projectStructure, .functionalRequirement, .nonFunctionalRequirement])
     "Design Package roles were collapsed"
 
+def testCommandProfileAndKPTFacts : IO Unit := do
+  let acceptedDecision :=
+    decision "command-profile" "Caller selected the exact argv."
+  let profile : CommandProfile.Profile :=
+    { ref := { key := "check", version := 0 }
+      predecessor := none
+      purpose := "verify the selected implementation"
+      scope := .project
+      argv := ["lake", "test"]
+      cwd := some "."
+      disposition := .required
+      source := acceptedDecision.source
+      authority := .acceptedByCaller acceptedDecision }
+  expect profile.wellFormed
+    "structured accepted Command Profile is not well formed"
+  expect (!({ profile with argv := [] }).wellFormed)
+    "a Command Profile without argv was accepted"
+  expect (!({ profile with cwd := some "../outside" }).wellFormed)
+    "a Command Profile cwd escaped the project boundary"
+  let proposed :=
+    { profile with
+      ref := { key := "proposal", version := 0 }
+      source := source "profile-agent" .agent
+      authority := .proposed }
+  expect proposed.wellFormed
+    "non-authoritative repository or agent profile could not be represented"
+  expect
+    (!({ proposed with source := source "profile-caller" .caller }).wellFormed)
+    "a caller profile silently became a non-authoritative proposal"
+  let entry : KPT.Entry :=
+    { ref := { key := "fresh-review", version := 0 }
+      predecessor := none
+      category := .keep
+      scope := .work workRef.key
+      statement := "Use a context-free reviewer for a fresh Review."
+      source := acceptedDecision.source
+      relation := some "review-boundary"
+      authority := .callerOwned acceptedDecision }
+  expect entry.wellFormed "caller-owned KPT is not well formed"
+  expect (!({ entry with statement := "" }).wellFormed)
+    "an empty KPT statement was accepted"
+
 def run : IO Unit := do
   testAuthorityAndClassification
   testWorkFactsAndOptionalPhase
   testEvidenceFacts
   testComplexityDecisionFacts
   testDesignPackageRoles
+  testCommandProfileAndKPTFacts
   IO.println "domain tests: pass"
 
 end AgentWorkbench.Tests.Domain
