@@ -1525,6 +1525,31 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   | .ok _ =>
       throw <| IO.userError
         "a bare Design relation retargeted across accepted and proposed meanings"
+  let acceptedRelationDesignState :=
+    { initialState with
+      design :=
+        { effects :=
+            [{ source := acceptedRelationDesign.source
+               content := .design acceptedRelationDesign }] } }
+  let atomicRelationDecision :=
+    decision "atomic-design-relation"
+      "Record the exact Design correction and its lesson together."
+  let atomicRelatedDesign ← unwrap
+    (Kernel.recordKPTWithDesignCandidate acceptedRelationDesignState
+      atomicRelationDecision.source "caller" (some atomicRelationDecision)
+      "atomic-design-relation-lesson" .try .project
+      "Relate this lesson to the exact generated Design correction."
+      (some (.design "ambiguous-relation-design"))
+      "ambiguous-relation-design" "Correct the accepted relation meaning."
+      .decision { kind := .none, obligations := [] })
+    "atomic KPT could not bind its exact generated Design correction"
+  expect
+    (atomicRelatedDesign.kpt.reverse.head?.bind (·.relation) ==
+      some
+        (.design
+          ({ key := "ambiguous-relation-design", version := 1 } :
+            DesignRef)))
+    "atomic KPT did not freeze its exact generated Design correction"
   let deviationPending ← unwrap
     (Kernel.addEvidence corrected "deviated-evidence"
       "Observe the actual recommended route." "run exact argv"

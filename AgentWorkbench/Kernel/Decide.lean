@@ -424,23 +424,6 @@ def evidenceSpecCurrent (state : State) (spec : Evidence.Spec) : Bool :=
       state.commandProfiles.find? (·.ref == selected)
         |>.any (commandProfileCurrent state)
 
-def requiredProfileBindingsPreserved (prior next : State) : Bool :=
-  prior.evidenceSpecs.all fun spec =>
-    let required :=
-      evidenceSpecLatestInBasis prior spec &&
-        spec.commandProfile.any fun selected =>
-          prior.commandProfiles.find? (·.ref == selected)
-            |>.any (·.disposition == .required)
-    !required ||
-      next.evidenceSpecs.all fun candidate =>
-        let newerSameLineage :=
-          candidate.ref.key == spec.ref.key &&
-            sameEvidenceBasisLineage spec.basis candidate.basis &&
-            candidate.ref.version > spec.ref.version
-        !newerSameLineage ||
-          (candidate.commandProfile.isSome &&
-            candidate.commandProfileDecision.isSome)
-
 def reviewScopeCurrent (state : State) (scope : Review.Scope) : Bool :=
   state.work.any fun work =>
     work.ref.key == scope.work.key && workCurrent state work.ref &&
@@ -1028,14 +1011,13 @@ def resolveOptionalKPTRelation (state : State)
   | none => .ok none
   | some selected => some <$> resolveKPTRelation state selected
 
-def recordKPT (state : State) (source : Source) (author : String)
+def recordKPTResolved (state : State) (source : Source) (author : String)
     (decision : Option CallerDecision) (key : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
-    (relationSelector : Option KPT.RelationSelector := none)
+    (relation : Option KPT.Relation)
     (predecessorAuthor : Option String := none) : Except String State := do
   let authority ←
     authorityForKPTRecording source decision predecessorAuthor
-  let relation ← resolveOptionalKPTRelation state relationSelector
   let predecessor ←
     selectKPTPredecessor state author key scope decision predecessorAuthor
   let entry : KPT.Entry :=
@@ -1051,6 +1033,15 @@ def recordKPT (state : State) (source : Source) (author : String)
   if !entry.wellFormed then
     throw "The KPT entry is invalid."
   pure { state with kpt := state.kpt ++ [entry] }
+
+def recordKPT (state : State) (source : Source) (author : String)
+    (decision : Option CallerDecision) (key : String)
+    (category : KPT.Category) (scope : MemoryScope) (statement : String)
+    (relationSelector : Option KPT.RelationSelector := none)
+    (predecessorAuthor : Option String := none) : Except String State := do
+  let relation ← resolveOptionalKPTRelation state relationSelector
+  recordKPTResolved state source author decision key category scope statement
+    relation predecessorAuthor
 
 def acceptKPT
     (state : State) (key : String) (scope : MemoryScope)
@@ -1084,7 +1075,19 @@ structure EvidenceRecordingSelection where
   basis : Work.DerivationBasis
   commandProfile : Option CommandProfileRef
 
-def selectEvidenceRecording
+def requiredProfileReplacementSelected (state : State) (key : String)
+    (basis : Work.DerivationBasis)
+    (commandProfile : Option CommandProfileRef) : Bool :=
+  !(state.evidenceSpecs.any fun prior =>
+      prior.ref.key == key &&
+        sameEvidenceBasisLineage prior.basis basis &&
+        evidenceSpecLatestInBasis state prior &&
+        prior.commandProfile.any fun selected =>
+          state.commandProfiles.find? (·.ref == selected)
+            |>.any (·.disposition == .required)) ||
+    commandProfile.isSome
+
+def selectEvidenceRecordingCandidate
     (state : State) (key observation method environment : String)
     (acceptanceCondition trustedBoundary artifactIdentity : String)
     (designKey : Option String := none)
@@ -1153,6 +1156,24 @@ def selectEvidenceRecording
             throw "The Command Profile is ambiguous; select an exact scoped profile."
   pure { revised, ref := evidenceRef, basis, commandProfile }
 
+def selectEvidenceRecording
+    (state : State) (key observation method environment : String)
+    (acceptanceCondition trustedBoundary artifactIdentity : String)
+    (designKey : Option String := none)
+    (commandProfileKey : Option String := none)
+    (commandProfileScope : Option MemoryScope := none)
+    (commandProfileDecision : Option CallerDecision := none) :
+    Except String EvidenceRecordingSelection := do
+  let selected ←
+    selectEvidenceRecordingCandidate state key observation method environment
+      acceptanceCondition trustedBoundary artifactIdentity designKey
+      commandProfileKey commandProfileScope commandProfileDecision
+  if !requiredProfileReplacementSelected selected.revised key selected.basis
+      selected.commandProfile then
+    throw
+      "A required Command Profile binding needs an explicit caller-selected exact replacement."
+  pure selected
+
 def evidenceSpecForRecording (selected : EvidenceRecordingSelection)
     (observation method environment : String) (inputs : List String)
     (acceptanceCondition trustedBoundary artifactIdentity : String)
@@ -1205,18 +1226,9 @@ def addEvidence (state : State) (key observation method environment : String)
     .error
       "An exact Command Profile and its explicit caller selection are required together."
   else
-    match
-        addEvidenceAfterSelectionValidation state key observation method
-          environment inputs acceptanceCondition trustedBoundary
-          artifactIdentity designKey commandProfileKey commandProfileScope
-          commandProfileDecision with
-    | .error reason => .error reason
-    | .ok next =>
-        if requiredProfileBindingsPreserved state next then
-          .ok next
-        else
-          .error
-            "The Evidence transition lost a required Command Profile replacement."
+    addEvidenceAfterSelectionValidation state key observation method
+      environment inputs acceptanceCondition trustedBoundary artifactIdentity
+      designKey commandProfileKey commandProfileScope commandProfileDecision
 
 def evidenceSpecsSelectedByFocusedBoundary (state : State) (key : String)
     (designKey : Option String := none) : List Evidence.Spec :=
@@ -1622,6 +1634,23 @@ def recordKPTWithInstruction
       statement relation
   recordInstruction withKPT decision instruction
 
+def resolveAtomicDesignKPTRelation (state : State)
+    (designKey : String) (selector : Option KPT.RelationSelector) :
+    Except String (Option KPT.Relation) :=
+  match selector with
+  | some (.design selectedKey) =>
+      if selectedKey == designKey then
+        match state.design.designItems.reverse.head? with
+        | some candidate =>
+            if candidate.ref.key == designKey then
+              .ok (some (.design candidate.ref))
+            else
+              .error "The atomic Design candidate identity was not retained."
+        | none => .error "The atomic Design candidate identity is missing."
+      else
+        resolveOptionalKPTRelation state selector
+  | _ => resolveOptionalKPTRelation state selector
+
 def recordKPTWithDesignCandidate
     (state : State) (source : Source)
     (kptAuthor : String)
@@ -1634,8 +1663,10 @@ def recordKPTWithDesignCandidate
   let withDesign ←
     recordDesign state source designKey designStatement role assurance
       dependencyKeys addsComplexity
-  recordKPT withDesign source kptAuthor decision kptKey category scope statement
-    relation
+  let resolvedRelation ←
+    resolveAtomicDesignKPTRelation withDesign designKey relation
+  recordKPTResolved withDesign source kptAuthor decision kptKey category scope
+    statement resolvedRelation
 
 def requestReview (state : State) (key artifact : String)
     (purpose : Review.Purpose) : Except String State := do
