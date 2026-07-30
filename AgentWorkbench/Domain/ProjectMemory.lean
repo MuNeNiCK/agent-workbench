@@ -109,6 +109,7 @@ inductive RelationSelector
   | task (description : String)
   | reviewObservation (review observation : String)
   | evidenceResult (key : String) (basis : EvidenceBasisSelector)
+      (observedValue : String) (passed : Bool)
 deriving DecidableEq, Repr, BEq
 
 inductive Relation

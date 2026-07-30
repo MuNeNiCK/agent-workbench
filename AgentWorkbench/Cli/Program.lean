@@ -149,14 +149,18 @@ def parseKPTCategory : String → Except String KPT.Category
   | "try" => .ok .try
   | _ => .error "KPT category must be keep, problem, or try."
 
-def parseKPTRelation (kind key member : String) :
+def parseKPTRelation (kind key member observedValue passedName : String) :
     Except String (Option KPT.RelationSelector) :=
   match kind with
   | "-" =>
-      if key == "-" && member == "-" then .ok none
-      else .error "An absent KPT relation requires '-', '-', '-'."
+      if key == "-" && member == "-" && observedValue == "-" &&
+          passedName == "-" then
+        .ok none
+      else
+        .error "An absent KPT relation requires five '-' fields."
   | "command-profile" =>
-      if key.isEmpty || key == "-" then
+      if key.isEmpty || key == "-" || observedValue != "-" ||
+          passedName != "-" then
         .error "A Command Profile relation requires its key and scope."
       else match member with
         | "project" => .ok (some (.commandProfile key .project))
@@ -165,7 +169,8 @@ def parseKPTRelation (kind key member : String) :
             .error
               "A Command Profile relation scope must be project or work."
   | "design" =>
-      if key.isEmpty || key == "-" then
+      if key.isEmpty || key == "-" || observedValue != "-" ||
+          passedName != "-" then
         .error "A Design relation requires its key and authority."
       else match member with
         | "accepted" => .ok (some (.design key .accepted))
@@ -173,29 +178,40 @@ def parseKPTRelation (kind key member : String) :
         | _ =>
             .error "A Design relation authority must be accepted or candidate."
   | "task" =>
-      if key.isEmpty || key == "-" || member != "work" then
+      if key.isEmpty || key == "-" || member != "work" ||
+          observedValue != "-" || passedName != "-" then
         .error "A Task relation requires its description and work."
       else
         .ok (some (.task key))
   | "review-observation" =>
-      if key.isEmpty || key == "-" || member.isEmpty || member == "-" then
+      if key.isEmpty || key == "-" || member.isEmpty || member == "-" ||
+          observedValue != "-" || passedName != "-" then
         .error "A Review relation requires review and observation keys."
       else
         .ok (some (.reviewObservation key member))
-  | "evidence-result" =>
-      if key.isEmpty || key == "-" || member.isEmpty || member == "-" then
-        .error "An Evidence relation requires its key and Work or Design basis."
-      else if member == "work" then
-        .ok (some (.evidenceResult key .focusedWork))
-      else if member.startsWith "design:" then
-        let designKey := (member.drop 7).toString
-        if designKey.isEmpty then
-          .error "An Evidence Design basis requires a Design key."
-        else
-          .ok (some (.evidenceResult key (.design designKey)))
-      else
+  | "evidence-result" => do
+      if key.isEmpty || key == "-" || member.isEmpty || member == "-" ||
+          observedValue.isEmpty then
         .error
-          "An Evidence relation basis must be work or design:<Design-key>."
+          "An Evidence relation requires its key, basis, and observed value."
+      else
+        let passed ← match passedName with
+          | "pass" => .ok true
+          | "fail" => .ok false
+          | _ => .error "An Evidence relation result must be pass or fail."
+        if member == "work" then
+          .ok (some (.evidenceResult key .focusedWork observedValue passed))
+        else if member.startsWith "design:" then
+          let designKey := (member.drop 7).toString
+          if designKey.isEmpty then
+            .error "An Evidence Design basis requires a Design key."
+          else
+            .ok
+              (some
+                (.evidenceResult key (.design designKey) observedValue passed))
+        else
+          .error
+            "An Evidence relation basis must be work or design:<Design-key>."
   | _ =>
       .error
         "KPT relation kind must be command-profile, design, task, review-observation, evidence-result, or '-'."
@@ -1048,12 +1064,14 @@ def run (arguments : List String) : IO Unit := do
           (source context .agent) selectedEvidence (some scope)
       printNext state
   | ["record-kpt", author, key, categoryName, scopeName, statement,
-      relationKind, relationKey, relationMember, predecessorAuthor] =>
+      relationKind, relationKey, relationMember, relationObservedValue,
+      relationPassed, predecessorAuthor] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedPredecessorAuthor :=
@@ -1067,12 +1085,14 @@ def run (arguments : List String) : IO Unit := do
           category scope statement selectedRelation selectedPredecessorAuthor
       printNext state
   | ["propose-kpt", author, key, categoryName, scopeName, statement,
-      relationKind, relationKey, relationMember] =>
+      relationKind, relationKey, relationMember, relationObservedValue,
+      relationPassed] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let token ← privateToken
@@ -1092,8 +1112,8 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | "record-kpt-command-profile" :: author :: kptKey :: categoryName ::
       scopeName :: statement :: relationKind :: relationKey ::
-      relationMember :: profileKey :: purpose :: dispositionName :: cwd ::
-      argv =>
+      relationMember :: relationObservedValue :: relationPassed ::
+      profileKey :: purpose :: dispositionName :: cwd :: argv =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1101,7 +1121,8 @@ def run (arguments : List String) : IO Unit := do
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedCwd := if cwd == "-" then none else some cwd
@@ -1116,12 +1137,14 @@ def run (arguments : List String) : IO Unit := do
           profileKey purpose argv selectedCwd disposition
       printNext state
   | ["record-kpt-instruction", author, key, categoryName, scopeName,
-      statement, relationKind, relationKey, relationMember, instruction] =>
+      statement, relationKind, relationKey, relationMember,
+      relationObservedValue, relationPassed, instruction] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let token ← privateToken
@@ -1135,8 +1158,8 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | "record-kpt-design" :: author :: kptKey :: categoryName :: scopeName ::
       statement :: relationKind :: relationKey :: relationMember ::
-      designKey :: roleName :: assuranceName :: designStatement ::
-      dependencyKeys =>
+      relationObservedValue :: relationPassed :: designKey :: roleName ::
+      assuranceName :: designStatement :: dependencyKeys =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1148,7 +1171,8 @@ def run (arguments : List String) : IO Unit := do
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let token ← privateToken
@@ -1308,12 +1332,13 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | ["accept-design-with-kpt", designKey, reason, author, kptKey,
       categoryName, scopeName, statement, relationKind, relationKey,
-      relationMember] =>
+      relationMember, relationObservedValue, relationPassed] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedRelation ← match
-          parseKPTRelation relationKind relationKey relationMember with
+          parseKPTRelation relationKind relationKey relationMember
+            relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let token ← privateToken

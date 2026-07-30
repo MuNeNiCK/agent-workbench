@@ -904,77 +904,113 @@ def kptRelationProfileScope (state : State) :
   | .project => .project
   | .focusedWork => .work state.focus.work.key
 
+def commandProfileKPTRelationCandidates (state : State) (key : String)
+    (selectedScope : KPT.ProfileScopeSelector) : List KPT.Relation :=
+  let scope := kptRelationProfileScope state selectedScope
+  state.commandProfiles.filterMap fun profile =>
+    if profile.ref.key == key && profile.scope == scope &&
+        commandProfileCurrent state profile then
+      some (.commandProfile profile.ref)
+    else
+      none
+
+def designKPTRelationCandidates (state : State) (key : String) :
+    KPT.DesignAuthoritySelector → List KPT.Relation
+  | .accepted =>
+      (currentDesignItems state).filterMap fun item =>
+        if item.ref.key == key then some (.design item.ref) else none
+  | .candidate =>
+      state.design.designItems.filterMap fun item =>
+        if item.ref.key == key &&
+            !(state.design.designItems.any fun successor =>
+              successor.ref.key == key &&
+                successor.ref.version > item.ref.version) &&
+            match item.authority with
+            | .unaccepted => true
+            | _ => false then
+          some (.design item.ref)
+        else
+          none
+
+def taskKPTRelationCandidates (state : State)
+    (description : String) : List KPT.Relation :=
+  state.tasks.filterMap fun task =>
+    if task.description == description &&
+        task.work.key == state.focus.work.key && taskCurrent state task then
+      some (.task task.ref)
+    else
+      none
+
+def reviewKPTRelationCandidates (state : State)
+    (reviewKey observationKey : String) : List KPT.Relation :=
+  state.reviewResults.filterMap fun result =>
+    let currentRequest :=
+      state.reviewRequests.find? fun request =>
+        request.ref == result.review && reviewRequestCurrent state request
+    if result.review.key == reviewKey &&
+        currentRequest.any (·.scope.work.key == state.focus.work.key) &&
+        result.observations.any (·.key == observationKey) then
+      some <| .reviewObservation
+        { review := result.review, observation := observationKey }
+    else
+      none
+
+def evidenceKPTRelationCandidates (state : State) (key : String)
+    (selectedBasis : KPT.EvidenceBasisSelector)
+    (observedValue : String) (passed : Bool) : List KPT.Relation :=
+  (state.evidenceResults.filterMap fun result =>
+    let basisMatches := match selectedBasis, result.spec.basis with
+      | .focusedWork, .workBoundary work =>
+          work.key == state.focus.work.key
+      | .design designKey, .design items =>
+          items.any (·.ref.key == designKey)
+      | _, _ => false
+    if result.spec.ref.key == key && basisMatches &&
+        result.observedValue == observedValue && result.passed == passed &&
+        evidenceResultCurrent state result then
+      some <| KPT.Relation.evidenceResult
+        { evidence := result.spec.ref
+          observedValue
+          passed }
+    else
+      none).eraseDups
+
+def resolveUniqueKPTRelation (candidates : List KPT.Relation)
+    (missing ambiguous : String) : Except String KPT.Relation :=
+  match candidates with
+  | [relation] => .ok relation
+  | [] => .error missing
+  | _ => .error ambiguous
+
 def resolveKPTRelation (state : State)
     (selector : KPT.RelationSelector) : Except String KPT.Relation :=
   match selector with
   | .commandProfile key selectedScope =>
-      let scope := kptRelationProfileScope state selectedScope
-      match state.commandProfiles.filter fun profile =>
-          profile.ref.key == key && profile.scope == scope &&
-            commandProfileCurrent state profile with
-      | [profile] => .ok (.commandProfile profile.ref)
-      | [] => .error "No current applicable Command Profile matches the KPT relation."
-      | _ => .error "The KPT Command Profile relation is ambiguous."
+      resolveUniqueKPTRelation
+        (commandProfileKPTRelationCandidates state key selectedScope)
+        "No current applicable Command Profile matches the KPT relation."
+        "The KPT Command Profile relation is ambiguous."
   | .design key selectedAuthority =>
-      let candidates : List Design.Item := match selectedAuthority with
-        | .accepted =>
-            (currentDesignItems state).filter fun item => item.ref.key == key
-        | .candidate =>
-            state.design.designItems.filter fun item =>
-              item.ref.key == key &&
-                !(state.design.designItems.any fun successor =>
-                  successor.ref.key == key &&
-                    successor.ref.version > item.ref.version) &&
-                match item.authority with
-                | .unaccepted => true
-                | _ => false
-      match candidates with
-      | [item] => .ok (.design item.ref)
-      | [] => .error "No current DesignItem matches the KPT relation."
-      | _ => .error "The KPT DesignItem relation is ambiguous."
+      resolveUniqueKPTRelation
+        (designKPTRelationCandidates state key selectedAuthority)
+        "No current DesignItem matches the KPT relation."
+        "The KPT DesignItem relation is ambiguous."
   | .task description =>
-      match state.tasks.filter fun task =>
-          task.description == description &&
-            task.work.key == state.focus.work.key && taskCurrent state task with
-      | [task] => .ok (.task task.ref)
-      | [] => .error "No current Task matches the KPT relation."
-      | _ => .error "The KPT Task relation is ambiguous."
+      resolveUniqueKPTRelation
+        (taskKPTRelationCandidates state description)
+        "No current Task matches the KPT relation."
+        "The KPT Task relation is ambiguous."
   | .reviewObservation reviewKey observationKey =>
-      let candidates := state.reviewResults.filterMap fun result =>
-        let currentRequest :=
-          state.reviewRequests.find? fun request =>
-            request.ref == result.review && reviewRequestCurrent state request
-        if result.review.key == reviewKey &&
-            currentRequest.any
-              (·.scope.work.key == state.focus.work.key) &&
-            result.observations.any (·.key == observationKey) then
-          some
-            (KPT.Relation.reviewObservation
-              { review := result.review, observation := observationKey })
-        else
-          none
-      match candidates with
-      | [relation] => .ok relation
-      | [] => .error "No current Review observation matches the KPT relation."
-      | _ => .error "The KPT Review observation relation is ambiguous."
-  | .evidenceResult key selectedBasis =>
-      let candidates := state.evidenceResults.filter fun result =>
-        let basisMatches := match selectedBasis, result.spec.basis with
-          | .focusedWork, .workBoundary work =>
-              work.key == state.focus.work.key
-          | .design designKey, .design items =>
-              items.any (·.ref.key == designKey)
-          | _, _ => false
-        result.spec.ref.key == key && basisMatches &&
-          evidenceResultCurrent state result
-      match candidates with
-      | [result] =>
-          .ok <| .evidenceResult
-            { evidence := result.spec.ref
-              observedValue := result.observedValue
-              passed := result.passed }
-      | [] => .error "No current Evidence result matches the KPT relation."
-      | _ => .error "The KPT Evidence result relation is ambiguous."
+      resolveUniqueKPTRelation
+        (reviewKPTRelationCandidates state reviewKey observationKey)
+        "No current Review observation matches the KPT relation."
+        "The KPT Review observation relation is ambiguous."
+  | .evidenceResult key selectedBasis observedValue passed =>
+      resolveUniqueKPTRelation
+        (evidenceKPTRelationCandidates state key selectedBasis observedValue
+          passed)
+        "No current Evidence result matches the KPT relation."
+        "The KPT Evidence result relation is ambiguous."
 
 def selectKPTPredecessor (state : State) (author key : String)
     (scope : MemoryScope) (decision : Option CallerDecision)

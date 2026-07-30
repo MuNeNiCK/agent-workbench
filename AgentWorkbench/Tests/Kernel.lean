@@ -1489,6 +1489,10 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       basis := .workBoundary otherWorkRef }
   let otherEvidenceResult : Evidence.Result :=
     { workResult with spec := otherEvidenceSpec }
+  let repeatedWorkResult : Evidence.Result :=
+    { workResult with
+      observedValue := "second observation"
+      passed := false }
   let duplicateEvidenceState :=
     { duplicateTaskState with
       work :=
@@ -1504,10 +1508,11 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       evidenceSpecs :=
         duplicateTaskState.evidenceSpecs ++ [otherEvidenceSpec]
       evidenceResults :=
-        duplicateTaskState.evidenceResults ++ [otherEvidenceResult] }
+        duplicateTaskState.evidenceResults ++
+          [otherEvidenceResult, repeatedWorkResult] }
   let relatedEvidence ← unwrap
     (Kernel.resolveKPTRelation duplicateEvidenceState
-      (.evidenceResult "work-evidence" .focusedWork))
+      (.evidenceResult "work-evidence" .focusedWork "passed" true))
     "current Evidence result relation failed"
   expect
     (relatedEvidence ==
@@ -1516,6 +1521,18 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
           observedValue := "passed"
           passed := true })
     "Evidence relation did not freeze the exact current result payload"
+  let relatedRepeatedEvidence ← unwrap
+    (Kernel.resolveKPTRelation duplicateEvidenceState
+      (.evidenceResult "work-evidence" .focusedWork
+        "second observation" false))
+    "a repeated Evidence result was not publicly resolvable"
+  expect
+    (relatedRepeatedEvidence ==
+      .evidenceResult
+        { evidence := { key := "work-evidence", version := 0 }
+          observedValue := "second observation"
+          passed := false })
+    "Evidence payload selection did not freeze the exact repeated result"
   let relationReviewRequested ← unwrap
     (Kernel.requestReview initialState "relation-review" "artifact"
       .implementation)

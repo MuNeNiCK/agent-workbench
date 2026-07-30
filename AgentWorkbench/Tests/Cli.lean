@@ -32,32 +32,39 @@ def testParsing : IO Unit := do
   | _ => throw <| IO.userError "KPT Problem category did not parse"
   match
       AgentWorkbench.Cli.parseKPTRelation
-        "review-observation" "fresh-review" "missing-boundary" with
+        "review-observation" "fresh-review" "missing-boundary" "-" "-" with
   | .ok (some (.reviewObservation "fresh-review" "missing-boundary")) =>
       pure ()
   | _ => throw <| IO.userError "tagged KPT Review relation did not parse"
   match
       AgentWorkbench.Cli.parseKPTRelation
-        "command-profile" "shared-check" "work" with
+        "command-profile" "shared-check" "work" "-" "-" with
   | .ok (some (.commandProfile "shared-check" .focusedWork)) => pure ()
   | _ =>
       throw <| IO.userError
         "scoped KPT Command Profile relation did not parse"
   match
       AgentWorkbench.Cli.parseKPTRelation
-        "evidence-result" "shared-evidence" "design:selected-design" with
-  | .ok (some (.evidenceResult "shared-evidence" (.design "selected-design"))) =>
+        "evidence-result" "shared-evidence" "design:selected-design"
+        "observed result" "pass" with
+  | .ok
+      (some
+        (.evidenceResult "shared-evidence" (.design "selected-design")
+          "observed result" true)) =>
       pure ()
   | _ =>
       throw <| IO.userError "Design-basis KPT Evidence relation did not parse"
   match
       AgentWorkbench.Cli.parseKPTRelation
-        "evidence-result" "shared-evidence" "selected-design" with
+        "evidence-result" "shared-evidence" "selected-design"
+        "observed result" "pass" with
   | .error _ => pure ()
   | _ =>
       throw <| IO.userError
         "KPT Evidence relation accepted a non-injective bare basis"
-  match AgentWorkbench.Cli.parseKPTRelation "design" "selected-design" "extra" with
+  match
+      AgentWorkbench.Cli.parseKPTRelation
+        "design" "selected-design" "extra" "-" "-" with
   | .error _ => pure ()
   | _ =>
       throw <| IO.userError

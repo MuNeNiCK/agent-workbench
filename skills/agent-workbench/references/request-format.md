@@ -23,6 +23,7 @@ accept-design <key> <reason>
 accept-design-with-kpt <design-key> <reason> <author> <kpt-key>
   <keep|problem|try> <project|work> <statement>
   <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
 accept-complex-design <key> <reason> <necessity>
   <why-simpler-is-insufficient> <bounded-scope> <maintenance-cost>
 retire-design <key> <reason>
@@ -43,19 +44,24 @@ record-command-deviation <key> <project|work> <evidence-key|-> <cwd|-> <reason>
 
 record-kpt <author> <key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
   <predecessor-author|->
 propose-kpt <author> <key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
 accept-kpt <author> <key> <project|work> <reason>
 record-kpt-command-profile <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
   <profile-key> <purpose>
   <required|recommended|discouraged> <cwd|-> <argv>...
 record-kpt-instruction <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
   <instruction>
 record-kpt-design <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <relation-observed-value|-> <relation-pass|fail|->
   <design-key> <role> <assurance>
   <design-statement> [dependency-key...]
 kpt-history <key> <project|work>
@@ -69,6 +75,8 @@ the Evidence basis (`work|design:<Design-key>`), respectively. `work` always
 selects the focused Work. Generated
 immutable identities remain internal. The Kernel
 resolves one exact current target and rejects missing or ambiguous relations.
+Only `evidence-result` uses `relation-observed-value` and
+`relation-pass|fail`; every other relation kind supplies `-` for both.
 `predecessor-author` selects one exact current standalone-author entry for
 caller supersession; it is not an adoption route.
 
