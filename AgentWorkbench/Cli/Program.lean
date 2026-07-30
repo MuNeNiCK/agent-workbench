@@ -908,7 +908,7 @@ def run (arguments : List String) : IO Unit := do
   let printNext := fun state => printNextWithStale state stale
   match arguments with
   | ["--version"] =>
-      IO.println "agent-workbench 0.2.3"
+      IO.println "agent-workbench 0.2.4"
   | ["--help"] | ["-h"] =>
       printHelp
   | ["compare-json-files", expected, actual] =>

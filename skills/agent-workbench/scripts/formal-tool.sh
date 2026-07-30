@@ -1,12 +1,8 @@
 #!/bin/sh
 set -eu
 
-repository="MuNeNiCK/agent-workbench"
-script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
-skill_dir="$(dirname -- "$script_dir")"
-
 case "$(uname -s):$(uname -m)" in
-  Linux:x86_64|Linux:amd64) platform="linux-x86_64" ;;
+  Linux:x86_64|Linux:amd64) platform="linux" ;;
   *)
     echo "agent-workbench: formal assurance is unsupported on $(uname -s) $(uname -m)" >&2
     exit 1
@@ -18,7 +14,7 @@ case "${1:-}" in
   root) command="root"; shift ;;
   identity) command="identity"; shift ;;
   *)
-    echo "usage: $0 <lean|lake> [arguments...]" >&2
+    echo "usage: $0 <lean|lake|root|identity> [arguments...]" >&2
     exit 2
     ;;
 esac
@@ -31,30 +27,33 @@ need() {
 }
 
 need curl
+need flock
 need grep
 need sed
 need sha256sum
 need tar
-need flock
+need zstd
 
-version="$(sed -n '1{s/[[:space:]]//g;p;}' "$skill_dir/CLI_VERSION")"
-if ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-  echo "agent-workbench: invalid CLI_VERSION: $version" >&2
-  exit 1
+lean_version="4.30.0"
+source_commit="d024af099ca4bf2c86f649261ebf59565dc8c622"
+asset="lean-$lean_version-$platform.tar.zst"
+expected_digest="4dad74141c2c119ca1aa626656be83b8e14238afba97271fd7bf1eb3f081b319"
+if test -n "${AGENT_WORKBENCH_TEST_RELEASE_DIR:-}"; then
+  expected_digest="${AGENT_WORKBENCH_TEST_LEAN_DIGEST:?}"
 fi
 
 cache_base="${XDG_CACHE_HOME:-${HOME}/.cache}"
-cache_dir="$cache_base/agent-workbench/releases/$version/formal-tool-$platform"
-tool_root="$cache_dir/agent-workbench-formal-tool"
-archive="$cache_dir/formal-tool.tar.gz"
-marker="$cache_dir/formal-tool.sha256"
-cache_parent="$(dirname -- "$cache_dir")"
-cache_lock="$cache_parent/.formal-tool-install-lock"
+cache_parent="$cache_base/agent-workbench/toolchains"
+cache_dir="$cache_parent/lean-$lean_version-$platform"
+tool_root="$cache_dir/lean-$lean_version-$platform"
+marker="$cache_dir/distribution.sha256"
+cache_lock="$cache_parent/.lean-$lean_version-$platform-install-lock"
 mkdir -p "$cache_parent"
 exec 9>"$cache_lock"
 until flock -n 9; do
   sleep 0.05
 done
+
 release_cache_lock() {
   flock -u 9 2>/dev/null || true
   exec 9>&-
@@ -71,38 +70,17 @@ trap 'abort_cache_install 130' INT
 trap 'abort_cache_install 143' TERM
 
 cache_valid=false
-if test -s "$archive" && test -s "$marker" &&
-    test -x "$tool_root/bin/lean" && test -x "$tool_root/bin/lake" &&
-    test -s "$tool_root/lean-toolchain" &&
-    test -s "$tool_root/SOURCE_COMMIT" &&
-    test -s "$tool_root/MANIFEST.sha256"; then
-  expected="$(exec 9>&-; sed -n '1{s/[[:space:]]//g;p;}' "$marker")"
-  actual="$(exec 9>&-; sha256sum "$archive" |
-    sed -n 's/[[:space:]].*//p' 9>&-)"
-  archived_manifest=""
-  if manifest_content="$(exec 9>&-; tar -xOzf "$archive" \
-      agent-workbench-formal-tool/MANIFEST.sha256 2>/dev/null)"; then
-    archived_manifest="$(exec 9>&-; printf '%s\n' "$manifest_content" |
-      sha256sum 9>&- | sed -n 's/[[:space:]].*//p' 9>&-)"
-  fi
-  cached_manifest="$(exec 9>&-; sha256sum "$tool_root/MANIFEST.sha256" |
-    sed -n 's/[[:space:]].*//p' 9>&-)"
-  if printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$' 9>&- &&
-      test "$actual" = "$expected" &&
-      test "$archived_manifest" = "$cached_manifest" &&
-      test "$(exec 9>&-; sed -n '1p' "$tool_root/lean-toolchain")" = \
-        "leanprover/lean4:v4.30.0" &&
-      test "$(exec 9>&-; sed -n '1p' "$tool_root/SOURCE_COMMIT")" = \
-        "d024af099ca4bf2c86f649261ebf59565dc8c622" &&
-      (exec 9>&-; cd "$tool_root" &&
-        sha256sum -c MANIFEST.sha256 >/dev/null); then
-    cache_valid=true
-  fi
+if test -x "$tool_root/bin/lean" &&
+    test -x "$tool_root/bin/lake" &&
+    test "$(sed -n '1p' "$marker" 2>/dev/null)" = "$expected_digest" &&
+    "$tool_root/bin/lean" --version |
+      grep -F "Lean (version $lean_version," >/dev/null; then
+  cache_valid=true
 fi
 
 if test "$cache_valid" != true; then
   download_dir="$(exec 9>&-; mktemp -d)"
-  staging_dir="$(exec 9>&-; mktemp -d "$cache_parent/.formal-tool.XXXXXX")"
+  staging_dir="$(exec 9>&-; mktemp -d "$cache_parent/.lean.XXXXXX")"
   cleanup() {
     rm -rf "$download_dir" "$staging_dir" 9>&-
   }
@@ -118,31 +96,21 @@ if test "$cache_valid" != true; then
   trap 'abort_download 130' INT
   trap 'abort_download 143' TERM
 
-  asset="agent-workbench-$version-formal-tool-$platform.tar.gz"
-  checksums="agent-workbench-$version-checksums.txt"
-  base_url="https://github.com/$repository/releases/download/$version"
+  url="https://github.com/leanprover/lean4/releases/download/v$lean_version/$asset"
   curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
-    "$base_url/$asset" -o "$download_dir/$asset" 9>&-
-  curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
-    "$base_url/$checksums" -o "$download_dir/$checksums" 9>&-
-  grep "  $asset\$" "$download_dir/$checksums" 9>&- \
-    > "$download_dir/$asset.sha256"
-  (exec 9>&-; cd "$download_dir" && sha256sum -c "$asset.sha256" >/dev/null)
-  tar -xzf "$download_dir/$asset" -C "$staging_dir" 9>&-
+    "$url" -o "$download_dir/$asset" 9>&-
+  actual_digest="$(exec 9>&-; sha256sum "$download_dir/$asset" |
+    sed -n 's/[[:space:]].*//p' 9>&-)"
+  test "$actual_digest" = "$expected_digest"
+  tar --zstd -xf "$download_dir/$asset" -C "$staging_dir" 9>&-
 
-  staged_root="$staging_dir/agent-workbench-formal-tool"
+  staged_root="$staging_dir/lean-$lean_version-$platform"
   test -x "$staged_root/bin/lean"
   test -x "$staged_root/bin/lake"
-  test "$(exec 9>&-; sed -n '1p' "$staged_root/lean-toolchain")" = \
-    "leanprover/lean4:v4.30.0"
-  test "$(exec 9>&-; sed -n '1p' "$staged_root/SOURCE_COMMIT")" = \
-    "d024af099ca4bf2c86f649261ebf59565dc8c622"
-  (exec 9>&-; cd "$staged_root" &&
-    sha256sum -c MANIFEST.sha256 >/dev/null)
+  "$staged_root/bin/lean" --version |
+    grep -F "Lean (version $lean_version," >/dev/null
+  printf '%s\n' "$expected_digest" > "$staging_dir/distribution.sha256"
 
-  cp "$download_dir/$asset" "$staging_dir/formal-tool.tar.gz" 9>&-
-  sha256sum "$staging_dir/formal-tool.tar.gz" 9>&- |
-    sed -n 's/[[:space:]].*//p' 9>&- > "$staging_dir/formal-tool.sha256"
   rm -rf "$cache_dir" 9>&-
   mv "$staging_dir" "$cache_dir" 9>&-
   staging_dir=""
@@ -151,16 +119,16 @@ fi
 
 release_cache_lock
 trap - EXIT HUP INT TERM
-if test "$command" = "root"; then
-  printf '%s\n' "$tool_root"
-elif test "$command" = "identity"; then
-  archive_digest="$(sed -n '1p' "$marker")"
-  manifest_digest="$(sha256sum "$tool_root/MANIFEST.sha256" |
-    sed -n 's/[[:space:]].*//p')"
-  source_commit="$(sed -n '1p' "$tool_root/SOURCE_COMMIT")"
-  lean_version="$("$tool_root/bin/lean" --version | sed -n '1p')"
-  printf '%s|archive=%s|manifest=%s|source=%s\n' \
-    "$lean_version" "$archive_digest" "$manifest_digest" "$source_commit"
-else
-  exec "$tool_root/bin/$command" "$@"
-fi
+case "$command" in
+  root)
+    printf '%s\n' "$tool_root"
+    ;;
+  identity)
+    lean_identity="$("$tool_root/bin/lean" --version | sed -n '1p')"
+    printf '%s|distribution=sha256:%s|source=%s\n' \
+      "$lean_identity" "$expected_digest" "$source_commit"
+    ;;
+  *)
+    exec "$tool_root/bin/$command" "$@"
+    ;;
+esac

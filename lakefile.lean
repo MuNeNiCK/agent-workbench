@@ -3,7 +3,7 @@ import Lake
 open Lake DSL
 
 package «agent-workbench» where
-  version := v!"0.2.3"
+  version := v!"0.2.4"
   leanOptions := #[⟨`warningAsError, true⟩]
   moreLinkArgs :=
     match get_config? staticRelease with

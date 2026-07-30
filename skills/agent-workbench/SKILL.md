@@ -12,9 +12,9 @@ Run every project action through:
 sh <installed-skill-dir>/scripts/agent-workbench.sh <action> [arguments...]
 ```
 
-The Skill acquires and verifies the native runtime itself. It acquires the
-pinned portable Lean tool only after a formal assurance is selected. The user
-does not install or operate either tool and does not provide glibc.
+The Skill acquires and verifies the native runtime itself. During `init`, it
+also acquires the pinned official Lean distribution. The user does not install
+or operate either tool.
 
 ## Recover first
 

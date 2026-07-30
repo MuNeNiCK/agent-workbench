@@ -1,21 +1,18 @@
 # Installation
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.3 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.4 \
   --scope user --agent <target-agent>
 ```
 
 Ask the coding agent to use `$agent-workbench` for the project. The Skill:
 
 1. resolves the project root;
-2. downloads the matching static Linux x86_64 runtime on first use;
+2. downloads the matching Linux x86_64 runtime on first use;
 3. verifies the published SHA-256 checksum; and
-4. creates project memory under `.agent-workbench` after `init`.
+4. acquires the pinned official Lean distribution during `init`.
 
-If formal assurance is selected, the first `formal-check` separately downloads
-and verifies the pinned portable Lean 4.30.0 tool. Ordinary work does not incur
-that download. Neither runtime requires host glibc, and the user does not
-operate Lean directly.
+The user does not install or operate Lean directly.
 
 The Skill does not change `.gitignore`, Git configuration, or the index.
 

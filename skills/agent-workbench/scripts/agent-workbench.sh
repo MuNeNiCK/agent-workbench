@@ -6,7 +6,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 skill_dir="$(dirname -- "$script_dir")"
 
 case "$(uname -s):$(uname -m)" in
-  Linux:x86_64|Linux:amd64) platform="linux-x86_64-static" ;;
+  Linux:x86_64|Linux:amd64) platform="linux-x86_64" ;;
   *)
     echo "agent-workbench: unsupported platform: $(uname -s) $(uname -m)" >&2
     exit 1
@@ -284,6 +284,12 @@ run() {
       shift
       test "$#" -eq 7
       preview_formal "$runtime" "$@"
+      ;;
+    init)
+      "$script_dir/formal-tool.sh" root >/dev/null
+      root="$(project_root)"
+      with_stale_formal_result_identities "$runtime" "$root" \
+        operation "$runtime" "$@"
       ;;
     *)
       root="$(project_root)"

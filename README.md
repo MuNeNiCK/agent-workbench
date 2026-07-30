@@ -12,14 +12,14 @@ affected design, implementation surface, and review are revisited.
 ## Install
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.3 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.4 \
   --scope user --agent <target-agent>
 ```
 
 Then ask the agent to use `$agent-workbench` in the project. The Skill acquires
-and verifies its Linux x86_64 runtime itself. It downloads the portable pinned
-Lean tool only when the project selects formal assurance. Users do not install
-or operate a separate CLI, Lean toolchain, or glibc runtime.
+and verifies its Linux x86_64 runtime itself. During `init`, it also acquires
+the pinned official Lean distribution. Users do not install or operate a
+separate CLI or Lean toolchain.
 
 Project memory is stored under `.agent-workbench`. The using repository—not
 Agent Workbench—decides whether that directory is tracked, ignored, or shared.
@@ -34,8 +34,8 @@ lake test
 scripts/test-skill.sh .lake/build/bin/agent-workbench
 ```
 
-Release validation additionally exercises the packaged formal tool through the
-installed Skill route.
+Release validation exercises official Lean acquisition through the installed
+Skill route.
 
 Documentation is published at <https://munenick.github.io/agent-workbench/>.
 

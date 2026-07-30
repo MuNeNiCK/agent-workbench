@@ -2,28 +2,18 @@
 set -eu
 
 if test "$#" -ne 1; then
-  echo "usage: $0 <static-binary>" >&2
+  echo "usage: $0 <binary>" >&2
   exit 2
 fi
 
 input="$1"
 directory="$(CDPATH='' cd -- "$(dirname -- "$input")" && pwd -P)"
 binary="$directory/$(basename -- "$input")"
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+version="$(sed -n '1{s/[[:space:]]//g;p;}' \
+  "$root/skills/agent-workbench/CLI_VERSION")"
 
 test -x "$binary"
-file "$binary" | grep -F "ELF 64-bit LSB executable"
-file "$binary" | grep -F "statically linked"
-test "$("$binary" --version)" = "agent-workbench 0.2.3"
-
-smoke() {
-  image="$1"
-  docker run --rm \
-    -v "$binary:/usr/local/bin/agent-workbench:ro" \
-    "$image" sh -ec '
-      test "$(agent-workbench --version)" = "agent-workbench 0.2.3"
-      agent-workbench --help >/dev/null
-    '
-}
-
-smoke "alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"
-smoke "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
+file "$binary" | grep -F "ELF 64-bit LSB"
+test "$("$binary" --version)" = "agent-workbench ${version#v}"
+"$binary" --help >/dev/null

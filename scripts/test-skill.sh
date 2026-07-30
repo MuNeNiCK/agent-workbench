@@ -1,20 +1,13 @@
 #!/bin/sh
 set -eu
 
-if test "$#" -lt 1 || test "$#" -gt 2; then
-  echo "usage: $0 <agent-workbench-binary> [formal-tool-archive]" >&2
+if test "$#" -ne 1; then
+  echo "usage: $0 <agent-workbench-binary>" >&2
   exit 2
 fi
 
 binary="$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd -P)/$(basename -- "$1")"
-formal_archive="${2:-}"
 test -x "$binary"
-if test -n "$formal_archive"; then
-  formal_archive="$(
-    CDPATH='' cd -- "$(dirname -- "$formal_archive")" && pwd -P
-  )/$(basename -- "$formal_archive")"
-  test -s "$formal_archive"
-fi
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 test_area="$(mktemp -d)"
@@ -44,23 +37,32 @@ grep -F "KPT relation kinds are \`command-profile\`, \`design\`, \`task\`" \
 grep -F "record-evidence <key> <observed-value> <pass|fail> [design-key]" \
   "$skill/references/request-format.md" >/dev/null
 version="$(sed -n '1{s/[[:space:]]//g;p;}' "$skill/CLI_VERSION")"
-runtime_asset="agent-workbench-$version-linux-x86_64-static.tar.gz"
-formal_asset="agent-workbench-$version-formal-tool-linux-x86_64.tar.gz"
+runtime_asset="agent-workbench-$version-linux-x86_64.tar.gz"
 checksums="agent-workbench-$version-checksums.txt"
+lean_asset="lean-4.30.0-linux.tar.zst"
 
 cp "$binary" "$release/agent-workbench"
 chmod +x "$skill/scripts/"*.sh "$release/agent-workbench"
 tar -czf "$release/$runtime_asset" -C "$release" agent-workbench
-if test -n "$formal_archive"; then
-  cp "$formal_archive" "$release/$formal_asset"
-fi
-(
-  cd "$release"
-  sha256sum "$runtime_asset" > "$checksums"
-  if test -n "$formal_archive"; then
-    sha256sum "$formal_asset" >> "$checksums"
-  fi
-)
+(cd "$release" && sha256sum "$runtime_asset" > "$checksums")
+
+lean_fixture="$test_area/lean-fixture/lean-4.30.0-linux"
+mkdir -p "$lean_fixture/bin"
+installed_lean_root="$(lean --print-prefix)"
+printf '%s\n' \
+  '#!/bin/sh' \
+  "exec \"$installed_lean_root/bin/lean\" \"\$@\"" \
+  > "$lean_fixture/bin/lean"
+printf '%s\n' \
+  '#!/bin/sh' \
+  "exec \"$installed_lean_root/bin/lake\" \"\$@\"" \
+  > "$lean_fixture/bin/lake"
+chmod +x "$lean_fixture/bin/lean" "$lean_fixture/bin/lake"
+tar -C "$test_area/lean-fixture" -cf - lean-4.30.0-linux |
+  zstd -q -o "$release/$lean_asset"
+lean_digest="$(sha256sum "$release/$lean_asset" |
+  sed -n 's/[[:space:]].*//p')"
+
 cp "$root/scripts/test-support/curl-release.sh" "$test_bin/curl"
 cp "$root/scripts/test-support/sha256sum-delay.sh" "$hash_bin/sha256sum"
 chmod +x "$test_bin/curl" "$hash_bin/sha256sum"
@@ -69,6 +71,7 @@ awb() {
   PATH="$test_bin:$PATH" \
     XDG_CACHE_HOME="$cache" \
     AGENT_WORKBENCH_TEST_RELEASE_DIR="$release" \
+    AGENT_WORKBENCH_TEST_LEAN_DIGEST="$lean_digest" \
     "$skill/scripts/agent-workbench.sh" "$@"
 }
 
@@ -117,11 +120,14 @@ test "$(sha256sum "$project/.git/info/exclude")" = "$exclude_before"
 test "$(git -C "$project" status --porcelain --untracked-files=no)" = "$index_before"
 test "$(sha256sum "$project/main.js")" = "$project_file_before"
 
-runtime_dir="$cache/agent-workbench/releases/$version/linux-x86_64-static"
-formal_dir="$cache/agent-workbench/releases/$version/formal-tool-linux-x86_64"
+runtime_dir="$cache/agent-workbench/releases/$version/linux-x86_64"
+toolchain_dir="$cache/agent-workbench/toolchains/lean-4.30.0-linux"
+tool_root="$toolchain_dir/lean-4.30.0-linux"
 test -x "$runtime_dir/agent-workbench"
 test -s "$runtime_dir/agent-workbench.sha256"
-test ! -e "$formal_dir"
+test -x "$tool_root/bin/lean"
+test -x "$tool_root/bin/lake"
+test "$(sed -n '1p' "$toolchain_dir/distribution.sha256")" = "$lean_digest"
 
 # Each public projection is reconstructed by a new process. These checks assert
 # projection equality only; component tests own the state-transition meaning.
@@ -323,6 +329,7 @@ setsid env \
   PATH="$hash_bin:$test_bin:$PATH" \
   XDG_CACHE_HOME="$lock_cache" \
   AGENT_WORKBENCH_TEST_RELEASE_DIR="$release" \
+  AGENT_WORKBENCH_TEST_LEAN_DIGEST="$lean_digest" \
   AGENT_WORKBENCH_TEST_HASH_READY="$hash_ready" \
   AGENT_WORKBENCH_TEST_HASH_DELAY=30 \
   "$skill/scripts/agent-workbench.sh" --version >/dev/null 2>&1 &
@@ -339,6 +346,7 @@ if ! flock -n "$runtime_lock" true; then
 fi
 PATH="$test_bin:$PATH" XDG_CACHE_HOME="$lock_cache" \
   AGENT_WORKBENCH_TEST_RELEASE_DIR="$release" \
+  AGENT_WORKBENCH_TEST_LEAN_DIGEST="$lean_digest" \
   "$skill/scripts/agent-workbench.sh" --version >/dev/null
 kill -TERM "-$hash_owner" 2>/dev/null || true
 
@@ -385,6 +393,7 @@ awb_replacement() {
   PATH="$test_bin:$PATH" \
     XDG_CACHE_HOME="$replacement_cache" \
     AGENT_WORKBENCH_TEST_RELEASE_DIR="$release" \
+    AGENT_WORKBENCH_TEST_LEAN_DIGEST="$lean_digest" \
     "$skill/scripts/agent-workbench.sh" "$@"
 }
 project_a="$test_area/project-a"
@@ -401,7 +410,7 @@ git -C "$project_b" init -q
   awb_replacement init "preserve project B" "prepare B" >/dev/null
 )
 cp "$project_b/.agent-workbench/state.sqlite3" "$project_a/replacement.sqlite3"
-replacement_runtime="$replacement_cache/agent-workbench/releases/$version/linux-x86_64-static"
+replacement_runtime="$replacement_cache/agent-workbench/releases/$version/linux-x86_64"
 mv "$replacement_runtime/agent-workbench" \
   "$replacement_runtime/agent-workbench.real"
 # shellcheck disable=SC2016
@@ -437,6 +446,7 @@ awb_concurrent() {
   PATH="$test_bin:$PATH" \
     XDG_CACHE_HOME="$concurrent_cache" \
     AGENT_WORKBENCH_TEST_RELEASE_DIR="$release" \
+    AGENT_WORKBENCH_TEST_LEAN_DIGEST="$lean_digest" \
     "$skill/scripts/agent-workbench.sh" "$@"
 }
 concurrent="$test_area/concurrent"
@@ -446,7 +456,7 @@ git -C "$concurrent" init -q
   cd "$concurrent"
   awb_concurrent init "serialize concurrent work" "prepare concurrency" >/dev/null
 )
-concurrent_runtime="$concurrent_cache/agent-workbench/releases/$version/linux-x86_64-static"
+concurrent_runtime="$concurrent_cache/agent-workbench/releases/$version/linux-x86_64"
 mv "$concurrent_runtime/agent-workbench" \
   "$concurrent_runtime/agent-workbench.real"
 # shellcheck disable=SC2016
@@ -489,8 +499,7 @@ sha256sum "$concurrent_runtime/agent-workbench" |
   grep -F "Next:" "$loser_output" >/dev/null
 )
 
-if test -n "$formal_archive"; then
-  formal="$test_area/formal"
+formal="$test_area/formal"
   mkdir -p "$formal/Inventory" "$formal/bin" "$formal/test"
   git -C "$formal" init -q
   printf '%s\n' \
@@ -768,8 +777,7 @@ if test -n "$formal_archive"; then
     sha256sum "$runtime_dir/agent-workbench" |
       sed -n 's/[[:space:]].*//p' > "$runtime_dir/agent-workbench.sha256"
   )
-  test -x "$formal_dir/agent-workbench-formal-tool/bin/lean"
-  test -s "$formal_dir/formal-tool.sha256"
-fi
+test -x "$tool_root/bin/lean"
+test -s "$toolchain_dir/distribution.sha256"
 
 printf '%s\n' "installed skill boundaries: pass"
