@@ -60,7 +60,8 @@ def testPersistence : IO Unit := do
     let withKPT ← unwrap
       (AgentWorkbench.Kernel.recordKPT withEvidence profileDecision.source
         "caller" (some profileDecision) "stored-lesson" .keep .project
-        "The selected profile survives restart." none)
+        "The selected profile survives restart."
+        (some (.task "implement the selected change")))
       "stored KPT fixture failed"
     let memoryCommitted ← expectMutation
       (← Adapter.SQLite.mutate path "project-memory" "project-memory"

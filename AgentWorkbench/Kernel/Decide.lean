@@ -96,6 +96,23 @@ def State.wellFormed (state : State) : Bool :=
       | .project => true
       | .work key =>
           state.work.any (·.ref.key == key)) &&
+      (entry.relation.all fun relation =>
+        match relation with
+        | .commandProfile ref =>
+            state.commandProfiles.any (·.ref == ref)
+        | .design ref =>
+            state.design.designItems.any (·.ref == ref)
+        | .task ref =>
+            state.tasks.any (·.ref == ref)
+        | .reviewObservation ref =>
+            state.reviewResults.any fun result =>
+              result.review == ref.review &&
+                result.observations.any (·.key == ref.observation)
+        | .evidenceResult ref =>
+            state.evidenceResults.any fun result =>
+              result.spec.ref == ref.evidence &&
+                result.observedValue == ref.observedValue &&
+                result.passed == ref.passed) &&
       entry.predecessor.all fun selected =>
         state.kpt.any fun prior =>
           prior.ref == selected && prior.scope == entry.scope) &&
@@ -780,14 +797,14 @@ def orderPhase (state : State) (name : String) (displayOrder : Nat) :
         if phase.name == name then { phase with displayOrder }
         else phase }
 
-private def nextCommandProfileRef (state : State) (key : String) :
+def nextCommandProfileRef (state : State) (key : String) :
     CommandProfileRef :=
   { key
     version :=
       (state.commandProfiles.filter (·.ref.key == key)).foldl
         (fun next profile => max next (profile.ref.version + 1)) 0 }
 
-private def latestAcceptedCommandProfile? (state : State) (key : String)
+def latestAcceptedCommandProfile? (state : State) (key : String)
     (scope : MemoryScope) : Option CommandProfile.Profile :=
   state.commandProfiles.reverse.find? fun profile =>
     profile.ref.key == key && profile.scope == scope &&
@@ -835,7 +852,9 @@ def acceptCommandProfile (state : State) (key : String)
   let accepted : CommandProfile.Profile :=
     { candidate with
       ref := nextCommandProfileRef state key
-      predecessor := some candidate.ref
+      predecessor :=
+        (latestAcceptedCommandProfile? state key scope).map (·.ref)
+          |>.orElse (fun _ => some candidate.ref)
       authority := .acceptedByCaller decision }
   if !accepted.wellFormed then
     throw "The accepted Command Profile is invalid."
@@ -891,63 +910,131 @@ def recordCommandDeviation (state : State) (profileKey : String)
     { state with
       commandDeviations := state.commandDeviations ++ [deviation] }
 
-private def nextKPTRef (state : State) (key : String) : KPTRef :=
+def nextKPTRef (state : State) (key : String) : KPTRef :=
   { key
     version :=
       (state.kpt.filter (·.ref.key == key)).foldl
         (fun next entry => max next (entry.ref.version + 1)) 0 }
 
-def exactKPTAdoption (prior next : State) (key : String)
-    (scope : MemoryScope) (author : String) : Bool :=
-  match next.kpt.drop prior.kpt.length with
-  | [accepted] =>
-      accepted.ref.key == key &&
-        accepted.scope == scope &&
-        accepted.author == author &&
-        (match accepted.authority with
-        | .nonAuthoritative => false
-        | .callerOwned _ => true) &&
-        accepted.predecessor.any fun selected =>
-          (pendingKPTCandidates prior).any fun candidate =>
-            candidate.ref == selected &&
-              candidate.ref.key == key &&
-              candidate.scope == scope &&
-              candidate.author == author &&
-              kptCandidateExactForCurrentCaller prior candidate
-  | _ => false
+def resolveKPTRelation (state : State)
+    (selector : KPT.RelationSelector) : Except String KPT.Relation :=
+  match selector with
+  | .commandProfile key =>
+      match state.commandProfiles.filter fun profile =>
+          profile.ref.key == key && commandProfileApplicable state profile with
+      | [profile] => .ok (.commandProfile profile.ref)
+      | [] => .error "No current applicable Command Profile matches the KPT relation."
+      | _ => .error "The KPT Command Profile relation is ambiguous."
+  | .design key =>
+      let candidates := state.design.designItems.filter fun item =>
+        item.ref.key == key &&
+          !(state.design.designItems.any fun successor =>
+            successor.ref.key == key &&
+              successor.ref.version > item.ref.version) &&
+          match item.authority with
+          | .retiredByCaller _ => false
+          | _ => true
+      match candidates with
+      | [item] => .ok (.design item.ref)
+      | [] => .error "No current DesignItem matches the KPT relation."
+      | _ => .error "The KPT DesignItem relation is ambiguous."
+  | .task description =>
+      match state.tasks.filter fun task =>
+          task.description == description && taskCurrent state task with
+      | [task] => .ok (.task task.ref)
+      | [] => .error "No current Task matches the KPT relation."
+      | _ => .error "The KPT Task relation is ambiguous."
+  | .reviewObservation reviewKey observationKey =>
+      let candidates := state.reviewResults.filterMap fun result =>
+        let currentRequest :=
+          state.reviewRequests.find? fun request =>
+            request.ref == result.review && reviewRequestCurrent state request
+        if result.review.key == reviewKey && currentRequest.isSome &&
+            result.observations.any (·.key == observationKey) then
+          some
+            (KPT.Relation.reviewObservation
+              { review := result.review, observation := observationKey })
+        else
+          none
+      match candidates with
+      | [relation] => .ok relation
+      | [] => .error "No current Review observation matches the KPT relation."
+      | _ => .error "The KPT Review observation relation is ambiguous."
+  | .evidenceResult key =>
+      let candidates := state.evidenceResults.filter fun result =>
+        result.spec.ref.key == key && evidenceResultCurrent state result
+      match candidates with
+      | [result] =>
+          .ok <| .evidenceResult
+            { evidence := result.spec.ref
+              observedValue := result.observedValue
+              passed := result.passed }
+      | [] => .error "No current Evidence result matches the KPT relation."
+      | _ => .error "The KPT Evidence result relation is ambiguous."
+
+def selectKPTPredecessor (state : State) (author key : String)
+    (scope : MemoryScope) (decision : Option CallerDecision)
+    (predecessorAuthor : Option String) : Except String (Option KPTRef) :=
+  match decision with
+  | some _ =>
+      let candidates := (currentKPT state).filter fun entry =>
+        entry.ref.key == key && entry.scope == scope &&
+          predecessorAuthor.all (· == entry.author)
+      match candidates with
+      | [] =>
+          if predecessorAuthor.isSome then
+            .error "No current KPT entry matches that predecessor author."
+          else
+            .ok none
+      | [current] => .ok (some current.ref)
+      | _ =>
+          .error
+            "The current KPT key and scope are ambiguous; select one exact predecessor author."
+  | none =>
+      match (currentCallerKPT state).reverse.find? fun entry =>
+          entry.ref.key == key && entry.scope == scope with
+      | some caller => .ok (some caller.ref)
+      | none =>
+          .ok <|
+            state.kpt.reverse.find? (fun entry =>
+              entry.ref.key == key && entry.scope == scope &&
+                entry.author == author)
+              |>.map (·.ref)
+
+def authorityForKPTRecording (source : Source)
+    (decision : Option CallerDecision)
+    (predecessorAuthor : Option String) : Except String KPT.Authority :=
+  match decision with
+  | some accepted =>
+      if !accepted.wellFormed then
+        .error "A valid caller decision is required."
+      else
+        .ok (.callerOwned accepted)
+  | none =>
+      if source.kind == .caller then
+        .error "A caller decision is required for caller-owned KPT."
+      else if predecessorAuthor.isSome then
+        .error "Only a caller-owned KPT may select a predecessor author."
+      else
+        .ok .nonAuthoritative
+
+def resolveOptionalKPTRelation (state : State)
+    (selector : Option KPT.RelationSelector) :
+    Except String (Option KPT.Relation) :=
+  match selector with
+  | none => .ok none
+  | some selected => some <$> resolveKPTRelation state selected
 
 def recordKPT (state : State) (source : Source) (author : String)
     (decision : Option CallerDecision) (key : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
-    (relation : Option String := none) : Except String State := do
-  let authority ← match decision with
-    | some accepted =>
-        if !accepted.wellFormed then
-          throw "A valid caller decision is required."
-        pure (KPT.Authority.callerOwned accepted)
-    | none =>
-        if source.kind == .caller then
-          throw "A caller decision is required for caller-owned KPT."
-        pure .nonAuthoritative
-  let predecessor ← match decision with
-    | some _ =>
-        match (currentKPT state).filter fun entry =>
-            entry.ref.key == key && entry.scope == scope with
-        | [] => pure none
-        | [current] => pure (some current.ref)
-        | _ =>
-            throw
-              "The current KPT key and scope are ambiguous; supersede one exact author first."
-    | none =>
-        match (currentCallerKPT state).reverse.find? fun entry =>
-            entry.ref.key == key && entry.scope == scope with
-        | some caller => pure (some caller.ref)
-        | none =>
-            pure <|
-              state.kpt.reverse.find? (fun entry =>
-                entry.ref.key == key && entry.scope == scope &&
-                  entry.author == author)
-                |>.map (·.ref)
+    (relationSelector : Option KPT.RelationSelector := none)
+    (predecessorAuthor : Option String := none) : Except String State := do
+  let authority ←
+    authorityForKPTRecording source decision predecessorAuthor
+  let relation ← resolveOptionalKPTRelation state relationSelector
+  let predecessor ←
+    selectKPTPredecessor state author key scope decision predecessorAuthor
   let entry : KPT.Entry :=
     { ref := nextKPTRef state key
       predecessor
@@ -962,7 +1049,7 @@ def recordKPT (state : State) (source : Source) (author : String)
     throw "The KPT entry is invalid."
   pure { state with kpt := state.kpt ++ [entry] }
 
-private def acceptKPTCandidate
+def acceptKPT
     (state : State) (key : String) (scope : MemoryScope)
     (author : String)
     (decision : CallerDecision) : Except String State := do
@@ -988,26 +1075,20 @@ private def acceptKPTCandidate
     throw "The adopted KPT entry is invalid."
   pure { state with kpt := state.kpt ++ [accepted] }
 
-def acceptKPT (state : State) (key : String) (scope : MemoryScope)
-    (author : String)
-    (decision : CallerDecision) : Except String State :=
-  match acceptKPTCandidate state key scope author decision with
-  | .error reason => .error reason
-  | .ok next =>
-      if exactKPTAdoption state next key scope author then
-        .ok next
-      else
-        .error "The adopted KPT entry lost its exact candidate basis."
+structure EvidenceRecordingSelection where
+  revised : State
+  ref : EvidenceRef
+  basis : Work.DerivationBasis
+  commandProfile : Option CommandProfileRef
 
-private def addEvidenceAfterSelectionValidation
+def selectEvidenceRecording
     (state : State) (key observation method environment : String)
-    (inputs : List String)
     (acceptanceCondition trustedBoundary artifactIdentity : String)
     (designKey : Option String := none)
     (commandProfileKey : Option String := none)
     (commandProfileScope : Option MemoryScope := none)
     (commandProfileDecision : Option CallerDecision := none) :
-    Except String State := do
+    Except String EvidenceRecordingSelection := do
   if [key, observation, method, environment, acceptanceCondition,
       trustedBoundary, artifactIdentity].any String.isEmpty then
     throw "The evidence description is incomplete."
@@ -1067,32 +1148,47 @@ private def addEvidenceAfterSelectionValidation
             throw "No accepted current Command Profile matches that key."
         | _ =>
             throw "The Command Profile is ambiguous; select an exact scoped profile."
-  let priorRequired :=
-    revised.evidenceSpecs.filter fun prior =>
-      prior.ref.key == key &&
-        sameEvidenceBasisLineage prior.basis basis &&
-        evidenceSpecLatestInBasis revised prior &&
-        prior.commandProfile.any fun selected =>
-          revised.commandProfiles.find? (·.ref == selected)
-            |>.any (·.disposition == .required)
-  if !priorRequired.isEmpty && commandProfile.isNone then
-    throw
-      "A required Command Profile binding needs an explicit caller-selected exact replacement."
-  let spec : Evidence.Spec :=
-    { ref := evidenceRef
-      observation
-      method
-      environment
-      inputs
-      acceptanceCondition
-      trustedBoundary
-      artifactIdentity
-      basis
-      commandProfile
-      commandProfileDecision }
+  pure { revised, ref := evidenceRef, basis, commandProfile }
+
+def evidenceSpecForRecording (selected : EvidenceRecordingSelection)
+    (observation method environment : String) (inputs : List String)
+    (acceptanceCondition trustedBoundary artifactIdentity : String)
+    (commandProfileDecision : Option CallerDecision) : Evidence.Spec :=
+  { ref := selected.ref
+    observation := observation
+    method := method
+    environment := environment
+    inputs := inputs
+    acceptanceCondition := acceptanceCondition
+    trustedBoundary := trustedBoundary
+    artifactIdentity := artifactIdentity
+    basis := selected.basis
+    commandProfile := selected.commandProfile
+    commandProfileDecision := commandProfileDecision }
+
+def addEvidenceAfterSelectionValidation
+    (state : State) (key observation method environment : String)
+    (inputs : List String)
+    (acceptanceCondition trustedBoundary artifactIdentity : String)
+    (designKey : Option String := none)
+    (commandProfileKey : Option String := none)
+    (commandProfileScope : Option MemoryScope := none)
+    (commandProfileDecision : Option CallerDecision := none) :
+    Except String State := do
+  let selected ←
+    selectEvidenceRecording state key observation method environment
+      acceptanceCondition trustedBoundary artifactIdentity designKey
+      commandProfileKey commandProfileScope commandProfileDecision
+  let spec :=
+    evidenceSpecForRecording selected observation method environment inputs
+      acceptanceCondition trustedBoundary artifactIdentity
+      commandProfileDecision
   if !spec.wellFormed then
     throw "The evidence description is invalid."
-  return { revised with evidenceSpecs := revised.evidenceSpecs ++ [spec] }
+  else
+    pure
+      { selected.revised with
+        evidenceSpecs := selected.revised.evidenceSpecs ++ [spec] }
 
 def addEvidence (state : State) (key observation method environment : String)
     (inputs : List String)
@@ -1117,7 +1213,7 @@ def addEvidence (state : State) (key observation method environment : String)
           .ok next
         else
           .error
-            "A required Command Profile binding needs an explicit caller-selected exact replacement."
+            "The Evidence transition lost a required Command Profile replacement."
 
 def evidenceSpecsSelectedByFocusedBoundary (state : State) (key : String)
     (designKey : Option String := none) : List Evidence.Spec :=
@@ -1323,7 +1419,8 @@ private def designReviewArtifacts? (state : State)
         [result.previewIdentity, result.toolIdentity] ++
           result.oracleArtifact.toList ++ result.checkedArtifacts
 
-def recordDesign (state : State) (source : Source) (key statement : String)
+def recordDesign
+    (state : State) (source : Source) (key statement : String)
     (role : Design.Role) (assurance : Design.AssuranceSelection)
     (dependencyKeys : List String := []) (addsComplexity : Bool := false) :
     Except String State := do
@@ -1425,10 +1522,11 @@ def acceptDesign (state : State) (key : String)
                   effect
             | _ => effect } }
 
-def acceptDesignWithKPT (state : State) (designKey : String)
+def acceptDesignWithKPT
+    (state : State) (designKey : String)
     (decision : CallerDecision) (kptAuthor kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
-    (relation : Option String := none)
+    (relation : Option KPT.RelationSelector := none)
     (staleFormalResultIdentities :
       List Evidence.FormalResultIdentity := []) : Except String State := do
   let accepted ←
@@ -1485,42 +1583,45 @@ def recordNonAuthoritative (state : State) (source : Source)
     { state with
       design := { effects := state.design.effects ++ [effect] } }
 
-def recordKPTWithCommandProfile (state : State) (source : Source)
+def recordKPTWithCommandProfile
+    (state : State) (source : Source)
     (kptAuthor : String)
     (decision : Option CallerDecision) (kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
-    (relation : Option String) (profileKey purpose : String)
+    (relation : Option KPT.RelationSelector) (profileKey purpose : String)
     (argv : List String) (cwd : Option String)
     (disposition : CommandProfile.Disposition) : Except String State := do
-  let withKPT ←
-    recordKPT state source kptAuthor decision kptKey category scope statement
-      relation
-  recordCommandProfile withKPT source decision profileKey purpose scope argv cwd
-    disposition
+  let withProfile ←
+    recordCommandProfile state source decision profileKey purpose scope argv cwd
+      disposition
+  recordKPT withProfile source kptAuthor decision kptKey category scope statement
+    relation
 
-def recordKPTWithInstruction (state : State) (decision : CallerDecision)
+def recordKPTWithInstruction
+    (state : State) (decision : CallerDecision)
     (kptAuthor : String)
     (key : String) (category : KPT.Category) (scope : MemoryScope)
-    (statement : String) (relation : Option String)
+    (statement : String) (relation : Option KPT.RelationSelector)
     (instruction : String) : Except String State := do
   let withKPT ←
     recordKPT state decision.source kptAuthor (some decision) key category scope
       statement relation
   recordInstruction withKPT decision instruction
 
-def recordKPTWithDesignCandidate (state : State) (source : Source)
+def recordKPTWithDesignCandidate
+    (state : State) (source : Source)
     (kptAuthor : String)
     (decision : Option CallerDecision) (kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
-    (relation : Option String) (designKey designStatement : String)
+    (relation : Option KPT.RelationSelector) (designKey designStatement : String)
     (role : Design.Role) (assurance : Design.AssuranceSelection)
     (dependencyKeys : List String := [])
     (addsComplexity : Bool := false) : Except String State := do
-  let withKPT ←
-    recordKPT state source kptAuthor decision kptKey category scope statement
-      relation
-  recordDesign withKPT source designKey designStatement role assurance
-    dependencyKeys addsComplexity
+  let withDesign ←
+    recordDesign state source designKey designStatement role assurance
+      dependencyKeys addsComplexity
+  recordKPT withDesign source kptAuthor decision kptKey category scope statement
+    relation
 
 def requestReview (state : State) (key artifact : String)
     (purpose : Review.Purpose) : Except String State := do

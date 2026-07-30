@@ -66,6 +66,8 @@ A required profile has no agent-reasoned bypass. Record a caller-authorized
 accepted replacement and select that exact profile instead. A recommended
 profile may record an agent-reasoned deviation. A discouraged profile is
 guidance and never creates an absence test.
+`status` retains the recommended deviation's exact actual argv/cwd, reason,
+source, and Evidence binding.
 
 KPT records `keep`, `problem`, and `try` as non-blocking project memory at
 project or current Work scope. It never changes assurance, Review, next action,
@@ -75,6 +77,11 @@ Supply one stable project-language author identity across that author's KPT
 actions; per-action operation tokens are provenance, not author identity.
 Adoption names that author and is valid only for a proposal correcting the
 exact current caller entry.
+When parallel standalone authors share a key and scope, caller supersession
+names one `predecessor-author`; this does not make standalone entries
+adoptable. KPT relations are tagged project-language selectors resolved to one
+exact Command Profile, Design, Task, Review observation, or Evidence result;
+missing and ambiguous targets are rejected before mutation.
 Use `kpt-history` to inspect immutable predecessors, relations, provenance, and
 authority after correction.
 Use the atomic KPT conclusion actions when the same source also records an

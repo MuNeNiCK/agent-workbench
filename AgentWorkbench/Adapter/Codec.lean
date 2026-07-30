@@ -14,8 +14,10 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.WorkRef
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.TaskRef
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewRef
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.EvidenceResultRef
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.CommandProfileRef
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.KPTRef
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.ReviewObservationRef
 
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.Role
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Design.AssuranceKind
@@ -51,6 +53,7 @@ deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.CommandProfile.
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.CommandProfile.Deviation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.KPT.Category
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.KPT.Authority
+deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.KPT.Relation
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.KPT.Entry
 
 deriving instance ToBinary, FromBinary for AgentWorkbench.Domain.Evidence.Spec

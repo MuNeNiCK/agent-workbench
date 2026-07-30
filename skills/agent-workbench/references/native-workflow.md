@@ -38,13 +38,18 @@ not execute commands. Project and Work profiles remain jointly applicable
 until an EvidenceSpec selects one exact accepted profile with an explicit
 caller reason. A later same-lineage EvidenceSpec cannot remove a required
 binding without another exact caller-selected accepted profile.
+Recommended deviation details remain recoverable through `status` after
+restart.
 
 Use KPT for durable `keep`, `problem`, and `try` learning that should survive
 restart without becoming a completion requirement. Caller-owned KPT stays
 visible when an agent proposes a correction. Pass the same stable author name
 for later corrections by that author; operation tokens remain separate source
 provenance. Name that author when adopting the exact proposal against the
-current caller entry. Use `kpt-history` to recover the immutable succession and
+current caller entry. For parallel standalone authors, caller supersession
+names one exact predecessor author without exposing those entries to adoption.
+Tagged relation selectors resolve one exact current project entity before
+mutation. Use `kpt-history` to recover the immutable succession and
 relations. Use an atomic KPT conclusion
 action when the same source also states an instruction, Design candidate, or
 Command Profile.

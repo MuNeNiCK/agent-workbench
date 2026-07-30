@@ -149,6 +149,41 @@ def parseKPTCategory : String → Except String KPT.Category
   | "try" => .ok .try
   | _ => .error "KPT category must be keep, problem, or try."
 
+def parseKPTRelation (kind key member : String) :
+    Except String (Option KPT.RelationSelector) :=
+  match kind with
+  | "-" =>
+      if key == "-" && member == "-" then .ok none
+      else .error "An absent KPT relation requires '-', '-', '-'."
+  | "command-profile" =>
+      if key.isEmpty || key == "-" || member != "-" then
+        .error "A Command Profile relation requires its key and '-' member."
+      else
+        .ok (some (.commandProfile key))
+  | "design" =>
+      if key.isEmpty || key == "-" || member != "-" then
+        .error "A Design relation requires its key and '-' member."
+      else
+        .ok (some (.design key))
+  | "task" =>
+      if key.isEmpty || key == "-" || member != "-" then
+        .error "A Task relation requires its description and '-' member."
+      else
+        .ok (some (.task key))
+  | "review-observation" =>
+      if key.isEmpty || key == "-" || member.isEmpty || member == "-" then
+        .error "A Review relation requires review and observation keys."
+      else
+        .ok (some (.reviewObservation key member))
+  | "evidence-result" =>
+      if key.isEmpty || key == "-" || member != "-" then
+        .error "An Evidence relation requires its key and '-' member."
+      else
+        .ok (some (.evidenceResult key))
+  | _ =>
+      .error
+        "KPT relation kind must be command-profile, design, task, review-observation, evidence-result, or '-'."
+
 private def parseMemoryScope (state : Kernel.State) :
     String → Except String MemoryScope
   | "project" => .ok .project
@@ -321,13 +356,42 @@ private def sourceKindName : SourceKind → String
   | .repository => "repository"
   | .document => "document"
 
+private def kptRelationName (state : Kernel.State) : KPT.Relation → String
+  | .commandProfile ref =>
+      let purpose :=
+        state.commandProfiles.find? (·.ref == ref) |>.map (·.purpose)
+          |>.getD "unavailable purpose"
+      s!"Command Profile {ref.key}@{ref.version}: {purpose}"
+  | .design ref =>
+      let statement :=
+        state.design.designItems.find? (·.ref == ref) |>.map (·.statement)
+          |>.getD "unavailable Design"
+      s!"Design {ref.key}@{ref.version}: {statement}"
+  | .task ref =>
+      let description :=
+        state.tasks.find? (·.ref == ref) |>.map (·.description)
+          |>.getD "unavailable Task"
+      s!"Task {description} [{ref.key}@{ref.version}]"
+  | .reviewObservation ref =>
+      let summary :=
+        state.reviewResults.findSome? fun result =>
+          if result.review == ref.review then
+            result.observations.find? (·.key == ref.observation) |>.map (·.summary)
+          else
+            none
+        |>.getD "unavailable Review observation"
+      s!"Review {ref.review.key}@{ref.review.version} observation {ref.observation}: {summary}"
+  | .evidenceResult ref =>
+      let outcome := if ref.passed then "passed" else "failed"
+      s!"Evidence {ref.evidence.key}@{ref.evidence.version} {outcome}: {ref.observedValue}"
+
 private def printKPTEntry (state : Kernel.State) (entry : KPT.Entry) :
     IO Unit := do
   IO.println s!"  - [{kptCategoryName entry.category}:{entry.ref.key}@{entry.ref.version}] {entry.statement}"
   IO.println s!"    Scope: {memoryScopeName state entry.scope}"
   IO.println s!"    Author: {entry.author}"
   IO.println s!"    Source: {sourceKindName entry.source.kind} ({entry.source.description})"
-  IO.println s!"    Relation: {entry.relation.getD "-"}"
+  IO.println s!"    Relation: {entry.relation.map (kptRelationName state) |>.getD "-"}"
   IO.println s!"    Predecessor: {entry.predecessor.map (fun prior => s!"{prior.key}@{prior.version}") |>.getD "-"}"
   match entry.authority with
   | .nonAuthoritative => IO.println "    Authority: non-authoritative"
@@ -467,6 +531,17 @@ private def printStatusWithStale (state : Kernel.State)
         IO.println "Proposed Command Profiles awaiting caller decision:"
         for profile in proposedProfiles do
           IO.println s!"  - [command-profile:{profile.ref.key}] {profile.purpose} ({memoryScopeName state profile.scope})"
+      let deviations := state.commandDeviations.filter fun deviation =>
+        state.commandProfiles.find? (·.ref == deviation.profile)
+          |>.any fun profile => Kernel.memoryScopeApplicable state profile.scope
+      unless deviations.isEmpty do
+        IO.println "Recorded recommended Command Profile deviations:"
+        for deviation in deviations do
+          IO.println s!"  - [command-profile:{deviation.profile.key}@{deviation.profile.version}] actual argv: {(Lean.toJson deviation.actualArgv).compress}"
+          IO.println s!"    actual cwd: {deviation.actualCwd.map (fun selected => (Lean.toJson selected).compress) |>.getD "-"}"
+          IO.println s!"    Reason: {deviation.reason}"
+          IO.println s!"    Source: {sourceKindName deviation.source.kind} ({deviation.source.description})"
+          IO.println s!"    Evidence: {deviation.evidence.map (fun selected => s!"{selected.key}@{selected.version}") |>.getD "-"}"
       let kpt := Kernel.relevantKPT state
       unless kpt.isEmpty do
         IO.println "KPT project memory:"
@@ -956,24 +1031,34 @@ def run (arguments : List String) : IO Unit := do
         Kernel.recordCommandDeviation state key argv selectedCwd reason
           (source context .agent) selectedEvidence (some scope)
       printNext state
-  | ["record-kpt", author, key, categoryName, scopeName, statement, relation] =>
+  | ["record-kpt", author, key, categoryName, scopeName, statement,
+      relationKind, relationKey, relationMember, predecessorAuthor] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
+      let selectedPredecessorAuthor :=
+        if predecessorAuthor == "-" then none else some predecessorAuthor
       let token ← privateToken
       let context ← sourceContext token
       let accepted := callerDecision context "Record this caller-owned KPT."
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
         Kernel.recordKPT state accepted.source author (some accepted) key
-          category scope statement selectedRelation
+          category scope statement selectedRelation selectedPredecessorAuthor
       printNext state
-  | ["propose-kpt", author, key, categoryName, scopeName, statement, relation] =>
+  | ["propose-kpt", author, key, categoryName, scopeName, statement,
+      relationKind, relationKey, relationMember] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
       let token ← privateToken
       let context ← sourceContext token
       let state ← applyMutation path arguments fun state => do
@@ -990,15 +1075,19 @@ def run (arguments : List String) : IO Unit := do
         Kernel.acceptKPT state key scope author accepted
       printNext state
   | "record-kpt-command-profile" :: author :: kptKey :: categoryName ::
-      scopeName :: statement :: relation :: profileKey :: purpose ::
-      dispositionName :: cwd :: argv =>
+      scopeName :: statement :: relationKind :: relationKey ::
+      relationMember :: profileKey :: purpose :: dispositionName :: cwd ::
+      argv =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let disposition ← match parseCommandDisposition dispositionName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
       let selectedCwd := if cwd == "-" then none else some cwd
       let token ← privateToken
       let context ← sourceContext token
@@ -1011,11 +1100,14 @@ def run (arguments : List String) : IO Unit := do
           profileKey purpose argv selectedCwd disposition
       printNext state
   | ["record-kpt-instruction", author, key, categoryName, scopeName,
-      statement, relation, instruction] =>
+      statement, relationKind, relationKey, relationMember, instruction] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
       let token ← privateToken
       let context ← sourceContext token
       let accepted :=
@@ -1026,8 +1118,9 @@ def run (arguments : List String) : IO Unit := do
           statement selectedRelation instruction
       printNext state
   | "record-kpt-design" :: author :: kptKey :: categoryName :: scopeName ::
-      statement :: relation :: designKey :: roleName :: assuranceName ::
-      designStatement :: dependencyKeys =>
+      statement :: relationKind :: relationKey :: relationMember ::
+      designKey :: roleName :: assuranceName :: designStatement ::
+      dependencyKeys =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1038,7 +1131,10 @@ def run (arguments : List String) : IO Unit := do
           parseAssurance designKey designStatement assuranceName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
       let token ← privateToken
       let context ← sourceContext token
       let accepted :=
@@ -1195,11 +1291,15 @@ def run (arguments : List String) : IO Unit := do
           none stale
       printNext state
   | ["accept-design-with-kpt", designKey, reason, author, kptKey,
-      categoryName, scopeName, statement, relation] =>
+      categoryName, scopeName, statement, relationKind, relationKey,
+      relationMember] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
-      let selectedRelation := if relation == "-" then none else some relation
+      let selectedRelation ← match
+          parseKPTRelation relationKind relationKey relationMember with
+        | .ok selected => pure selected
+        | .error message => throw <| IO.userError message
       let token ← privateToken
       let context ← sourceContext token
       let accepted := callerDecision context reason

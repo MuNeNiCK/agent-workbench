@@ -88,6 +88,31 @@ inductive Authority
   | callerOwned (decision : CallerDecision)
 deriving DecidableEq, Repr, BEq
 
+inductive RelationSelector
+  | commandProfile (key : String)
+  | design (key : String)
+  | task (description : String)
+  | reviewObservation (review observation : String)
+  | evidenceResult (key : String)
+deriving DecidableEq, Repr, BEq
+
+inductive Relation
+  | commandProfile (ref : CommandProfileRef)
+  | design (ref : DesignRef)
+  | task (ref : TaskRef)
+  | reviewObservation (ref : ReviewObservationRef)
+  | evidenceResult (ref : EvidenceResultRef)
+deriving DecidableEq, Repr, BEq
+
+def Relation.wellFormed : Relation → Bool
+  | .commandProfile ref => !ref.key.isEmpty
+  | .design ref => !ref.key.isEmpty
+  | .task ref => !ref.key.isEmpty
+  | .reviewObservation ref =>
+      !ref.review.key.isEmpty && !ref.observation.isEmpty
+  | .evidenceResult ref =>
+      !ref.evidence.key.isEmpty && !ref.observedValue.isEmpty
+
 structure Entry where
   ref : KPTRef
   predecessor : Option KPTRef
@@ -96,7 +121,7 @@ structure Entry where
   statement : String
   source : Source
   author : String
-  relation : Option String
+  relation : Option Relation
   authority : Authority
 deriving DecidableEq, Repr, BEq
 
@@ -108,7 +133,7 @@ def Entry.wellFormed (entry : Entry) : Bool :=
     !entry.statement.isEmpty &&
     !entry.source.id.value.isEmpty &&
     !entry.author.isEmpty &&
-    entry.relation.all (fun value => !value.isEmpty) &&
+    entry.relation.all Relation.wellFormed &&
     match entry.authority with
     | .nonAuthoritative => entry.source.kind != .caller
     | .callerOwned decision => decision.wellFormed

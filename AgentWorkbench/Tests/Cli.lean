@@ -30,6 +30,17 @@ def testParsing : IO Unit := do
   match AgentWorkbench.Cli.parseKPTCategory "problem" with
   | .ok .problem => pure ()
   | _ => throw <| IO.userError "KPT Problem category did not parse"
+  match
+      AgentWorkbench.Cli.parseKPTRelation
+        "review-observation" "fresh-review" "missing-boundary" with
+  | .ok (some (.reviewObservation "fresh-review" "missing-boundary")) =>
+      pure ()
+  | _ => throw <| IO.userError "tagged KPT Review relation did not parse"
+  match AgentWorkbench.Cli.parseKPTRelation "design" "selected-design" "extra" with
+  | .error _ => pure ()
+  | _ =>
+      throw <| IO.userError
+        "KPT relation accepted an invalid extra member"
   let firstIntent :=
     AgentWorkbench.Cli.formalResultMutationIntentArguments
       "rule" "design" "0" "tool" "oracle" "pass" "preview:digest"
@@ -208,19 +219,32 @@ def testProjectMemoryRendering : IO Unit := do
         ["tool", "one argument", "", "line\nbreak", "\"quoted\""]
         (some "path with space") .required)
       "project-memory rendering Work profile fixture failed"
+    let diagnosticDecision :=
+      decision "diagnostic-profile" "Accept the diagnostic route."
+    let diagnosticProfile ← unwrap
+      (Kernel.recordCommandProfile workProfile diagnosticDecision.source
+        (some diagnosticDecision) "diagnostic-check" "diagnose the release"
+        .project ["tool", "recommended"] none .recommended)
+      "project-memory rendering diagnostic profile fixture failed"
+    let deviated ← unwrap
+      (Kernel.recordCommandDeviation diagnosticProfile "diagnostic-check"
+        ["tool", "alternate argument", "", "line\nbreak"]
+        (some "diagnostic path") "Use the bounded diagnostic alternate."
+        (source "diagnostic-deviation" .agent))
+      "project-memory rendering deviation fixture failed"
     let callerKPTDecision :=
       decision "caller-kpt" "Retain the caller-owned lesson."
     let callerKPT ← unwrap
-      (Kernel.recordKPT workProfile callerKPTDecision.source "caller"
+      (Kernel.recordKPT deviated callerKPTDecision.source "caller"
         (some callerKPTDecision) "review-context" .problem
         (.work workProfile.focus.work.key)
         "A resumed reviewer retains implementation context."
-        (some "render-evidence"))
+        (some (.task "implement the selected change")))
       "project-memory rendering caller KPT fixture failed"
     let proposal ← unwrap
       (Kernel.recordKPT callerKPT (source "proposal-action" .agent) "codex"
         none "review-context" .try (.work callerKPT.focus.work.key)
-        "Use a fresh reviewer execution." (some "review-context"))
+        "Use a fresh reviewer execution." none)
       "project-memory rendering KPT proposal fixture failed"
     let adopted ← unwrap
       (Kernel.acceptKPT proposal "review-context"
@@ -261,8 +285,13 @@ def testProjectMemoryRendering : IO Unit := do
         status.stdout.contains "Scope: Work: deliver the selected change" &&
         status.stdout.contains
           "Profile selection: caller-owned (Select the exact Work route.)" &&
+        status.stdout.contains
+          "actual argv: [\"tool\",\"alternate argument\",\"\",\"line\\nbreak\"]" &&
+        status.stdout.contains "actual cwd: \"diagnostic path\"" &&
+        status.stdout.contains
+          "Reason: Use the bounded diagnostic alternate." &&
+        status.stdout.contains "Source: agent (diagnostic-deviation)" &&
         status.stdout.contains "Author: codex" &&
-        status.stdout.contains "Relation: review-context" &&
         !status.stdout.contains "work:")
       "status did not render exact argv or current KPT in project language"
     let pendingNext ← runCliChild path #["next"]
@@ -278,6 +307,8 @@ def testProjectMemoryRendering : IO Unit := do
         history.stdout.contains "[Try:review-context@1]" &&
         history.stdout.contains "[Try:review-context@2]" &&
         history.stdout.contains "Predecessor: review-context@1" &&
+        history.stdout.contains
+          "Relation: Task implement the selected change [task@0]" &&
         history.stdout.contains "Source: agent")
       "KPT history did not expose immutable succession and provenance"
 

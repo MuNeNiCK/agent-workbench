@@ -21,7 +21,8 @@ propose-design <ordinary|complexity> <key> <role> <assurance>
 request-design-review <review> <design-key>
 accept-design <key> <reason>
 accept-design-with-kpt <design-key> <reason> <author> <kpt-key>
-  <keep|problem|try> <project|work> <statement> <relation|->
+  <keep|problem|try> <project|work> <statement>
+  <relation-kind|-> <relation-key|-> <relation-member|->
 accept-complex-design <key> <reason> <necessity>
   <why-simpler-is-insufficient> <bounded-scope> <maintenance-cost>
 retire-design <key> <reason>
@@ -41,19 +42,31 @@ record-command-deviation <key> <project|work> <evidence-key|-> <cwd|-> <reason>
   <actual-argv>...
 
 record-kpt <author> <key> <keep|problem|try> <project|work>
-  <statement> <relation|->
+  <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <predecessor-author|->
 propose-kpt <author> <key> <keep|problem|try> <project|work>
-  <statement> <relation|->
+  <statement> <relation-kind|-> <relation-key|-> <relation-member|->
 accept-kpt <author> <key> <project|work> <reason>
 record-kpt-command-profile <author> <kpt-key> <keep|problem|try> <project|work>
-  <statement> <relation|-> <profile-key> <purpose>
+  <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <profile-key> <purpose>
   <required|recommended|discouraged> <cwd|-> <argv>...
 record-kpt-instruction <author> <kpt-key> <keep|problem|try> <project|work>
-  <statement> <relation|-> <instruction>
+  <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <instruction>
 record-kpt-design <author> <kpt-key> <keep|problem|try> <project|work>
-  <statement> <relation|-> <design-key> <role> <assurance>
+  <statement> <relation-kind|-> <relation-key|-> <relation-member|->
+  <design-key> <role> <assurance>
   <design-statement> [dependency-key...]
 kpt-history <key> <project|work>
+
+KPT relation kinds are `command-profile`, `design`, `task`,
+`review-observation`, and `evidence-result`. The relation key is respectively a
+profile key, Design key, Task description, Review key, or Evidence key.
+`review-observation` alone uses the observation key as `relation-member`; all
+other kinds use `-`. The Kernel resolves one exact current target and rejects
+missing or ambiguous relations. `predecessor-author` selects one exact current
+standalone-author entry for caller supersession; it is not an adoption route.
 
 add-evidence <key> <observation> <method> <environment> <input,...|->
   <acceptance-condition> <trusted-boundary> <artifact>

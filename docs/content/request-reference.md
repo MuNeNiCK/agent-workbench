@@ -38,3 +38,6 @@ a stable author name separate from per-action source provenance, and
 `kpt-history` exposes immutable succession and relations in project language.
 Evidence profile selection records a caller reason and cannot silently remove
 a required same-lineage binding. KPT adoption names the proposal author.
+KPT relations resolve tagged project-language targets to exact immutable
+identities; caller supersession can select one parallel standalone author.
+`status` renders retained recommended-deviation details.

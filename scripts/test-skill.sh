@@ -37,6 +37,10 @@ grep -F "A requested fresh Review uses a different reviewer execution with no in
 grep -F "Do not resume a prior reviewer and" "$skill/SKILL.md" >/dev/null
 grep -F "[design-key|- command-profile-key project|work caller-selection-reason]" \
   "$skill/references/request-format.md" >/dev/null
+grep -F "<predecessor-author|->" \
+  "$skill/references/request-format.md" >/dev/null
+grep -F "KPT relation kinds are \`command-profile\`, \`design\`, \`task\`" \
+  "$skill/references/request-format.md" >/dev/null
 grep -F "record-evidence <key> <observed-value> <pass|fail> [design-key]" \
   "$skill/references/request-format.md" >/dev/null
 version="$(sed -n '1{s/[[:space:]]//g;p;}' "$skill/CLI_VERSION")"

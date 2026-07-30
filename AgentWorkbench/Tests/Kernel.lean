@@ -1277,6 +1277,29 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     ((Kernel.applicableCommandProfiles withWork "verify the implementation"
       |>.map (·.ref.key)) == ["global-check", "work-check"])
     "project and exact-Work Command Profiles acquired silent precedence"
+  let proposedGlobalCorrection ← unwrap
+    (Kernel.recordCommandProfile withGlobal
+      (source "proposed-global-correction" .agent) none "global-check"
+      "verify the implementation" .project ["lake", "test", "--", "all"]
+      none .required)
+    "proposed global Command Profile correction failed"
+  let acceptedGlobalCorrectionDecision :=
+    decision "accept-global-correction" "Accept the exact proposed correction."
+  let acceptedGlobalCorrection ← unwrap
+    (Kernel.acceptCommandProfile proposedGlobalCorrection "global-check"
+      .project acceptedGlobalCorrectionDecision)
+    "proposed global Command Profile correction acceptance failed"
+  expect
+    (acceptedGlobalCorrection.commandProfiles.reverse.head?.any fun profile =>
+      profile.ref ==
+          ({ key := "global-check", version := 2 } : CommandProfileRef) &&
+        profile.predecessor ==
+          some ({ key := "global-check", version := 0 } : CommandProfileRef) &&
+        profile.argv == ["lake", "test", "--", "all"] &&
+        profile.source.kind == .agent &&
+        profile.authority ==
+          .acceptedByCaller acceptedGlobalCorrectionDecision)
+    "accepted Command Profile correction lost exact payload or predecessor"
   let otherWorkDecision :=
     decision "other-work" "Start the independent other Work."
   let otherWork ← unwrap
@@ -1401,6 +1424,83 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   | .ok _ =>
       throw <| IO.userError
         "an agent reason bypassed a required Command Profile"
+  match Kernel.recordKPT sharedScopes (source "dangling-relation" .agent)
+      "codex" none "dangling-relation" .problem .project
+      "Do not retain a dangling relation."
+      (some (.commandProfile "missing-profile")) with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError "a dangling KPT relation committed"
+  match Kernel.recordKPT sharedScopes (source "ambiguous-relation" .agent)
+      "codex" none "ambiguous-relation" .problem .project
+      "Do not guess between scoped profiles."
+      (some (.commandProfile "shared-check")) with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError "an ambiguous KPT relation committed"
+  let relatedKPT ← unwrap
+    (Kernel.recordKPT corrected (source "resolved-relation" .agent) "codex"
+      none "resolved-relation" .keep .project
+      "Retain the exact current Task relation."
+      (some (.task "implement the selected change")))
+    "an exact KPT Task relation failed"
+  expect
+    (relatedKPT.kpt.reverse.head?.bind (·.relation) ==
+      some (.task ({ key := "task", version := 0 } : TaskRef)))
+    "a KPT relation did not freeze the exact resolved Task"
+  let relatedProfile ← unwrap
+    (Kernel.resolveKPTRelation corrected (.commandProfile "global-check"))
+    "current Command Profile relation failed"
+  expect
+    (relatedProfile ==
+      .commandProfile
+        ({ key := "global-check", version := 1 } : CommandProfileRef))
+    "Command Profile relation did not freeze the exact current version"
+  let relatedEvidence ← unwrap
+    (Kernel.resolveKPTRelation corrected (.evidenceResult "work-evidence"))
+    "current Evidence result relation failed"
+  expect
+    (relatedEvidence ==
+      .evidenceResult
+        { evidence := { key := "work-evidence", version := 0 }
+          observedValue := "passed"
+          passed := true })
+    "Evidence relation did not freeze the exact current result payload"
+  let relationReviewRequested ← unwrap
+    (Kernel.requestReview initialState "relation-review" "artifact"
+      .implementation)
+    "KPT relation Review request failed"
+  let relationObservation : Review.Observation :=
+    { key := "relation-risk"
+      kind := .risk
+      summary := "Retain the reviewed relation."
+      evidence := "The exact observation exists." }
+  let relationReviewed ← unwrap
+    (Kernel.recordReviewResult relationReviewRequested "relation-review"
+      "relation-reviewer" relationObservation)
+    "KPT relation Review observation failed"
+  let relatedReview ← unwrap
+    (Kernel.resolveKPTRelation relationReviewed
+      (.reviewObservation "relation-review" "relation-risk"))
+    "current Review observation relation failed"
+  expect
+    (relatedReview ==
+      .reviewObservation
+        { review := { key := "relation-review", version := 0 }
+          observation := "relation-risk" })
+    "Review relation did not freeze the exact Review and observation"
+  let relationDesign ← unwrap
+    (Kernel.recordDesign initialState (source "relation-design" .agent)
+      "relation-design" "Retain the exact Design relation." .decision
+      { kind := .none, obligations := [] })
+    "KPT relation Design candidate failed"
+  let relatedDesign ← unwrap
+    (Kernel.resolveKPTRelation relationDesign (.design "relation-design"))
+    "current Design relation failed"
+  expect
+    (relatedDesign ==
+      .design ({ key := "relation-design", version := 0 } : DesignRef))
+    "Design relation did not freeze the exact current candidate"
   let deviationPending ← unwrap
     (Kernel.addEvidence corrected "deviated-evidence"
       "Observe the actual recommended route." "run exact argv"
@@ -1438,7 +1538,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (Kernel.recordKPT standaloneKPT (source "new-action-token" .agent)
       "codex" none "standalone-lesson"
       .keep .project "Keep using the accepted project route."
-      (some "standalone-lesson"))
+      none)
     "agent KPT self-correction failed"
   expect
     (((Kernel.currentKPT correctedStandalone).filter
@@ -1448,10 +1548,30 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let callerSupersessionDecision :=
     decision "caller-supersedes-agent-kpt"
       "Caller supersedes the exact current agent-only entry."
-  let callerSupersededStandalone ← unwrap
-    (Kernel.recordKPT correctedStandalone callerSupersessionDecision.source
+  let parallelStandalone ← unwrap
+    (Kernel.recordKPT correctedStandalone
+      (source "parallel-standalone-author" .agent) "other-agent" none
+      "standalone-lesson" .try .project
+      "Try the other author's independent route." none)
+    "parallel standalone KPT author failed"
+  match Kernel.recordKPT parallelStandalone callerSupersessionDecision.source
       "caller" (some callerSupersessionDecision) "standalone-lesson" .keep
-      .project "Use the caller-selected accepted project route." none)
+      .project "Use the caller-selected accepted project route." none with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "caller KPT guessed among parallel standalone authors"
+  match Kernel.acceptKPT parallelStandalone "standalone-lesson" .project
+      "codex" callerSupersessionDecision with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "standalone KPT was incorrectly exposed through adoption"
+  let callerSupersededStandalone ← unwrap
+    (Kernel.recordKPT parallelStandalone callerSupersessionDecision.source
+      "caller" (some callerSupersessionDecision) "standalone-lesson" .keep
+      .project "Use the caller-selected accepted project route." none
+      (some "codex"))
     "caller could not supersede an agent-only current KPT entry"
   expect
     (callerSupersededStandalone.kpt.reverse.head?.any fun entry =>
@@ -1468,7 +1588,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let agentKPT ← unwrap
     (Kernel.recordKPT callerKPT (source "agent-kpt" .agent) "codex" none
       "review-bias" .try .project
-      "Reuse the reviewer context anyway." (some "review-bias"))
+      "Reuse the reviewer context anyway." none)
     "agent KPT correction proposal failed"
   expect
     (agentKPT.kpt.reverse.head?.any fun candidate =>
@@ -1478,7 +1598,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let parallelKPT ← unwrap
     (Kernel.recordKPT agentKPT (source "other-agent-kpt" .agent) "other-agent"
       none "review-bias" .try .project "Use another fresh reviewer."
-      (some "review-bias"))
+      none)
     "parallel author KPT proposal failed"
   expect
     (((Kernel.pendingKPTCandidates parallelKPT).map (·.author)
@@ -1548,7 +1668,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let correctedAtomic ← unwrap
     (Kernel.recordKPTWithCommandProfile instructed correctionDecision.source
       "caller" (some correctionDecision) "stable-check" .try .project
-      "Use the corrected exact release route." (some "release-check")
+      "Use the corrected exact release route."
+      (some (.commandProfile "release-check"))
       "release-check" "verify the release"
       ["lake", "test", "--", "all"] (some "validation")
       .required)
@@ -1562,6 +1683,11 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   expect
     (correctedKPT.predecessor ==
         some ({ key := "stable-check", version := 0 } : KPTRef) &&
+      correctedKPT.relation ==
+        some
+          (.commandProfile
+            ({ key := "release-check", version := 1 } :
+              CommandProfileRef)) &&
       correctedKPT.scope == .project &&
       correctedKPT.source == correctionDecision.source &&
       correctedKPT.authority == .callerOwned correctionDecision &&

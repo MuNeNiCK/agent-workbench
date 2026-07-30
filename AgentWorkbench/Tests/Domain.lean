@@ -234,9 +234,28 @@ def testCommandProfileAndKPTFacts : IO Unit := do
       statement := "Use a context-free reviewer for a fresh Review."
       source := acceptedDecision.source
       author := "caller"
-      relation := some "review-boundary"
+      relation :=
+        some (.commandProfile { key := "review-check", version := 0 })
       authority := .callerOwned acceptedDecision }
   expect entry.wellFormed "caller-owned KPT is not well formed"
+  expect
+    ([KPT.Relation.commandProfile
+        ({ key := "check", version := 0 } : CommandProfileRef),
+      KPT.Relation.design ({ key := "design", version := 0 } : DesignRef),
+      KPT.Relation.task ({ key := "task", version := 0 } : TaskRef),
+      KPT.Relation.reviewObservation
+        { review := { key := "review", version := 0 }
+          observation := "risk" },
+      KPT.Relation.evidenceResult
+        { evidence := { key := "evidence", version := 0 }
+          observedValue := "passed"
+          passed := true }].all KPT.Relation.wellFormed)
+    "a supported exact KPT relation identity was not well formed"
+  expect
+    (!(KPT.Relation.reviewObservation
+      { review := { key := "review", version := 0 }, observation := "" }
+      |>.wellFormed))
+    "an incomplete KPT Review relation was accepted"
   expect (!({ entry with statement := "" }).wellFormed)
     "an empty KPT statement was accepted"
 

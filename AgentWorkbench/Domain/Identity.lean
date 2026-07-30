@@ -53,6 +53,12 @@ structure EvidenceRef where
   version : Nat
 deriving DecidableEq, Repr, BEq
 
+structure EvidenceResultRef where
+  evidence : EvidenceRef
+  observedValue : String
+  passed : Bool
+deriving DecidableEq, Repr, BEq
+
 structure CommandProfileRef where
   key : String
   version : Nat
@@ -61,6 +67,11 @@ deriving DecidableEq, Repr, BEq
 structure KPTRef where
   key : String
   version : Nat
+deriving DecidableEq, Repr, BEq
+
+structure ReviewObservationRef where
+  review : ReviewRef
+  observation : String
 deriving DecidableEq, Repr, BEq
 
 end AgentWorkbench.Domain
