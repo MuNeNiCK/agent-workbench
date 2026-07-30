@@ -20,7 +20,7 @@ propose-design <ordinary|complexity> <key> <role> <assurance>
   <statement> [dependency-key...]
 request-design-review <review> <design-key>
 accept-design <key> <reason>
-accept-design-with-kpt <design-key> <reason> <kpt-key>
+accept-design-with-kpt <design-key> <reason> <author> <kpt-key>
   <keep|problem|try> <project|work> <statement> <relation|->
 accept-complex-design <key> <reason> <necessity>
   <why-simpler-is-insufficient> <bounded-scope> <maintenance-cost>
@@ -37,24 +37,27 @@ record-command-profile <key> <purpose> <project|work>
 propose-command-profile <key> <purpose> <project|work>
   <required|recommended|discouraged> <cwd|-> <argv>...
 accept-command-profile <key> <project|work> <reason>
-record-command-deviation <key> <evidence-key|-> <cwd|-> <reason>
+record-command-deviation <key> <project|work> <evidence-key|-> <cwd|-> <reason>
   <actual-argv>...
 
-record-kpt <key> <keep|problem|try> <project|work> <statement> <relation|->
-propose-kpt <key> <keep|problem|try> <project|work> <statement> <relation|->
+record-kpt <author> <key> <keep|problem|try> <project|work>
+  <statement> <relation|->
+propose-kpt <author> <key> <keep|problem|try> <project|work>
+  <statement> <relation|->
 accept-kpt <key> <project|work> <reason>
-record-kpt-command-profile <kpt-key> <keep|problem|try> <project|work>
+record-kpt-command-profile <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation|-> <profile-key> <purpose>
   <required|recommended|discouraged> <cwd|-> <argv>...
-record-kpt-instruction <kpt-key> <keep|problem|try> <project|work>
+record-kpt-instruction <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation|-> <instruction>
-record-kpt-design <kpt-key> <keep|problem|try> <project|work>
+record-kpt-design <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation|-> <design-key> <role> <assurance>
   <design-statement> [dependency-key...]
+kpt-history <key> <project|work>
 
 add-evidence <key> <observation> <method> <environment> <input,...|->
   <acceptance-condition> <trusted-boundary> <artifact>
-  [design-key|- command-profile-key]
+  [design-key|- command-profile-key project|work]
 record-evidence <key> <observed-value> <pass|fail> [design-key]
 
 preview-formal <assurance-key> <design-key> <oracle-module> <module,...>

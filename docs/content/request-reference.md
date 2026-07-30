@@ -33,3 +33,6 @@ Command Profiles record exact argv/cwd guidance and can be selected only by an
 EvidenceSpec; they do not execute commands. KPT records durable project
 learning without changing completion. The installed reference includes the
 profile, deviation, KPT, adoption, and atomic-conclusion actions.
+Command Profile argv is rendered as a lossless JSON vector. KPT actions carry
+a stable author name separate from per-action source provenance, and
+`kpt-history` exposes immutable succession and relations in project language.

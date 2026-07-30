@@ -1223,6 +1223,40 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
         Kernel.commandProfileCurrent correctedWorkScope profile).map
           (·.ref.version) == [1])
     "a Work boundary revision split one semantic Command Profile scope"
+  let sharedProjectDecision :=
+    decision "shared-project-profile" "Select the project-scoped shared route."
+  let sharedProject ← unwrap
+    (Kernel.recordCommandProfile withWork sharedProjectDecision.source
+      (some sharedProjectDecision) "shared-check" "verify shared scope"
+      .project ["lake", "test"] none .recommended)
+    "same-key project profile failed"
+  let sharedWorkDecision :=
+    decision "shared-work-profile" "Select the Work-scoped shared route."
+  let sharedScopes ← unwrap
+    (Kernel.recordCommandProfile sharedProject sharedWorkDecision.source
+      (some sharedWorkDecision) "shared-check" "verify shared scope"
+      (.work sharedProject.focus.work.key) ["lake", "build"] none
+      .recommended)
+    "same-key Work profile failed"
+  match Kernel.addEvidence sharedScopes "ambiguous-shared"
+      "Observe a shared route." "run exact argv" "supported host" []
+      "passes" "ordinary process" "sha256:ambiguous" none
+      (some "shared-check") with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError
+        "same-key cross-scope profiles were selected without a bounded scope"
+  let selectedSharedWork ← unwrap
+    (Kernel.addEvidence sharedScopes "selected-shared"
+      "Observe the Work shared route." "run exact argv" "supported host" []
+      "passes" "ordinary process" "sha256:shared-work" none
+      (some "shared-check") (some (.work sharedScopes.focus.work.key)))
+    "same-key Work profile selection failed"
+  expect
+    (selectedSharedWork.evidenceSpecs.reverse.head?.bind
+      (·.commandProfile) ==
+        some ({ key := "shared-check", version := 1 } : CommandProfileRef))
+    "bounded same-key profile selection did not freeze the exact Work version"
   let proposed ← unwrap
     (Kernel.recordCommandProfile withWork
       (source "profile-proposal" .agent) none "agent-check"
@@ -1304,7 +1338,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let missingBefore := Kernel.missingCompletion deviated deviated.focus.work
   let agentAuthor := source "standalone-agent-kpt" .agent
   let standaloneKPT ← unwrap
-    (Kernel.recordKPT deviated agentAuthor none "standalone-lesson" .try
+    (Kernel.recordKPT deviated agentAuthor "codex" none "standalone-lesson" .try
       .project "Try the accepted project route." none)
     "standalone agent KPT failed"
   expect
@@ -1312,7 +1346,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       (·.statement == "Try the accepted project route."))
     "standalone agent-authored KPT was hidden as a caller correction"
   let correctedStandalone ← unwrap
-    (Kernel.recordKPT standaloneKPT agentAuthor none "standalone-lesson"
+    (Kernel.recordKPT standaloneKPT (source "new-action-token" .agent)
+      "codex" none "standalone-lesson"
       .keep .project "Keep using the accepted project route."
       (some "standalone-lesson"))
     "agent KPT self-correction failed"
@@ -1323,12 +1358,12 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     "an author could not supersede its own KPT entry"
   let kptDecision := decision "caller-kpt" "Retain the caller's Problem."
   let callerKPT ← unwrap
-    (Kernel.recordKPT correctedStandalone kptDecision.source (some kptDecision)
-      "review-bias" .problem .project
+    (Kernel.recordKPT correctedStandalone kptDecision.source "caller"
+      (some kptDecision) "review-bias" .problem .project
       "A resumed reviewer carries implementation context." none)
     "caller KPT recording failed"
   let agentKPT ← unwrap
-    (Kernel.recordKPT callerKPT (source "agent-kpt" .agent) none
+    (Kernel.recordKPT callerKPT (source "agent-kpt" .agent) "codex" none
       "review-bias" .try .project
       "Reuse the reviewer context anyway." (some "review-bias"))
     "agent KPT correction proposal failed"
@@ -1338,6 +1373,21 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (currentCallerKPT.any
       (·.statement == "A resumed reviewer carries implementation context."))
     "an agent KPT correction hid the caller-owned KPT"
+  let adoptionDecision :=
+    decision "kpt-adoption" "Adopt the exact agent-authored correction."
+  let adoptedKPT ← unwrap
+    (Kernel.acceptKPT agentKPT "review-bias" .project adoptionDecision)
+    "agent KPT adoption failed"
+  expect
+    (!(Kernel.pendingKPTCandidates adoptedKPT).any
+        (·.ref.key == "review-bias") &&
+      (Kernel.currentKPT adoptedKPT).any
+        (·.statement == "Reuse the reviewer context anyway."))
+    "an adopted KPT correction remained pending or failed to become current"
+  match Kernel.acceptKPT adoptedKPT "review-bias" .project adoptionDecision with
+  | .error _ => pure ()
+  | .ok _ =>
+      throw <| IO.userError "the same KPT candidate was adopted repeatedly"
   expect
     (Kernel.currentlyComplete agentKPT agentKPT.focus.work == completionBefore &&
       Kernel.missingCompletion agentKPT agentKPT.focus.work == missingBefore &&
@@ -1349,17 +1399,17 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   let atomicDecision :=
     decision "atomic-kpt-profile" "Record one source and both conclusions."
   let atomic ← unwrap
-    (Kernel.recordKPTWithCommandProfile agentKPT atomicDecision.source
-      (some atomicDecision) "stable-check" .keep .project
+    (Kernel.recordKPTWithCommandProfile adoptedKPT atomicDecision.source
+      "caller" (some atomicDecision) "stable-check" .keep .project
       "The release check is stable." none "release-check"
       "verify the release" ["lake", "test"] none .recommended)
     "atomic KPT and Command Profile recording failed"
   expect
-    (atomic.kpt.length == agentKPT.kpt.length + 1 &&
-      atomic.commandProfiles.length == agentKPT.commandProfiles.length + 1)
+    (atomic.kpt.length == adoptedKPT.kpt.length + 1 &&
+      atomic.commandProfiles.length == adoptedKPT.commandProfiles.length + 1)
     "atomic KPT and Command Profile did not commit both facts"
   match Kernel.recordKPTWithCommandProfile atomic atomicDecision.source
-      (some atomicDecision) "invalid-atomic" .keep .project "Invalid." none
+      "caller" (some atomicDecision) "invalid-atomic" .keep .project "Invalid." none
       "invalid-profile" "invalid" [] none .recommended with
   | .error _ => pure ()
   | .ok _ =>
@@ -1367,7 +1417,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
         "an invalid atomic Command Profile committed its KPT half"
   let designAtomic ← unwrap
     (Kernel.recordKPTWithDesignCandidate atomic atomicDecision.source
-      (some atomicDecision) "design-lesson" .try .project
+      "caller" (some atomicDecision) "design-lesson" .try .project
       "Consider a bounded follow-up." none "follow-up-design"
       "Add the bounded follow-up." .decision
       { kind := .none, obligations := [] })
@@ -1378,7 +1428,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
         (·.authority == .unaccepted))
     "KPT created a caller-accepted Design without the ordinary review flow"
   match Kernel.acceptDesignWithKPT designAtomic "follow-up-design"
-      atomicDecision "premature-lesson" .keep .project
+      atomicDecision "caller" "premature-lesson" .keep .project
       "Do not bypass Design Review." none with
   | .error _ => pure ()
   | .ok _ =>
@@ -1401,7 +1451,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     decision "accepted-kpt-decision" "Accept the reviewed design and lesson."
   let acceptedWithKPT ← unwrap
     (Kernel.acceptDesignWithKPT reviewClean "accepted-kpt-design"
-      acceptanceDecision "accepted-design-lesson" .keep .project
+      acceptanceDecision "caller" "accepted-design-lesson" .keep .project
       "The exact reviewed meaning was sufficient." none)
     "atomic Design acceptance and KPT recording failed"
   expect

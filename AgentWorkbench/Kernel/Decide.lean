@@ -334,9 +334,9 @@ def currentKPT (state : State) : List KPT.Entry :=
       !(caller.any fun owned =>
         owned.ref.key == entry.ref.key && owned.scope == entry.scope) &&
       !(state.kpt.any fun successor =>
-        successor.ref.key == entry.ref.key &&
+          successor.ref.key == entry.ref.key &&
           successor.scope == entry.scope &&
-          successor.source == entry.source &&
+          successor.author == entry.author &&
           successor.authority == .nonAuthoritative &&
           successor.ref.version > entry.ref.version)
   caller ++ authored
@@ -363,11 +363,16 @@ def pendingKPTCandidates (state : State) : List KPT.Entry :=
       (caller.any fun owned =>
         owned.ref.key == entry.ref.key && owned.scope == entry.scope) &&
       !(state.kpt.any fun successor =>
-        successor.ref.key == entry.ref.key &&
+          successor.ref.key == entry.ref.key &&
           successor.scope == entry.scope &&
-          successor.source == entry.source &&
+          successor.author == entry.author &&
           successor.authority == .nonAuthoritative &&
-          successor.ref.version > entry.ref.version)
+          successor.ref.version > entry.ref.version) &&
+      !(state.kpt.any fun successor =>
+        successor.predecessor == some entry.ref &&
+          match successor.authority with
+          | .nonAuthoritative => false
+          | .callerOwned _ => true)
 
 def taskCurrent (state : State) (task : Work.Task) : Bool :=
   state.tasks.any (·.ref == task.ref) &&
@@ -812,9 +817,12 @@ def acceptCommandProfile (state : State) (key : String)
 def recordCommandDeviation (state : State) (profileKey : String)
     (actualArgv : List String) (actualCwd : Option String)
     (reason : String) (source : Source)
-    (evidenceKey : Option String := none) : Except String State := do
+    (evidenceKey : Option String := none)
+    (profileScope : Option MemoryScope := none) : Except String State := do
   let candidates := state.commandProfiles.filter fun profile =>
-    profile.ref.key == profileKey && commandProfileApplicable state profile
+    profile.ref.key == profileKey &&
+      profileScope.all (· == profile.scope) &&
+      commandProfileApplicable state profile
   let profile ← match candidates with
     | [selected] => pure selected
     | [] => throw "No accepted current Command Profile matches that key."
@@ -862,7 +870,7 @@ private def nextKPTRef (state : State) (key : String) : KPTRef :=
       (state.kpt.filter (·.ref.key == key)).foldl
         (fun next entry => max next (entry.ref.version + 1)) 0 }
 
-def recordKPT (state : State) (source : Source)
+def recordKPT (state : State) (source : Source) (author : String)
     (decision : Option CallerDecision) (key : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option String := none) : Except String State := do
@@ -882,7 +890,7 @@ def recordKPT (state : State) (source : Source)
     | none =>
         state.kpt.reverse.find? (fun entry =>
           entry.ref.key == key && entry.scope == scope &&
-            entry.source == source)
+            entry.author == author)
           |>.map (·.ref)
   let entry : KPT.Entry :=
     { ref := nextKPTRef state key
@@ -891,6 +899,7 @@ def recordKPT (state : State) (source : Source)
       scope
       statement
       source
+      author
       relation
       authority }
   if !entry.wellFormed then
@@ -919,7 +928,8 @@ def addEvidence (state : State) (key observation method environment : String)
     (inputs : List String)
     (acceptanceCondition trustedBoundary artifactIdentity : String)
     (designKey : Option String := none)
-    (commandProfileKey : Option String := none) :
+    (commandProfileKey : Option String := none)
+    (commandProfileScope : Option MemoryScope := none) :
     Except String State := do
   if [key, observation, method, environment, acceptanceCondition,
       trustedBoundary, artifactIdentity].any String.isEmpty then
@@ -967,6 +977,7 @@ def addEvidence (state : State) (key observation method environment : String)
     | some selectedKey =>
         match revised.commandProfiles.filter fun profile =>
             profile.ref.key == selectedKey &&
+              commandProfileScope.all (· == profile.scope) &&
               commandProfileApplicable revised profile with
         | [profile] => pure (some profile.ref)
         | [] =>
@@ -1295,14 +1306,14 @@ def acceptDesign (state : State) (key : String)
             | _ => effect } }
 
 def acceptDesignWithKPT (state : State) (designKey : String)
-    (decision : CallerDecision) (kptKey : String)
+    (decision : CallerDecision) (kptAuthor kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option String := none)
     (staleFormalResultIdentities :
       List Evidence.FormalResultIdentity := []) : Except String State := do
   let accepted ←
     acceptDesign state designKey decision none staleFormalResultIdentities
-  recordKPT accepted decision.source (some decision) kptKey category scope
+  recordKPT accepted decision.source kptAuthor (some decision) kptKey category scope
     statement relation
 
 def retireDesign (state : State) (key : String)
@@ -1355,25 +1366,30 @@ def recordNonAuthoritative (state : State) (source : Source)
       design := { effects := state.design.effects ++ [effect] } }
 
 def recordKPTWithCommandProfile (state : State) (source : Source)
+    (kptAuthor : String)
     (decision : Option CallerDecision) (kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option String) (profileKey purpose : String)
     (argv : List String) (cwd : Option String)
     (disposition : CommandProfile.Disposition) : Except String State := do
   let withKPT ←
-    recordKPT state source decision kptKey category scope statement relation
+    recordKPT state source kptAuthor decision kptKey category scope statement
+      relation
   recordCommandProfile withKPT source decision profileKey purpose scope argv cwd
     disposition
 
 def recordKPTWithInstruction (state : State) (decision : CallerDecision)
+    (kptAuthor : String)
     (key : String) (category : KPT.Category) (scope : MemoryScope)
     (statement : String) (relation : Option String)
     (instruction : String) : Except String State := do
-  let withKPT ← recordKPT state decision.source (some decision) key category
-    scope statement relation
+  let withKPT ←
+    recordKPT state decision.source kptAuthor (some decision) key category scope
+      statement relation
   recordInstruction withKPT decision instruction
 
 def recordKPTWithDesignCandidate (state : State) (source : Source)
+    (kptAuthor : String)
     (decision : Option CallerDecision) (kptKey : String)
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option String) (designKey designStatement : String)
@@ -1381,7 +1397,8 @@ def recordKPTWithDesignCandidate (state : State) (source : Source)
     (dependencyKeys : List String := [])
     (addsComplexity : Bool := false) : Except String State := do
   let withKPT ←
-    recordKPT state source decision kptKey category scope statement relation
+    recordKPT state source kptAuthor decision kptKey category scope statement
+      relation
   recordDesign withKPT source designKey designStatement role assurance
     dependencyKeys addsComplexity
 

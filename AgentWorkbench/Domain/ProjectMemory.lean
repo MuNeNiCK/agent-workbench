@@ -50,7 +50,6 @@ def Profile.wellFormed (profile : Profile) : Bool :=
     !profile.purpose.isEmpty &&
     profile.scope.wellFormed &&
     !profile.argv.isEmpty &&
-    profile.argv.all (fun argument => !argument.isEmpty) &&
     profile.cwd.all relativePath &&
     !profile.source.id.value.isEmpty &&
     match profile.authority with
@@ -69,7 +68,6 @@ deriving DecidableEq, Repr, BEq
 def Deviation.wellFormed (deviation : Deviation) : Bool :=
   !deviation.profile.key.isEmpty &&
     !deviation.actualArgv.isEmpty &&
-    deviation.actualArgv.all (fun argument => !argument.isEmpty) &&
     deviation.actualCwd.all relativePath &&
     !deviation.reason.isEmpty &&
     !deviation.source.id.value.isEmpty &&
@@ -97,6 +95,7 @@ structure Entry where
   scope : MemoryScope
   statement : String
   source : Source
+  author : String
   relation : Option String
   authority : Authority
 deriving DecidableEq, Repr, BEq
@@ -108,6 +107,7 @@ def Entry.wellFormed (entry : Entry) : Bool :=
     entry.scope.wellFormed &&
     !entry.statement.isEmpty &&
     !entry.source.id.value.isEmpty &&
+    !entry.author.isEmpty &&
     entry.relation.all (fun value => !value.isEmpty) &&
     match entry.authority with
     | .nonAuthoritative => entry.source.kind != .caller

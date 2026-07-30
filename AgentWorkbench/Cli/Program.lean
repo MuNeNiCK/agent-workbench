@@ -235,9 +235,10 @@ private def describeCommandProfile (state : Kernel.State)
   match state.commandProfiles.find? (·.ref == selected) with
   | none => s!"Command Profile {selected.key}@{selected.version}"
   | some profile =>
-      let cwd := profile.cwd.map (fun selected => s!" from {selected}")
+      let cwd := profile.cwd.map (fun selected =>
+        s!" from {(Lean.toJson selected).compress}")
         |>.getD ""
-      s!"Command Profile {selected.key}@{selected.version} ({String.intercalate " " profile.argv}{cwd})"
+      s!"Command Profile {selected.key}@{selected.version} ({(Lean.toJson profile.argv).compress}{cwd})"
 
 def describeMember (state : Kernel.State)
     (member : Work.CompletionMember) : String :=
@@ -305,9 +306,43 @@ def kptCategoryName : KPT.Category → String
   | .problem => "Problem"
   | .try => "Try"
 
-def memoryScopeName : MemoryScope → String
+def memoryScopeName (state : Kernel.State) : MemoryScope → String
   | .project => "project"
-  | .work key => s!"work:{key}"
+  | .work key =>
+      let outcome :=
+        state.work.find? (·.ref.key == key) |>.map (·.outcome)
+          |>.getD "unavailable Work"
+      s!"Work: {outcome}"
+
+private def sourceKindName : SourceKind → String
+  | .caller => "caller"
+  | .agent => "agent"
+  | .reviewer => "reviewer"
+  | .repository => "repository"
+  | .document => "document"
+
+private def printKPTEntry (state : Kernel.State) (entry : KPT.Entry) :
+    IO Unit := do
+  IO.println s!"  - [{kptCategoryName entry.category}:{entry.ref.key}@{entry.ref.version}] {entry.statement}"
+  IO.println s!"    Scope: {memoryScopeName state entry.scope}"
+  IO.println s!"    Author: {entry.author}"
+  IO.println s!"    Source: {sourceKindName entry.source.kind} ({entry.source.description})"
+  IO.println s!"    Relation: {entry.relation.getD "-"}"
+  IO.println s!"    Predecessor: {entry.predecessor.map (fun prior => s!"{prior.key}@{prior.version}") |>.getD "-"}"
+  match entry.authority with
+  | .nonAuthoritative => IO.println "    Authority: non-authoritative"
+  | .callerOwned decision =>
+      IO.println s!"    Authority: caller-owned ({decision.reason})"
+
+private def printKPTHistory (state : Kernel.State) (key : String)
+    (scope : MemoryScope) : IO Unit := do
+  let entries := state.kpt.filter fun entry =>
+    entry.ref.key == key && entry.scope == scope
+  if entries.isEmpty then
+    throw <| IO.userError "No KPT history matches that key and scope."
+  IO.println s!"KPT history [kpt:{key}] for {memoryScopeName state scope}:"
+  for entry in entries do
+    printKPTEntry state entry
 
 private def printReturnAssumption (state : Kernel.State)
     (assumption : Work.ReturnAssumption) : IO Unit :=
@@ -423,25 +458,25 @@ private def printStatusWithStale (state : Kernel.State)
         IO.println "Accepted Command Profiles:"
         for profile in profiles do
           IO.println s!"  - [command-profile:{profile.ref.key}] {profile.purpose}"
-          IO.println s!"    Scope: {memoryScopeName profile.scope}"
+          IO.println s!"    Scope: {memoryScopeName state profile.scope}"
           IO.println s!"    Disposition: {commandDispositionName profile.disposition}"
-          IO.println s!"    argv: {String.intercalate " " profile.argv}"
-          IO.println s!"    cwd: {profile.cwd.getD "-"}"
+          IO.println s!"    argv: {(Lean.toJson profile.argv).compress}"
+          IO.println s!"    cwd: {profile.cwd.map (fun selected => (Lean.toJson selected).compress) |>.getD "-"}"
       let proposedProfiles := Kernel.pendingCommandProfileProposals state
       unless proposedProfiles.isEmpty do
         IO.println "Proposed Command Profiles awaiting caller decision:"
         for profile in proposedProfiles do
-          IO.println s!"  - [command-profile:{profile.ref.key}] {profile.purpose} ({memoryScopeName profile.scope})"
+          IO.println s!"  - [command-profile:{profile.ref.key}] {profile.purpose} ({memoryScopeName state profile.scope})"
       let kpt := Kernel.relevantKPT state
       unless kpt.isEmpty do
         IO.println "KPT project memory:"
         for entry in kpt do
-          IO.println s!"  - [{kptCategoryName entry.category}:{entry.ref.key}] {entry.statement} ({memoryScopeName entry.scope})"
+          printKPTEntry state entry
       let proposedKPT := Kernel.pendingKPTCandidates state
       unless proposedKPT.isEmpty do
         IO.println "Agent-authored KPT candidates:"
         for entry in proposedKPT do
-          IO.println s!"  - [{kptCategoryName entry.category}:{entry.ref.key}] {entry.statement} ({memoryScopeName entry.scope})"
+          printKPTEntry state entry
       let context := state.design.effects.filterMap fun effect =>
         match effect.content with
         | .nonAuthoritative record => some record
@@ -660,6 +695,7 @@ private def printHelp : IO Unit :=
   record-command-profile, propose-command-profile, accept-command-profile
   record-command-deviation, record-kpt, propose-kpt, accept-kpt
   record-kpt-command-profile, record-kpt-instruction, record-kpt-design
+  kpt-history
   preview-formal, formal-check, request-review, record-review
   record-clean-review, resolve-review
   adopt-review-proposal, adopt-complex-review-proposal, correct-review
@@ -823,6 +859,12 @@ def run (arguments : List String) : IO Unit := do
       printStatus (← load path)
   | ["next"] =>
       printNext (← load path)
+  | ["kpt-history", key, scopeName] =>
+      let state ← load path
+      let scope ← match parseMemoryScope state scopeName with
+        | .ok selected => pure selected
+        | .error reason => throw <| IO.userError reason
+      printKPTHistory state key scope
   | ["finish-task"] =>
       let state ← applyMutation path arguments Kernel.finishCurrentTask
       printNext state
@@ -898,17 +940,19 @@ def run (arguments : List String) : IO Unit := do
         let scope ← parseMemoryScope state scopeName
         Kernel.acceptCommandProfile state key scope accepted
       printNext state
-  | "record-command-deviation" :: key :: evidenceKey :: cwd :: reason :: argv =>
+  | "record-command-deviation" :: key :: scopeName :: evidenceKey :: cwd ::
+      reason :: argv =>
       let selectedCwd := if cwd == "-" then none else some cwd
       let selectedEvidence :=
         if evidenceKey == "-" then none else some evidenceKey
       let token ← privateToken
       let context ← sourceContext token
-      let state ← applyMutation path arguments fun state =>
+      let state ← applyMutation path arguments fun state => do
+        let scope ← parseMemoryScope state scopeName
         Kernel.recordCommandDeviation state key argv selectedCwd reason
-          (source context .agent) selectedEvidence
+          (source context .agent) selectedEvidence (some scope)
       printNext state
-  | ["record-kpt", key, categoryName, scopeName, statement, relation] =>
+  | ["record-kpt", author, key, categoryName, scopeName, statement, relation] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -918,10 +962,10 @@ def run (arguments : List String) : IO Unit := do
       let accepted := callerDecision context "Record this caller-owned KPT."
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
-        Kernel.recordKPT state accepted.source (some accepted) key category
-          scope statement selectedRelation
+        Kernel.recordKPT state accepted.source author (some accepted) key
+          category scope statement selectedRelation
       printNext state
-  | ["propose-kpt", key, categoryName, scopeName, statement, relation] =>
+  | ["propose-kpt", author, key, categoryName, scopeName, statement, relation] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -930,8 +974,8 @@ def run (arguments : List String) : IO Unit := do
       let context ← sourceContext token
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
-        Kernel.recordKPT state (source context .agent) none key category
-          scope statement selectedRelation
+        Kernel.recordKPT state (source context .agent) author none key
+          category scope statement selectedRelation
       printNext state
   | ["accept-kpt", key, scopeName, reason] =>
       let token ← privateToken
@@ -941,9 +985,9 @@ def run (arguments : List String) : IO Unit := do
         let scope ← parseMemoryScope state scopeName
         Kernel.acceptKPT state key scope accepted
       printNext state
-  | "record-kpt-command-profile" :: kptKey :: categoryName :: scopeName ::
-      statement :: relation :: profileKey :: purpose :: dispositionName ::
-      cwd :: argv =>
+  | "record-kpt-command-profile" :: author :: kptKey :: categoryName ::
+      scopeName :: statement :: relation :: profileKey :: purpose ::
+      dispositionName :: cwd :: argv =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -959,11 +1003,11 @@ def run (arguments : List String) : IO Unit := do
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
         Kernel.recordKPTWithCommandProfile state accepted.source
-          (some accepted) kptKey category scope statement selectedRelation
+          author (some accepted) kptKey category scope statement selectedRelation
           profileKey purpose argv selectedCwd disposition
       printNext state
-  | ["record-kpt-instruction", key, categoryName, scopeName, statement,
-      relation, instruction] =>
+  | ["record-kpt-instruction", author, key, categoryName, scopeName,
+      statement, relation, instruction] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -974,10 +1018,10 @@ def run (arguments : List String) : IO Unit := do
         callerDecision context "Record the KPT and its operating instruction."
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
-        Kernel.recordKPTWithInstruction state accepted key category scope
+        Kernel.recordKPTWithInstruction state accepted author key category scope
           statement selectedRelation instruction
       printNext state
-  | "record-kpt-design" :: kptKey :: categoryName :: scopeName ::
+  | "record-kpt-design" :: author :: kptKey :: categoryName :: scopeName ::
       statement :: relation :: designKey :: roleName :: assuranceName ::
       designStatement :: dependencyKeys =>
       let category ← match parseKPTCategory categoryName with
@@ -998,7 +1042,7 @@ def run (arguments : List String) : IO Unit := do
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
         Kernel.recordKPTWithDesignCandidate state accepted.source
-          (some accepted) kptKey category scope statement selectedRelation
+          author (some accepted) kptKey category scope statement selectedRelation
           designKey designStatement role assurance dependencyKeys
       printNext state
   | ["add-evidence", key, observation, method, environment, inputs,
@@ -1016,12 +1060,13 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | ["add-evidence", key, observation, method, environment, inputs,
       acceptanceCondition, trustedBoundary, artifactIdentity, designKey,
-      commandProfileKey] =>
+      commandProfileKey, profileScopeName] =>
       let selectedDesign := if designKey == "-" then none else some designKey
-      let state ← applyMutation path arguments fun state =>
+      let state ← applyMutation path arguments fun state => do
+        let profileScope ← parseMemoryScope state profileScopeName
         Kernel.addEvidence state key observation method environment
           (commaSeparated inputs) acceptanceCondition trustedBoundary artifactIdentity
-          selectedDesign (some commandProfileKey)
+          selectedDesign (some commandProfileKey) (some profileScope)
       printNext state
   | ["record-evidence", key, observedValue, result] =>
       let passed ← match parsePassed result with
@@ -1140,8 +1185,8 @@ def run (arguments : List String) : IO Unit := do
         Kernel.acceptDesign state key (callerDecision context reason)
           none stale
       printNext state
-  | ["accept-design-with-kpt", designKey, reason, kptKey, categoryName,
-      scopeName, statement, relation] =>
+  | ["accept-design-with-kpt", designKey, reason, author, kptKey,
+      categoryName, scopeName, statement, relation] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1152,8 +1197,8 @@ def run (arguments : List String) : IO Unit := do
       let stale ← staleFormalResultIdentities
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
-        Kernel.acceptDesignWithKPT state designKey accepted kptKey category
-          scope statement selectedRelation stale
+        Kernel.acceptDesignWithKPT state designKey accepted author kptKey
+          category scope statement selectedRelation stale
       printNext state
   | ["accept-complex-design", key, reason, necessity, simpler, scope, cost] =>
       let token ← privateToken

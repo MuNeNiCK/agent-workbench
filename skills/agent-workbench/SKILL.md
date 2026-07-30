@@ -69,6 +69,10 @@ KPT records `keep`, `problem`, and `try` as non-blocking project memory at
 project or current Work scope. It never changes assurance, Review, next action,
 or completion by itself. An agent-authored correction remains a parallel
 candidate until the caller adopts it; it cannot hide caller-owned KPT.
+Supply one stable project-language author identity across that author's KPT
+actions; per-action operation tokens are provenance, not author identity.
+Use `kpt-history` to inspect immutable predecessors, relations, provenance, and
+authority after correction.
 Use the atomic KPT conclusion actions when the same source also records an
 instruction, an unaccepted Design candidate, or a Command Profile. A Design
 candidate still requires the ordinary fresh design Review and caller

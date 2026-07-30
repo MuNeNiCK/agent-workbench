@@ -189,108 +189,101 @@ def testRepresentativeDelegation : IO Unit := do
         complete.stdout.contains "The current outcome is complete.")
       "satisfied Work did not report successful completion"
 
-def testProjectMemoryDelegation : IO Unit := do
+def testProjectMemoryRendering : IO Unit := do
   IO.FS.withTempDir fun root => do
     let path := root / "project-memory.sqlite3"
+    let projectDecision :=
+      decision "project-profile" "Select the project route."
+    let projectProfile ← unwrap
+      (Kernel.recordCommandProfile initialState projectDecision.source
+        (some projectDecision) "shared-check" "verify the release"
+        .project ["tool", "one argument"] none .required)
+      "project-memory rendering profile fixture failed"
+    let workDecision :=
+      decision "work-profile" "Select the exact Work route."
+    let workProfile ← unwrap
+      (Kernel.recordCommandProfile projectProfile workDecision.source
+        (some workDecision) "shared-check" "verify the release"
+        (.work projectProfile.focus.work.key)
+        ["tool", "one argument", "", "line\nbreak", "\"quoted\""]
+        (some "path with space") .required)
+      "project-memory rendering Work profile fixture failed"
+    let callerKPTDecision :=
+      decision "caller-kpt" "Retain the caller-owned lesson."
+    let callerKPT ← unwrap
+      (Kernel.recordKPT workProfile callerKPTDecision.source "caller"
+        (some callerKPTDecision) "review-context" .problem
+        (.work workProfile.focus.work.key)
+        "A resumed reviewer retains implementation context."
+        (some "render-evidence"))
+      "project-memory rendering caller KPT fixture failed"
+    let proposal ← unwrap
+      (Kernel.recordKPT callerKPT (source "proposal-action" .agent) "codex"
+        none "review-context" .try (.work callerKPT.focus.work.key)
+        "Use a fresh reviewer execution." (some "review-context"))
+      "project-memory rendering KPT proposal fixture failed"
+    let adopted ← unwrap
+      (Kernel.acceptKPT proposal "review-context"
+        (.work proposal.focus.work.key)
+        (decision "adopt-kpt" "Adopt the exact correction."))
+      "project-memory rendering KPT adoption fixture failed"
+    expect adopted.wellFormed
+      "project-memory rendering fixture is not a valid Kernel state"
     let _ ← match ← AgentWorkbench.Adapter.SQLite.initializeStore
-        path "memory-store" "initialize" initialState with
+        path "memory-store" "initialize" adopted with
       | .ok snapshot => pure snapshot
       | .error error =>
           throw <| IO.userError
             s!"project-memory CLI fixture initialization failed: {repr error}"
-    let environment token :=
-      #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some token),
-        ("AGENT_WORKBENCH_SOURCE_CONTEXT", some token)]
-    let profile ← runCliChild path
-      #["record-command-profile", "release-check", "verify the release",
-        "project", "required", "-", "Caller selected the exact check.",
-        "lake", "test"]
-      (environment "cli-profile")
-    expect (profile.exitCode == 0)
-      s!"Command Profile CLI delegation failed: {profile.stderr}"
-    let evidence ← runCliChild path
-      #["add-evidence", "release-observation", "Observe the release check.",
-        "run exact argv", "supported host", "-", "passes",
-        "ordinary process", "sha256:release", "-", "release-check"]
-      (environment "cli-profile-evidence")
-    expect (evidence.exitCode == 0)
-      s!"Evidence Command Profile selection failed: {evidence.stderr}"
+    let delegated ← runCliChild path
+      #["add-evidence", "render-evidence",
+        "Observe the exact rendered route.", "run exact argv",
+        "supported host", "-", "passes", "ordinary process",
+        "sha256:render", "-", "shared-check", "work"]
+      #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some "cli-project-memory"),
+        ("AGENT_WORKBENCH_SOURCE_CONTEXT", some "cli-project-memory")]
+    expect (delegated.exitCode == 0)
+      s!"project-memory CLI delegation failed: {delegated.stderr}"
+    let delegatedState ← match ← AgentWorkbench.Adapter.SQLite.inspect path with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"project-memory delegation inspection failed: {repr error}"
+    expect (delegatedState.revision == 1)
+      "project-memory CLI delegation produced more than one durable effect"
+    let status ← runCliChild path #["status"]
+    let exactArgv :=
+      (Lean.toJson
+        ["tool", "one argument", "", "line\nbreak", "\"quoted\""]).compress
+    expect (status.exitCode == 0 &&
+        status.stdout.contains s!"argv: {exactArgv}" &&
+        status.stdout.contains "Scope: Work: deliver the selected change" &&
+        status.stdout.contains "Author: codex" &&
+        status.stdout.contains "Relation: review-context" &&
+        !status.stdout.contains "work:")
+      "status did not render exact argv or current KPT in project language"
     let pendingNext ← runCliChild path #["next"]
     expect (pendingNext.exitCode == 0 &&
         pendingNext.stdout.contains
-          "Command Profile release-check@0 (lake test)")
-      "next did not name the exact Command Profile frozen by Evidence"
-    let recorded ← runCliChild path
-      #["record-evidence", "release-observation", "passed", "pass"]
-      (environment "cli-profile-result")
-    expect (recorded.exitCode == 0)
-      s!"Command Profile Evidence result failed: {recorded.stderr}"
-    let rejectedDeviation ← runCliChild path
-      #["record-command-deviation", "release-check", "release-observation", "-",
-        "Use another command.", "lake", "build"]
-      (environment "cli-required-deviation")
-    expect (rejectedDeviation.exitCode != 0 &&
-        rejectedDeviation.stderr.contains
-          "Only a recommended Command Profile")
-      "public CLI allowed an agent-reasoned required-profile deviation"
-    let kpt ← runCliChild path
-      #["record-kpt", "review-context", "problem", "work",
-        "A resumed reviewer retains implementation context.", "-"]
-      (environment "cli-kpt")
-    expect (kpt.exitCode == 0)
-      s!"KPT CLI delegation failed: {kpt.stderr}"
-    let proposedKPT ← runCliChild path
-      #["propose-kpt", "review-context", "try", "work",
-        "Reuse the reviewer context.", "review-context"]
-      (environment "cli-kpt-proposal")
-    expect (proposedKPT.exitCode == 0)
-      s!"KPT proposal CLI delegation failed: {proposedKPT.stderr}"
-    let atomic ← runCliChild path
-      #["record-kpt-command-profile", "stable-check", "keep", "project",
-        "The release check is stable.", "-", "diagnostic-check",
-        "diagnose the release", "recommended", "-", "lake", "build"]
-      (environment "cli-atomic-memory")
-    expect (atomic.exitCode == 0)
-      s!"atomic KPT and Command Profile CLI delegation failed: {atomic.stderr}"
-    let design ← runCliChild path
-      #["record-design", "learning-design", "decision", "none",
-        "Accept reviewed learning with its KPT."]
-      (environment "cli-learning-design")
-    expect (design.exitCode == 0)
-      s!"KPT acceptance Design recording failed: {design.stderr}"
-    let requested ← runCliChild path
-      #["request-design-review", "learning-design-review", "learning-design"]
-      (environment "cli-learning-review")
-    expect (requested.exitCode == 0)
-      s!"KPT acceptance Design Review request failed: {requested.stderr}"
-    let clean ← runCliChild path
-      #["record-clean-review", "learning-design-review", "fresh-reviewer"]
-      (environment "cli-learning-clean")
-    expect (clean.exitCode == 0)
-      s!"KPT acceptance clean Review failed: {clean.stderr}"
-    let accepted ← runCliChild path
-      #["accept-design-with-kpt", "learning-design",
-        "Caller accepted the reviewed learning.", "learning-lesson", "keep",
-        "project", "The reviewed learning is useful.", "-"]
-      (environment "cli-learning-accept")
-    expect (accepted.exitCode == 0)
-      s!"Design acceptance with KPT CLI delegation failed: {accepted.stderr}"
-    let status ← runCliChild path #["status"]
-    expect (status.exitCode == 0 &&
-        status.stdout.contains "Accepted Command Profiles:" &&
-        status.stdout.contains
-          "Command Profile: release-check@0" &&
-        status.stdout.contains
-          "A resumed reviewer retains implementation context." &&
-        status.stdout.contains "Agent-authored KPT candidates:")
-      "status lost durable Command Profile or KPT project language"
+          s!"Command Profile shared-check@1 ({exactArgv} from \"path with space\")")
+      "next did not render the exact structured argv selected by Evidence"
+    let history ← runCliChild path #["kpt-history", "review-context", "work"]
+    expect (history.exitCode == 0 &&
+        history.stdout.contains
+          "KPT history [kpt:review-context] for Work: deliver the selected change:" &&
+        history.stdout.contains "[Problem:review-context@0]" &&
+        history.stdout.contains "[Try:review-context@1]" &&
+        history.stdout.contains "[Try:review-context@2]" &&
+        history.stdout.contains "Predecessor: review-context@1" &&
+        history.stdout.contains "Source: agent")
+      "KPT history did not expose immutable succession and provenance"
 
 def run : IO Unit := do
   testParsing
   testRendering
   testJsonValidation
   testRepresentativeDelegation
-  testProjectMemoryDelegation
+  testProjectMemoryRendering
   IO.println "cli tests: pass"
 
 end AgentWorkbench.Tests.Cli

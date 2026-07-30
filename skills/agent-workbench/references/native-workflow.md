@@ -39,7 +39,10 @@ until an EvidenceSpec selects one exact accepted profile.
 
 Use KPT for durable `keep`, `problem`, and `try` learning that should survive
 restart without becoming a completion requirement. Caller-owned KPT stays
-visible when an agent proposes a correction. Use an atomic KPT conclusion
+visible when an agent proposes a correction. Pass the same stable author name
+for later corrections by that author; operation tokens remain separate source
+provenance. Use `kpt-history` to recover the immutable succession and
+relations. Use an atomic KPT conclusion
 action when the same source also states an instruction, Design candidate, or
 Command Profile.
 

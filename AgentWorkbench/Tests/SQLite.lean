@@ -51,7 +51,7 @@ def testPersistence : IO Unit := do
       "stored Command Profile fixture failed"
     let withKPT ← unwrap
       (AgentWorkbench.Kernel.recordKPT withProfile profileDecision.source
-        (some profileDecision) "stored-lesson" .keep .project
+        "caller" (some profileDecision) "stored-lesson" .keep .project
         "The selected profile survives restart." none)
       "stored KPT fixture failed"
     let memoryCommitted ← expectMutation

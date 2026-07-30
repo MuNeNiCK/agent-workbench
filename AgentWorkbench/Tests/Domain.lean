@@ -200,6 +200,8 @@ def testCommandProfileAndKPTFacts : IO Unit := do
     "structured accepted Command Profile is not well formed"
   expect (!({ profile with argv := [] }).wellFormed)
     "a Command Profile without argv was accepted"
+  expect ({ profile with argv := ["tool", ""] }).wellFormed
+    "an exact empty argv element was rejected"
   expect (!({ profile with cwd := some "../outside" }).wellFormed)
     "a Command Profile cwd escaped the project boundary"
   let proposed :=
@@ -219,6 +221,7 @@ def testCommandProfileAndKPTFacts : IO Unit := do
       scope := .work workRef.key
       statement := "Use a context-free reviewer for a fresh Review."
       source := acceptedDecision.source
+      author := "caller"
       relation := some "review-boundary"
       authority := .callerOwned acceptedDecision }
   expect entry.wellFormed "caller-owned KPT is not well formed"
