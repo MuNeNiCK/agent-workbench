@@ -23,7 +23,7 @@ accept-design <key> <reason>
 accept-design-with-kpt <design-key> <reason> <author> <kpt-key>
   <keep|problem|try> <project|work> <statement>
   <relation-kind|-> <relation-key|-> <relation-member|->
-  <relation-observed-value|-> <relation-pass|fail|->
+  <relation-observed-value|-> <relation-pass|fail|-> <predecessor-author|->
 accept-complex-design <key> <reason> <necessity>
   <why-simpler-is-insufficient> <bounded-scope> <maintenance-cost>
 retire-design <key> <reason>
@@ -53,15 +53,18 @@ accept-kpt <author> <key> <project|work> <reason>
 record-kpt-command-profile <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
   <relation-observed-value|-> <relation-pass|fail|->
+  <predecessor-author|->
   <profile-key> <purpose>
   <required|recommended|discouraged> <cwd|-> <argv>...
 record-kpt-instruction <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
   <relation-observed-value|-> <relation-pass|fail|->
+  <predecessor-author|->
   <instruction>
 record-kpt-design <author> <kpt-key> <keep|problem|try> <project|work>
   <statement> <relation-kind|-> <relation-key|-> <relation-member|->
   <relation-observed-value|-> <relation-pass|fail|->
+  <predecessor-author|->
   <design-key> <role> <assurance>
   <design-statement> [dependency-key...]
 kpt-history <key> <project|work>

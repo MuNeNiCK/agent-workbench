@@ -340,12 +340,79 @@ def testProjectMemoryRendering : IO Unit := do
         history.stdout.contains "Source: agent")
       "KPT history did not expose immutable succession and provenance"
 
+def testCompoundKPTPredecessorSelection : IO Unit := do
+  IO.FS.withTempDir fun root => do
+    let first ← unwrap
+      (Kernel.recordKPT initialState (source "first-author" .agent) "alpha"
+        none "shared-compound" .problem .project "First standalone lesson."
+        none)
+      "first compound KPT predecessor fixture failed"
+    let parallel ← unwrap
+      (Kernel.recordKPT first (source "second-author" .agent) "beta" none
+        "shared-compound" .try .project "Second standalone lesson." none)
+      "second compound KPT predecessor fixture failed"
+    let profilePath := root / "profile.sqlite3"
+    let _ ← match ← AgentWorkbench.Adapter.SQLite.initializeStore
+        profilePath "compound-profile-store" "initialize" parallel with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"compound profile CLI fixture initialization failed: {repr error}"
+    let profileResult ← runCliChild profilePath
+      #["record-kpt-command-profile", "caller", "shared-compound", "keep",
+        "project", "Select the first standalone lesson.", "-", "-", "-", "-",
+        "-", "alpha", "exact-compound-profile", "verify exact selection",
+        "recommended", "-", "lake", "test"]
+      #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some "compound-profile-token"),
+        ("AGENT_WORKBENCH_SOURCE_CONTEXT", some "compound-profile-context")]
+    expect (profileResult.exitCode == 0)
+      s!"public compound profile route rejected exact predecessor author: {profileResult.stderr}"
+    let profileSnapshot ← match ←
+        AgentWorkbench.Adapter.SQLite.inspect profilePath with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"compound profile CLI inspection failed: {repr error}"
+    expect
+      (profileSnapshot.state.kpt.reverse.head?.any fun entry =>
+        entry.predecessor ==
+          some ({ key := "shared-compound", version := 0 } : KPTRef))
+      "public compound profile route selected the wrong KPT predecessor"
+    let designPath := root / "design.sqlite3"
+    let _ ← match ← AgentWorkbench.Adapter.SQLite.initializeStore
+        designPath "compound-design-store" "initialize" parallel with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"compound Design CLI fixture initialization failed: {repr error}"
+    let designResult ← runCliChild designPath
+      #["record-kpt-design", "caller", "shared-compound", "try", "project",
+        "Select the second standalone lesson.", "-", "-", "-", "-", "-",
+        "beta", "exact-compound-design", "decision", "none",
+        "Retain exact compound predecessor selection."]
+      #[("AGENT_WORKBENCH_PRIVATE_TOKEN", some "compound-design-token"),
+        ("AGENT_WORKBENCH_SOURCE_CONTEXT", some "compound-design-context")]
+    expect (designResult.exitCode == 0)
+      s!"public compound Design route rejected exact predecessor author: {designResult.stderr}"
+    let designSnapshot ← match ←
+        AgentWorkbench.Adapter.SQLite.inspect designPath with
+      | .ok snapshot => pure snapshot
+      | .error error =>
+          throw <| IO.userError
+            s!"compound Design CLI inspection failed: {repr error}"
+    expect
+      (designSnapshot.state.kpt.reverse.head?.any fun entry =>
+        entry.predecessor ==
+          some ({ key := "shared-compound", version := 1 } : KPTRef))
+      "public compound Design route selected the wrong KPT predecessor"
+
 def run : IO Unit := do
   testParsing
   testRendering
   testJsonValidation
   testRepresentativeDelegation
   testProjectMemoryRendering
+  testCompoundKPTPredecessorSelection
   IO.println "cli tests: pass"
 
 end AgentWorkbench.Tests.Cli

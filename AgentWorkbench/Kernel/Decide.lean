@@ -1616,11 +1616,12 @@ def acceptDesignWithKPT
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option KPT.RelationSelector := none)
     (staleFormalResultIdentities :
-      List Evidence.FormalResultIdentity := []) : Except String State := do
+      List Evidence.FormalResultIdentity := [])
+    (predecessorAuthor : Option String := none) : Except String State := do
   let accepted ←
     acceptDesign state designKey decision none staleFormalResultIdentities
   recordKPT accepted decision.source kptAuthor (some decision) kptKey category scope
-    statement relation
+    statement relation predecessorAuthor
 
 def retireDesign (state : State) (key : String)
     (decision : CallerDecision) : Except String State := do
@@ -1704,24 +1705,26 @@ def recordKPTWithCommandProfile
     (category : KPT.Category) (scope : MemoryScope) (statement : String)
     (relation : Option KPT.RelationSelector) (profileKey purpose : String)
     (argv : List String) (cwd : Option String)
-    (disposition : CommandProfile.Disposition) : Except String State := do
+    (disposition : CommandProfile.Disposition)
+    (predecessorAuthor : Option String := none) : Except String State := do
   let withProfile ←
     recordCommandProfile state source decision profileKey purpose scope argv cwd
       disposition
   let resolvedRelation ←
     resolveAtomicCommandProfileKPTRelation withProfile profileKey scope relation
   recordKPTResolved withProfile source kptAuthor decision kptKey category scope
-    statement resolvedRelation
+    statement resolvedRelation predecessorAuthor
 
 def recordKPTWithInstruction
     (state : State) (decision : CallerDecision)
     (kptAuthor : String)
     (key : String) (category : KPT.Category) (scope : MemoryScope)
     (statement : String) (relation : Option KPT.RelationSelector)
-    (instruction : String) : Except String State := do
+    (instruction : String)
+    (predecessorAuthor : Option String := none) : Except String State := do
   let withKPT ←
     recordKPT state decision.source kptAuthor (some decision) key category scope
-      statement relation
+      statement relation predecessorAuthor
   recordInstruction withKPT decision instruction
 
 def resolveAtomicDesignKPTRelation (state : State)
@@ -1749,14 +1752,15 @@ def recordKPTWithDesignCandidate
     (relation : Option KPT.RelationSelector) (designKey designStatement : String)
     (role : Design.Role) (assurance : Design.AssuranceSelection)
     (dependencyKeys : List String := [])
-    (addsComplexity : Bool := false) : Except String State := do
+    (addsComplexity : Bool := false)
+    (predecessorAuthor : Option String := none) : Except String State := do
   let withDesign ←
     recordDesign state source designKey designStatement role assurance
       dependencyKeys addsComplexity
   let resolvedRelation ←
     resolveAtomicDesignKPTRelation withDesign designKey relation
   recordKPTResolved withDesign source kptAuthor decision kptKey category scope
-    statement resolvedRelation
+    statement resolvedRelation predecessorAuthor
 
 def requestReview (state : State) (key artifact : String)
     (purpose : Review.Purpose) : Except String State := do

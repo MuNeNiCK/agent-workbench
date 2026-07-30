@@ -1711,6 +1711,35 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
           some ({ key := "standalone-lesson", version := 1 } : KPTRef) &&
         entry.authority == .callerOwned callerSupersessionDecision)
     "caller KPT supersession lost the exact agent-only predecessor"
+  let exactProfileCompound ← unwrap
+    (Kernel.recordKPTWithCommandProfile parallelStandalone
+      callerSupersessionDecision.source "caller"
+      (some callerSupersessionDecision) "standalone-lesson" .keep .project
+      "Use the exact first author's lesson with the command conclusion." none
+      "standalone-profile" "verify the exact predecessor" ["lake", "test"]
+      none .recommended (some "codex"))
+    "compound Command Profile KPT could not select one exact standalone author"
+  expect
+    (exactProfileCompound.kpt.reverse.head?.any fun entry =>
+      entry.predecessor ==
+          some ({ key := "standalone-lesson", version := 1 } : KPTRef) &&
+        entry.authority == .callerOwned callerSupersessionDecision)
+    "compound Command Profile KPT lost its selected standalone predecessor"
+  let exactDesignCompound ← unwrap
+    (Kernel.recordKPTWithDesignCandidate parallelStandalone
+      callerSupersessionDecision.source "caller"
+      (some callerSupersessionDecision) "standalone-lesson" .try .project
+      "Use the exact second author's lesson with the Design conclusion." none
+      "standalone-design" "Retain exact compound KPT predecessor selection."
+      .decision { kind := .none, obligations := [] } [] false
+      (some "other-agent"))
+    "compound Design KPT could not select one exact standalone author"
+  expect
+    (exactDesignCompound.kpt.reverse.head?.any fun entry =>
+      entry.predecessor ==
+          some ({ key := "standalone-lesson", version := 2 } : KPTRef) &&
+        entry.authority == .callerOwned callerSupersessionDecision)
+    "compound Design KPT lost its selected standalone predecessor"
   let kptDecision := decision "caller-kpt" "Retain the caller's Problem."
   let callerKPT ← unwrap
     (Kernel.recordKPT correctedStandalone kptDecision.source "caller"

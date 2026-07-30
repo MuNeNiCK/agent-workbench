@@ -1113,7 +1113,8 @@ def run (arguments : List String) : IO Unit := do
   | "record-kpt-command-profile" :: author :: kptKey :: categoryName ::
       scopeName :: statement :: relationKind :: relationKey ::
       relationMember :: relationObservedValue :: relationPassed ::
-      profileKey :: purpose :: dispositionName :: cwd :: argv =>
+      predecessorAuthor :: profileKey :: purpose :: dispositionName :: cwd ::
+      argv =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1126,6 +1127,8 @@ def run (arguments : List String) : IO Unit := do
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
       let selectedCwd := if cwd == "-" then none else some cwd
+      let selectedPredecessorAuthor :=
+        if predecessorAuthor == "-" then none else some predecessorAuthor
       let token ← privateToken
       let context ← sourceContext token
       let accepted :=
@@ -1135,10 +1138,11 @@ def run (arguments : List String) : IO Unit := do
         Kernel.recordKPTWithCommandProfile state accepted.source
           author (some accepted) kptKey category scope statement selectedRelation
           profileKey purpose argv selectedCwd disposition
+          selectedPredecessorAuthor
       printNext state
   | ["record-kpt-instruction", author, key, categoryName, scopeName,
       statement, relationKind, relationKey, relationMember,
-      relationObservedValue, relationPassed, instruction] =>
+      relationObservedValue, relationPassed, predecessorAuthor, instruction] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1147,6 +1151,8 @@ def run (arguments : List String) : IO Unit := do
             relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
+      let selectedPredecessorAuthor :=
+        if predecessorAuthor == "-" then none else some predecessorAuthor
       let token ← privateToken
       let context ← sourceContext token
       let accepted :=
@@ -1154,12 +1160,13 @@ def run (arguments : List String) : IO Unit := do
       let state ← applyMutation path arguments fun state => do
         let scope ← parseMemoryScope state scopeName
         Kernel.recordKPTWithInstruction state accepted author key category scope
-          statement selectedRelation instruction
+          statement selectedRelation instruction selectedPredecessorAuthor
       printNext state
   | "record-kpt-design" :: author :: kptKey :: categoryName :: scopeName ::
       statement :: relationKind :: relationKey :: relationMember ::
-      relationObservedValue :: relationPassed :: designKey :: roleName ::
-      assuranceName :: designStatement :: dependencyKeys =>
+      relationObservedValue :: relationPassed :: predecessorAuthor ::
+      designKey :: roleName :: assuranceName :: designStatement ::
+      dependencyKeys =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1175,6 +1182,8 @@ def run (arguments : List String) : IO Unit := do
             relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
+      let selectedPredecessorAuthor :=
+        if predecessorAuthor == "-" then none else some predecessorAuthor
       let token ← privateToken
       let context ← sourceContext token
       let accepted :=
@@ -1183,7 +1192,8 @@ def run (arguments : List String) : IO Unit := do
         let scope ← parseMemoryScope state scopeName
         Kernel.recordKPTWithDesignCandidate state accepted.source
           author (some accepted) kptKey category scope statement selectedRelation
-          designKey designStatement role assurance dependencyKeys
+          designKey designStatement role assurance dependencyKeys false
+          selectedPredecessorAuthor
       printNext state
   | ["add-evidence", key, observation, method, environment, inputs,
       acceptanceCondition, trustedBoundary, artifactIdentity] =>
@@ -1332,7 +1342,8 @@ def run (arguments : List String) : IO Unit := do
       printNext state
   | ["accept-design-with-kpt", designKey, reason, author, kptKey,
       categoryName, scopeName, statement, relationKind, relationKey,
-      relationMember, relationObservedValue, relationPassed] =>
+      relationMember, relationObservedValue, relationPassed,
+      predecessorAuthor] =>
       let category ← match parseKPTCategory categoryName with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
@@ -1341,6 +1352,8 @@ def run (arguments : List String) : IO Unit := do
             relationObservedValue relationPassed with
         | .ok selected => pure selected
         | .error message => throw <| IO.userError message
+      let selectedPredecessorAuthor :=
+        if predecessorAuthor == "-" then none else some predecessorAuthor
       let token ← privateToken
       let context ← sourceContext token
       let accepted := callerDecision context reason
@@ -1349,6 +1362,7 @@ def run (arguments : List String) : IO Unit := do
         let scope ← parseMemoryScope state scopeName
         Kernel.acceptDesignWithKPT state designKey accepted author kptKey
           category scope statement selectedRelation stale
+          selectedPredecessorAuthor
       printNext state
   | ["accept-complex-design", key, reason, necessity, simpler, scope, cost] =>
       let token ← privateToken
