@@ -3,6 +3,14 @@
 `v0.2.3` replaces the prior workflow with a Lean-assisted project workflow.
 
 - Capture caller-approved design separately from agent and reviewer proposals.
+- Persist caller-owned Command Profiles as exact structured argv, cwd, scope,
+  disposition, and immutable succession; bind required validation routes to
+  Evidence and retain caller-authorized deviations without turning profiles
+  into a command runner.
+- Retain non-blocking Keep/Problem/Try project memory with stable authors,
+  caller-owned adoption and supersession, exact project-language relations,
+  and atomic instruction, Design-candidate, Command Profile, or reviewed
+  Design-acceptance conclusions without bypassing ordinary Design Review.
 - Require explicit necessity, simpler-alternative analysis, bounded scope, and
   maintenance cost before adopting an AI-proposed complexity increase.
 - Select formal, external-evidence, mixed, or no assurance per accepted design
