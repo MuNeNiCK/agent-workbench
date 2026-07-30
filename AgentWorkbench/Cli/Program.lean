@@ -156,18 +156,25 @@ def parseKPTRelation (kind key member : String) :
       if key == "-" && member == "-" then .ok none
       else .error "An absent KPT relation requires '-', '-', '-'."
   | "command-profile" =>
-      if key.isEmpty || key == "-" || member != "-" then
-        .error "A Command Profile relation requires its key and '-' member."
-      else
-        .ok (some (.commandProfile key))
+      if key.isEmpty || key == "-" then
+        .error "A Command Profile relation requires its key and scope."
+      else match member with
+        | "project" => .ok (some (.commandProfile key .project))
+        | "work" => .ok (some (.commandProfile key .focusedWork))
+        | _ =>
+            .error
+              "A Command Profile relation scope must be project or work."
   | "design" =>
-      if key.isEmpty || key == "-" || member != "-" then
-        .error "A Design relation requires its key and '-' member."
-      else
-        .ok (some (.design key))
+      if key.isEmpty || key == "-" then
+        .error "A Design relation requires its key and authority."
+      else match member with
+        | "accepted" => .ok (some (.design key .accepted))
+        | "candidate" => .ok (some (.design key .candidate))
+        | _ =>
+            .error "A Design relation authority must be accepted or candidate."
   | "task" =>
-      if key.isEmpty || key == "-" || member != "-" then
-        .error "A Task relation requires its description and '-' member."
+      if key.isEmpty || key == "-" || member != "work" then
+        .error "A Task relation requires its description and work."
       else
         .ok (some (.task key))
   | "review-observation" =>
@@ -176,10 +183,19 @@ def parseKPTRelation (kind key member : String) :
       else
         .ok (some (.reviewObservation key member))
   | "evidence-result" =>
-      if key.isEmpty || key == "-" || member != "-" then
-        .error "An Evidence relation requires its key and '-' member."
+      if key.isEmpty || key == "-" || member.isEmpty || member == "-" then
+        .error "An Evidence relation requires its key and Work or Design basis."
+      else if member == "work" then
+        .ok (some (.evidenceResult key .focusedWork))
+      else if member.startsWith "design:" then
+        let designKey := (member.drop 7).toString
+        if designKey.isEmpty then
+          .error "An Evidence Design basis requires a Design key."
+        else
+          .ok (some (.evidenceResult key (.design designKey)))
       else
-        .ok (some (.evidenceResult key))
+        .error
+          "An Evidence relation basis must be work or design:<Design-key>."
   | _ =>
       .error
         "KPT relation kind must be command-profile, design, task, review-observation, evidence-result, or '-'."

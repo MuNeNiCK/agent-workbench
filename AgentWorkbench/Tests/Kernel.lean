@@ -1427,19 +1427,43 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
   match Kernel.recordKPT sharedScopes (source "dangling-relation" .agent)
       "codex" none "dangling-relation" .problem .project
       "Do not retain a dangling relation."
-      (some (.commandProfile "missing-profile")) with
+      (some (.commandProfile "missing-profile" .project)) with
   | .error _ => pure ()
   | .ok _ =>
       throw <| IO.userError "a dangling KPT relation committed"
-  match Kernel.recordKPT sharedScopes (source "ambiguous-relation" .agent)
-      "codex" none "ambiguous-relation" .problem .project
-      "Do not guess between scoped profiles."
-      (some (.commandProfile "shared-check")) with
-  | .error _ => pure ()
-  | .ok _ =>
-      throw <| IO.userError "an ambiguous KPT relation committed"
+  let relatedSharedProfile ← unwrap
+    (Kernel.resolveKPTRelation sharedScopes
+      (.commandProfile "shared-check" .focusedWork))
+    "a scoped KPT Command Profile relation was not publicly resolvable"
+  expect
+    (relatedSharedProfile ==
+      .commandProfile
+        ({ key := "shared-check", version := 1 } : CommandProfileRef))
+    "a Work discriminator did not resolve the exact scoped profile"
+  let otherWorkRef : WorkRef := { key := "other-work", version := 0 }
+  let otherTaskRef : TaskRef := { key := "other-task", version := 0 }
+  let otherWork : Work.Unit :=
+    { ref := otherWorkRef
+      outcome := "retain another identically described Task"
+      completionBoundary :=
+        [{ target := .taskSatisfied otherTaskRef
+           basis := .workBoundary otherWorkRef }]
+      authority := decision "other-work" "Start the other Work." }
+  let otherTask : Work.Task :=
+    { ref := otherTaskRef
+      work := otherWorkRef
+      description := "implement the selected change"
+      basis := .workBoundary otherWorkRef
+      designScope := []
+      phase := none
+      state := .pending }
+  let duplicateTaskState :=
+    { corrected with
+      work := corrected.work ++ [otherWork]
+      tasks := corrected.tasks ++ [otherTask] }
   let relatedKPT ← unwrap
-    (Kernel.recordKPT corrected (source "resolved-relation" .agent) "codex"
+    (Kernel.recordKPT duplicateTaskState
+      (source "resolved-relation" .agent) "codex"
       none "resolved-relation" .keep .project
       "Retain the exact current Task relation."
       (some (.task "implement the selected change")))
@@ -1449,15 +1473,41 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       some (.task ({ key := "task", version := 0 } : TaskRef)))
     "a KPT relation did not freeze the exact resolved Task"
   let relatedProfile ← unwrap
-    (Kernel.resolveKPTRelation corrected (.commandProfile "global-check"))
+    (Kernel.resolveKPTRelation corrected
+      (.commandProfile "global-check" .project))
     "current Command Profile relation failed"
   expect
     (relatedProfile ==
       .commandProfile
         ({ key := "global-check", version := 1 } : CommandProfileRef))
     "Command Profile relation did not freeze the exact current version"
+  let otherEvidenceRef : EvidenceRef :=
+    { key := "work-evidence", version := 9 }
+  let otherEvidenceSpec : Evidence.Spec :=
+    { workResult.spec with
+      ref := otherEvidenceRef
+      basis := .workBoundary otherWorkRef }
+  let otherEvidenceResult : Evidence.Result :=
+    { workResult with spec := otherEvidenceSpec }
+  let duplicateEvidenceState :=
+    { duplicateTaskState with
+      work :=
+        duplicateTaskState.work.map fun work =>
+          if work.ref == otherWorkRef then
+            { work with
+              completionBoundary :=
+                { target := .externalObservation otherEvidenceRef
+                  basis := .workBoundary otherWorkRef } ::
+                  work.completionBoundary }
+          else
+            work
+      evidenceSpecs :=
+        duplicateTaskState.evidenceSpecs ++ [otherEvidenceSpec]
+      evidenceResults :=
+        duplicateTaskState.evidenceResults ++ [otherEvidenceResult] }
   let relatedEvidence ← unwrap
-    (Kernel.resolveKPTRelation corrected (.evidenceResult "work-evidence"))
+    (Kernel.resolveKPTRelation duplicateEvidenceState
+      (.evidenceResult "work-evidence" .focusedWork))
     "current Evidence result relation failed"
   expect
     (relatedEvidence ==
@@ -1495,7 +1545,8 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       { kind := .none, obligations := [] })
     "KPT relation Design candidate failed"
   let relatedDesign ← unwrap
-    (Kernel.resolveKPTRelation relationDesign (.design "relation-design"))
+    (Kernel.resolveKPTRelation relationDesign
+      (.design "relation-design" .candidate))
     "current Design relation failed"
   expect
     (relatedDesign ==
@@ -1519,12 +1570,22 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
               { source := proposedRelationDesign.source
                 content := .design proposedRelationDesign }] :
               List Design.Effect) } }
-  match Kernel.resolveKPTRelation ambiguousRelationDesignState
-      (.design "ambiguous-relation-design") with
-  | .error _ => pure ()
-  | .ok _ =>
-      throw <| IO.userError
-        "a bare Design relation retargeted across accepted and proposed meanings"
+  let acceptedRelation ← unwrap
+    (Kernel.resolveKPTRelation ambiguousRelationDesignState
+      (.design "ambiguous-relation-design" .accepted))
+    "an accepted Design relation was not publicly resolvable"
+  let candidateRelation ← unwrap
+    (Kernel.resolveKPTRelation ambiguousRelationDesignState
+      (.design "ambiguous-relation-design" .candidate))
+    "a candidate Design relation was not publicly resolvable"
+  expect
+    (acceptedRelation ==
+        .design
+          ({ key := "ambiguous-relation-design", version := 0 } : DesignRef) &&
+      candidateRelation ==
+        .design
+          ({ key := "ambiguous-relation-design", version := 1 } : DesignRef))
+    "Design authority discriminators did not resolve immutable meanings"
   let acceptedRelationDesignState :=
     { initialState with
       design :=
@@ -1539,7 +1600,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
       atomicRelationDecision.source "caller" (some atomicRelationDecision)
       "atomic-design-relation-lesson" .try .project
       "Relate this lesson to the exact generated Design correction."
-      (some (.design "ambiguous-relation-design"))
+      (some (.design "ambiguous-relation-design" .candidate))
       "ambiguous-relation-design" "Correct the accepted relation meaning."
       .decision { kind := .none, obligations := [] })
     "atomic KPT could not bind its exact generated Design correction"
@@ -1718,7 +1779,7 @@ def testCommandProfileAndKPTInvariants : IO Unit := do
     (Kernel.recordKPTWithCommandProfile instructed correctionDecision.source
       "caller" (some correctionDecision) "stable-check" .try .project
       "Use the corrected exact release route."
-      (some (.commandProfile "release-check"))
+      (some (.commandProfile "release-check" .project))
       "release-check" "verify the release"
       ["lake", "test", "--", "all"] (some "validation")
       .required)

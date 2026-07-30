@@ -63,10 +63,14 @@ kpt-history <key> <project|work>
 KPT relation kinds are `command-profile`, `design`, `task`,
 `review-observation`, and `evidence-result`. The relation key is respectively a
 profile key, Design key, Task description, Review key, or Evidence key.
-`review-observation` alone uses the observation key as `relation-member`; all
-other kinds use `-`. The Kernel resolves one exact current target and rejects
-missing or ambiguous relations. `predecessor-author` selects one exact current
-standalone-author entry for caller supersession; it is not an adoption route.
+The `relation-member` is the profile scope (`project|work`), Design authority
+(`accepted|candidate`), `work` for a Task, the observation key for a Review, or
+the Evidence basis (`work|design:<Design-key>`), respectively. `work` always
+selects the focused Work. Generated
+immutable identities remain internal. The Kernel
+resolves one exact current target and rejects missing or ambiguous relations.
+`predecessor-author` selects one exact current standalone-author entry for
+caller supersession; it is not an adoption route.
 
 add-evidence <key> <observation> <method> <environment> <input,...|->
   <acceptance-condition> <trusted-boundary> <artifact>

@@ -88,12 +88,27 @@ inductive Authority
   | callerOwned (decision : CallerDecision)
 deriving DecidableEq, Repr, BEq
 
-inductive RelationSelector
-  | commandProfile (key : String)
+inductive ProfileScopeSelector
+  | project
+  | focusedWork
+deriving DecidableEq, Repr, BEq
+
+inductive DesignAuthoritySelector
+  | accepted
+  | candidate
+deriving DecidableEq, Repr, BEq
+
+inductive EvidenceBasisSelector
+  | focusedWork
   | design (key : String)
+deriving DecidableEq, Repr, BEq
+
+inductive RelationSelector
+  | commandProfile (key : String) (scope : ProfileScopeSelector)
+  | design (key : String) (authority : DesignAuthoritySelector)
   | task (description : String)
   | reviewObservation (review observation : String)
-  | evidenceResult (key : String)
+  | evidenceResult (key : String) (basis : EvidenceBasisSelector)
 deriving DecidableEq, Repr, BEq
 
 inductive Relation

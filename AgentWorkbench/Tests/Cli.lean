@@ -36,6 +36,27 @@ def testParsing : IO Unit := do
   | .ok (some (.reviewObservation "fresh-review" "missing-boundary")) =>
       pure ()
   | _ => throw <| IO.userError "tagged KPT Review relation did not parse"
+  match
+      AgentWorkbench.Cli.parseKPTRelation
+        "command-profile" "shared-check" "work" with
+  | .ok (some (.commandProfile "shared-check" .focusedWork)) => pure ()
+  | _ =>
+      throw <| IO.userError
+        "scoped KPT Command Profile relation did not parse"
+  match
+      AgentWorkbench.Cli.parseKPTRelation
+        "evidence-result" "shared-evidence" "design:selected-design" with
+  | .ok (some (.evidenceResult "shared-evidence" (.design "selected-design"))) =>
+      pure ()
+  | _ =>
+      throw <| IO.userError "Design-basis KPT Evidence relation did not parse"
+  match
+      AgentWorkbench.Cli.parseKPTRelation
+        "evidence-result" "shared-evidence" "selected-design" with
+  | .error _ => pure ()
+  | _ =>
+      throw <| IO.userError
+        "KPT Evidence relation accepted a non-injective bare basis"
   match AgentWorkbench.Cli.parseKPTRelation "design" "selected-design" "extra" with
   | .error _ => pure ()
   | _ =>

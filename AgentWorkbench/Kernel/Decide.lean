@@ -899,34 +899,43 @@ def nextKPTRef (state : State) (key : String) : KPTRef :=
       (state.kpt.filter (·.ref.key == key)).foldl
         (fun next entry => max next (entry.ref.version + 1)) 0 }
 
+def kptRelationProfileScope (state : State) :
+    KPT.ProfileScopeSelector → MemoryScope
+  | .project => .project
+  | .focusedWork => .work state.focus.work.key
+
 def resolveKPTRelation (state : State)
     (selector : KPT.RelationSelector) : Except String KPT.Relation :=
   match selector with
-  | .commandProfile key =>
+  | .commandProfile key selectedScope =>
+      let scope := kptRelationProfileScope state selectedScope
       match state.commandProfiles.filter fun profile =>
-          profile.ref.key == key && commandProfileApplicable state profile with
+          profile.ref.key == key && profile.scope == scope &&
+            commandProfileCurrent state profile with
       | [profile] => .ok (.commandProfile profile.ref)
       | [] => .error "No current applicable Command Profile matches the KPT relation."
       | _ => .error "The KPT Command Profile relation is ambiguous."
-  | .design key =>
-      let acceptedCurrent := (currentDesignItems state).filter fun item =>
-        item.ref.key == key
-      let unacceptedCurrent := state.design.designItems.filter fun item =>
-        item.ref.key == key &&
-          !(state.design.designItems.any fun successor =>
-            successor.ref.key == key &&
-              successor.ref.version > item.ref.version) &&
-          match item.authority with
-          | .unaccepted => true
-          | _ => false
-      let candidates := acceptedCurrent ++ unacceptedCurrent
+  | .design key selectedAuthority =>
+      let candidates : List Design.Item := match selectedAuthority with
+        | .accepted =>
+            (currentDesignItems state).filter fun item => item.ref.key == key
+        | .candidate =>
+            state.design.designItems.filter fun item =>
+              item.ref.key == key &&
+                !(state.design.designItems.any fun successor =>
+                  successor.ref.key == key &&
+                    successor.ref.version > item.ref.version) &&
+                match item.authority with
+                | .unaccepted => true
+                | _ => false
       match candidates with
       | [item] => .ok (.design item.ref)
       | [] => .error "No current DesignItem matches the KPT relation."
       | _ => .error "The KPT DesignItem relation is ambiguous."
   | .task description =>
       match state.tasks.filter fun task =>
-          task.description == description && taskCurrent state task with
+          task.description == description &&
+            task.work.key == state.focus.work.key && taskCurrent state task with
       | [task] => .ok (.task task.ref)
       | [] => .error "No current Task matches the KPT relation."
       | _ => .error "The KPT Task relation is ambiguous."
@@ -935,7 +944,9 @@ def resolveKPTRelation (state : State)
         let currentRequest :=
           state.reviewRequests.find? fun request =>
             request.ref == result.review && reviewRequestCurrent state request
-        if result.review.key == reviewKey && currentRequest.isSome &&
+        if result.review.key == reviewKey &&
+            currentRequest.any
+              (·.scope.work.key == state.focus.work.key) &&
             result.observations.any (·.key == observationKey) then
           some
             (KPT.Relation.reviewObservation
@@ -946,9 +957,16 @@ def resolveKPTRelation (state : State)
       | [relation] => .ok relation
       | [] => .error "No current Review observation matches the KPT relation."
       | _ => .error "The KPT Review observation relation is ambiguous."
-  | .evidenceResult key =>
+  | .evidenceResult key selectedBasis =>
       let candidates := state.evidenceResults.filter fun result =>
-        result.spec.ref.key == key && evidenceResultCurrent state result
+        let basisMatches := match selectedBasis, result.spec.basis with
+          | .focusedWork, .workBoundary work =>
+              work.key == state.focus.work.key
+          | .design designKey, .design items =>
+              items.any (·.ref.key == designKey)
+          | _, _ => false
+        result.spec.ref.key == key && basisMatches &&
+          evidenceResultCurrent state result
       match candidates with
       | [result] =>
           .ok <| .evidenceResult
@@ -1609,6 +1627,32 @@ def recordNonAuthoritative (state : State) (source : Source)
     { state with
       design := { effects := state.design.effects ++ [effect] } }
 
+def kptProfileScopeSelector : MemoryScope → KPT.ProfileScopeSelector
+  | .project => .project
+  | .work _ => .focusedWork
+
+def resolveAtomicCommandProfileKPTRelation (state : State)
+    (profileKey : String) (profileScope : MemoryScope)
+    (selector : Option KPT.RelationSelector) :
+    Except String (Option KPT.Relation) :=
+  let selectedScope := kptProfileScopeSelector profileScope
+  match selector with
+  | some (.commandProfile selectedKey selectedProfileScope) =>
+      if selectedKey = profileKey && selectedProfileScope = selectedScope then
+        match state.commandProfiles.reverse.head? with
+        | some candidate =>
+            if candidate.ref.key = profileKey &&
+                candidate.scope = profileScope then
+              .ok (some (.commandProfile candidate.ref))
+            else
+              .error
+                "The atomic Command Profile candidate identity was not retained."
+        | none =>
+            .error "The atomic Command Profile candidate identity is missing."
+      else
+        resolveOptionalKPTRelation state selector
+  | _ => resolveOptionalKPTRelation state selector
+
 def recordKPTWithCommandProfile
     (state : State) (source : Source)
     (kptAuthor : String)
@@ -1620,8 +1664,10 @@ def recordKPTWithCommandProfile
   let withProfile ←
     recordCommandProfile state source decision profileKey purpose scope argv cwd
       disposition
-  recordKPT withProfile source kptAuthor decision kptKey category scope statement
-    relation
+  let resolvedRelation ←
+    resolveAtomicCommandProfileKPTRelation withProfile profileKey scope relation
+  recordKPTResolved withProfile source kptAuthor decision kptKey category scope
+    statement resolvedRelation
 
 def recordKPTWithInstruction
     (state : State) (decision : CallerDecision)
@@ -1638,7 +1684,7 @@ def resolveAtomicDesignKPTRelation (state : State)
     (designKey : String) (selector : Option KPT.RelationSelector) :
     Except String (Option KPT.Relation) :=
   match selector with
-  | some (.design selectedKey) =>
+  | some (.design selectedKey .candidate) =>
       if selectedKey == designKey then
         match state.design.designItems.reverse.head? with
         | some candidate =>
