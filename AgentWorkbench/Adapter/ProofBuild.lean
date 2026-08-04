@@ -28,6 +28,9 @@ private structure OutputLayout where
   wasBackedUp : System.FilePath
   wasAbsent : System.FilePath
 
+private def samePath (left right : System.FilePath) : Bool :=
+  left.normalize == right.normalize
+
 private def moduleOleanComponents : List String → Except String (List String)
   | [] => throw "Lean module name is empty"
   | [name] => pure [name ++ ".olean"]
@@ -103,7 +106,7 @@ def buildDirectories
     let directory ← match buildDirectoryFromOlean output setup.name with
       | .ok value => pure value
       | .error message => throw (IO.userError message)
-    if !directories.any (fun prior => prior.toString == directory.toString) then
+    if !directories.any (samePath · directory) then
       directories := directories ++ [directory]
     for (name, outputs) in setup.importArts.toList do
       for output in outputs do
@@ -113,7 +116,7 @@ def buildDirectories
           let directory ← match buildDirectoryFromOlean path name with
             | .ok value => pure value
             | .error message => throw (IO.userError message)
-          if !directories.any (fun prior => prior.toString == directory.toString) then
+          if !directories.any (samePath · directory) then
             directories := directories ++ [directory]
   pure directories
 
@@ -148,7 +151,7 @@ def captureBaselines
         | some directory => packageRoot / directory
         | none => packageRoot
       let output := packageRoot / ".lake" / "build"
-      if !directories.any (fun prior => prior.toString == output.toString) then
+      if !directories.any (samePath · output) then
         directories := directories ++ [output]
   let mut baselines := []
   for directory in directories do
@@ -162,7 +165,7 @@ def captureBaselines
 def validateDiscoveredOutputs
     (baselines : List OutputBaseline) (directories : List System.FilePath) : IO Unit := do
   for directory in directories do
-    unless baselines.any (fun baseline => baseline.directory.toString == directory.toString) do
+    unless baselines.any (fun baseline => samePath baseline.directory directory) do
       throw (IO.userError s!"Lean output is outside the pre-operation Lake manifest: {directory}")
 
 private def restore (layouts : List OutputLayout) : IO Unit := do
