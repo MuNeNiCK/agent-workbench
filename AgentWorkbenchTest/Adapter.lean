@@ -5,6 +5,7 @@ namespace AgentWorkbenchTest.Adapter
 open AgentWorkbench AgentWorkbenchTest
 
 def run : IO Unit := do
+  let leanExecutable := if System.Platform.isWindows then "lean.exe" else "lean"
   expect (ContentDigest.string "" ==
     "sha3-256:a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
     "SHA3-256 empty-string vector failed"
@@ -97,7 +98,7 @@ def run : IO Unit := do
     workId := some work.id, designRevision := some design.id
     payload := .commandProfile {
       purpose := "verify Lean command execution", target := some criterion.target
-      command := { executable := "lean", arguments := #["--version"] } } }
+      command := { executable := leanExecutable, arguments := #["--version"] } } }
   let commandState ← fromExcept (appendEntry state profileEntry)
   let shown ← match resolveCommandProfile? commandRoot commandState profileEntry.id with
     | some value => pure value
@@ -125,7 +126,7 @@ def run : IO Unit := do
   let reviewProfileState ← fromExcept (defineProfile afterCommand {
     entryId := "entry-review-profile", purpose := "verify a non-criterion Review target"
     target := some "file:review-only.txt"
-    command := { executable := "lean", arguments := #["--version"] } })
+    command := { executable := leanExecutable, arguments := #["--version"] } })
   let (reviewEvidenceState, _) ← runCommandProfile commandRoot reviewProfileState {
     profileEntryId := "entry-review-profile", entryId := "entry-review-evidence-before" }
   let freshReviewState ← startReview commandRoot reviewEvidenceState {
