@@ -14,8 +14,18 @@ for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-cryptography L
   test -f "$staging/$license"
 done
 
-mkdir -p "$project/.agents/skills"
-cp -R "$skill_source" "$project/.agents/skills/agent-workbench"
+git -C "$project" init -q
+if [[ -n "${AGENT_WORKBENCH_SKILL_REPOSITORY:-}" ]]; then
+  [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]
+  (cd "$project" && gh skill install "$AGENT_WORKBENCH_SKILL_REPOSITORY" agent-workbench \
+    --agent codex --scope project --pin "$AGENT_WORKBENCH_SKILL_REF")
+else
+  skill_repository=$(cd "$skill_source/../.." && pwd)
+  (cd "$project" && gh skill install "$skill_repository" agent-workbench \
+    --from-local --agent codex --scope project)
+fi
+test -f "$project/.agents/skills/agent-workbench/SKILL.md"
+test -f "$project/.agents/skills/agent-workbench/scripts/setup.sh"
 
 if [[ -n "$provided_archive" || -n "$provided_checksum" ]]; then
   [[ -n "$provided_archive" && -n "$provided_checksum" ]]
@@ -45,7 +55,7 @@ if [[ -f "$staging/agent-workbench.exe" ]]; then
     -ProjectRoot "$project" -LocalArchive "$archive" -LocalChecksum "$checksum")
   awb="$project/.agent-workbench/bin/agent-workbench.exe"
 else
-  setup_result=$("$project/.agents/skills/agent-workbench/scripts/setup.sh" \
+  setup_result=$(sh "$project/.agents/skills/agent-workbench/scripts/setup.sh" \
     "$project" "$archive" "$checksum")
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi

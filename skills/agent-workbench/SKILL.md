@@ -11,8 +11,10 @@ the Skill or shell.
 ## Enter a project
 
 1. Find the project root.
-2. If `.agent-workbench/bin/agent-workbench` is absent, run `scripts/setup.sh PROJECT_ROOT` on
-   POSIX or `scripts/setup.ps1 -ProjectRoot PROJECT_ROOT` on Windows.
+2. If `.agent-workbench/bin/agent-workbench` is absent, invoke this Skill's setup script as
+   `sh SKILL_DIR/scripts/setup.sh PROJECT_ROOT` on POSIX or
+   `SKILL_DIR/scripts/setup.ps1 -ProjectRoot PROJECT_ROOT` on Windows. Do not depend on the
+   installed POSIX script retaining an executable mode.
 3. Run `.agent-workbench/bin/agent-workbench --project PROJECT_ROOT context`.
 4. Run `... describe` and select only from `applicableOperations`. Before using an unfamiliar
    mutation, run `... describe OPERATION`; require `applicable: true` and use only its

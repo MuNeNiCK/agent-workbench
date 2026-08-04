@@ -112,6 +112,10 @@ jobs:
           cp elan-LICENSE-MIT stage/LICENSE-elan-MIT
       - name: Test installed public route
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AGENT_WORKBENCH_SKILL_REPOSITORY: ${{ github.repository }}
+          AGENT_WORKBENCH_SKILL_REF: ${{ github.ref_name }}
         run: tests/installed-route.sh stage skills/agent-workbench
       - name: Package candidate
         shell: bash
