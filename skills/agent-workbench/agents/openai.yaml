@@ -1,7 +1,0 @@
-interface:
-  display_name: "Agent Workbench"
-  short_description: "Structured memory for coding-agent work"
-  default_prompt: "Use $agent-workbench through its bundled wrapper to recover this project's internal state, follow its next action, and manage design, review, evidence, interruption, and completion."
-
-policy:
-  allow_implicit_invocation: true
