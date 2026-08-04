@@ -21,6 +21,7 @@ import AgentWorkbench.Application.Artifact
 import AgentWorkbench.Application.Guidance
 import AgentWorkbench.Application.Review
 import AgentWorkbench.Adapter.SQLite
+import AgentWorkbench.Adapter.OperationLock
 import AgentWorkbench.Adapter.Store
 import AgentWorkbench.Adapter.ContentDigest
 import AgentWorkbench.Adapter.Process

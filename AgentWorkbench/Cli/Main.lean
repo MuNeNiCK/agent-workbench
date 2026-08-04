@@ -12,6 +12,7 @@ import AgentWorkbench.Application.Artifact
 import AgentWorkbench.Application.Guidance
 import AgentWorkbench.Application.Review
 import AgentWorkbench.Adapter.Runtime
+import AgentWorkbench.Adapter.OperationLock
 import AgentWorkbench.Cli.Protocol
 import AgentWorkbench.Cli.Describe
 
@@ -97,7 +98,7 @@ private def emitCurrentState
   writeJson (ContextResult.mk state.revision
     (currentContext? state inputs.observations inputs.claimDigests))
 
-private def runStateCommand (invocation : Invocation) : IO Unit := do
+private def runStateCommandUnlocked (invocation : Invocation) : IO Unit := do
   let store ← openStore invocation.projectRoot
   match invocation.command with
   | ["init"] =>
@@ -241,6 +242,19 @@ private def runStateCommand (invocation : Invocation) : IO Unit := do
         (completionReady state inputs.observations inputs.claimDigests)
         (currentContext? state inputs.observations inputs.claimDigests))
   | command => fail s!"unknown command: {String.intercalate " " command}"
+
+private def isReadOnlyStateCommand : List String → Bool
+  | ["design", "get"] | ["work", "get"] | ["entry", "get"] | ["history"]
+  | ["review", "context"] | ["command", "show"] | ["proof", "digest"]
+  | ["context"] | ["ready"] => true
+  | _ => false
+
+private def runStateCommand (invocation : Invocation) : IO Unit :=
+  if isReadOnlyStateCommand invocation.command then
+    runStateCommandUnlocked invocation
+  else
+    AgentWorkbench.OperationLock.withProjectMutationLock invocation.projectRoot
+      (runStateCommandUnlocked invocation)
 
 private def runCommand (invocation : Invocation) : IO Unit := do
   match invocation.command with

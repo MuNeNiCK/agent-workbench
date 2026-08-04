@@ -251,6 +251,30 @@ assert sorted(path.name for path in root.iterdir()) == ["preserved"]
 assert (root / "preserved").read_text() == "pre-existing user build output\n"
 PY
 
+proof_concurrent_a=$(example proof run | python3 -c '
+import json,sys
+x=json.load(sys.stdin); x["entryId"]="proof-concurrent-a"; print(json.dumps(x))')
+proof_concurrent_b=$(example proof run | python3 -c '
+import json,sys
+x=json.load(sys.stdin); x["entryId"]="proof-concurrent-b"; print(json.dumps(x))')
+printf '%s\n' "$proof_concurrent_a" | invoke proof run > "$project/proof-concurrent-a.json" &
+proof_concurrent_a_pid=$!
+printf '%s\n' "$proof_concurrent_b" | invoke proof run > "$project/proof-concurrent-b.json" &
+proof_concurrent_b_pid=$!
+wait "$proof_concurrent_a_pid"
+wait "$proof_concurrent_b_pid"
+python3 - "$project/proof-concurrent-a.json" "$project/proof-concurrent-b.json" \
+  "$project/proof/.lake/build" <<'PY'
+import json, pathlib, sys
+for result in sys.argv[1:3]:
+    receipt = json.loads(pathlib.Path(result).read_text())
+    assert receipt["entry"]["payload"]["leanProofReceipt"]["value"]["kernelAccepted"] is True
+root = pathlib.Path(sys.argv[3])
+assert sorted(path.name for path in root.iterdir()) == ["preserved"]
+assert (root / "preserved").read_text() == "pre-existing user build output\n"
+PY
+rm -f "$project/proof-concurrent-a.json" "$project/proof-concurrent-b.json"
+
 before_forged_review=$(revision)
 forged_review=$(example review start | python3 -c '
 import json,sys

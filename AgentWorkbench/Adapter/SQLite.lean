@@ -8,6 +8,9 @@ abbrev Connection := _root_.SQLite
 def «open» (path : System.FilePath) : IO Connection :=
   _root_.SQLite.open path 5000
 
+def openWithTimeout (path : System.FilePath) (busyTimeoutMs : Int32) : IO Connection :=
+  _root_.SQLite.open path busyTimeoutMs
+
 private def prepareBound
     (connection : Connection) (sql : String) (params : Array String) : IO _root_.SQLite.Stmt := do
   let statement ← connection.prepare sql
@@ -48,5 +51,8 @@ def changes (connection : Connection) : IO Int64 :=
 
 def transaction (connection : Connection) (action : IO α) : IO α :=
   connection.transaction action
+
+def immediateTransaction (connection : Connection) (action : IO α) : IO α :=
+  connection.transaction action .immediate
 
 end AgentWorkbench.SQLite
