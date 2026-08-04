@@ -72,11 +72,12 @@ private def moduleSetup
 
 private def queryOutput
     (projectRoot : System.FilePath) (proofRoot : System.FilePath)
-    (runtime : Runtime.Layout) (source : System.FilePath) : IO System.FilePath := do
+    (runtime : Runtime.Layout) (source : System.FilePath)
+    (querySource : String) : IO System.FilePath := do
   let result ← Process.execute projectRoot {
     executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "query",
-      s!"{source}:olean", "--text"]
+      s!"{querySource}:olean", "--text"]
     workingDirectory := some proofRoot.toString
     environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
   if result.exitCode != 0 then
@@ -96,9 +97,9 @@ def buildDirectories
     if configured.isAbsolute then configured else projectRoot / configured
   let sources ← ProofInput.declaredSourcePaths projectRoot claim
   let mut directories := []
-  for source in sources do
+  for (source, declaredSource) in sources.zip claim.input.declaredSources do
     let setup ← moduleSetup projectRoot proofRoot runtime source
-    let output ← queryOutput projectRoot proofRoot runtime source
+    let output ← queryOutput projectRoot proofRoot runtime source declaredSource.path
     let directory ← match buildDirectoryFromOlean output setup.name with
       | .ok value => pure value
       | .error message => throw (IO.userError message)
