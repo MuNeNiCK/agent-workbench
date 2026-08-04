@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+          - runner: macos-15-intel
+          - runner: macos-15
+          - runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+      - name: Build native targets
+        run: lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
+      - name: Run domain and native integration tests
+        shell: bash
+        run: .lake/build/bin/agent-workbench-tests${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Run isolated proof-build integration tests
+        shell: bash
+        run: .lake/build/bin/agent-workbench-proof-tests${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Check bootstrap script syntax
+        if: runner.os != 'Windows'
+        run: sh -n skills/agent-workbench/scripts/setup.sh

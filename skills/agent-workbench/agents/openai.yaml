@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Workbench"
+  short_description: "Use project-local verified agent context"
+  default_prompt: "Use $agent-workbench to inspect current project context and perform the requested work against its accepted design and evidence."

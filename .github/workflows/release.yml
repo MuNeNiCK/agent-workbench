@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+            elan_asset: elan-x86_64-unknown-linux-gnu.tar.gz
+            elan_sha256: df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2
+            format: tar
+          - runner: ubuntu-24.04-arm
+            target: linux-aarch64
+            elan_asset: elan-aarch64-unknown-linux-gnu.tar.gz
+            elan_sha256: cb69af0803b04157bc30201c29c12fca882bb3ad8b43476b8d2d3064810bc3ac
+            format: tar
+          - runner: macos-15-intel
+            target: macos-x86_64
+            elan_asset: elan-x86_64-apple-darwin.tar.gz
+            elan_sha256: 10d037a69731c0593723e018130c5f54afde175796b4af8ba1317e561e55598c
+            format: tar
+          - runner: macos-15
+            target: macos-aarch64
+            elan_asset: elan-aarch64-apple-darwin.tar.gz
+            elan_sha256: 7cae4c03b2f0de4053fb04a91359d5804551e6e37a6ddd1b2e0097dc561ae4a9
+            format: tar
+          - runner: windows-2025
+            target: windows-x86_64
+            elan_asset: elan-x86_64-pc-windows-msvc.zip
+            elan_sha256: be5e92a2dfdd8176099b2db0b810c27237c9054f1e5db1126f4f2a1134773b25
+            format: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+      - name: Build and test candidate
+        shell: bash
+        run: |
+          lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
+          .lake/build/bin/agent-workbench-tests${{ runner.os == 'Windows' && '.exe' || '' }}
+          .lake/build/bin/agent-workbench-proof-tests${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Acquire pinned Elan
+        shell: bash
+        env:
+          ELAN_ASSET: ${{ matrix.elan_asset }}
+          ELAN_SHA256: ${{ matrix.elan_sha256 }}
+        run: |
+          curl -fL --retry 3 -o "$ELAN_ASSET" \
+            "https://github.com/leanprover/elan/releases/download/v4.2.3/$ELAN_ASSET"
+          curl -fL --retry 3 -o elan-LICENSE-APACHE \
+            "https://raw.githubusercontent.com/leanprover/elan/v4.2.3/LICENSE-APACHE"
+          curl -fL --retry 3 -o elan-LICENSE-MIT \
+            "https://raw.githubusercontent.com/leanprover/elan/v4.2.3/LICENSE-MIT"
+          python3 - "$ELAN_ASSET" "$ELAN_SHA256" <<'PY'
+          import hashlib, pathlib, sys
+          actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+          if actual != sys.argv[2]:
+              raise SystemExit(f"Elan checksum mismatch: {actual}")
+          licenses = {
+              "elan-LICENSE-APACHE": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+              "elan-LICENSE-MIT": "920d8685aa3276617133e07d67502148a619eb274b3bba58c9b45d718b687831",
+          }
+          for name, expected in licenses.items():
+              actual = hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"Elan license checksum mismatch for {name}: {actual}")
+          PY
+      - name: Stage Unix candidate
+        if: matrix.format == 'tar'
+        shell: bash
+        env:
+          ELAN_ASSET: ${{ matrix.elan_asset }}
+        run: |
+          mkdir -p stage elan-extract
+          cp .lake/build/bin/agent-workbench stage/agent-workbench
+          tar -xzf "$ELAN_ASSET" -C elan-extract
+          cp elan-extract/elan-init stage/elan
+          chmod +x stage/agent-workbench stage/elan
+      - name: Stage Windows candidate
+        if: matrix.format == 'zip'
+        shell: bash
+        env:
+          ELAN_ASSET: ${{ matrix.elan_asset }}
+        run: |
+          mkdir -p stage elan-extract
+          cp .lake/build/bin/agent-workbench.exe stage/agent-workbench.exe
+          unzip -q "$ELAN_ASSET" -d elan-extract
+          cp elan-extract/elan-init.exe stage/elan.exe
+      - name: Stage redistribution licenses
+        shell: bash
+        run: |
+          cp LICENSE stage/LICENSE-agent-workbench
+          cp .lake/packages/leansqlite/LICENSE stage/LICENSE-leansqlite
+          cp .lake/packages/cryptography/LICENSE stage/LICENSE-cryptography
+          cp "$(lean --print-prefix)/LICENSE" stage/LICENSE-lean4
+          cp "$(lean --print-prefix)/LICENSES" stage/LICENSES-lean4
+          cp elan-LICENSE-APACHE stage/LICENSE-elan-APACHE
+          cp elan-LICENSE-MIT stage/LICENSE-elan-MIT
+      - name: Test installed public route
+        shell: bash
+        run: tests/installed-route.sh stage skills/agent-workbench
+      - name: Package candidate
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          FORMAT: ${{ matrix.format }}
+        run: |
+          if [[ "$FORMAT" == tar ]]; then
+            archive="agent-workbench-$TARGET.tar.gz"
+            tar -czf "$archive" -C stage .
+          else
+            archive="agent-workbench-$TARGET.zip"
+            (cd stage && 7z a -tzip "../$archive" . >/dev/null)
+          fi
+          python3 - "$archive" <<'PY'
+          import hashlib, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          path.with_name(path.name + ".sha256").write_text(
+              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-workbench-${{ matrix.target }}
+          path: |
+            agent-workbench-${{ matrix.target }}.*
+
+  publish:
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-workbench-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" release-assets/* --verify-tag --generate-notes --repo "${{ github.repository }}"
