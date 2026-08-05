@@ -9,7 +9,9 @@ project=$(mktemp -d "${TMPDIR:-/tmp}/agent-workbench-route.XXXXXX")
 package_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-workbench-package.XXXXXX")
 trap 'rm -rf "$project" "$package_dir"' EXIT
 
-for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-cryptography LICENSE-lean4 LICENSES-lean4 \
+for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
+    LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
+    LICENSE-lean4 LICENSES-lean4 \
     LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$staging/$license"
 done
@@ -25,7 +27,15 @@ else
     --from-local --agent codex --scope project)
 fi
 test -f "$project/.agents/skills/agent-workbench/SKILL.md"
+test -f "$project/.agents/skills/agent-workbench/release-version"
 test -f "$project/.agents/skills/agent-workbench/scripts/setup.sh"
+if [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]; then
+  [[ "$(<"$project/.agents/skills/agent-workbench/release-version")" == "$AGENT_WORKBENCH_SKILL_REF" ]]
+fi
+if grep -R "releases/latest" "$project/.agents/skills/agent-workbench"; then
+  echo "installed Skill retained a moving release route" >&2
+  exit 1
+fi
 
 if [[ -n "$provided_archive" || -n "$provided_checksum" ]]; then
   [[ -n "$provided_archive" && -n "$provided_checksum" ]]
@@ -60,7 +70,9 @@ else
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi
 
-for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-cryptography LICENSE-lean4 LICENSES-lean4 \
+for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
+    LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
+    LICENSE-lean4 LICENSES-lean4 \
     LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$project/.agent-workbench/bin/$license"
 done
@@ -287,10 +299,7 @@ fi
 example review start | invoke review start >/dev/null
 fresh_input=$(example review context | invoke review context)
 [[ "$fresh_input" == *'"lineage":[]'* ]]
-example review finding | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["mismatchEvidenceId"]="command-1"; print(json.dumps(x))' \
-  | invoke review finding >/dev/null
+example review finding | invoke review finding >/dev/null
 example review disposition | invoke review disposition >/dev/null
 [[ "$(invoke ready)" == *'"ready":false'* ]]
 

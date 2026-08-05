@@ -44,6 +44,21 @@ jobs:
       - name: Check bootstrap script syntax
         if: runner.os != 'Windows'
         run: sh -n skills/agent-workbench/scripts/setup.sh
+      - name: Check Skill release binding
+        shell: bash
+        run: |
+          release_version=$(sed -n '1p' skills/agent-workbench/release-version)
+          [[ "$release_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -F "agent-workbench@$release_version" README.md
+          grep -F "agent-workbench@$release_version" docs/content/installation.md
+          grep -F 'from that exact Skill release' docs/content/installation.md
+          grep -F 'build-provenance attestation' docs/content/installation.md
+          ! grep -F 'latest GitHub Release' docs/content/installation.md
+          grep -F 'releases/download/$release_version/$archive' skills/agent-workbench/scripts/setup.sh
+          grep -F 'releases/download/$releaseVersion/$archive' skills/agent-workbench/scripts/setup.ps1
+          grep -F -- '--source-ref "refs/tags/$release_version"' skills/agent-workbench/scripts/setup.sh
+          grep -F -- '--source-ref "refs/tags/$releaseVersion"' skills/agent-workbench/scripts/setup.ps1
+          ! grep -R "releases/latest" skills/agent-workbench
 
   required:
     if: always()

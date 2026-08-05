@@ -8,7 +8,7 @@ not require a global Workbench CLI, Elan, Lean, Docker, or QEMU.
 From the repository root:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.6 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.7 \
   --agent codex --scope project
 ```
 
@@ -24,10 +24,11 @@ is the first use, and work toward <outcome>.
 
 ## What first use downloads
 
-The installed Skill selects the archive for the current platform, downloads it from the latest
-GitHub Release, verifies the published SHA-256 checksum, and extracts it below
-`.agent-workbench/bin`. Native `init` then uses the bundled official Elan executable to acquire
-`leanprover/lean4:v4.30.0` below `.agent-workbench/toolchains`.
+The installed Skill selects the archive for the current platform from that exact Skill release. It
+verifies the archive's GitHub build-provenance attestation for the repository, release workflow, and
+tag, then verifies the published SHA-256 checksum before extracting below `.agent-workbench/bin`.
+Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.30.0`
+below `.agent-workbench/toolchains`.
 
 The POSIX setup entry point is invoked through `sh`, so installed script executable mode is not a
 requirement. Once setup finishes, the Skill calls the native Workbench executable directly; shell is

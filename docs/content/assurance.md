@@ -54,8 +54,8 @@ A receipt counts only while all of these remain current:
 - focused Work and accepted DesignRevision binding.
 
 Absolute temporary-directory prefixes are not part of the source identity, so relocating an otherwise
-identical fixed packet does not invalidate it. Relative paths, contents, configuration, dependencies,
-or claim inputs do.
+identical project and proof tree does not invalidate it. Relative paths, contents, configuration,
+dependencies, or claim inputs do.
 
 ## What kernel acceptance establishes
 
