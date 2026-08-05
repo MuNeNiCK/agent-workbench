@@ -20,7 +20,7 @@ jobs:
           - runner: windows-2025
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: leanprover/lean-action@v1
         with:
           auto-config: false
@@ -28,6 +28,7 @@ jobs:
           test: false
           lint: false
       - name: Build native targets
+        shell: bash
         run: lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
       - name: Run domain and native integration tests
         shell: bash
