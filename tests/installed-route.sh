@@ -124,7 +124,7 @@ for forbidden in ("order", "scope", "workId", "designRevision", "supersedes"):
 mkdir -p "$project/proof/Proof"
 printf '%s\n' 'name = "proof"' 'version = "0.0.0"' 'defaultTargets = ["Proof"]' \
   '' '[[lean_lib]]' 'name = "Proof"' > "$project/proof/lakefile.toml"
-printf '%s\n' 'leanprover/lean4:v4.30.0' > "$project/proof/lean-toolchain"
+printf '%s\n' 'leanprover/lean4:v4.32.2' > "$project/proof/lean-toolchain"
 printf '%s\n' 'theorem supportClaim : True := by trivial' > "$project/proof/Proof/Support.lean"
 printf '%s\n' 'import Proof.Support' 'theorem designClaim : True := supportClaim' > "$project/proof/Proof.lean"
 printf '%s\n' 'current accepted design source' > "$project/design-source.md"
@@ -182,7 +182,7 @@ p=json.loads(sys.argv[2])
 root=pathlib.Path(sys.argv[1])
 suffix=".exe" if (root/".agent-workbench/bin/elan.exe").exists() else ""
 p["command"]["executable"]=str(root/f".agent-workbench/bin/elan{suffix}")
-p["command"]["arguments"]=["run", "leanprover/lean4:v4.30.0", "lean", "--version"]
+p["command"]["arguments"]=["run", "leanprover/lean4:v4.32.2", "lean", "--version"]
 p["command"]["environment"]=[["ELAN_HOME", str(root/".agent-workbench/toolchains")]]
 print(json.dumps(p))
 PY

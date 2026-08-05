@@ -62,8 +62,8 @@ jobs:
         run: |
           test "$(sed -n '1p' skills/agent-workbench/release-version)" = "${{ github.ref_name }}"
           lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
-          test "$(git -C .lake/packages/Blake3 rev-parse HEAD)" = d815da486b97afae97f8c1f76f17260e3db5b075
-          test "$(git -C .lake/packages/Blake3/blake3 rev-parse HEAD)" = 8b829b697fa4cfe35de35e9aa8c20b56266cb091
+          test "$(git -C .lake/packages/Blake3 rev-parse HEAD)" = 4d4ec7d21b43fcc0cf89a93e3344b10fbd2e0754
+          test "$(git -C .lake/packages/Blake3/blake3-source rev-parse HEAD)" = b97a24f8754819755ef78d8016c0391c65c943c5
           .lake/build/bin/agent-workbench-tests${{ runner.os == 'Windows' && '.exe' || '' }}
           .lake/build/bin/agent-workbench-proof-tests${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Acquire pinned Elan
@@ -119,9 +119,9 @@ jobs:
           cp LICENSE stage/LICENSE-agent-workbench
           cp .lake/packages/leansqlite/LICENSE stage/LICENSE-leansqlite
           cp .lake/packages/Blake3/LICENSE stage/LICENSE-Blake3-lean
-          cp .lake/packages/Blake3/blake3/LICENSE_A2 stage/LICENSE-BLAKE3-APACHE-2.0
-          cp .lake/packages/Blake3/blake3/LICENSE_A2LLVM stage/LICENSE-BLAKE3-APACHE-2.0-LLVM
-          cp .lake/packages/Blake3/blake3/LICENSE_CC0 stage/LICENSE-BLAKE3-CC0-1.0
+          cp .lake/packages/Blake3/blake3-source/LICENSE_A2 stage/LICENSE-BLAKE3-APACHE-2.0
+          cp .lake/packages/Blake3/blake3-source/LICENSE_A2LLVM stage/LICENSE-BLAKE3-APACHE-2.0-LLVM
+          cp .lake/packages/Blake3/blake3-source/LICENSE_CC0 stage/LICENSE-BLAKE3-CC0-1.0
           cp "$(lean --print-prefix)/LICENSE" stage/LICENSE-lean4
           cp "$(lean --print-prefix)/LICENSES" stage/LICENSES-lean4
           cp elan-LICENSE-APACHE stage/LICENSE-elan-APACHE

@@ -27,7 +27,7 @@ is the first use, and work toward <outcome>.
 The installed Skill selects the archive for the current platform from that exact Skill release. It
 verifies the archive's GitHub build-provenance attestation for the repository, release workflow, and
 tag, then verifies the published SHA-256 checksum before extracting below `.agent-workbench/bin`.
-Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.30.0`
+Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.32.2`
 below `.agent-workbench/toolchains`.
 
 The POSIX setup entry point is invoked through `sh`, so installed script executable mode is not a

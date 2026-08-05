@@ -5,11 +5,11 @@ package «agent-workbench» where
   version := v!"0.0.0"
 
 require leansqlite from git
-  "https://github.com/leanprover/leansqlite.git" @ "v4.30.0"
+  "https://github.com/leanprover/leansqlite.git" @ "v4.32.0"
 
 require Blake3 from git
-  "https://github.com/argumentcomputer/Blake3.lean.git" @
-    "d815da486b97afae97f8c1f76f17260e3db5b075"
+  "https://github.com/MuNeNiCK/Blake3.lean.git" @
+    "4d4ec7d21b43fcc0cf89a93e3344b10fbd2e0754"
 
 lean_lib AgentWorkbench
 lean_lib AgentWorkbenchTest
