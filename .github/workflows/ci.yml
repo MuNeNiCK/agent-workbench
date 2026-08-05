@@ -30,6 +30,11 @@ jobs:
       - name: Build native targets
         shell: bash
         run: lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
+      - name: Verify pinned BLAKE3 sources
+        shell: bash
+        run: |
+          test "$(git -C .lake/packages/Blake3 rev-parse HEAD)" = d815da486b97afae97f8c1f76f17260e3db5b075
+          test "$(git -C .lake/packages/Blake3/blake3 rev-parse HEAD)" = 8b829b697fa4cfe35de35e9aa8c20b56266cb091
       - name: Run domain and native integration tests
         shell: bash
         run: .lake/build/bin/agent-workbench-tests${{ runner.os == 'Windows' && '.exe' || '' }}

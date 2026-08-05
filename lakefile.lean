@@ -7,9 +7,9 @@ package «agent-workbench» where
 require leansqlite from git
   "https://github.com/leanprover/leansqlite.git" @ "v4.30.0"
 
-require cryptography from git
-  "https://github.com/gdncc/cryptography.git" @
-    "883139dc0cd152a0f6f219b23aae35cbf6d67223"
+require Blake3 from git
+  "https://github.com/argumentcomputer/Blake3.lean.git" @
+    "d815da486b97afae97f8c1f76f17260e3db5b075"
 
 lean_lib AgentWorkbench
 lean_lib AgentWorkbenchTest

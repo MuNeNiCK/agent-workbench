@@ -29,6 +29,9 @@ private def validLeanSource (source : SourceInput) : Bool :=
     !(normalized.splitOn "/").any (· == "..") &&
     validLeanName (normalized.dropEnd 5 |>.toString |>.replace "/" ".")
 
+private def validContentDigest (value : String) : Bool :=
+  value.startsWith "blake3:" || value.startsWith "sha3-256:"
+
 private def validateCommand (command : CommandSpec) : Except String Unit := do
   ensure (!command.executable.isEmpty) "command executable is empty"
   ensure (command.environment.toList.map (·.1) |> uniqueStrings)
@@ -40,7 +43,7 @@ private def validateDesign (design : DesignRevision) : Except String Unit := do
   ensure (uniqueStrings (design.sourceDocuments.map (·.target)))
     s!"design {design.id} has duplicate source documents"
   for source in design.sourceDocuments do
-    ensure (source.target.startsWith "file:" && source.snapshot.startsWith "sha3-256:")
+    ensure (source.target.startsWith "file:" && validContentDigest source.snapshot)
       s!"design {design.id} has an invalid source document"
   ensure (uniqueStrings (design.statements.map (·.id)))
     s!"design {design.id} has duplicate statement ids"

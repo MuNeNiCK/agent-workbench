@@ -23,11 +23,12 @@ def evaluateCurrentInputs
             observations := observations ++ [TargetObservation.mk source.target snapshot]
         catch _ => pure ()
       for criterion in projection.design.acceptanceCriteria do
-        try
-          let snapshot ← Snapshot.target projectRoot criterion.target
-          if !observations.any (fun prior => prior.target == criterion.target) then
-            observations := observations ++ [TargetObservation.mk criterion.target snapshot]
-        catch _ => pure ()
+        if criterionEvidenceRecorded projection criterion then
+          try
+            if !observations.any (fun prior => prior.target == criterion.target) then
+              let snapshot ← Snapshot.target projectRoot criterion.target
+              observations := observations ++ [TargetObservation.mk criterion.target snapshot]
+          catch _ => pure ()
       for entry in projection.entries do
         match entry.payload with
         | .review review =>
@@ -40,9 +41,10 @@ def evaluateCurrentInputs
       let mut claimDigests := []
       let runtime := Runtime.layout projectRoot
       for claim in projection.design.leanClaims do
-        try
-          claimDigests := claimDigests ++ [(← ProofInput.evaluate projectRoot runtime claim).1]
-        catch _ => pure ()
+        if claimReceiptRecorded projection claim then
+          try
+            claimDigests := claimDigests ++ [(← ProofInput.evaluate projectRoot runtime claim).1]
+          catch _ => pure ()
       pure { observations, claimDigests }
 
 end AgentWorkbench
