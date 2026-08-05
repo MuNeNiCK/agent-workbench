@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [lean]
   pull_request:
-    branches: [main]
+    branches: [lean]
   workflow_dispatch:
 
 jobs:
@@ -38,3 +38,13 @@ jobs:
       - name: Check bootstrap script syntax
         if: runner.os != 'Windows'
         run: sh -n skills/agent-workbench/scripts/setup.sh
+
+  required:
+    if: always()
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every native target
+        env:
+          NATIVE_RESULT: ${{ needs.native.result }}
+        run: test "$NATIVE_RESULT" = success
