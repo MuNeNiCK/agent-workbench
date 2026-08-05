@@ -6,6 +6,7 @@ import AgentWorkbench.Decision.Completion
 import AgentWorkbench.Decision.ProofReuse
 import AgentWorkbench.Decision.Context
 import AgentWorkbench.Decision.ReviewInput
+import AgentWorkbench.Decision.Finding
 import AgentWorkbench.Decision.Command
 import AgentWorkbench.Decision.Operation
 import AgentWorkbench.Application.Design

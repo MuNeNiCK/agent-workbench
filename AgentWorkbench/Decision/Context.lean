@@ -60,50 +60,22 @@ def LedgerEntry.reference (entry : LedgerEntry) : EntryReference :=
 private def boundedReferences (entries : List LedgerEntry) : List EntryReference :=
   (entries.take currentContextLimit).map (·.reference)
 
-private def hasRecordedCriterionEvidence
-    (projection : CurrentProjection) (criterion : AcceptanceCriterion) : Bool :=
-  projection.entries.any (fun entry =>
-    match entry.payload with
-    | .artifactObservation evidence =>
-        criterion.evidenceKind == "artifact" &&
-        entry.workId == some projection.work.id &&
-        entry.designRevision == some projection.design.id &&
-        evidence.criterionId == criterion.id && evidence.target == criterion.target &&
-        evidence.successful
-    | .commandExecution evidence =>
-        criterion.evidenceKind == "command" &&
-        entry.workId == some projection.work.id &&
-        entry.designRevision == some projection.design.id &&
-        evidence.criterionId == some criterion.id && evidence.target == some criterion.target &&
-        evidence.successful
-    | _ => false)
-
 private def criterionGap?
     (projection : CurrentProjection) (observations : List TargetObservation)
     (criterion : AcceptanceCriterion) : Option CriterionGap :=
   if criterionHasEvidence projection observations criterion then none
-  else if !hasRecordedCriterionEvidence projection criterion then
+  else if !criterionEvidenceRecorded projection criterion then
     some { criterionId := criterion.id, target := criterion.target, kind := .missingEvidence }
   else if (currentSnapshot? observations criterion.target).isNone then
     some { criterionId := criterion.id, target := criterion.target, kind := .missingObservation }
   else
     some { criterionId := criterion.id, target := criterion.target, kind := .staleEvidence }
 
-private def hasRecordedClaimReceipt
-    (projection : CurrentProjection) (claim : LeanClaim) : Bool :=
-  projection.entries.any (fun entry =>
-    match entry.payload with
-    | .leanProofReceipt receipt =>
-        entry.workId == some projection.work.id &&
-        entry.designRevision == some projection.design.id &&
-        receipt.claimId == claim.id && receipt.kernelAccepted
-    | _ => false)
-
 private def claimGap?
     (projection : CurrentProjection) (digests : List CurrentClaimDigest)
     (claim : LeanClaim) : Option ClaimGap :=
   if claimHasReceipt projection digests claim then none
-  else if !hasRecordedClaimReceipt projection claim then
+  else if !claimReceiptRecorded projection claim then
     some { claimId := claim.id, kind := .missingEvidence }
   else if (uniqueBy? digests (·.claimId) claim.id).isNone then
     some { claimId := claim.id, kind := .missingInputDigest }

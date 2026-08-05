@@ -9,7 +9,9 @@ project=$(mktemp -d "${TMPDIR:-/tmp}/agent-workbench-route.XXXXXX")
 package_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-workbench-package.XXXXXX")
 trap 'rm -rf "$project" "$package_dir"' EXIT
 
-for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-cryptography LICENSE-lean4 LICENSES-lean4 \
+for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
+    LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
+    LICENSE-lean4 LICENSES-lean4 \
     LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$staging/$license"
 done
@@ -25,7 +27,15 @@ else
     --from-local --agent codex --scope project)
 fi
 test -f "$project/.agents/skills/agent-workbench/SKILL.md"
+test -f "$project/.agents/skills/agent-workbench/release-version"
 test -f "$project/.agents/skills/agent-workbench/scripts/setup.sh"
+if [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]; then
+  [[ "$(<"$project/.agents/skills/agent-workbench/release-version")" == "$AGENT_WORKBENCH_SKILL_REF" ]]
+fi
+if grep -R "releases/latest" "$project/.agents/skills/agent-workbench"; then
+  echo "installed Skill retained a moving release route" >&2
+  exit 1
+fi
 
 if [[ -n "$provided_archive" || -n "$provided_checksum" ]]; then
   [[ -n "$provided_archive" && -n "$provided_checksum" ]]
@@ -60,7 +70,9 @@ else
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi
 
-for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-cryptography LICENSE-lean4 LICENSES-lean4 \
+for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
+    LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
+    LICENSE-lean4 LICENSES-lean4 \
     LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$project/.agent-workbench/bin/$license"
 done
@@ -112,7 +124,7 @@ for forbidden in ("order", "scope", "workId", "designRevision", "supersedes"):
 mkdir -p "$project/proof/Proof"
 printf '%s\n' 'name = "proof"' 'version = "0.0.0"' 'defaultTargets = ["Proof"]' \
   '' '[[lean_lib]]' 'name = "Proof"' > "$project/proof/lakefile.toml"
-printf '%s\n' 'leanprover/lean4:v4.30.0' > "$project/proof/lean-toolchain"
+printf '%s\n' 'leanprover/lean4:v4.32.2' > "$project/proof/lean-toolchain"
 printf '%s\n' 'theorem supportClaim : True := by trivial' > "$project/proof/Proof/Support.lean"
 printf '%s\n' 'import Proof.Support' 'theorem designClaim : True := supportClaim' > "$project/proof/Proof.lean"
 printf '%s\n' 'current accepted design source' > "$project/design-source.md"
@@ -170,7 +182,7 @@ p=json.loads(sys.argv[2])
 root=pathlib.Path(sys.argv[1])
 suffix=".exe" if (root/".agent-workbench/bin/elan.exe").exists() else ""
 p["command"]["executable"]=str(root/f".agent-workbench/bin/elan{suffix}")
-p["command"]["arguments"]=["run", "leanprover/lean4:v4.30.0", "lean", "--version"]
+p["command"]["arguments"]=["run", "leanprover/lean4:v4.32.2", "lean", "--version"]
 p["command"]["environment"]=[["ELAN_HOME", str(root/".agent-workbench/toolchains")]]
 print(json.dumps(p))
 PY
@@ -287,10 +299,7 @@ fi
 example review start | invoke review start >/dev/null
 fresh_input=$(example review context | invoke review context)
 [[ "$fresh_input" == *'"lineage":[]'* ]]
-example review finding | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["mismatchEvidenceId"]="command-1"; print(json.dumps(x))' \
-  | invoke review finding >/dev/null
+example review finding | invoke review finding >/dev/null
 example review disposition | invoke review disposition >/dev/null
 [[ "$(invoke ready)" == *'"ready":false'* ]]
 

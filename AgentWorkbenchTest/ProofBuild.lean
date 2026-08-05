@@ -115,6 +115,16 @@ private def exerciseAbsentOutputParent (root : System.FilePath) : IO Unit := do
   expect (!(← (package / ".lake").pathExists))
     "proof operation left a Lake state parent that was initially absent"
 
+private def exerciseLakeImportOutputs : IO Unit := do
+  let build := "/package/.lake/build/lib/lean/Blake3"
+  let outputs := #[
+    build ++ ".olean",
+    build ++ ".ir",
+    build ++ ".olean.server",
+    build ++ ".olean.private"]
+  expect (AgentWorkbench.ProofBuild.oleanOutputs outputs == #[build ++ ".olean"])
+    "proof discovery treated a non-.olean Lake artifact as an imported module output"
+
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     let parent := root / "outputs"
@@ -124,5 +134,6 @@ def run : IO Unit :=
     exerciseAbsentOutput parent
     exerciseCallbackFailure parent
     exerciseAbsentOutputParent root
+    exerciseLakeImportOutputs
 
 end AgentWorkbenchTest.ProofBuild

@@ -40,7 +40,7 @@ def proposeDesignRequest
   let mut sources := []
   for target in request.sourceDocumentTargets do
     let snapshot ← Snapshot.requiredTarget projectRoot target
-    sources := sources ++ [{ target, snapshot }]
+    sources := sources ++ [DesignSource.mk target snapshot]
   let candidate := { request.design state sources with parent := state.acceptedDesignId }
   match proposeDesign state candidate with
   | .ok next =>

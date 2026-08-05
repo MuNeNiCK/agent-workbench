@@ -5,6 +5,12 @@ project_root=${1:-"$(pwd)"}
 local_archive=${2:-}
 local_checksum=${3:-}
 repository=https://github.com/MuNeNiCK/agent-workbench
+skill_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+release_version=$(sed -n '1p' "$skill_dir/release-version")
+if ! printf '%s\n' "$release_version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "invalid Agent Workbench release version" >&2
+  exit 1
+fi
 
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64) target=linux-x86_64 ;;
@@ -24,9 +30,14 @@ if [ -n "$local_archive" ] || [ -n "$local_checksum" ]; then
   cp "$local_checksum" "$temporary/$archive.sha256"
 else
   curl -fL --retry 3 -o "$temporary/$archive" \
-    "$repository/releases/latest/download/$archive"
+    "$repository/releases/download/$release_version/$archive"
   curl -fL --retry 3 -o "$temporary/$archive.sha256" \
-    "$repository/releases/latest/download/$archive.sha256"
+    "$repository/releases/download/$release_version/$archive.sha256"
+  gh attestation verify "$temporary/$archive" \
+    --repo MuNeNiCK/agent-workbench \
+    --signer-workflow MuNeNiCK/agent-workbench/.github/workflows/release.yml \
+    --deny-self-hosted-runners \
+    --source-ref "refs/tags/$release_version" >/dev/null
 fi
 
 expected=$(sed 's/[[:space:]].*$//' "$temporary/$archive.sha256")

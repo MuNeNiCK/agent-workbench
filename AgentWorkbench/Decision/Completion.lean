@@ -41,6 +41,33 @@ def evidenceEntryCurrent
       | _, _ => false
   | _ => false
 
+def criterionEvidenceRecorded
+    (projection : CurrentProjection) (criterion : AcceptanceCriterion) : Bool :=
+  projection.entries.any (fun entry =>
+    match entry.payload with
+    | .artifactObservation evidence =>
+        criterion.evidenceKind == "artifact" &&
+        entry.workId == some projection.work.id &&
+        entry.designRevision == some projection.design.id &&
+        evidence.criterionId == criterion.id && evidence.target == criterion.target &&
+        evidence.successful
+    | .commandExecution evidence =>
+        criterion.evidenceKind == "command" &&
+        entry.workId == some projection.work.id &&
+        entry.designRevision == some projection.design.id &&
+        evidence.criterionId == some criterion.id && evidence.target == some criterion.target &&
+        evidence.successful
+    | _ => false)
+
+def claimReceiptRecorded (projection : CurrentProjection) (claim : LeanClaim) : Bool :=
+  projection.entries.any (fun entry =>
+    match entry.payload with
+    | .leanProofReceipt receipt =>
+        entry.workId == some projection.work.id &&
+        entry.designRevision == some projection.design.id &&
+        receipt.claimId == claim.id && receipt.kernelAccepted
+    | _ => false)
+
 def criterionHasEvidence
     (projection : CurrentProjection) (observations : List TargetObservation)
     (criterion : AcceptanceCriterion) : Bool :=
@@ -72,6 +99,33 @@ def claimHasReceipt
           entry.designRevision == some projection.design.id &&
           canReuseReceipt claim current receipt
       | _ => false)
+
+theorem criterionHasEvidence_implies_recorded
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (criterion : AcceptanceCriterion) :
+    criterionHasEvidence projection observations criterion = true →
+      criterionEvidenceRecorded projection criterion = true := by
+  simp only [criterionHasEvidence, criterionEvidenceRecorded, List.any_eq_true]
+  rintro ⟨entry, member, hmatch⟩
+  refine ⟨entry, member, ?_⟩
+  cases payload : entry.payload <;>
+    simp [payload, evidenceEntryCurrent] at hmatch ⊢
+  all_goals grind
+
+theorem claimHasReceipt_implies_recorded
+    (projection : CurrentProjection) (digests : List CurrentClaimDigest)
+    (claim : LeanClaim) :
+    claimHasReceipt projection digests claim = true →
+      claimReceiptRecorded projection claim = true := by
+  unfold claimHasReceipt
+  split
+  · simp
+  · simp only [claimReceiptRecorded, List.any_eq_true]
+    rintro ⟨entry, member, hmatch⟩
+    refine ⟨entry, member, ?_⟩
+    cases payload : entry.payload <;>
+      simp [payload, canReuseReceipt] at hmatch ⊢
+    all_goals grind
 
 def acceptedFindingResolved
     (projection : CurrentProjection) (observations : List TargetObservation)

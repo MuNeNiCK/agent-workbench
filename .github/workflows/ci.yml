@@ -30,6 +30,11 @@ jobs:
       - name: Build native targets
         shell: bash
         run: lake build agent-workbench agent-workbench-tests agent-workbench-proof-tests
+      - name: Verify pinned BLAKE3 sources
+        shell: bash
+        run: |
+          test "$(git -C .lake/packages/Blake3 rev-parse HEAD)" = 4d4ec7d21b43fcc0cf89a93e3344b10fbd2e0754
+          test "$(git -C .lake/packages/Blake3/blake3-source rev-parse HEAD)" = b97a24f8754819755ef78d8016c0391c65c943c5
       - name: Run domain and native integration tests
         shell: bash
         run: .lake/build/bin/agent-workbench-tests${{ runner.os == 'Windows' && '.exe' || '' }}
@@ -39,6 +44,21 @@ jobs:
       - name: Check bootstrap script syntax
         if: runner.os != 'Windows'
         run: sh -n skills/agent-workbench/scripts/setup.sh
+      - name: Check Skill release binding
+        shell: bash
+        run: |
+          release_version=$(sed -n '1p' skills/agent-workbench/release-version)
+          [[ "$release_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -F "agent-workbench@$release_version" README.md
+          grep -F "agent-workbench@$release_version" docs/content/installation.md
+          grep -F 'from that exact Skill release' docs/content/installation.md
+          grep -F 'build-provenance attestation' docs/content/installation.md
+          ! grep -F 'latest GitHub Release' docs/content/installation.md
+          grep -F 'releases/download/$release_version/$archive' skills/agent-workbench/scripts/setup.sh
+          grep -F 'releases/download/$releaseVersion/$archive' skills/agent-workbench/scripts/setup.ps1
+          grep -F -- '--source-ref "refs/tags/$release_version"' skills/agent-workbench/scripts/setup.sh
+          grep -F -- '--source-ref "refs/tags/$releaseVersion"' skills/agent-workbench/scripts/setup.ps1
+          ! grep -R "releases/latest" skills/agent-workbench
 
   required:
     if: always()

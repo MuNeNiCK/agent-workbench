@@ -1,4 +1,4 @@
-import «Cryptography».Hashes.SHA3.Basic
+import Blake3.C
 
 namespace AgentWorkbench.ContentDigest
 
@@ -13,22 +13,22 @@ private def hex (digest : ByteArray) : String :=
     [hexDigit (byte.toNat / 16), hexDigit (byte.toNat % 16)]))
 
 private def tagged (digest : ByteArray) : String :=
-  s!"sha3-256:{hex digest}"
+  s!"blake3:{hex digest}"
 
 def bytes (input : ByteArray) : String :=
-  tagged (SHA3_256.hashData input)
+  tagged (Blake3.C.hash input).val
 
 def string (input : String) : String :=
   bytes input.toUTF8
 
 partial def file (path : System.FilePath) : IO String := do
   IO.FS.withFile path IO.FS.Mode.read fun handle => do
-    let rec loop state : IO String := do
-      let chunk ← handle.read 65536
+    let rec loop (hasher : Blake3.C.Hasher) : IO String := do
+      let chunk ← handle.read (1024 * 1024)
       if chunk.isEmpty then
-        pure (tagged (SHA3_256.final state))
+        pure (tagged (hasher.finalizeWithLength 32).val)
       else
-        loop (SHA3_256.update state chunk)
-    loop SHA3_256.mk
+        loop (hasher.update chunk)
+    loop (Blake3.C.Hasher.init ())
 
 end AgentWorkbench.ContentDigest

@@ -1,5 +1,6 @@
 import AgentWorkbench.Application.Ledger
 import AgentWorkbench.Adapter.ReviewTarget
+import AgentWorkbench.Decision.Finding
 
 namespace AgentWorkbench
 
@@ -20,7 +21,6 @@ structure FindingRecordRequest where
   entryId : String
   reviewEntryId : String
   subject : FindingSubject
-  mismatchEvidenceId : String
   summary : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
@@ -74,6 +74,11 @@ def resumeReview
 
 def recordFinding
     (state : ProjectState) (request : FindingRecordRequest) : Except String ProjectState := do
+  let projection ← match currentProjection? state with
+    | some value => pure value
+    | none => throw "review finding requires a current Work and accepted Design"
+  if !findingInputsEligible projection request.reviewEntryId request.subject then
+    throw "review finding requires a compatible current root Review and exact subject"
   let reviewEntry ← match state.entry? request.reviewEntryId with
     | some value => pure value
     | none => throw s!"no Review entry {request.reviewEntryId}"
@@ -82,7 +87,9 @@ def recordFinding
     | _ => throw s!"entry {request.reviewEntryId} is not a Review"
   appendCurrentEntry state request.entryId (.finding {
     reviewId := review.reviewId, subject := request.subject
-    mismatchEvidenceId := request.mismatchEvidenceId, summary := request.summary })
+    targetSourceId := review.targetSourceId, target := review.target
+    targetSnapshot := review.targetSnapshot, producerAgentRun := review.producerAgentRun
+    summary := request.summary })
 
 def recordDisposition
     (state : ProjectState) (request : DispositionRecordRequest) : Except String ProjectState := do

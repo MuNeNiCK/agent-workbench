@@ -11,11 +11,21 @@ def run : IO Unit := do
   let executableName := if System.Platform.isWindows then "agent-workbench.exe" else "agent-workbench"
   let workbenchExecutable := executableParent / executableName
   expect (ContentDigest.string "" ==
-    "sha3-256:a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
-    "SHA3-256 empty-string vector failed"
+    "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+    "BLAKE3 empty-string vector failed"
   expect (ContentDigest.string "abc" ==
-    "sha3-256:3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
-    "SHA3-256 abc vector failed"
+    "blake3:6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")
+    "BLAKE3 abc vector failed"
+  let legacyDigestDesign :=
+    { design with sourceDocuments := [{ target := "file:design.md", snapshot := "sha3-256:00" }] }
+  let currentDigestDesign :=
+    { design with sourceDocuments := [{ target := "file:design.md", snapshot := "blake3:00" }] }
+  let _ ← fromExcept (validateState { ProjectState.empty with
+    designRevisions := [legacyDigestDesign] })
+  let _ ← fromExcept (validateState { ProjectState.empty with
+    designRevisions := [currentDigestDesign] })
+  expect (ContentDigest.string "abc" |>.startsWith "blake3:")
+    "new content identity did not use the current algorithm tag"
   let identityRoot := System.mkFilePath ["packet", "self-application"]
   let identitySource := System.mkFilePath ["packet", "product", "Proof.lean"]
   expect (ProofInput.pathIdentity identityRoot identitySource == "../product/Proof.lean")
@@ -118,7 +128,7 @@ def run : IO Unit := do
         "shown and executed commands came from different resolutions"
       expect (execution.command.workingDirectory == some commandRoot.toString)
         "Command Profile did not record its resolved working directory"
-      expect (execution.snapshot.map (fun value => value.startsWith "sha3-256:") == some true)
+      expect (execution.snapshot.map (fun value => value.startsWith "blake3:") == some true)
         "command execution did not bind its target snapshot"
   | _ => throw (IO.userError "command runner recorded the wrong payload")
   expect (afterCommand.ledgerEntries.length == 5) "command execution was not appended"
@@ -141,7 +151,6 @@ def run : IO Unit := do
     entryId := "entry-review-outside-finding"
     reviewEntryId := "entry-review-outside-criterion"
     subject := { kind := .criterion, id := criterion.id, exactQuote := criterion.statement }
-    mismatchEvidenceId := "entry-review-evidence-before"
     summary := "non-criterion target requires remediation" })
   let acceptedFindingState ← fromExcept (recordDisposition findingState {
     entryId := "entry-review-outside-disposition"

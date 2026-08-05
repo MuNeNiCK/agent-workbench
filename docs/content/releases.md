@@ -14,15 +14,17 @@ Each GitHub Release publishes one native archive and one SHA-256 checksum for ea
 - Windows x86_64
 
 An archive contains the native Workbench executable, the matching official Elan executable, and
-redistribution licenses for Agent Workbench, LeanSQLite, cryptography, Lean, and Elan. The Lean
+redistribution licenses for Agent Workbench, LeanSQLite, Blake3.lean, BLAKE3, Lean, and Elan. The Lean
 toolchain is acquired project-locally by native `init`; setup does not assume a global installation.
 
 ## Setup boundary
 
-The installed setup helper selects the platform archive, downloads the archive and checksum from the
-latest GitHub Release, verifies the archive, extracts it below `.agent-workbench/bin`, and invokes
-native `init`. POSIX and PowerShell helpers own acquisition only; after initialization the Skill uses
-the native executable directly.
+The installed Skill carries its release version. Its setup helper selects the platform archive,
+downloads that exact version's archive and checksum, verifies the archive's GitHub build-provenance
+attestation and SHA-256 checksum, extracts it below `.agent-workbench/bin`, and invokes native
+`init`. It never resolves `latest`; a Skill installed from one release cannot silently acquire a
+runtime from another release. POSIX and PowerShell helpers own acquisition only; after initialization
+the Skill uses the native executable directly.
 
 ## Release validation
 

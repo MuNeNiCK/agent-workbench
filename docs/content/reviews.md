@@ -33,6 +33,12 @@ reviewer run, even if a Work handoff later made that run responsible for impleme
 
 ## Findings do not decide product authority
 
+A Finding quotes an exact current design subject and is grounded by the immutable target already
+fixed by its fresh root Review. `review finding` becomes applicable when that root Review is current.
+The request cannot select separate evidence, target, snapshot, or producer provenance. If it is
+inapplicable, inspect the current Work/Design binding and Review entry; do not create unrelated
+evidence or a replacement Review to force the operation.
+
 A Finding is advisory. The responsible work agent records an allowed disposition with a reason:
 
 - `accepted` means the mismatch must be resolved and verified;

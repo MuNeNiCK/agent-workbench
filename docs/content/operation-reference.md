@@ -57,6 +57,11 @@ project ownership and rechecks applicability against authoritative state before 
 operation may therefore make a previously displayed request inapplicable; the rejected request does
 not advance state revision.
 
+An applicable mutation has at least one current set of state-owned referents that satisfies its
+semantic preconditions; it does not mean arbitrary request-authored content will succeed. For
+example, `review finding` remains inapplicable until the current Work has a compatible fresh root
+Review. Its target provenance is derived from that Review rather than supplied by the request.
+
 ## Read operations
 
 - `context` returns the bounded current projection.
