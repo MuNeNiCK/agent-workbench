@@ -51,6 +51,9 @@ private def buildDirectoryFromOlean
     throw s!"Lean output has no package build directory: {path}"
   pure directory
 
+def oleanOutputs (outputs : Array String) : Array String :=
+  outputs.filter (·.endsWith ".olean")
+
 private structure ModuleSetup where
   name : String
   importArts : Std.TreeMap String (Array String)
@@ -109,7 +112,7 @@ def buildDirectories
     if !directories.any (samePath · directory) then
       directories := directories ++ [directory]
     for (name, outputs) in setup.importArts.toList do
-      for output in outputs do
+      for output in oleanOutputs outputs do
         let configured : System.FilePath := output
         let path := if configured.isAbsolute then configured else proofRoot / configured
         if !ProofInput.pathWithin runtime.elanHome path then
