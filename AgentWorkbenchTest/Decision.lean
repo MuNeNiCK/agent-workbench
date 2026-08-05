@@ -278,7 +278,9 @@ def run : IO Unit := do
     payload := .finding {
       reviewId := "review-design", subject := {
         kind := .statement, id := statement.id, exactQuote := statement.text }
-      mismatchEvidenceId := "entry-evidence", summary := "statement mismatch" } }
+      targetSourceId := design.id, target := "design:design-1"
+      targetSnapshot := "design-snapshot", producerAgentRun := "designer-1"
+      summary := "statement mismatch" } }
   let _ ← append statementFinding {
     id := "entry-assumption-finding", order := 6, scope := work.scope
     workId := some work.id, designRevision := some design.id
@@ -286,7 +288,9 @@ def run : IO Unit := do
       reviewId := "review-design", subject := {
         kind := .assumption, id := statement.id
         exactQuote := "artifact observation is externally truthful" }
-      mismatchEvidenceId := "entry-evidence", summary := "assumption mismatch" } }
+      targetSourceId := design.id, target := "design:design-1"
+      targetSnapshot := "design-snapshot", producerAgentRun := "designer-1"
+      summary := "assumption mismatch" } }
 
   let reviewed ← append state {
     id := "entry-review", order := 4, scope := work.scope
@@ -312,7 +316,9 @@ def run : IO Unit := do
     payload := .finding {
       reviewId := "review-1", subject := {
         kind := .criterion, id := criterion.id, exactQuote := criterion.statement }
-      mismatchEvidenceId := "entry-evidence", summary := "cross-boundary mismatch" } }
+      targetSourceId := "entry-evidence", target := criterion.target
+      targetSnapshot := "snapshot-a", producerAgentRun := "agent-1"
+      summary := "cross-boundary mismatch" } }
   match appendEntry multiWork crossWorkFinding with
   | .error _ => pure ()
   | .ok _ => throw (IO.userError "finding crossed its Review Work binding")
@@ -322,7 +328,9 @@ def run : IO Unit := do
     payload := .finding {
       reviewId := "review-1", subject := {
         kind := .criterion, id := criterion.id, exactQuote := criterion.statement }
-      mismatchEvidenceId := "entry-evidence", summary := "artifact mismatch" } }
+      targetSourceId := "entry-evidence", target := criterion.target
+      targetSnapshot := "snapshot-a", producerAgentRun := "agent-1"
+      summary := "artifact mismatch" } }
   let anotherFresh ← append withFinding {
     id := "entry-review-fresh-2", order := 6, scope := work.scope
     workId := some work.id, designRevision := some design.id

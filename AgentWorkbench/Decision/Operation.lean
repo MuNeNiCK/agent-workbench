@@ -1,4 +1,4 @@
-import AgentWorkbench.Decision.Projection
+import AgentWorkbench.Decision.Finding
 
 namespace AgentWorkbench
 
@@ -41,8 +41,9 @@ def operationApplicable (state : ProjectState) (operation : String) : Bool :=
   | "kpt apply" => current && currentHasEntry state (fun
       | .kpt kpt => kpt.tryNext.isSome
       | _ => false)
-  | "review resume" | "review finding" =>
+  | "review resume" =>
       current && currentHasEntry state (fun | .review _ => true | _ => false)
+  | "review finding" => reviewFindingApplicable state
   | "review disposition" => current && currentHasEntry state (fun
       | .finding _ => true
       | _ => false)

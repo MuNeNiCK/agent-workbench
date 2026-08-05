@@ -151,7 +151,6 @@ def run : IO Unit := do
     entryId := "entry-review-outside-finding"
     reviewEntryId := "entry-review-outside-criterion"
     subject := { kind := .criterion, id := criterion.id, exactQuote := criterion.statement }
-    mismatchEvidenceId := "entry-review-evidence-before"
     summary := "non-criterion target requires remediation" })
   let acceptedFindingState ← fromExcept (recordDisposition findingState {
     entryId := "entry-review-outside-disposition"

@@ -124,8 +124,7 @@ def operationContracts : List OperationContract :=
        } : ReviewResumeRequest)
   , contract "review finding" "record an advisory Finding under an existing Review"
       ({ entryId := "finding-1", reviewEntryId := "review-fresh"
-         subject := findingSubject
-         mismatchEvidenceId := "evidence-1", summary := "artifact does not match" } : FindingRecordRequest)
+         subject := findingSubject, summary := "artifact does not match" } : FindingRecordRequest)
   , contract "review disposition" "resolve advisory authority using the responsible Work run"
       ({ entryId := "disposition-1", findingEntryId := "finding-1"
          decision := DispositionDecision.accepted, reason := "evidence confirms mismatch" } : DispositionRecordRequest)

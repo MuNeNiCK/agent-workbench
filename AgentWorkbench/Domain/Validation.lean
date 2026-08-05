@@ -186,19 +186,15 @@ private def findReviewRootById?
 
 private def validateFinding
     (state : ProjectState) (entry : LedgerEntry) (finding : FindingRecord) : Except String Unit := do
-  let (reviewEntry, _) ← requireSome (findReviewRootById? state finding.reviewId)
+  let (reviewEntry, review) ← requireSome (findReviewRootById? state finding.reviewId)
     s!"finding {entry.id} references missing review {finding.reviewId}"
   ensure (reviewEntry.scope == entry.scope && reviewEntry.workId == entry.workId &&
     reviewEntry.designRevision == entry.designRevision && reviewEntry.order < entry.order)
     s!"finding {entry.id} crosses its Review binding"
-  let evidence ← requireSome (state.entry? finding.mismatchEvidenceId)
-    s!"finding {entry.id} references missing mismatch evidence"
-  ensure (evidence.order < entry.order && evidence.scope == entry.scope &&
-    evidence.workId == entry.workId && evidence.designRevision == entry.designRevision)
-    s!"finding {entry.id} references future or differently-bound evidence"
-  match evidence.payload with
-  | .artifactObservation _ | .commandExecution _ => pure ()
-  | _ => throw s!"finding {entry.id} cites a non-evidence mismatch entry"
+  ensure (finding.targetSourceId == review.targetSourceId && finding.target == review.target &&
+    finding.targetSnapshot == review.targetSnapshot &&
+    finding.producerAgentRun == review.producerAgentRun)
+    s!"finding {entry.id} differs from its fixed Review target provenance"
   let design ← requireSome (entryDesign? state entry) s!"finding {entry.id} has no design"
   match finding.subject.kind with
   | .criterion =>

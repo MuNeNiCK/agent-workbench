@@ -89,7 +89,10 @@ structure FindingSubject where
 structure FindingRecord where
   reviewId : String
   subject : FindingSubject
-  mismatchEvidenceId : String
+  targetSourceId : String
+  target : String
+  targetSnapshot : String
+  producerAgentRun : String
   summary : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
