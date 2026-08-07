@@ -142,7 +142,7 @@ def currentContext?
     match entry.payload with
     | .finding finding =>
         isAcceptedFinding projection entry &&
-        !acceptedFindingResolved projection observations entry finding
+        !acceptedFindingResolved state projection observations entry finding
     | _ => false)
   let criterionGaps := projection.design.acceptanceCriteria.filterMap
     (criterionGap? projection observations)

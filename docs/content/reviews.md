@@ -70,6 +70,10 @@ output-changing Finding must be included in a replacement Plan before materializ
 through current evidence in the same resumed Review lineage. Only an accepted unresolved Finding in
 current implementation authority blocks completion.
 
+A recorded verification remains valid history after a later Plan replacement, but it stops
+resolving the Finding when its remediation Task or evidence is no longer current. The replacement
+Plan must carry the Finding again and obtain new evidence before another resumed verification.
+
 ## Diagnosing review state
 
 Use `review context` with a Review entry ID. Fresh context has an empty lineage. Resumed context

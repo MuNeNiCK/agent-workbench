@@ -404,7 +404,8 @@ private def validateVerification
     | _ => false
   ensure matchesSuccessfulEvidence
     s!"verification {entry.id} does not cite successful evidence for its exact target snapshot"
-  ensure (findingRemediationBindingCurrent state findingEntry evidenceEntry finding verification.target)
+  ensure (findingRemediationBindingBefore state findingEntry evidenceEntry finding
+    verification.target entry.order)
     s!"verification {entry.id} bypasses its Finding-bound replacement Plan Task"
 
 def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String Unit := do

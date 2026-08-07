@@ -444,6 +444,30 @@ def run : IO Unit :=
       entryId := "verification-1", findingEntryId := "finding-1"
       reviewEntryId := "review-resume", evidenceEntryId := "evidence-remediation" }
     fromExcept (validateState verified)
+    let reopenedPlan : ImplementationPlan := {
+      coveredPlan with
+      id := "plan-finding-reopened"
+      predecessorPlanId := some coveredPlan.id
+      status := .candidate
+      contentDigest := "blake3:finding-reopened"
+      reason := "replace the verified remediation with a new current candidate" }
+    let reopenCandidate := { verified with
+      implementationPlans := verified.implementationPlans ++ [reopenedPlan] }
+    fromExcept (validateState reopenCandidate)
+    let reopened ← fromExcept <| materializePlan reopenCandidate reopenedPlan.id [] []
+    fromExcept (validateState reopened)
+    let reopenedProjection ← match currentProjection? reopened with
+      | some value => pure value
+      | none => throw (IO.userError "Plan replacement lost the current projection")
+    let findingEntry ← match reopened.entry? "finding-1" with
+      | some value => pure value
+      | none => throw (IO.userError "Plan replacement lost the historical Finding")
+    let finding ← match findingEntry.payload with
+      | .finding value => pure value
+      | _ => throw (IO.userError "historical Finding has the wrong payload")
+    expect (!acceptedFindingResolved reopened reopenedProjection
+      [{ target := criterion.target, snapshot := remediationSnapshot }] findingEntry finding)
+      "Plan replacement left historical verification current instead of reopening remediation"
     historicalReviewSurvivesWorkHandoff root
     historicalReviewSurvivesDesignAdoption root
     freshReviewUsesBoundedCompletionProjection root

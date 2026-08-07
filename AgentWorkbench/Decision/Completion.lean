@@ -1,4 +1,5 @@
 import AgentWorkbench.Decision.ProofReuse
+import AgentWorkbench.Decision.Finding
 
 namespace AgentWorkbench
 
@@ -172,7 +173,7 @@ theorem claimHasReceipt_implies_recorded
     all_goals grind
 
 def acceptedFindingResolved
-    (projection : CurrentProjection) (observations : List TargetObservation)
+    (state : ProjectState) (projection : CurrentProjection) (observations : List TargetObservation)
     (findingEntry : LedgerEntry) (finding : FindingRecord) : Bool :=
   let accepted := findingDispositionIn? projection.entries findingEntry.id projection.work.id
     |>.any fun entry => match entry.payload with
@@ -189,6 +190,8 @@ def acceptedFindingResolved
         projection.entries.any (fun evidenceEntry =>
           evidenceEntry.id == verification.evidenceEntryId &&
           evidenceEntryCurrent projection observations evidenceEntry &&
+          findingRemediationBindingCurrent state findingEntry evidenceEntry finding
+            verification.target &&
           match evidenceEntry.payload with
           | .artifactObservation evidence =>
               evidence.target == verification.target &&
@@ -200,10 +203,11 @@ def acceptedFindingResolved
     | _ => false)
 
 def noBlockingEntries
-    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
+    (state : ProjectState) (projection : CurrentProjection)
+    (observations : List TargetObservation) : Bool :=
   projection.entries.all (fun entry =>
     match entry.payload with
-    | .finding finding => acceptedFindingResolved projection observations entry finding
+    | .finding finding => acceptedFindingResolved state projection observations entry finding
     | .userCorrection correction =>
         correction.resolvedByEntryId.isSome ||
           correction.incorporatedIn == some projection.design.id
@@ -221,6 +225,6 @@ def completionReady
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) &&
       projection.design.leanClaims.all (claimHasReceipt projection digests) &&
-      noBlockingEntries projection observations
+      noBlockingEntries state projection observations
 
 end AgentWorkbench

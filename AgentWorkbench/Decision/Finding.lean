@@ -123,4 +123,47 @@ def findingRemediationBindingCurrent
           | _, _ => false)
   | _, _ => false
 
+/-- Validate the causal remediation chain as it existed when a verification was recorded. Later
+Plan replacement may make that verification non-current, but cannot make its history malformed. -/
+def findingRemediationBindingBefore
+    (state : ProjectState) (findingEntry evidenceEntry : LedgerEntry)
+    (finding : FindingRecord) (target : String) (beforeOrder : Nat) : Bool :=
+  let priorEntries := state.ledgerEntries.filter (·.order < beforeOrder)
+  let supersededBefore (candidate : LedgerEntry) := priorEntries.any fun replacement =>
+    replacement.order > candidate.order && replacement.supersedes.contains candidate.id
+  match findingEntry.workId, remediationTaskEntryId? evidenceEntry with
+  | some workId, some sourceTaskEntryId =>
+      let acceptedDisposition? := findingDispositionIn? priorEntries findingEntry.id workId
+      let sourceTaskEntry? := priorEntries.find? (·.id == sourceTaskEntryId)
+      acceptedDisposition?.any (fun dispositionEntry =>
+        sourceTaskEntry?.any (fun sourceTaskEntry => dispositionEntry.order < sourceTaskEntry.order) &&
+          match dispositionEntry.payload with
+          | .reviewDisposition disposition => disposition.decision == .accepted
+          | _ => false) &&
+      findingTargetMatches state findingEntry finding target &&
+      sourceTaskEntry?.any fun sourceTaskEntry =>
+        let sourceBinding := match sourceTaskEntry.payload with
+          | .task sourceTask =>
+              (sourceTask.planId.bind state.plan?).any (fun (plan : ImplementationPlan) =>
+                plan.workId == workId && some plan.designRevision == findingEntry.designRevision &&
+                (sourceTask.planStepId.bind (fun stepId => uniqueBy? plan.steps (·.id) stepId)
+                  |>.any (·.acceptedFindingEntryIds.contains findingEntry.id)) &&
+                priorEntries.any (fun closedTaskEntry =>
+                  let taskMatches := match closedTaskEntry.payload with
+                    | .task closedTask =>
+                        closedTask.planId == sourceTask.planId &&
+                        closedTask.lineageId == sourceTask.lineageId && closedTask.closed &&
+                        !closedTask.retired && closedTask.outputScopes.contains target &&
+                        closedTask.verificationTaskEntryId == some sourceTaskEntry.id &&
+                        closedTask.verificationEvidenceEntryIds.contains evidenceEntry.id
+                    | _ => false
+                  !supersededBefore closedTaskEntry &&
+                    closedTaskEntry.workId == some workId &&
+                    closedTaskEntry.designRevision == findingEntry.designRevision &&
+                    closedTaskEntry.order > evidenceEntry.order && taskMatches))
+          | _ => false
+        sourceTaskEntry.order > findingEntry.order &&
+          sourceTaskEntry.order < evidenceEntry.order && sourceBinding
+  | _, _ => false
+
 end AgentWorkbench
