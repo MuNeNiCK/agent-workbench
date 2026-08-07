@@ -47,11 +47,11 @@ private def isGeneratedLeanObject (path : String) : Bool :=
 
 private def isReviewedNativeDependency (path : String) : Bool :=
   (containsText path "/.lake/packages/Blake3/.lake/build/lib/" &&
-      containsText path "libblake3_c") ||
+      path.endsWith "blake3_c.a") ||
   containsText path "/.lake/packages/MD4Lean/.lake/build/md4c/" ||
   containsText path "/.lake/packages/MD4Lean/.lake/build/wrapper/" ||
   (containsText path "/.lake/packages/leansqlite/.lake/build/lib/" &&
-      containsText path "libleansqlite")
+      path.endsWith "leansqlite.a")
 
 private def archivePath? (response marker : String) : Option String :=
   response.splitOn "\n" |>.findSome? fun line =>
@@ -105,8 +105,8 @@ private def verifyProductLinkResponse : IO Unit := do
     let path := input.trimAscii.toString.replace "\"" ""
     expect (isGeneratedLeanObject path || isReviewedNativeDependency path)
       s!"unreviewed package-native link input: {path}"
-  verifyArchiveMembers response "libblake3_c" ["blake3", "blake3_dispatch", "blake3_portable", "ffi_c"]
-  verifyArchiveMembers response "libleansqlite" ["sqlite3", "leansqlite", "shathree"]
+  verifyArchiveMembers response "blake3_c.a" ["blake3", "blake3_dispatch", "blake3_portable", "ffi_c"]
+  verifyArchiveMembers response "leansqlite.a" ["sqlite3", "leansqlite", "shathree"]
 
 private def verifyQueryStoreCapability : IO Unit :=
   IO.FS.withTempDir fun root => do
