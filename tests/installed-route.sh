@@ -61,7 +61,8 @@ if [[ -z "$provided_archive" ]]; then
 import hashlib, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 path.with_name(path.name + ".sha256").write_text(
-    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n", encoding="utf-8")
+    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n",
+    encoding="utf-8", newline="\n")
 PY
 fi
 
@@ -136,18 +137,20 @@ root = Path(sys.argv[1]) / ".agent-workbench" / "design"
 (root / "product").mkdir(parents=True, exist_ok=True)
 (root / "proofs" / "example" / "ExampleDesign").mkdir(parents=True, exist_ok=True)
 (root / "product" / "design.md").write_text(
-    "The selected property is true.\n", encoding="utf-8")
+    "The selected property is true.\n", encoding="utf-8", newline="\n")
 (root / "proofs" / "example" / "lean-toolchain").write_text(
-    "leanprover/lean4:v4.32.2\n", encoding="utf-8")
+    "leanprover/lean4:v4.32.2\n", encoding="utf-8", newline="\n")
 (root / "proofs" / "example" / "lakefile.lean").write_text(
     "import Lake\nopen Lake DSL\npackage «installed-route-proof»\n"
-    "@[default_target] lean_lib ExampleDesign\n", encoding="utf-8")
+    "@[default_target] lean_lib ExampleDesign\n",
+    encoding="utf-8", newline="\n")
 (root / "proofs" / "example" / "ExampleDesign.lean").write_text(
     "import ExampleDesign.Base\nnamespace ExampleDesign\n"
     "def Property : Prop := Base\ntheorem property : Property := by trivial\nend ExampleDesign\n",
-    encoding="utf-8")
+    encoding="utf-8", newline="\n")
 (root / "proofs" / "example" / "ExampleDesign" / "Base.lean").write_text(
-    "namespace ExampleDesign\ndef Base : Prop := True\nend ExampleDesign\n", encoding="utf-8")
+    "namespace ExampleDesign\ndef Base : Prop := True\nend ExampleDesign\n",
+    encoding="utf-8", newline="\n")
 PY
 
 inspection=$(printf '%s\n' \
@@ -211,7 +214,8 @@ value=json.load(sys.stdin)
 expected=("import ExampleDesign.Base\nnamespace ExampleDesign\n"
           "def Property : Prop := Base\ntheorem property : Property := by trivial\nend ExampleDesign\n").encode()
 assert value["mediaKind"] == "lean"
-assert bytes(value["contentBytes"]) == expected
+assert bytes(value["contentBytes"]) == expected, {
+    "check":"archived-source-bytes","actual":bytes(value["contentBytes"]),"expected":expected}
 '
 printf '{"id":"%s"}\n' "$design_id" | "$awb" --project "$project" design accept >/dev/null
 proof=$(printf '%s\n' '{"entryId":"proof-route","claimId":"claim-route"}' \
