@@ -205,12 +205,12 @@ private def runCommandProfile
       throw error
   let (observed, result) := execution
   let next ← replayPreparedObservation prior observed (.commandExecution result.entry)
-  let successful := match result.entry.payload with
-    | .commandExecution value => value.successful
-    | _ => false
+  let (successful, exitCode) := match result.entry.payload with
+    | .commandExecution value => (value.successful, value.exitCode)
+    | _ => (false, 0)
   if !successful then
     cleanupUncommitted
-    fail "Command Profile failed without recording successful evidence"
+    fail s!"Command Profile {request.entryId} exited with code {exitCode} without recording successful evidence"
   try
     commitOperation store .commandRun prior.revision next (some operationId)
   catch error =>

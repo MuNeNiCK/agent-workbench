@@ -1,6 +1,6 @@
 import AgentWorkbenchTest
 
-def main : IO Unit := do
+private def runSuite : IO Unit := do
   AgentWorkbenchTest.Lifecycle.run
   AgentWorkbenchTest.Completion.run
   AgentWorkbenchTest.Plan.run
@@ -20,3 +20,13 @@ def main : IO Unit := do
   AgentWorkbenchTest.BinaryProtocol.run
   AgentWorkbenchTest.DesignClaim.run
   IO.println "agent-workbench-tests: pass"
+
+def main (arguments : List String) : IO Unit := do
+  match arguments with
+  | ["write-artifact", path, content] =>
+      IO.FS.writeFile path content
+  | ["write-artifact-fail", path, content] =>
+      IO.FS.writeFile path content
+      throw (IO.userError "intentional command failure")
+  | [] => runSuite
+  | _ => throw (IO.userError "unknown test-helper arguments")

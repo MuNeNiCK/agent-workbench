@@ -12,6 +12,10 @@ private def executablePath : System.FilePath :=
   if System.Platform.isWindows then ".lake/build/bin/agent-workbench.exe"
   else ".lake/build/bin/agent-workbench"
 
+private def testExecutablePath : System.FilePath :=
+  if System.Platform.isWindows then ".lake/build/bin/agent-workbench-tests.exe"
+  else ".lake/build/bin/agent-workbench-tests"
+
 private def invoke
     (root : System.FilePath) (command : List String) (input : Option String := none) :
     IO IO.Process.Output :=
@@ -126,19 +130,17 @@ def run : IO Unit :=
       ({ id := planId } : AgentWorkbench.Cli.IdInput)
 
     let taskId := s!"task-{planId}-{routeStep.id}"
-    IO.FS.writeFile (root / "artifact.txt") "baseline artifact\n"
+    let artifactPath := root / "artifact.txt"
+    IO.FS.writeFile artifactPath "baseline artifact\n"
     IO.FS.writeFile (root / "command-input.txt") "current input\n"
-    let commandExecutable ← if System.Platform.isWindows then
-        match ← IO.getEnv "ComSpec" with
-        | some value => pure value
-        | none => throw (IO.userError "Windows command interpreter path is unavailable")
-      else pure "sh"
-    let successfulCommand : CommandSpec := if System.Platform.isWindows then
-        { executable := commandExecutable, arguments := #["/D", "/S", "/C", "echo command-output>artifact.txt"]
-          workingDirectory := some root.toString }
-      else
-        { executable := "sh", arguments := #["-c", "printf 'command-output\\n' > artifact.txt"]
-          workingDirectory := some root.toString }
+    let testHelper ← IO.FS.realPath testExecutablePath
+    let successfulCommand : CommandSpec := {
+      executable := testHelper.toString
+      arguments := #["write-artifact", artifactPath.toString, "command-output\n"] }
+    let helperCheck ← AgentWorkbench.Process.execute root successfulCommand
+    unless helperCheck.exitCode == 0 do
+      throw (IO.userError s!"native command helper failed: {helperCheck.stderr}")
+    IO.FS.writeFile artifactPath "baseline artifact\n"
     let _ ← invokeJson root ["profile", "define"] ({
       entryId := "profile-route", purpose := "produce the Task output"
       taskEntryId := taskId, inputTargets := ["file:command-input.txt"]
@@ -163,14 +165,9 @@ def run : IO Unit :=
       entryId := "kpt-route-applied", kptEntryId := "kpt-route"
       actionEntryId := "command-route", outcome := "the Try produced current command evidence" } : KptApplyRequest)
 
-    let failingCommand : CommandSpec := if System.Platform.isWindows then
-        { executable := commandExecutable
-          arguments := #["/D", "/S", "/C", "echo partial-output>artifact.txt & exit /b 1"]
-          workingDirectory := some root.toString }
-      else
-        { executable := "sh"
-          arguments := #["-c", "printf 'partial-output\\n' > artifact.txt; exit 1"]
-          workingDirectory := some root.toString }
+    let failingCommand : CommandSpec := {
+      executable := testHelper.toString
+      arguments := #["write-artifact-fail", artifactPath.toString, "partial-output\n"] }
     let _ ← invokeJson root ["profile", "define"] ({
       entryId := "profile-failing", purpose := "exercise failed managed output restoration"
       taskEntryId := taskId, outputScope := criterion.target
