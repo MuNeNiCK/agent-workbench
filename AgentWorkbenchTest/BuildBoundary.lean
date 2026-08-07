@@ -6,7 +6,7 @@ private def containsText (text fragment : String) : Bool :=
   (text.splitOn fragment).length > 1
 
 private def normalized (path : String) : String :=
-  path.replace "\\" "/"
+  path.replace "\\\\" "\\" |>.replace "\\" "/"
 
 private def readRequired (path : System.FilePath) : IO String := do
   unless ← path.pathExists do
