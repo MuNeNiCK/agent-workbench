@@ -12,8 +12,8 @@ private def fromExcept : Except String α → IO α
   | .ok value => pure value
   | .error message => fail message
 
-private def loadDocuments [Lean.FromJson α] {access : Access}
-    (store : Store access) (kind table : String) (orderBy : String) : IO (List α) := do
+private def loadDocuments [Lean.FromJson α] [ReadableStore S]
+    (store : S) (kind table : String) (orderBy : String) : IO (List α) := do
   let rows ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
     s!"SELECT document FROM {table} ORDER BY {orderBy}" #[] 1
   let mut values := []
@@ -24,7 +24,7 @@ private def loadDocuments [Lean.FromJson α] {access : Access}
     values := values ++ [← Codec.decode kind source]
   pure values
 
-private def loadDesigns {access : Access} (store : Store access) : IO (List DesignRevision) := do
+private def loadDesigns [ReadableStore S] (store : S) : IO (List DesignRevision) := do
   let rows ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
     "SELECT id, COALESCE(accepted_parent_id, ''), COALESCE(amends_candidate_id, ''),
        status, producer_run, change_rationale, revision_content_digest, structured_document
@@ -46,7 +46,7 @@ private def loadDesigns {access : Access} (store : Store access) : IO (List Desi
     values := values ++ [design]
   pure values
 
-private def loadWorks {access : Access} (store : Store access) : IO (List Work) := do
+private def loadWorks [ReadableStore S] (store : S) : IO (List Work) := do
   let rows ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
     "SELECT id, status, scope, outcome,
        COALESCE(baseline_design_id, ''), COALESCE(design_revision_id, ''),
@@ -67,7 +67,7 @@ private def loadWorks {access : Access} (store : Store access) : IO (List Work) 
     values := values ++ [work]
   pure values
 
-private def loadPlans {access : Access} (store : Store access) : IO (List ImplementationPlan) := do
+private def loadPlans [ReadableStore S] (store : S) : IO (List ImplementationPlan) := do
   let rows ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
     "SELECT id, work_id, design_revision_id, COALESCE(predecessor_plan_id, ''),
        status, producer_run, reason, content_digest, document
@@ -101,8 +101,8 @@ private def loadPlans {access : Access} (store : Store access) : IO (List Implem
     values := values ++ [plan]
   pure values
 
-private def validateDesignArchives {access : Access}
-    (store : Store access) (designs : List DesignRevision) : IO Unit := do
+private def validateDesignArchives [ReadableStore S]
+    (store : S) (designs : List DesignRevision) : IO Unit := do
   for design in designs do
     let textRows ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
       "SELECT target, media_kind, digest FROM design_sources
@@ -141,7 +141,7 @@ private def validateReviewManifests (entries : List LedgerEntry) : IO Unit := do
             fail s!"Review {entry.id} fixed manifest digest is invalid"
     | _ => pure ()
 
-def loadState {access : Access} (store : Store access) : IO ProjectState := do
+def loadState [ReadableStore S] (store : S) : IO ProjectState := do
   let metadata ← AgentWorkbench.SQLite.queryTextRows (readConnection store)
     "SELECT CAST(schema_revision AS TEXT), CAST(state_revision AS TEXT),
       COALESCE(accepted_design_id, ''), COALESCE(focused_work_id, '')

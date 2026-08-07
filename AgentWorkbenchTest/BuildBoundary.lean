@@ -103,9 +103,23 @@ private def verifyProductLinkResponse : IO Unit := do
   verifyArchiveMembers response "libblake3_c" ["blake3", "blake3_dispatch", "blake3_portable", "ffi_c"]
   verifyArchiveMembers response "libleansqlite" ["sqlite3", "leansqlite", "shathree"]
 
+private def verifyQueryStoreCapability : IO Unit :=
+  IO.FS.withTempDir fun root => do
+    let source := root / "QueryCapability.lean"
+    IO.FS.writeFile source
+      "import AgentWorkbench.Cli.Query\n#check AgentWorkbench.Store.openReadOnly\n#check AgentWorkbench.Store.open\n#check AgentWorkbench.Store.writeConnection\n#check AgentWorkbench.Store.commitOperation\n"
+    let result ← IO.Process.output { cmd := "lake", args := #["env", "lean", source.toString] }
+    let diagnostics := result.stdout ++ result.stderr
+    expect (result.exitCode != 0 &&
+      containsText diagnostics "AgentWorkbench.Store.open" &&
+      containsText diagnostics "AgentWorkbench.Store.writeConnection" &&
+      containsText diagnostics "AgentWorkbench.Store.commitOperation")
+      "query import can name a Store write opener, connection, or commit primitive"
+
 def run : IO Unit := do
   verifyProductionSourceBoundary
   verifyExecutableRoots
   verifyProductLinkResponse
+  verifyQueryStoreCapability
 
 end AgentWorkbenchTest.BuildBoundary

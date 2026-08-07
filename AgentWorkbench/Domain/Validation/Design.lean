@@ -147,6 +147,18 @@ def validateDesign (design : DesignRevision) : Except String Unit := do
       for assumptionId in statement.assumptions do
         let _ ← requireSome (design.assumption? assumptionId)
           s!"Statement {statement.id} references missing assumption {assumptionId}"
+    for claim in design.leanClaims do
+      ensure (design.statementCoverage.countP (fun coverage =>
+        coverage.statementId == claim.input.statementId &&
+          coverage.leanClaims.selectedIds.contains claim.id) == 1)
+        s!"claim {claim.id} is declared but not selected exactly once by its Statement"
+    for criterion in design.acceptanceCriteria do
+      let statementId ← requireSome criterion.statementId
+        s!"criterion {criterion.id} is not bound to a Statement"
+      ensure (design.statementCoverage.countP (fun coverage =>
+        coverage.statementId == statementId &&
+          coverage.acceptanceCriteria.selectedIds.contains criterion.id) == 1)
+        s!"criterion {criterion.id} is declared but not selected exactly once by its Statement"
     for disposition in design.sourceUnitDispositions do
       if disposition.role == .requirement then
         ensure (design.statementCoverage.any (·.sourceUnitIds.contains disposition.unitId))

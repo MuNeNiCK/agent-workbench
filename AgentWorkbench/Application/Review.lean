@@ -212,6 +212,8 @@ def recordVerification
   if !(review.targetManifest.any fun component =>
       component.kind == "implementation_target" && component.id == target) then
     throw "remediation target is absent from the fixed Review manifest"
+  if !findingRemediationBindingCurrent state findingEntry evidenceEntry finding target then
+    throw "remediation evidence is not produced by the current Finding-bound replacement Plan Task"
   appendEntry state {
     id := request.entryId, order := nextEntryOrder state, scope := reviewEntry.scope
     workId := reviewEntry.workId, designRevision := reviewEntry.designRevision

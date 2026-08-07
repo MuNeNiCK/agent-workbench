@@ -189,12 +189,23 @@ private def migrateV1ToV2 (connection : AgentWorkbench.SQLite.Connection) : IO U
         NULL,
         design_revision,
         json_extract(document, '$.responsibleAgentRun'),
-        NULLIF(json_extract(document, '$.resumeCondition'), ''),
+        CASE status WHEN 'blocked' THEN COALESCE(
+          NULLIF(json_extract(document, '$.resumeCondition'), ''),
+          'verify the reason retained by the legacy blocked Work before resuming')
+          ELSE NULLIF(json_extract(document, '$.resumeCondition'), '') END,
         CASE status WHEN 'blocked' THEN
-          'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming'
+          CASE WHEN NULLIF(json_extract(document, '$.resumeCondition'), '') IS NULL THEN
+            'legacy blocked status migrated to suspended without a recorded condition; verify why it was blocked before resuming'
+          ELSE 'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming' END
           ELSE NULL END,
-        CASE status WHEN 'blocked' THEN json_set(document, '$.migrationDiagnostic',
-          'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming')
+        CASE status WHEN 'blocked' THEN json_set(
+          json_set(document, '$.resumeCondition', COALESCE(
+            NULLIF(json_extract(document, '$.resumeCondition'), ''),
+            'verify the reason retained by the legacy blocked Work before resuming')),
+          '$.migrationDiagnostic', CASE WHEN
+            NULLIF(json_extract(document, '$.resumeCondition'), '') IS NULL THEN
+              'legacy blocked status migrated to suspended without a recorded condition; verify why it was blocked before resuming'
+            ELSE 'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming' END)
           ELSE document END FROM works_v1;
     DROP TABLE works_v1;
     CREATE INDEX works_by_design ON works(design_revision_id);

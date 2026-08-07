@@ -1,9 +1,30 @@
 import AgentWorkbench.Adapter.StoreRead
+import AgentWorkbench.Adapter.StoreSchema
 import AgentWorkbench.Adapter.DesignSource
 import AgentWorkbench.Adapter.PlanSource
 import AgentWorkbench.Decision.Operation
 
 namespace AgentWorkbench.Store
+
+structure WriteStore where private mk ::
+  private connection : AgentWorkbench.SQLite.Connection
+  migratedFromLegacy : Bool := false
+
+instance : ReadableStore WriteStore where
+  connection store := store.connection
+
+/-- Write capability is defined only in the mutation-side Store module. Query
+roots import `StoreRead` and cannot name this accessor or the write opener. -/
+def writeConnection (store : WriteStore) : AgentWorkbench.SQLite.Connection :=
+  store.connection
+
+def «open» (path : System.FilePath) : IO WriteStore := do
+  let connection ← AgentWorkbench.SQLite.open path
+  let schemaResult ← AgentWorkbench.StoreSchema.initializeStoreSchema connection
+  pure { connection, migratedFromLegacy := schemaResult == .migrated }
+
+def wasMigratedFromLegacy (store : WriteStore) : Bool :=
+  store.migratedFromLegacy
 
 private def fail (message : String) : IO α :=
   throw (IO.userError message)

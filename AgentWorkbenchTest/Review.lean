@@ -102,11 +102,30 @@ def run : IO Unit :=
     expect ((covered.currentPlanFor? work.id).any (·.id == coveredPlan.id))
       "accepted Implementation Review Finding could not become an explicit Plan obligation"
     IO.FS.writeFile (root / "artifact.txt") "remediated"
-    let remediated ← observeArtifact root disposed {
-      entryId := "evidence-remediation", taskEntryId := "task-open"
+    let bypassEvidence ← observeArtifact root disposed {
+      entryId := "evidence-bypass", taskEntryId := "task-open"
       criterionId := criterion.id, operation := "inspect remediated artifact"
       result := "artifact now satisfies the Criterion", successful := true }
-    let resumed ← resumeReview root remediated {
+    let bypassResume ← resumeReview root bypassEvidence {
+      entryId := "review-resume-bypass", continuesEntryId := "review-1" }
+    expectError (recordVerification bypassResume {
+      entryId := "verification-bypass", findingEntryId := "finding-1"
+      reviewEntryId := "review-resume-bypass", evidenceEntryId := "evidence-bypass" })
+      "Review verification bypassed the Finding-bound replacement Plan Task"
+    let remediationTaskId := s!"task-{coveredPlan.id}-{coveredStep.id}"
+    let remediated ← observeArtifact root covered {
+      entryId := "evidence-remediation", taskEntryId := remediationTaskId
+      criterionId := criterion.id, operation := "inspect remediated artifact"
+      result := "artifact now satisfies the Criterion", successful := true }
+    let remediationSnapshot ← match remediated.entry? "evidence-remediation" with
+      | some entry => match entry.payload with
+        | .artifactObservation value => pure value.snapshot
+        | _ => throw (IO.userError "remediation evidence has the wrong kind")
+      | none => throw (IO.userError "remediation evidence was not recorded")
+    let closedRemediation ← fromExcept <| closeTask remediated
+      [{ target := criterion.target, snapshot := remediationSnapshot }]
+      { entryId := "task-closed-remediation", taskEntryId := remediationTaskId }
+    let resumed ← resumeReview root closedRemediation {
       entryId := "review-resume", continuesEntryId := "review-1" }
     let tamperedEntries := resumed.ledgerEntries.map fun entry =>
       if entry.id == "review-resume" then match entry.payload with

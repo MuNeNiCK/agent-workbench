@@ -46,6 +46,13 @@ def run : IO Unit := do
     leanClaims := {}, acceptanceCriteria := {}, implementationRequired := true }] }
   expectError (validateState { baseState with designRevisions := [missingChoices] })
     "Design accepted a Statement without explicit Claim and Acceptance choices"
+  let unselectedCriterion := { design with statementCoverage := [{
+    statementId := statement.id, sourceUnitIds := [sourceUnit.id]
+    leanClaims := { noSelectionReason := some "no logical Claim is needed" }
+    acceptanceCriteria := { noSelectionReason := some "no Criterion is selected" }
+    implementationRequired := true }] }
+  expectError (validateState { baseState with designRevisions := [unselectedCriterion] })
+    "Design accepted a declared Criterion that no Statement selected"
   let unreasoned := { design with sourceUnitDispositions := [{
     unitId := sourceUnit.id, role := .rationale }] }
   expectError (validateState { baseState with designRevisions := [unreasoned] })

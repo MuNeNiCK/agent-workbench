@@ -58,10 +58,11 @@ private def ensureCompleteClosure
     (proofRoot : System.FilePath) (claim : LeanClaim)
     (declared : List System.FilePath) : IO Unit := do
   let closure ← ProofInput.sourceClosurePaths projectRoot runtime claim
+  let canonicalProjectRoot ← IO.FS.realPath projectRoot
   let packagesRoot := proofRoot / ".lake" / "packages"
   for dependency in closure do
     let canonical ← IO.FS.realPath dependency
-    if pathWithin projectRoot canonical && !pathWithin packagesRoot canonical &&
+    if pathWithin canonicalProjectRoot canonical && !pathWithin packagesRoot canonical &&
         canonical.extension == some "lean" && !declared.contains canonical then
       fail s!"Claim {claim.id} omits local Lean dependency from declaredSources: {canonical}"
 

@@ -1,4 +1,5 @@
 import AgentWorkbench.Domain.Validation.Design
+import AgentWorkbench.Decision.Finding
 
 namespace AgentWorkbench
 namespace Validation
@@ -347,6 +348,8 @@ private def validateVerification
     | _ => false
   ensure matchesSuccessfulEvidence
     s!"verification {entry.id} does not cite successful evidence for its exact target snapshot"
+  ensure (findingRemediationBindingCurrent state findingEntry evidenceEntry finding verification.target)
+    s!"verification {entry.id} bypasses its Finding-bound replacement Plan Task"
 
 def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String Unit := do
   ensure (!entry.id.isEmpty && !entry.scope.isEmpty) "ledger entry identity or scope is empty"

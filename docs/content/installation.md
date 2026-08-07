@@ -37,7 +37,9 @@ historical source archives as unavailable, and advances project state once. Late
 read-only and idempotent.
 
 A legacy `blocked` Work is migrated to `suspended` with a persisted diagnostic explaining the
-translation and requiring its recorded resume condition to be verified before resume. The status
+translation and requiring its recorded resume condition to be verified before resume. If the
+legacy row had no condition, migration records an explicit recovery condition requiring the reason
+for the old block to be inspected; it does not create an unresumable suspended Work. The status
 change is therefore visible through ordinary Work inspection rather than hidden in migration code.
 
 The POSIX setup entry point is invoked through `sh`, so installed script executable mode is not a

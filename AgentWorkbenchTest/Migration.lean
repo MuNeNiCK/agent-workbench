@@ -275,8 +275,15 @@ def run : IO Unit := do
        '\"status\":\"focused\"', '\"status\":\"blocked\"') WHERE id = 'work-v1'" #[]
     let migrated ← Store.loadState (← Store.open database)
     expect ((migrated.work? "work-v1").any fun value =>
-      value.status == .suspended && value.migrationDiagnostic.isSome)
+      value.status == .suspended && value.resumeCondition.isSome &&
+        value.migrationDiagnostic.isSome)
       "blocked migration changed status without an explicit recovery diagnostic"
+    let resumed ← fromExcept <| resumeWork migrated {
+      workId := "work-v1", entryId := "resume-migrated-blocked"
+      satisfaction := "the retained legacy reason was inspected"
+      basisEntryIds := ["task-v1"], agentRun := "agent-old" }
+    expect ((resumed.work? "work-v1").any (·.status == .active))
+      "blocked migration stranded the retained Work without a resume path"
 
   -- Init is the upgrade transition used by setup when a read-only context reports schema revision
   -- 1. The migrated Store owns that exceptional applicability and still advances semantic state

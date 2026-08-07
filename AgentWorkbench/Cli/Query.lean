@@ -1,4 +1,4 @@
-import AgentWorkbench.Adapter.Store
+import AgentWorkbench.Adapter.StoreRead
 import AgentWorkbench.Adapter.DesignArchive
 import AgentWorkbench.Adapter.PlanArchive
 import AgentWorkbench.Adapter.DesignSource

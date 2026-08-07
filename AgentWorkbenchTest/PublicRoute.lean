@@ -128,8 +128,13 @@ def run : IO Unit :=
     let taskId := s!"task-{planId}-{routeStep.id}"
     IO.FS.writeFile (root / "artifact.txt") "baseline artifact\n"
     IO.FS.writeFile (root / "command-input.txt") "current input\n"
+    let commandExecutable ← if System.Platform.isWindows then
+        match ← IO.getEnv "ComSpec" with
+        | some value => pure value
+        | none => throw (IO.userError "Windows command interpreter path is unavailable")
+      else pure "sh"
     let successfulCommand : CommandSpec := if System.Platform.isWindows then
-        { executable := "cmd.exe", arguments := #["/C", "echo command-output>artifact.txt"]
+        { executable := commandExecutable, arguments := #["/D", "/S", "/C", "echo command-output>artifact.txt"]
           workingDirectory := some root.toString }
       else
         { executable := "sh", arguments := #["-c", "printf 'command-output\\n' > artifact.txt"]
@@ -159,8 +164,8 @@ def run : IO Unit :=
       actionEntryId := "command-route", outcome := "the Try produced current command evidence" } : KptApplyRequest)
 
     let failingCommand : CommandSpec := if System.Platform.isWindows then
-        { executable := "cmd.exe"
-          arguments := #["/C", "echo partial-output>artifact.txt & exit /b 1"]
+        { executable := commandExecutable
+          arguments := #["/D", "/S", "/C", "echo partial-output>artifact.txt & exit /b 1"]
           workingDirectory := some root.toString }
       else
         { executable := "sh"

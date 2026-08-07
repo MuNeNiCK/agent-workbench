@@ -1,4 +1,4 @@
-import AgentWorkbench.Adapter.StoreBase
+import AgentWorkbench.Adapter.StoreWrite
 import AgentWorkbench.Adapter.StoreCodec
 import AgentWorkbench.Adapter.ManagedOutput
 import AgentWorkbench.Adapter.ProofBuild
