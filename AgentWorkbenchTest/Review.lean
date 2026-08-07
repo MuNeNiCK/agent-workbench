@@ -12,6 +12,11 @@ private def startedReview (root : System.FilePath) : IO ProjectState :=
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     IO.FS.writeFile (root / "artifact.txt") "candidate"
+    let projectSnapshot ← Snapshot.target root "tree:."
+    IO.FS.createDirAll (root / ".agent-workbench" / "toolchains")
+    IO.FS.writeFile (root / ".agent-workbench" / "toolchains" / "private-state") "ignored"
+    expect ((← Snapshot.target root "tree:.") == projectSnapshot)
+      "project snapshot included private Agent Workbench state"
     let reviewed ← startedReview root
     let reviewEntry ← match reviewed.entry? "review-1" with
       | some value => pure value
