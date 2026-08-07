@@ -95,7 +95,8 @@ private def validateTaskEvidenceBinding
     (state : ProjectState) (entry : LedgerEntry) (taskEntryId outputScope : Option String)
     (criterionIds : List String) : Except String Unit := do
   let workId ← requireSome entry.workId s!"evidence {entry.id} is not Work-bound"
-  if (state.currentPlanFor? workId).isSome then
+  if (state.currentPlanFor? workId).any fun plan =>
+      entry.designRevision == some plan.designRevision then
     let taskId ← requireSome taskEntryId s!"evidence {entry.id} has no Task binding"
     let scope ← requireSome outputScope s!"evidence {entry.id} has no output scope"
     let taskEntry ← requireSome (state.entry? taskId)

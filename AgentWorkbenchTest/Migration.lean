@@ -124,6 +124,19 @@ private def createV1Database (path : System.FilePath) (focused : Bool := true) :
      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
     #[receiptEntry.id, "3", receiptEntry.scope, "work-v1", "design-v1",
       "lean-proof-receipt", legacyReceiptDocument]
+  let profileEntry : LedgerEntry := {
+    id := "profile-v1", order := 4, scope := "project"
+    workId := some "work-v1", designRevision := some "design-v1"
+    payload := .commandProfile {
+      purpose := "retained legacy verification"
+      target := some "file:legacy"
+      command := { executable := "lake", arguments := #["build"] } } }
+  AgentWorkbench.SQLite.execute connection
+    "INSERT INTO ledger_entries(
+       id, entry_order, scope, work_id, design_revision, payload_kind, document
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+    #[profileEntry.id, "4", profileEntry.scope, "work-v1", "design-v1",
+      "command-profile", (Lean.toJson profileEntry).compress]
   if !focused then
     AgentWorkbench.SQLite.execute connection
       "UPDATE project_metadata SET focused_work_id = NULL WHERE singleton = 1" #[]
@@ -171,6 +184,10 @@ def run : IO Unit := do
           value.assumptionDependencies.isEmpty
       | _ => false)
       "migration could not retain a v0.2.7 proof receipt as stale history"
+    expect (migrated.entry? "profile-v1" |>.any fun entry => match entry.payload with
+      | .commandProfile value => value.taskEntryId.isNone && value.criterionIds.isNone
+      | _ => false)
+      "migration did not retain a task-unbound v0.2.7 profile as stale history"
     let connection ← AgentWorkbench.SQLite.openReadOnly database
     let persistedDesign ← AgentWorkbench.SQLite.queryScalar connection
       "SELECT structured_document FROM design_revisions WHERE id = 'design-v1'" #[]
@@ -249,6 +266,8 @@ def run : IO Unit := do
       "migrated Work did not obtain its successor Plan"
     expect (advanced.ledgerEntries.any fun entry => entry.id == "task-v1")
       "successor materialization erased legacy Task history"
+    expect (advanced.ledgerEntries.any fun entry => entry.id == "profile-v1")
+      "successor materialization erased legacy Profile history"
     expect (advanced.ledgerEntries.countP (fun entry => match entry.payload with
       | .task task => task.planId == some plan.id && !task.retired
       | _ => false) == plan.steps.length)
