@@ -13,6 +13,19 @@ private def readRequired (path : System.FilePath) : IO String := do
     throw (IO.userError s!"missing build-boundary input: {path}")
   IO.FS.readFile path
 
+private def pinnedLeanRoot : IO System.FilePath := do
+  let lean ← match ← IO.getEnv "LEAN" with
+    | some configured => pure <| System.FilePath.mk configured
+    | none => pure <| System.FilePath.mk <|
+        if System.Platform.isWindows then "lean.exe" else "lean"
+  let result ← try
+      IO.Process.output { cmd := lean.toString, args := #["--print-prefix"] }
+    catch error =>
+      throw (IO.userError s!"cannot start the pinned Lean executable {lean}: {error}")
+  unless result.exitCode == 0 do
+    throw (IO.userError s!"cannot locate the pinned Lean toolchain with {lean}")
+  pure <| System.FilePath.mk result.stdout.trimAscii.toString
+
 private def productionSources : IO (Array System.FilePath) := do
   let nested ← (System.FilePath.mk "AgentWorkbench").walkDir
   pure <| #[System.FilePath.mk "AgentWorkbench.lean", System.FilePath.mk "Main.lean"] ++
@@ -69,10 +82,7 @@ private def verifyArchiveMembers
   let archive ← match archivePath? response marker with
     | some path => pure path
     | none => throw (IO.userError s!"missing reviewed native archive {marker}")
-  let leanPrefix ← IO.Process.output { cmd := "lean", args := #["--print-prefix"] }
-  unless leanPrefix.exitCode == 0 do
-    throw (IO.userError "cannot locate the pinned Lean toolchain")
-  let bin := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin"
+  let bin := (← pinnedLeanRoot) / "bin"
   let executable := bin / "llvm-ar.exe"
   let extensionless := bin / "llvm-ar"
   let ar ← match ← IO.getEnv "LEAN_AR" with
@@ -128,11 +138,8 @@ private def verifyQueryStoreCapability : IO Unit :=
     let source := root / "QueryCapability.lean"
     IO.FS.writeFile source
       "import AgentWorkbench.Cli.Query\n#check AgentWorkbench.Store.openReadOnly\n#check AgentWorkbench.Store.open\n#check AgentWorkbench.Store.writeConnection\n#check AgentWorkbench.Store.commitOperation\n"
-    let leanPrefix ← IO.Process.output { cmd := "lean", args := #["--print-prefix"] }
-    unless leanPrefix.exitCode == 0 do
-      throw (IO.userError "cannot locate the pinned Lean toolchain for the query boundary check")
     let lakeName := if System.Platform.isWindows then "lake.exe" else "lake"
-    let lake := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin" / lakeName
+    let lake := (← pinnedLeanRoot) / "bin" / lakeName
     unless ← lake.pathExists do
       throw (IO.userError s!"missing pinned Lake executable for the query boundary check: {lake}")
     let result ← try
