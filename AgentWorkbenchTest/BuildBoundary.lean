@@ -89,7 +89,7 @@ private def verifyProductLinkResponse : IO Unit := do
   let response := normalized (← readRequired responsePath)
   expect (!containsText response "/AgentWorkbenchProof")
     "product link response reaches the private proof library"
-  let objectSuffix := if System.Platform.isWindows then ".c.obj.export" else ".c.o.export"
+  let objectSuffix := ".c.o.export"
   for module in ["/AgentWorkbench/Cli/Main", "/Blake3/C", "/MD4Lean/FFI", "/SQLite/FFI"] do
     let required := module ++ objectSuffix
     expect (containsText response required)
