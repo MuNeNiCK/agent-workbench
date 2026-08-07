@@ -128,7 +128,17 @@ private def verifyQueryStoreCapability : IO Unit :=
     let source := root / "QueryCapability.lean"
     IO.FS.writeFile source
       "import AgentWorkbench.Cli.Query\n#check AgentWorkbench.Store.openReadOnly\n#check AgentWorkbench.Store.open\n#check AgentWorkbench.Store.writeConnection\n#check AgentWorkbench.Store.commitOperation\n"
-    let result ← IO.Process.output { cmd := "lake", args := #["env", "lean", source.toString] }
+    let leanPrefix ← IO.Process.output { cmd := "lean", args := #["--print-prefix"] }
+    unless leanPrefix.exitCode == 0 do
+      throw (IO.userError "cannot locate the pinned Lean toolchain for the query boundary check")
+    let lakeName := if System.Platform.isWindows then "lake.exe" else "lake"
+    let lake := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin" / lakeName
+    unless ← lake.pathExists do
+      throw (IO.userError s!"missing pinned Lake executable for the query boundary check: {lake}")
+    let result ← try
+        IO.Process.output { cmd := lake.toString, args := #["env", "lean", source.toString] }
+      catch error =>
+        throw (IO.userError s!"cannot run the query boundary check with {lake}: {error}")
     let diagnostics := result.stdout ++ result.stderr
     expect (result.exitCode != 0 &&
       containsText diagnostics "AgentWorkbench.Store.open" &&
