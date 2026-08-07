@@ -71,6 +71,39 @@ def run : IO Unit :=
       else entry
     expectError (validateState { reviewed with ledgerEntries := duplicateTargetEntries })
       "Implementation Review accepted conflicting duplicate implementation targets"
+    let reorderedEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.reverse
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := reorderedEntries })
+      "Implementation Review accepted noncanonical manifest ordering"
+    let foreignDesignEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let foreign : ReviewTargetComponent := {
+              kind := "design", id := "design-foreign", snapshot := "blake3:foreign"
+              producerAgentRuns := [design.producerAgentRun] }
+            let manifest := normalizeReviewTargetComponents (value.targetManifest ++ [foreign])
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := foreignDesignEntries })
+      "Implementation Review accepted an unrelated Design component"
+    let extraProducerEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value => { entry with payload := .review {
+            value with producerAgentRuns := value.producerAgentRuns ++ ["unrelated-producer"] } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := extraProducerEntries })
+      "Implementation Review accepted an unrelated top-level producer"
     let artifactComponent ← match review.targetManifest.find? (fun value =>
         value.kind == "implementation_target" && value.id == criterion.target) with
       | some value => pure value

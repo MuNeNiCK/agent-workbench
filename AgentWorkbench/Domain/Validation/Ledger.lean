@@ -160,9 +160,12 @@ private def validateReview
         let designId ← requireSome entry.designRevision s!"review {entry.id} has no Design"
         let design ← requireSome (state.design? designId)
           s!"review {entry.id} has no fixed Design"
-        let designComponent ← requireSome (uniqueBy?
-          (review.targetManifest.filter (·.kind == "design")) (·.id) designId)
-          s!"review {entry.id} omits or duplicates its fixed Design"
+        let designComponents := review.targetManifest.filter (·.kind == "design")
+        let designComponent ← match designComponents with
+          | [value] => pure value
+          | _ => throw s!"review {entry.id} omits or duplicates its fixed Design"
+        ensure (designComponent.id == designId)
+          s!"review {entry.id} changes its fixed Design identity"
         ensure (designComponent.snapshot == design.revisionContentDigest)
           s!"review {entry.id} changes its fixed Design digest"
         let planComponents := review.targetManifest.filter (·.kind == "plan")
@@ -203,6 +206,8 @@ private def validateReview
         ensure (review.targetSnapshot ==
           ContentDigest.string (Lean.toJson review.targetManifest).compress)
           s!"review {entry.id} changes its fixed manifest digest"
+        ensure (review.targetManifest == normalizeReviewTargetComponents review.targetManifest)
+          s!"review {entry.id} changes canonical manifest ordering"
         let workComponents := review.targetManifest.filter (·.kind == "work")
         ensure (workComponents.length == 1 && workComponents.head?.any (·.id == work.id))
           s!"review {entry.id} omits or duplicates its fixed Work"
@@ -221,6 +226,11 @@ private def validateReview
         ensure (review.targetManifest.all fun value =>
           value.producerAgentRuns.all producers.contains)
           s!"review {entry.id} manifest producer closure is incomplete"
+        let expectedProducers := review.targetManifest.foldl (fun found component =>
+          component.producerAgentRuns.foldl (fun runs producer =>
+            if producer.isEmpty || runs.contains producer then runs else runs ++ [producer]) found) []
+        ensure (producers == expectedProducers)
+          s!"review {entry.id} manifest producer closure is not exact"
   ensure (!producers.contains review.reviewerAgentRun)
     s!"review {entry.id} uses its target producer as reviewer"
   match review.context with
