@@ -190,7 +190,7 @@ def commitOperation
     let prior ← loadState store
     if prior.revision != expectedRevision then
       fail s!"stale state revision {expectedRevision}; current revision is {prior.revision}"
-    unless operationApplicable prior operation ||
+    unless operationStructurallyApplicable prior operation ||
         (operation == .init && store.migratedFromLegacy) do
       fail s!"operation is not applicable in the current state: {operation.name}"
     ensureAppendOnly prior next
@@ -229,7 +229,7 @@ def commitDesignProposal
     let prior ← loadState store
     if prior.revision != expectedRevision then
       fail s!"stale state revision {expectedRevision}; current revision is {prior.revision}"
-    unless operationApplicable prior operation do
+    unless operationStructurallyApplicable prior operation do
       fail s!"{operation.name} is not applicable in the authoritative state"
     ensureAppendOnly prior next
     persistDesignChanges store prior next
@@ -262,7 +262,7 @@ def commitPlanProposal
     let prior ← loadState store
     if prior.revision != expectedRevision then
       fail s!"stale state revision {expectedRevision}; current revision is {prior.revision}"
-    unless operationApplicable prior operation do
+    unless operationStructurallyApplicable prior operation do
       fail s!"{operation.name} is not applicable in the authoritative state"
     ensureAppendOnly prior next
     persistPlanChanges store prior next

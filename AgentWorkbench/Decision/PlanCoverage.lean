@@ -25,12 +25,15 @@ private def statementAuthorityChanged
       let newClaims := newCoverage.leanClaims.selectedIds.filterMap current.claim?
       let oldCriteria := oldCoverage.acceptanceCriteria.selectedIds.filterMap baseline.criterion?
       let newCriteria := newCoverage.acceptanceCriteria.selectedIds.filterMap current.criterion?
+      let oldAssumptions := oldStatement.assumptions.filterMap baseline.assumption?
+      let newAssumptions := newStatement.assumptions.filterMap current.assumption?
       oldStatement != newStatement ||
         oldCoverage.leanClaims != newCoverage.leanClaims ||
         oldCoverage.acceptanceCriteria != newCoverage.acceptanceCriteria ||
         oldCoverage.implementationRequired != newCoverage.implementationRequired ||
         oldCoverage.noImplementationReason != newCoverage.noImplementationReason ||
-        oldClaims != newClaims || oldCriteria != newCriteria
+        oldClaims != newClaims || oldCriteria != newCriteria ||
+        oldAssumptions != newAssumptions
   | _, _, _, _ => true
 
 private def removalChoice?

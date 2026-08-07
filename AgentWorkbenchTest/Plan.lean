@@ -79,6 +79,28 @@ def run : IO Unit := do
   let changedDeltas ← fromExcept <| expectedStatementDeltas changedState changedWork successor
   expect (changedDeltas.length == 1 && changedDeltas.head?.any (·.kind == .modified))
     "Plan delta omitted a Statement assumption change with unchanged ID and text"
+  let assumptionId := "assumption-service-online"
+  let baselineAssumption : DesignAssumption := {
+    id := assumptionId, text := "the service is online", sourceUnitIds := [sourceUnit.id] }
+  let changedAssumption : DesignAssumption := {
+    baselineAssumption with text := "the service is online and authenticated" }
+  let assumptionBaseline : DesignRevision := { baseline with
+    assumptions := [baselineAssumption]
+    statements := [{ statement with assumptions := [assumptionId] }] }
+  let assumptionSuccessor : DesignRevision := { successor with
+    assumptions := [changedAssumption]
+    statements := [{ statement with assumptions := [assumptionId] }] }
+  let assumptionWork : Work := { changedWork with
+    baselineDesignRevision := some assumptionBaseline.id
+    designRevision := some assumptionSuccessor.id }
+  let assumptionState : ProjectState := { changedState with
+    acceptedDesignId := some assumptionSuccessor.id
+    designRevisions := [assumptionBaseline, assumptionSuccessor]
+    works := [assumptionWork] }
+  let assumptionDeltas ← fromExcept <|
+    expectedStatementDeltas assumptionState assumptionWork assumptionSuccessor
+  expect (assumptionDeltas.length == 1 && assumptionDeltas.head?.any (·.kind == .modified))
+    "Plan delta omitted changed authoritative assumption text with a stable ID"
   let coverageSuccessor : DesignRevision := { design with
     id := "design-coverage-successor"
     acceptanceCriteria := [{ criterion with statement := "the changed artifact is verified" }] }

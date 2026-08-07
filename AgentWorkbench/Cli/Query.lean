@@ -32,10 +32,13 @@ private def loadDescribeState (root : System.FilePath) : IO ProjectState := do
 
 def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .describe none => do
-      writeJson (operationIndex (← loadDescribeState projectRoot))
+      let state ← loadDescribeState projectRoot
+      let inputs ← evaluateCurrentInputs projectRoot state
+      writeJson (operationIndex state inputs)
   | .describe (some operation) => do
       let state ← loadDescribeState projectRoot
-      match describedOperation? state operation with
+      let inputs ← evaluateCurrentInputs projectRoot state
+      match describedOperation? state inputs operation with
       | some value => writeJson value
       | none => fail s!"unknown operation {operation}"
   | .designInspectSources targets => do

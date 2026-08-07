@@ -65,7 +65,7 @@ def completionStructurallyReady (state : ProjectState) : Bool :=
       projection.design.acceptanceCriteria.all (criterionEvidenceRecorded projection) &&
       projection.design.leanClaims.all (claimReceiptRecorded projection)
 
-def operationApplicable (state : ProjectState) (operation : Operation) : Bool :=
+def operationStructurallyApplicable (state : ProjectState) (operation : Operation) : Bool :=
   let current := (currentProjection? state).isSome
   let unfocused := state.focusedWorkId.isNone
   let focusedWork := state.currentWork?.isSome
@@ -140,5 +140,17 @@ def operationApplicable (state : ProjectState) (operation : Operation) : Bool :=
       | _ => false)
   | .proofDigest | .proofRun =>
       current && state.currentDesign?.any (fun design => !design.leanClaims.isEmpty)
+
+/-- User-facing applicability includes current external inputs. Persistence uses the structural
+check only after the prepared transition has already validated these same immutable inputs. -/
+def operationApplicable
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) (operation : Operation) : Bool :=
+  operationStructurallyApplicable state operation && match operation with
+  | .planMaterialize =>
+      currentProjection? state |>.any fun projection =>
+        projection.design.leanClaims.all (claimHasReceipt projection digests)
+  | .workComplete => completionReady state observations digests
+  | _ => true
 
 end AgentWorkbench

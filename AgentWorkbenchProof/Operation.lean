@@ -169,7 +169,8 @@ theorem successful_prepared_mutation_preserves_immutable_history
 theorem successful_applicable_mutation_was_advertised
     (prepared : PreparedMutation) (prior next : ProjectState)
     (success : prepared.executeApplicable prior = .ok next) :
-    operationApplicable prior prepared.operation = true := by
+    operationApplicable prior prepared.currentObservations prepared.currentClaimDigests
+      prepared.operation = true := by
   unfold PreparedMutation.executeApplicable at success
   split at success
   · assumption
@@ -211,17 +212,23 @@ theorem successful_applicable_mutation_preserves_ledger_authority
 /-- Completion is advertised only after the persisted state has a current Plan and every
 non-observational completion input has a possible witness. External freshness is rechecked under
 the mutation lock. -/
-theorem advertised_completion_has_structural_request (state : ProjectState)
-    (advertised : operationApplicable state .workComplete = true) :
+theorem advertised_completion_has_current_request
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest)
+    (advertised : operationApplicable state observations digests .workComplete = true) :
     ∃ projection plan,
       currentProjection? state = some projection ∧
       state.currentPlanFor? projection.work.id = some plan ∧
       projection.design.sourceArchiveAvailable = true ∧
-      projection.design.acceptanceCriteria.all (criterionEvidenceRecorded projection) = true ∧
-      projection.design.leanClaims.all (claimReceiptRecorded projection) = true := by
-  have ready : completionStructurallyReady state = true := by
-    simpa [operationApplicable] using advertised
-  unfold completionStructurallyReady at ready
+      projection.design.acceptanceCriteria.all
+        (criterionHasEvidence projection observations) = true ∧
+      projection.design.leanClaims.all (claimHasReceipt projection digests) = true := by
+  have ready : completionReady state observations digests = true := by
+    have both : operationStructurallyApplicable state .workComplete = true ∧
+        completionReady state observations digests = true := by
+      simpa [operationApplicable] using advertised
+    exact both.2
+  unfold completionReady at ready
   split at ready
   · simp at ready
   · rename_i projection projectionEq
@@ -232,9 +239,11 @@ theorem advertised_completion_has_structural_request (state : ProjectState)
         simp [planEq] at ready
         grind
 
-/-- Plan materialization is not advertised merely because an arbitrary candidate exists. -/
-theorem advertised_plan_materialization_has_structural_request (state : ProjectState)
-    (advertised : operationApplicable state .planMaterialize = true) :
+/-- Plan materialization is advertised only with current receipts, not merely persisted ones. -/
+theorem advertised_plan_materialization_has_current_request
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest)
+    (advertised : operationApplicable state observations digests .planMaterialize = true) :
     ∃ (projection : CurrentProjection) (candidate : ImplementationPlan),
       currentProjection? state = some projection ∧
       state.implementationPlans.find? (fun plan =>
@@ -243,19 +252,28 @@ theorem advertised_plan_materialization_has_structural_request (state : ProjectS
           !(state.implementationPlans.any fun successor =>
             successor.predecessorPlanId == some plan.id && successor.status == .candidate)) =
         some candidate ∧
-      projection.design.leanClaims.all (claimReceiptRecorded projection) = true := by
-  have ready : planMaterializationStructurallyReady state = true := by
-    simpa [operationApplicable] using advertised
-  unfold planMaterializationStructurallyReady at ready
-  split at ready
-  · simp at ready
+      projection.design.leanClaims.all (claimHasReceipt projection digests) = true := by
+  have structural : planMaterializationStructurallyReady state = true := by
+    have both : operationStructurallyApplicable state .planMaterialize = true ∧
+        (currentProjection? state).any (fun projection =>
+          projection.design.leanClaims.all (claimHasReceipt projection digests)) = true := by
+      simpa [operationApplicable] using advertised
+    simpa [operationStructurallyApplicable] using both.1
+  have current : (currentProjection? state).any (fun projection =>
+      projection.design.leanClaims.all (claimHasReceipt projection digests)) = true := by
+    have both : operationStructurallyApplicable state .planMaterialize = true ∧
+        (currentProjection? state).any (fun projection =>
+          projection.design.leanClaims.all (claimHasReceipt projection digests)) = true := by
+      simpa [operationApplicable] using advertised
+    exact both.2
+  unfold planMaterializationStructurallyReady at structural
+  split at structural
+  · simp at structural
   · rename_i projection projectionEq
-    split at ready
-    · simp at ready
+    split at structural
+    · simp at structural
     · rename_i candidate candidateEq
       refine ⟨projection, candidate, projectionEq, candidateEq, ?_⟩
-      cases receiptEq : projection.design.leanClaims.all (claimReceiptRecorded projection) with
-      | false => simp [receiptEq] at ready
-      | true => rfl
+      simpa [projectionEq] using current
 
 end AgentWorkbenchProof

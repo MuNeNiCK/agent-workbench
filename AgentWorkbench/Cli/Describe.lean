@@ -215,18 +215,22 @@ def operationContracts : List OperationContract :=
       ({ claimId := "claim-1", entryId := "proof-1" } : ProofRunRequest)
   ]
 
-def operationIndex (state : ProjectState) : OperationIndex :=
+def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIndex :=
   { instruction := "use an applicable operation; run `describe OPERATION` for its native contract"
     operations := operationContracts.map (·.operation)
     applicableOperations := operationContracts.filter
-      (fun contract => Operation.parse? contract.operation |>.any (operationApplicable state))
+      (fun contract => Operation.parse? contract.operation |>.any
+        (operationApplicable state inputs.observations inputs.claimDigests))
       |>.map (·.operation) }
 
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
 
-def describedOperation? (state : ProjectState) (operation : String) : Option OperationContract :=
+def describedOperation?
+    (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=
   (operationContract? operation).map fun contract =>
-    { contract with applicable := Operation.parse? operation |>.any (operationApplicable state) }
+    let applicable := (Operation.parse? operation).any
+      (operationApplicable state inputs.observations inputs.claimDigests)
+    { contract with applicable }
 
 end AgentWorkbench.Cli

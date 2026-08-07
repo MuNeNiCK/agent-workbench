@@ -282,9 +282,18 @@ def PreparedMutation.execute
       if semanticTransitionPostcondition prepared.operation state next then validated next
       else .error "prepared mutation violated its revision, authority, history, or effect boundary"
 
+def PreparedMutation.currentObservations : PreparedMutation → List TargetObservation
+  | .taskClose _ values | .workComplete values _ _ => values
+  | _ => []
+
+def PreparedMutation.currentClaimDigests : PreparedMutation → List CurrentClaimDigest
+  | .planMaterialize _ values | .workComplete _ values _ => values
+  | _ => []
+
 def PreparedMutation.executeApplicable
     (prepared : PreparedMutation) (state : ProjectState) : Except String ProjectState :=
-  if operationApplicable state prepared.operation then prepared.execute state
+  if operationApplicable state prepared.currentObservations prepared.currentClaimDigests
+      prepared.operation then prepared.execute state
   else .error s!"operation is not applicable in the current state: {prepared.operation.name}"
 
 inductive MutationResult where

@@ -176,7 +176,8 @@ def currentContext?
     unresolvedAcceptedFindings := boundedReferences unresolvedAcceptedFindings
     criterionGaps := criterionGaps.take currentContextLimit
     claimGaps := claimGaps.take currentContextLimit
-    applicableOperations := Operation.all.filter (operationApplicable state) |>.map (·.name)
+    applicableOperations := Operation.all.filter
+      (operationApplicable state observations digests) |>.map (·.name)
     truncated }
 
 def Work.reference (work : Work) : WorkReference :=
