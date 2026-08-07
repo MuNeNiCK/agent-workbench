@@ -7,8 +7,8 @@ for every change unless the accepted design selects it.
 ## The two review purposes
 
 - **Design Review** examines an immutable DesignRevision before or independently of implementation.
-- **Implementation Review** examines a fixed implementation snapshot represented by recorded
-  evidence.
+- **Implementation Review** examines a fixed Design/Plan/Task/evidence manifest together with the
+  current snapshots of its planned output targets.
 
 `fresh` and `resume` describe reviewer context. They are not additional review types.
 
@@ -25,7 +25,9 @@ used only once forever.
 
 ## Resume review
 
-Resume continues the same review identifier, target, reviewer, findings, and remediation lineage.
+Resume continues the same review identifier, immutable target snapshot and manifest, reviewer,
+findings, and remediation lineage. Remediation evidence is a separate causal input; it never
+replaces the root target.
 Checking whether an existing finding was fixed is resumed review, not another fresh review.
 
 The resumed reviewer cannot verify a finding using remediation evidence produced by that same
@@ -33,20 +35,26 @@ reviewer run, even if a Work handoff later made that run responsible for impleme
 
 ## Findings do not decide product authority
 
-A Finding quotes an exact current design subject and is grounded by the immutable target already
-fixed by its fresh root Review. `review finding` becomes applicable when that root Review is current.
+A Design Finding quotes an exact current statement, criterion, or assumption. An Implementation
+Finding identifies an exact component ID and snapshot already present in the immutable target
+manifest. Both are grounded by the fresh root Review. `review finding` becomes applicable when that
+root Review is current.
 The request cannot select separate evidence, target, snapshot, or producer provenance. If it is
 inapplicable, inspect the current Work/Design binding and Review entry; do not create unrelated
 evidence or a replacement Review to force the operation.
 
 A Finding is advisory. The responsible work agent records an allowed disposition with a reason:
 
-- `accepted` means the mismatch must be resolved and verified;
+- `accepted` means the mismatch becomes a causal obligation;
 - `rejected` means it is not adopted under the accepted design;
 - `replaced` means a later disposition supersedes it.
 
-A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. Only an accepted
-finding without current resumed-review verification blocks completion.
+A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. For a Design
+Review, candidate amendment must name the accepted Finding as a change basis; the old Review remains
+immutable and cannot authorize the new candidate. For an Implementation Review, an accepted
+output-changing Finding must be included in a replacement Plan before materialization and is resolved
+through current evidence in the same resumed Review lineage. Only an accepted unresolved Finding in
+current implementation authority blocks completion.
 
 ## Diagnosing review state
 

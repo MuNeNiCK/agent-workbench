@@ -1,4 +1,5 @@
 import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Decision.Operation
 
 namespace AgentWorkbench
 
@@ -42,14 +43,25 @@ structure CurrentContext where
   design : DesignReference
   work : WorkReference
   designSourceGaps : List String
+  currentPlanId : Option String
+  candidatePlanId : Option String
+  planRequired : Bool
   unfinishedRequiredTasks : List EntryReference
+  dependencyReadyTasks : List EntryReference
   commandProfiles : List EntryReference
   effectiveUserCorrections : List EntryReference
   relevantKpt : List EntryReference
   unresolvedAcceptedFindings : List EntryReference
   criterionGaps : List CriterionGap
   claimGaps : List ClaimGap
+  applicableOperations : List String
   truncated : List String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
+structure ProjectContext where
+  acceptedDesign : Option DesignReference
+  openWorks : List WorkReference
+  focused : Option CurrentContext
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 def currentContextLimit : Nat := 32
@@ -84,11 +96,11 @@ private def claimGap?
 
 private def isAcceptedFinding
     (projection : CurrentProjection) (findingEntry : LedgerEntry) : Bool :=
-  projection.entries.any (fun entry =>
+  findingDispositionIn? projection.entries findingEntry.id projection.work.id |>.any fun entry =>
     match entry.payload with
     | .reviewDisposition disposition =>
-        disposition.findingEntryId == findingEntry.id && disposition.decision == .accepted
-    | _ => false)
+        disposition.decision == .accepted
+    | _ => false
 
 def currentContext?
     (state : ProjectState) (observations : List TargetObservation)
@@ -98,9 +110,24 @@ def currentContext?
     match entry.payload with
       | .task task => task.required && !task.closed
       | _ => false)
-  let designSourceGaps := projection.design.sourceDocuments.filterMap (fun source =>
-    if currentSnapshot? observations source.target == some source.snapshot then none
-    else some source.target)
+  let currentPlan := state.currentPlanFor? projection.work.id
+  let candidatePlan := state.implementationPlans.find? fun plan =>
+    plan.workId == projection.work.id && plan.designRevision == projection.design.id &&
+      plan.status == .candidate &&
+      !(state.implementationPlans.any fun successor =>
+        successor.predecessorPlanId == some plan.id && successor.status == .candidate)
+  let dependencyReadyTasks := unfinishedRequiredTasks.filter fun entry =>
+    match entry.payload with
+    | .task task => task.dependencyLineageIds.all fun dependency =>
+        projection.entries.any fun candidate => match candidate.payload with
+        | .task dependencyTask =>
+            dependencyTask.lineageId == some dependency && dependencyTask.closed &&
+              !dependencyTask.retired
+        | _ => false
+    | _ => false
+  let designSourceGaps :=
+    if projection.design.sourceArchiveAvailable then []
+    else ["historical source content unavailable"]
   let commandProfiles := projection.entries.filter (fun entry =>
     match entry.payload with | .commandProfile _ => true | _ => false)
   let effectiveUserCorrections := projection.entries.filter (fun entry =>
@@ -123,6 +150,7 @@ def currentContext?
   let truncated :=
     [("designSourceGaps", designSourceGaps.length),
       ("unfinishedRequiredTasks", unfinishedRequiredTasks.length),
+      ("dependencyReadyTasks", dependencyReadyTasks.length),
       ("commandProfiles", commandProfiles.length),
       ("effectiveUserCorrections", effectiveUserCorrections.length),
       ("relevantKpt", relevantKpt.length),
@@ -137,13 +165,33 @@ def currentContext?
       status := projection.work.status
       resumeCondition := projection.work.resumeCondition }
     designSourceGaps := designSourceGaps.take currentContextLimit
+    currentPlanId := currentPlan.map (·.id)
+    candidatePlanId := candidatePlan.map (·.id)
+    planRequired := currentPlan.isNone
     unfinishedRequiredTasks := boundedReferences unfinishedRequiredTasks
+    dependencyReadyTasks := boundedReferences dependencyReadyTasks
     commandProfiles := boundedReferences commandProfiles
     effectiveUserCorrections := boundedReferences effectiveUserCorrections
     relevantKpt := boundedReferences relevantKpt
     unresolvedAcceptedFindings := boundedReferences unresolvedAcceptedFindings
     criterionGaps := criterionGaps.take currentContextLimit
     claimGaps := claimGaps.take currentContextLimit
+    applicableOperations := Operation.all.filter
+      (operationApplicable state observations digests) |>.map (·.name)
     truncated }
+
+def Work.reference (work : Work) : WorkReference :=
+  { id := work.id, outcome := work.outcome, status := work.status
+    resumeCondition := work.resumeCondition }
+
+def projectContext?
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : Option ProjectContext :=
+  if state.acceptedDesignId.isNone && state.works.isEmpty then none else
+  some {
+    acceptedDesign := state.currentDesign?.map fun design => { id := design.id }
+    openWorks := (state.works.filter fun work =>
+      work.status != .completed && work.status != .withdrawn).take currentContextLimit |>.map Work.reference
+    focused := currentContext? state observations digests }
 
 end AgentWorkbench

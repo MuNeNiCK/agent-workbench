@@ -52,4 +52,17 @@ mkdir -p "$project_root/.agent-workbench/bin"
 tar -xzf "$temporary/$archive" -C "$project_root/.agent-workbench/bin"
 chmod +x "$project_root/.agent-workbench/bin/agent-workbench" \
   "$project_root/.agent-workbench/bin/elan"
-"$project_root/.agent-workbench/bin/agent-workbench" --project "$project_root" init
+if [ -f "$project_root/.agent-workbench/state.db" ]; then
+  context_error="$temporary/context-error"
+  if context=$("$project_root/.agent-workbench/bin/agent-workbench" \
+      --project "$project_root" context 2>"$context_error"); then
+    printf '%s\n' "$context"
+  elif grep -Fq 'unsupported schema revision 1; expected 2' "$context_error"; then
+    "$project_root/.agent-workbench/bin/agent-workbench" --project "$project_root" init
+  else
+    cat "$context_error" >&2
+    exit 1
+  fi
+else
+  "$project_root/.agent-workbench/bin/agent-workbench" --project "$project_root" init
+fi

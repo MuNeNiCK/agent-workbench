@@ -15,6 +15,7 @@ def findingSubjectCurrent (design : DesignRevision) (subject : FindingSubject) :
       statement.id == subject.id && statement.text == subject.exactQuote)
   | .assumption => design.statements.any (fun statement =>
       statement.id == subject.id && statement.assumptions.contains subject.exactQuote)
+  | .implementationComponent => false
 
 def designFindingSubject? (design : DesignRevision) : Option FindingSubject :=
   match design.statements, design.acceptanceCriteria with
@@ -47,10 +48,66 @@ def findingInputsEligible
     findingSubjectCurrent projection.design subject
 
 def reviewFindingApplicable (state : ProjectState) : Bool :=
-  match currentProjection? state with
-  | none => false
-  | some projection =>
-      (designFindingSubject? projection.design).isSome &&
-        projection.entries.any isFindingRootReview
+  state.ledgerEntries.any fun entry =>
+    match entry.payload, entry.designRevision with
+    | .review review, some designId =>
+        review.context == .fresh &&
+          (review.purpose == .implementation && !review.targetManifest.isEmpty ||
+            (state.design? designId).any (fun design => (designFindingSubject? design).isSome))
+    | _, _ => false
+
+private def remediationTaskEntryId? (entry : LedgerEntry) : Option String :=
+  match entry.payload with
+  | .artifactObservation value => value.taskEntryId
+  | .commandExecution value => value.taskEntryId
+  | _ => none
+
+private def findingTargetMatches
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
+    (target : String) : Bool :=
+  match finding.subject.kind with
+  | .implementationComponent => finding.subject.id == target
+  | .criterion =>
+      findingEntry.designRevision.bind state.design? |>.bind (·.criterion? finding.subject.id)
+        |>.any (·.target == target)
+  | .statement | .assumption => true
+
+/-- A remediation receipt is causal only when it was produced by the current
+replacement-Plan Task that explicitly owns this accepted Finding. -/
+def findingRemediationBindingCurrent
+    (state : ProjectState) (findingEntry evidenceEntry : LedgerEntry)
+    (finding : FindingRecord) (target : String) : Bool :=
+  let accepted := findingEntry.workId.any fun workId =>
+    state.findingAccepted findingEntry.id workId
+  match findingEntry.workId, remediationTaskEntryId? evidenceEntry with
+  | some workId, some sourceTaskEntryId =>
+      let sourceTaskEntry? := state.entry? sourceTaskEntryId
+      let currentPlan? := state.currentPlanFor? workId
+      accepted && findingTargetMatches state findingEntry finding target &&
+        sourceTaskEntry?.any (fun sourceTaskEntry =>
+          sourceTaskEntry.order > findingEntry.order &&
+          sourceTaskEntry.order < evidenceEntry.order &&
+          match sourceTaskEntry.payload, currentPlan? with
+          | .task sourceTask, some plan =>
+              let currentTaskEntry? := state.ledgerEntries.find? fun candidate =>
+                !entryIsSuperseded state candidate && candidate.workId == some workId &&
+                candidate.designRevision == findingEntry.designRevision &&
+                match candidate.payload with
+                | .task task => task.lineageId == sourceTask.lineageId && !task.retired
+                | _ => false
+              currentTaskEntry?.any fun currentTaskEntry =>
+                match currentTaskEntry.payload with
+                | .task currentTask =>
+                    currentTask.planId == some plan.id && currentTask.closed &&
+                    currentTask.outputScopes.contains target &&
+                    currentTask.materializedAtOrder > findingEntry.order &&
+                    currentTask.verificationTaskEntryId == some sourceTaskEntry.id &&
+                    currentTask.verificationEvidenceEntryIds.contains evidenceEntry.id &&
+                    (currentTask.planStepId.bind (fun stepId =>
+                      uniqueBy? plan.steps (·.id) stepId)
+                      |>.any (·.acceptedFindingEntryIds.contains findingEntry.id))
+                | _ => false
+          | _, _ => false)
+  | _, _ => false
 
 end AgentWorkbench

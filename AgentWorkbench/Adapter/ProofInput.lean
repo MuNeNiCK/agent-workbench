@@ -6,6 +6,8 @@ namespace AgentWorkbench.ProofInput
 
 structure Material where
   claimInput : ClaimInput
+  elaboratedPropositionDigest : String
+  propositionDependencies : List String
   sources : List ProofSourceDigest
   deriving Lean.ToJson
 
@@ -34,12 +36,12 @@ private def proofRootPath (projectRoot : System.FilePath) (claim : LeanClaim) : 
 private def sourceDependencies
     (projectRoot : System.FilePath) (runtime : Runtime.Layout) (claim : LeanClaim)
     (source : System.FilePath) : IO (List System.FilePath) := do
-  let result ← Process.execute projectRoot {
+  let result ← Process.executeWithOverrides projectRoot {
     executable := runtime.elanExecutable.toString
     arguments := #["run", claim.input.toolchain, "lake", "env", "lean", "--src-deps",
       source.toString]
-    workingDirectory := some (proofRootPath projectRoot claim).toString
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+    workingDirectory := some (proofRootPath projectRoot claim).toString }
+    #[("ELAN_HOME", runtime.elanHome.toString)]
   if result.exitCode != 0 then
     throw (IO.userError s!"cannot resolve Lean source dependencies for {source}: {result.stderr}")
   pure (result.stdout.splitOn "\n" |>.filterMap (fun line =>
@@ -72,24 +74,36 @@ private partial def collectSources
         collectSources projectRoot runtime claim remaining seenAfterDependencies
           (orderedAfterDependencies ++ [canonical])
 
-def declaredSourcePaths
+def resolveDeclaredSourcePaths
     (projectRoot : System.FilePath) (claim : LeanClaim) : IO (List System.FilePath) := do
   let mut declared := []
   for source in claim.input.declaredSources do
     let path := sourcePath projectRoot claim source
     if !(← path.pathExists) then
       throw (IO.userError s!"declared Lean source is missing: {source.path}")
+    declared := declared ++ [path]
+  pure declared
+
+def declaredSourcePaths
+    (projectRoot : System.FilePath) (claim : LeanClaim) : IO (List System.FilePath) := do
+  let declared ← resolveDeclaredSourcePaths projectRoot claim
+  for (source, path) in claim.input.declaredSources.zip declared do
     let digest ← ContentDigest.file path
     if let some expected := source.expectedDigest then
       if digest != expected then
         throw (IO.userError s!"declared Lean source digest changed: {source.path}")
-    declared := declared ++ [path]
   pure declared
 
 def sourceFiles
     (projectRoot : System.FilePath) (runtime : Runtime.Layout)
     (claim : LeanClaim) : IO (List System.FilePath) := do
   let declared ← declaredSourcePaths projectRoot claim
+  pure (← collectSources projectRoot runtime claim declared [] []).2
+
+def sourceClosurePaths
+    (projectRoot : System.FilePath) (runtime : Runtime.Layout)
+    (claim : LeanClaim) : IO (List System.FilePath) := do
+  let declared ← resolveDeclaredSourcePaths projectRoot claim
   pure (← collectSources projectRoot runtime claim declared [] []).2
 
 private def configurationSources (root : System.FilePath) : IO (List System.FilePath) := do
@@ -129,11 +143,17 @@ def evaluate
     let digest ← ContentDigest.file canonical
     digests := digests ++ [{ path := pathIdentity root canonical, digest }]
   let sortedDigests := digests.mergeSort (fun left right => left.path < right.path)
-  let material : Material := { claimInput := claim.input, sources := sortedDigests }
+  let material : Material := {
+    claimInput := claim.input
+    elaboratedPropositionDigest := claim.elaboratedPropositionDigest
+    propositionDependencies := claim.propositionDependencies
+    sources := sortedDigests }
   let inputDigest := ContentDigest.string (Lean.toJson material).compress
   pure ({
     claimId := claim.id
     claimInput := claim.input
+    elaboratedPropositionDigest := claim.elaboratedPropositionDigest
+    propositionDependencies := claim.propositionDependencies
     sourceDigests := sortedDigests
     inputDigest }, sortedDigests)
 

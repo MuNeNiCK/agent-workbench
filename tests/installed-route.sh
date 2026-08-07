@@ -11,9 +11,17 @@ trap 'rm -rf "$project" "$package_dir"' EXIT
 
 for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
     LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
-    LICENSE-lean4 LICENSES-lean4 \
-    LICENSE-elan-APACHE LICENSE-elan-MIT; do
+    LICENSE-lean4 LICENSES-lean4 LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$staging/$license"
+done
+for required in SKILL.md release-version scripts/setup.sh scripts/setup.ps1; do
+  test -f "$staging/skill/agent-workbench/$required"
+done
+diff -r "$staging/skill/agent-workbench" "$skill_source"
+test -f "$staging/README.md"
+for document in assurance concepts getting-started index installation operation-reference recovery \
+    releases reviews state-reference workflow; do
+  test -f "$staging/docs/$document.md"
 done
 
 git -C "$project" init -q
@@ -26,16 +34,14 @@ else
   (cd "$project" && gh skill install "$skill_repository" agent-workbench \
     --from-local --agent codex --scope project)
 fi
-test -f "$project/.agents/skills/agent-workbench/SKILL.md"
-test -f "$project/.agents/skills/agent-workbench/release-version"
-test -f "$project/.agents/skills/agent-workbench/scripts/setup.sh"
+installed_skill="$project/.agents/skills/agent-workbench"
+for required in SKILL.md release-version scripts/setup.sh scripts/setup.ps1; do
+  test -f "$installed_skill/$required"
+done
 if [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]; then
-  [[ "$(<"$project/.agents/skills/agent-workbench/release-version")" == "$AGENT_WORKBENCH_SKILL_REF" ]]
+  [[ "$(<"$installed_skill/release-version")" == "$AGENT_WORKBENCH_SKILL_REF" ]]
 fi
-if grep -R "releases/latest" "$project/.agents/skills/agent-workbench"; then
-  echo "installed Skill retained a moving release route" >&2
-  exit 1
-fi
+! grep -R "releases/latest" "$installed_skill"
 
 if [[ -n "$provided_archive" || -n "$provided_checksum" ]]; then
   [[ -n "$provided_archive" && -n "$provided_checksum" ]]
@@ -60,294 +66,182 @@ PY
 fi
 
 if [[ -f "$staging/agent-workbench.exe" ]]; then
-  setup_result=$(powershell -NoProfile -ExecutionPolicy Bypass -File \
-    "$project/.agents/skills/agent-workbench/scripts/setup.ps1" \
-    -ProjectRoot "$project" -LocalArchive "$archive" -LocalChecksum "$checksum")
+  setup() {
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$installed_skill/scripts/setup.ps1" \
+      -ProjectRoot "$project" -LocalArchive "$archive" -LocalChecksum "$checksum"
+  }
   awb="$project/.agent-workbench/bin/agent-workbench.exe"
 else
-  setup_result=$(sh "$project/.agents/skills/agent-workbench/scripts/setup.sh" \
-    "$project" "$archive" "$checksum")
+  setup() {
+    sh "$installed_skill/scripts/setup.sh" "$project" "$archive" "$checksum"
+  }
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi
 
+first_setup=$(setup)
 for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
     LICENSE-BLAKE3-APACHE-2.0 LICENSE-BLAKE3-APACHE-2.0-LLVM LICENSE-BLAKE3-CC0-1.0 \
-    LICENSE-lean4 LICENSES-lean4 \
-    LICENSE-elan-APACHE LICENSE-elan-MIT; do
+    LICENSE-lean4 LICENSES-lean4 LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$project/.agent-workbench/bin/$license"
 done
+for required in SKILL.md release-version scripts/setup.sh scripts/setup.ps1; do
+  test -f "$project/.agent-workbench/bin/skill/agent-workbench/$required"
+done
+test -f "$project/.agent-workbench/bin/README.md"
+test -f "$project/.agent-workbench/bin/docs/getting-started.md"
+test -x "$awb" || [[ "$awb" == *.exe ]]
 
-invoke() { "$awb" --project "$project" "$@"; }
-example() {
-  invoke describe "$@" |
-    python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["inputExample"]))'
+printf '%s\n' "$first_setup" | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["stateRevision"] == 1
+assert value["acceptedDesignId"] is None
+assert value["focusedWorkId"] is None
+'
+for directory in product implementation plans proofs; do
+  test -d "$project/.agent-workbench/design/$directory"
+done
+
+before=$("$awb" --project "$project" context)
+second_setup=$(setup)
+[[ "$second_setup" == "$before" ]]
+after=$("$awb" --project "$project" context)
+[[ "$after" == "$before" ]]
+
+"$awb" --project "$project" describe | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+operations=value["operations"]
+assert "work start" in operations
+assert "design inspect-sources" in operations
+assert "plan propose" in operations
+assert "task close" in operations
+assert "task add" not in operations
+assert "formal-check" not in operations
+'
+printf '%s\n' '{"id":"work-route","outcome":"verify installed release route","scope":"project","responsibleAgentRun":"release-route"}' \
+  | "$awb" --project "$project" work start >/dev/null
+"$awb" --project "$project" context | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["stateRevision"] == 2
+assert value["context"]["focused"] is None
+assert [work["id"] for work in value["context"]["openWorks"]] == ["work-route"]
+'
+
+python3 - "$project" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]) / ".agent-workbench" / "design"
+(root / "product").mkdir(parents=True, exist_ok=True)
+(root / "proofs" / "example" / "ExampleDesign").mkdir(parents=True, exist_ok=True)
+(root / "product" / "design.md").write_text("The selected property is true.\n")
+(root / "proofs" / "example" / "lean-toolchain").write_text("leanprover/lean4:v4.32.2\n")
+(root / "proofs" / "example" / "lakefile.lean").write_text(
+    "import Lake\nopen Lake DSL\npackage «installed-route-proof»\n"
+    "@[default_target] lean_lib ExampleDesign\n")
+(root / "proofs" / "example" / "ExampleDesign.lean").write_text(
+    "import ExampleDesign.Base\nnamespace ExampleDesign\n"
+    "def Property : Prop := Base\ntheorem property : Property := by trivial\nend ExampleDesign\n")
+(root / "proofs" / "example" / "ExampleDesign" / "Base.lean").write_text(
+    "namespace ExampleDesign\ndef Base : Prop := True\nend ExampleDesign\n")
+PY
+
+inspection=$(printf '%s\n' \
+  '{"sourceDocumentTargets":["file:.agent-workbench/design/product/design.md"]}' \
+  | "$awb" --project "$project" design inspect-sources)
+proposal=$(printf '%s\n' "$inspection" | python3 -c '
+import json,sys
+inspection=json.load(sys.stdin)
+units=[unit for source in inspection for unit in source["units"]]
+statement="The selected property is true."
+value={
+  "producerAgentRun":"release-route",
+  "changeRationale":"verify immutable Design Claim installation route",
+  "changeBasisEntryIds":[],
+  "amendsCandidate":None,
+  "sourceDocumentTargets":["file:.agent-workbench/design/product/design.md"],
+  "sourceUnitDispositions":[{"unitId":unit["id"],"role":"requirement","reason":None} for unit in units],
+  "statements":[{"id":"statement-route","text":statement,"assumptions":[]}],
+  "statementCoverage":[{
+    "statementId":"statement-route",
+    "sourceUnitIds":[unit["id"] for unit in units],
+    "leanClaims":{"selectedIds":["claim-route"],"noSelectionReason":None},
+    "acceptanceCriteria":{"selectedIds":[],"noSelectionReason":"the route has no external criterion"},
+    "implementationRequired":False,
+    "noImplementationReason":"the installed route verifies the Design Claim itself"
+  }],
+  "assumptions":[],
+  "removedStatements":[],
+  "acceptanceCriteria":[],
+  "leanClaims":[{
+    "id":"claim-route",
+    "elaboratedPropositionDigest":"",
+    "propositionDependencies":[],
+    "input":{
+      "statementId":"statement-route","statementText":statement,
+      "mapping":"ExampleDesign.Property is the selected Design property",
+      "proposition":"ExampleDesign.Property","witness":"ExampleDesign.property",
+      "assumptions":[],"proofRoot":".agent-workbench/design/proofs/example",
+      "declaredSources":[{"path":"ExampleDesign.lean","expectedDigest":None},
+                         {"path":"ExampleDesign/Base.lean","expectedDigest":None}],
+      "check":{"executable":"lake","arguments":["build"],"workingDirectory":None,"environment":[]},
+      "toolchain":"leanprover/lean4:v4.32.2"
+    }
+  }]
 }
-revision() {
-  invoke context | python3 -c 'import json,sys; print(json.load(sys.stdin)["stateRevision"])'
-}
-
-printf '%s\n' "$setup_result" | python3 -c '
+json.dump(value,sys.stdout,separators=(",",":"))
+')
+design=$(printf '%s\n' "$proposal" | "$awb" --project "$project" design propose)
+design_id=$(printf '%s\n' "$design" | python3 -c '
 import json,sys
-x=json.load(sys.stdin); assert "context" in x and x["context"] is None
+value=json.load(sys.stdin)
+assert value["leanClaims"][0]["elaboratedPropositionDigest"].startswith("blake3:")
+assert len(value["leanClaims"][0]["propositionDependencies"]) > 0
+assert sorted(source["mediaKind"] for source in value["sourceDocuments"]) == ["lean","lean","markdown"]
+print(value["id"])
+')
+printf '{"designId":"%s","target":"file:.agent-workbench/design/proofs/example/ExampleDesign.lean"}\n' \
+  "$design_id" | "$awb" --project "$project" design source | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+expected=("import ExampleDesign.Base\nnamespace ExampleDesign\n"
+          "def Property : Prop := Base\ntheorem property : Property := by trivial\nend ExampleDesign\n").encode()
+assert value["mediaKind"] == "lean"
+assert bytes(value["contentBytes"]) == expected
 '
-second_init=$(invoke init)
-printf '%s\n' "$second_init" | python3 -c '
+printf '{"id":"%s"}\n' "$design_id" | "$awb" --project "$project" design accept >/dev/null
+proof=$(printf '%s\n' '{"entryId":"proof-route","claimId":"claim-route"}' \
+  | "$awb" --project "$project" proof run)
+printf '%s\n' "$proof" | python3 -c '
 import json,sys
-x=json.load(sys.stdin); assert "context" in x and x["context"] is None
+value=json.load(sys.stdin)
+receipt=value["entry"]["payload"]["leanProofReceipt"]["value"]
+assert receipt["kernelAccepted"] is True
+assert receipt["elaboratedPropositionDigest"].startswith("blake3:")
+assert receipt["propositionDependencies"]
+assert receipt["assumptionDependencies"] == []
 '
-operation_index=$(invoke describe)
-[[ "$operation_index" == *'"task add"'* ]]
-[[ "$operation_index" == *'"review resume"'* ]]
-[[ "$operation_index" != *'entry append'* ]]
-printf '%s\n' "$operation_index" | python3 -c '
-import json,sys
-x=json.load(sys.stdin)
-assert "design propose" in x["applicableOperations"]
-assert "task add" not in x["applicableOperations"]
-'
-invoke describe design propose | python3 -c 'import json,sys; assert json.load(sys.stdin)["applicable"] is True'
-invoke describe task add | python3 -c 'import json,sys; assert json.load(sys.stdin)["applicable"] is False'
-example design propose | python3 -c '
-import json,sys
-x=json.load(sys.stdin)
-assert "id" not in x and "parent" not in x and "status" not in x
-assert "createdAfterEntryOrder" not in x and "sourceDocuments" not in x
-assert x["leanClaims"][0]["input"]["declaredSources"]
-'
-example task add | python3 -c '
-import json,sys
-x=json.load(sys.stdin)
-for forbidden in ("order", "scope", "workId", "designRevision", "supersedes"):
-    assert forbidden not in x
-'
-
-mkdir -p "$project/proof/Proof"
-printf '%s\n' 'name = "proof"' 'version = "0.0.0"' 'defaultTargets = ["Proof"]' \
-  '' '[[lean_lib]]' 'name = "Proof"' > "$project/proof/lakefile.toml"
-printf '%s\n' 'leanprover/lean4:v4.32.2' > "$project/proof/lean-toolchain"
-printf '%s\n' 'theorem supportClaim : True := by trivial' > "$project/proof/Proof/Support.lean"
-printf '%s\n' 'import Proof.Support' 'theorem designClaim : True := supportClaim' > "$project/proof/Proof.lean"
-printf '%s\n' 'current accepted design source' > "$project/design-source.md"
-
-before_missing_source=$(revision)
-missing_source_design=$(example design propose | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["sourceDocumentTargets"]=["file:does-not-exist.md"]
-print(json.dumps(x))')
-if printf '%s\n' "$missing_source_design" | invoke design propose >/dev/null 2>&1; then
-  echo "Design proposal accepted a missing normative source" >&2
+before_stale=$("$awb" --project "$project" context)
+printf '%s\n' '-- stale source edit' >> \
+  "$project/.agent-workbench/design/proofs/example/ExampleDesign.lean"
+if printf '%s\n' '{"entryId":"proof-stale","claimId":"claim-route"}' \
+    | "$awb" --project "$project" proof run >/dev/null 2>&1; then
+  echo "stale installed Claim unexpectedly produced a receipt" >&2
   exit 1
 fi
-[[ "$(revision)" == "$before_missing_source" ]]
-
-initial_design=$(example design propose | python3 -c '
+after_stale=$("$awb" --project "$project" context)
+printf '%s\n%s\n' "$before_stale" "$after_stale" | python3 -c '
 import json,sys
-x=json.load(sys.stdin); x["sourceDocumentTargets"]=["file:design-source.md"]
-print(json.dumps(x))' | invoke design propose)
-printf '%s\n' "$initial_design" | python3 -c '
-import json,sys
-x=json.load(sys.stdin)
-assert x["id"] == "design-1" and x["parent"] is None
-assert x["sourceDocuments"][0]["target"] == "file:design-source.md"
+before=json.loads(sys.stdin.readline())
+after=json.loads(sys.stdin.readline())
+assert after["stateRevision"] == before["stateRevision"]
+assert before["context"]["focused"]["claimGaps"] == []
+assert after["context"]["focused"]["claimGaps"] == [
+    {"claimId":"claim-route","kind":"missingInputDigest"}]
 '
-printf '%s\n' '{"id":"design-1"}' | invoke design get | python3 -c '
+printf '%s\n' '{"afterOrder":0,"limit":100}' \
+  | "$awb" --project "$project" history | python3 -c '
 import json,sys
-x=json.load(sys.stdin); assert x["parent"] is None and x["status"] == "candidate"
+assert all(entry["id"] != "proof-stale" for entry in json.load(sys.stdin))
 '
-example design accept | invoke design accept >/dev/null
-start_result=$(example work start | invoke work start)
-printf '%s\n' "$start_result" | python3 -c '
-import json,sys
-x=json.load(sys.stdin); assert x["context"]["work"]["id"] == "work-1"
-'
-printf '%s\n' '{"id":"work-1"}' | invoke work get | python3 -c '
-import json,sys
-x=json.load(sys.stdin); assert x["designRevision"] == "design-1" and x["status"] == "focused"
-'
-invoke describe task add | python3 -c 'import json,sys; assert json.load(sys.stdin)["applicable"] is True'
-example task add | invoke task add >/dev/null
-
-before_inapplicable=$(revision)
-invoke describe design propose | python3 -c 'import json,sys; assert json.load(sys.stdin)["applicable"] is False'
-if example design propose | invoke design propose >/dev/null 2>&1; then
-  echo "mutation boundary committed an inapplicable Design proposal" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_inapplicable" ]]
-
-profile_template=$(example profile define)
-profile=$(python3 - "$project" "$profile_template" <<'PY'
-import json, pathlib, sys
-p=json.loads(sys.argv[2])
-root=pathlib.Path(sys.argv[1])
-suffix=".exe" if (root/".agent-workbench/bin/elan.exe").exists() else ""
-p["command"]["executable"]=str(root/f".agent-workbench/bin/elan{suffix}")
-p["command"]["arguments"]=["run", "leanprover/lean4:v4.32.2", "lean", "--version"]
-p["command"]["environment"]=[["ELAN_HOME", str(root/".agent-workbench/toolchains")]]
-print(json.dumps(p))
-PY
-)
-printf '%s\n' "$profile" | invoke profile define >/dev/null
-example kpt record | invoke kpt record >/dev/null
-
-context=$(invoke context)
-[[ "$context" == *'"relevantKpt":[{'* ]]
-printf '%s\n' '{"workId":"work-1","resumeCondition":"continue the same route"}' \
-  | invoke work suspend >/dev/null
-resume_result=$(printf '%s\n' '{"id":"work-1"}' | invoke work resume)
-printf '%s\n' "$resume_result" | python3 -c '
-import json,sys
-x=json.load(sys.stdin); assert x["context"]["work"]["id"] == "work-1"
-'
-handoff_result=$(printf '%s\n' \
-  '{"workId":"work-1","entryId":"handoff-1","successorRun":"agent-run-2","reason":"continue the same Work across an agent run"}' \
-  | invoke work handoff)
-printf '%s\n' "$handoff_result" | python3 -c '
-import json,sys
-x=json.load(sys.stdin); assert x["context"]["work"]["id"] == "work-1"
-'
-
-before_invalid=$(revision)
-if printf '%s\n' '{}' | invoke entry append >/dev/null 2>&1; then
-  echo "removed generic entry append remained public" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_invalid" ]]
-invalid_system_field=$(example task add | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="task-forbidden"; x["order"]=999
-print(json.dumps(x))')
-if printf '%s\n' "$invalid_system_field" | invoke task add >/dev/null 2>&1; then
-  echo "semantic command accepted a request-selected ledger order" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_invalid" ]]
-invalid_design_id=$(example design propose | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["id"]="design-forbidden"
-print(json.dumps(x))')
-if printf '%s\n' "$invalid_design_id" | invoke design propose >/dev/null 2>&1; then
-  echo "Design proposal accepted a request-selected identity" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_invalid" ]]
-invalid_nested_field=$(example design propose | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["statements"][0]["status"]="accepted"
-print(json.dumps(x))')
-if printf '%s\n' "$invalid_nested_field" | invoke design propose >/dev/null 2>&1; then
-  echo "semantic command ignored an unknown nested system field" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_invalid" ]]
-
-printf '%s\n' 'initial artifact' > "$project/artifact.txt"
-printf '%s\n' 'initial observation target' > "$project/observed.txt"
-example correction record | invoke correction record >/dev/null
-[[ "$(invoke ready)" == *'"ready":false'* ]]
-example artifact observe | invoke artifact observe >/dev/null
-example command run | invoke command run >/dev/null
-example correction resolve | invoke correction resolve >/dev/null
-invoke context | python3 -c '
-import json,sys
-assert json.load(sys.stdin)["context"]["effectiveUserCorrections"] == []
-'
-mkdir -p "$project/proof/.lake/build"
-printf '%s\n' 'pre-existing user build output' > "$project/proof/.lake/build/preserved"
-proof_one=$(example proof run | invoke proof run)
-[[ "$proof_one" == *'"kernelAccepted":true'* ]]
-python3 - "$project/proof/.lake/build" <<'PY'
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
-assert sorted(path.name for path in root.iterdir()) == ["preserved"]
-assert (root / "preserved").read_text() == "pre-existing user build output\n"
-PY
-
-proof_concurrent_a=$(example proof run | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="proof-concurrent-a"; print(json.dumps(x))')
-proof_concurrent_b=$(example proof run | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="proof-concurrent-b"; print(json.dumps(x))')
-printf '%s\n' "$proof_concurrent_a" | invoke proof run > "$project/proof-concurrent-a.json" &
-proof_concurrent_a_pid=$!
-printf '%s\n' "$proof_concurrent_b" | invoke proof run > "$project/proof-concurrent-b.json" &
-proof_concurrent_b_pid=$!
-wait "$proof_concurrent_a_pid"
-wait "$proof_concurrent_b_pid"
-python3 - "$project/proof-concurrent-a.json" "$project/proof-concurrent-b.json" \
-  "$project/proof/.lake/build" <<'PY'
-import json, pathlib, sys
-for result in sys.argv[1:3]:
-    receipt = json.loads(pathlib.Path(result).read_text())
-    assert receipt["entry"]["payload"]["leanProofReceipt"]["value"]["kernelAccepted"] is True
-root = pathlib.Path(sys.argv[3])
-assert sorted(path.name for path in root.iterdir()) == ["preserved"]
-assert (root / "preserved").read_text() == "pre-existing user build output\n"
-PY
-rm -f "$project/proof-concurrent-a.json" "$project/proof-concurrent-b.json"
-
-before_forged_review=$(revision)
-forged_review=$(example review start | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["producerAgentRun"]="forged-producer"; print(json.dumps(x))')
-if printf '%s\n' "$forged_review" | invoke review start >/dev/null 2>&1; then
-  echo "Review accepted request-selected producer provenance" >&2
-  exit 1
-fi
-[[ "$(revision)" == "$before_forged_review" ]]
-example review start | invoke review start >/dev/null
-fresh_input=$(example review context | invoke review context)
-[[ "$fresh_input" == *'"lineage":[]'* ]]
-example review finding | invoke review finding >/dev/null
-example review disposition | invoke review disposition >/dev/null
-[[ "$(invoke ready)" == *'"ready":false'* ]]
-
-printf '%s\n' 'changed artifact' > "$project/artifact.txt"
-printf '%s\n' 'changed observation target' > "$project/observed.txt"
-[[ "$(invoke ready)" == *'"ready":false'* ]]
-example artifact observe | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="evidence-2"; print(json.dumps(x))' \
-  | invoke artifact observe >/dev/null
-example command run | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="command-2"; print(json.dumps(x))' \
-  | invoke command run >/dev/null
-example review resume | invoke review resume >/dev/null
-resume_input=$(printf '%s\n' '{"id":"review-resume"}' | invoke review context)
-[[ "$resume_input" != *'"lineage":[]'* ]]
-example review verify | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["evidenceEntryId"]="command-2"; print(json.dumps(x))' \
-  | invoke review verify >/dev/null
-example kpt apply | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["actionEntryId"]="command-2"; print(json.dumps(x))' \
-  | invoke kpt apply >/dev/null
-example task close | invoke task close >/dev/null
-[[ "$(invoke ready)" == *'"ready":true'* ]]
-
-printf '%s\n' 'changed without a successor Design' > "$project/design-source.md"
-[[ "$(invoke ready)" == *'"ready":false'* ]]
-printf '%s\n' 'current accepted design source' > "$project/design-source.md"
-[[ "$(invoke ready)" == *'"ready":true'* ]]
-
-printf '%s\n' 'theorem supportClaim : True := by exact True.intro' > "$project/proof/Proof/Support.lean"
-[[ "$(invoke ready)" == *'"ready":false'* ]]
-example proof run | python3 -c '
-import json,sys
-x=json.load(sys.stdin); x["entryId"]="proof-2"; print(json.dumps(x))' \
-  | invoke proof run >/dev/null
-python3 - "$project/proof/.lake/build" <<'PY'
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
-assert sorted(path.name for path in root.iterdir()) == ["preserved"]
-assert (root / "preserved").read_text() == "pre-existing user build output\n"
-PY
-[[ "$(invoke ready)" == *'"ready":true'* ]]
-invoke work complete >/dev/null
-
-printf '%s\n' '{"afterOrder":0,"limit":2}' | invoke history |
-  python3 -c 'import json,sys; assert len(json.load(sys.stdin)) == 2'
-printf '%s\n' '{"id":"task-1"}' | invoke entry get >/dev/null

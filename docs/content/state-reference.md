@@ -20,33 +20,50 @@ This is an intentional consistency boundary, not a request for the user to edit 
 |---|---|---|
 | `candidate` | Proposed immutable design awaiting acceptance | `design propose` creates it |
 | `accepted` | Current normative design | `design accept` selects it |
-| `replaced` | Former accepted design displaced by its accepted successor | Derived by `design accept` |
-| `rejected` | Reserved schema state | No current native operation enters this state |
+| `superseded` | Former accepted Design or amended candidate retained as immutable history | Derived by successor acceptance or candidate amendment |
+| `rejected` | Candidate explicitly rejected without changing accepted authority | `design reject` |
+| `replaced` | Legacy decoded status | No new v0.2.8 transition creates it |
 
-`design propose` is available only when no Work is focused. The candidate's parent is derived from
-the current accepted design. `design accept` is also available only with no focused Work and accepts
-only a candidate whose parent is still the current accepted design. If a declared design-source file
-changed after proposal, acceptance is rejected and a new candidate must be proposed.
+`design propose` and `design amend` require a focused Work and capture exact declared Markdown bytes
+from its private Design workspace. The accepted parent, Work binding, identity, digest, and candidate
+amendment status are derived. Initial acceptance keeps that Work focused and binds it to the initial
+Design. Successor acceptance requires focus to be cleared; ancestor-bound Work remains suspended
+until explicit adoption. Editing or deleting a live draft after proposal cannot change, invalidate,
+or silently replace the immutable candidate stored in SQLite.
 
 ## Work states
 
 | State | Meaning | Entry transitions |
 |---|---|---|
-| `focused` | The one Work currently being performed | `work start`, `work focus`, or `work resume` |
+| `active` | Work is eligible to be focused; `focusedWorkId` identifies the one currently performed | `work start`, `work focus`, or `work resume` |
 | `suspended` | Work retained with an explicit return condition | `work suspend` |
-| `blocked` | Resumable schema state | No current native operation enters this state |
-| `completed` | Readiness passed and Work was completed | `work complete` |
+| `completed` | Readiness passed and exactly one matching completion record was committed | `work complete` |
+| `withdrawn` | Outcome ended unsuccessfully under an effective User Correction | `work withdraw` |
 
 Important transitions:
 
 | Situation | Required operation | Result | Common rejection |
 |---|---|---|---|
-| Start a new outcome | `work start` | New Work becomes focused and binds the accepted design | No accepted design or another focused Work |
+| Start a new outcome | `work start` | New Work becomes focused; it binds the accepted Design or retains an empty baseline before initial Design | Another Work is focused |
 | Pause current work | `work suspend` | Work becomes suspended and records a non-empty resume condition | Named Work is not focused |
-| Continue retained work | `work resume` or `work focus` | Suspended/blocked Work becomes focused | Another Work is focused or its design is no longer accepted |
+| Continue retained work | `work resume` or `work focus` | Suspended/active Work becomes focused | Resume lacks a non-empty satisfaction statement and at least one current same-Work/Design basis entry; another Work is focused; or successor adoption is required |
 | Move retained Work to a successor design | `work adopt-design` | Design binding changes; Work remains unfocused | Work was not suspended, successor is not a descendant, or requester is not responsible |
 | Transfer agent responsibility | `work handoff` | Responsible agent run changes; Work and evidence boundary remain | Work is not focused or successor is already responsible |
-| Complete | `work complete` | Work becomes completed and focus clears | Derived readiness is false |
+| Complete | `work complete` | Work becomes completed, focus clears, and the exact completion-input digest is recorded atomically | Derived readiness is false |
+| End without success | `work withdraw` | Work becomes withdrawn and focus clears | No effective same-Work User Correction authorizes withdrawal |
+
+## Implementation Plan states
+
+| State | Meaning |
+|---|---|
+| `candidate` | Immutable proposed Plan with no Task authority yet |
+| `current` | The one materialized Plan for the Work's adopted Design |
+| `superseded` | Historical Plan replaced atomically during materialization |
+
+`plan propose/replace` captures exact private Plan-source bytes and the complete Design delta.
+`plan materialize` requires current selected Claim receipts, makes only the candidate head current,
+and creates or reopens the exact derived Task graph in the same state transition. A candidate alone
+does not change productive authority.
 
 ## Current Context
 
@@ -62,7 +79,11 @@ Important transitions:
 - missing or stale Lean receipts; and
 - changed declared design sources.
 
-Superseded entries and replaced designs remain in `history` but do not re-enter Current Context by
+Command evidence is current only while its Profile, resolved command, target, and every declared
+input still match the observations recorded by the run. Evidence without recorded input
+observations is retained as history but is not current.
+
+Superseded entries and superseded designs remain in `history` but do not re-enter Current Context by
 text similarity. Repeated categories are bounded; use paginated history or entity lookup for older
 records.
 
@@ -70,8 +91,8 @@ records.
 
 `ready` is false if any of these current conditions holds:
 
-- a declared design-source snapshot changed;
-- a required Task remains open;
+- the accepted Design or current Plan/source archive is incomplete or inconsistent;
+- a required Task remains open, or the exact Task-bound evidence used to close it is no longer current;
 - an acceptance criterion lacks current evidence of the declared kind;
 - a selected Lean claim lacks a current kernel-accepted receipt;
 - a user correction remains effective; or

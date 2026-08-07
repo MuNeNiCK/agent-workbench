@@ -1,14 +1,12 @@
 import AgentWorkbench.Domain.Design
 import AgentWorkbench.Domain.Work
+import AgentWorkbench.Domain.Task
+import AgentWorkbench.Domain.Evidence
+import AgentWorkbench.Domain.Review
+import AgentWorkbench.Domain.Correction
+import AgentWorkbench.Domain.Kpt
 
 namespace AgentWorkbench
-
-structure TaskRecord where
-  criterionId : Option String := none
-  description : String
-  required : Bool
-  closed : Bool
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure WorkDesignAdoptionRecord where
   predecessor : String
@@ -23,132 +21,46 @@ structure WorkHandoffRecord where
   reason : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
-structure CommandProfileRecord where
-  purpose : String
-  target : Option String := none
-  command : CommandSpec
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure CommandExecutionRecord where
-  profileEntryId : String
-  criterionId : Option String := none
-  target : Option String := none
-  snapshot : Option String := none
-  command : CommandSpec
-  exitCode : Nat
-  stdoutDigest : String
-  stderrDigest : String
-  successful : Bool
-  producerAgentRun : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure ArtifactObservationRecord where
-  criterionId : String
-  target : String
-  snapshot : String
-  operation : String
-  result : String
-  successful : Bool
-  producerAgentRun : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-inductive ReviewPurpose where
-  | design
-  | implementation
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-inductive ReviewContext where
-  | fresh
-  | resume
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure ReviewRecord where
-  reviewId : String
-  purpose : ReviewPurpose
-  context : ReviewContext
-  continuesEntryId : Option String := none
-  targetSourceId : String
-  target : String
-  targetSnapshot : String
-  producerAgentRun : String
-  reviewerAgentRun : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-inductive FindingSubjectKind where
-  | statement
-  | criterion
-  | assumption
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure FindingSubject where
-  kind : FindingSubjectKind
-  id : String
-  exactQuote : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure FindingRecord where
-  reviewId : String
-  subject : FindingSubject
-  targetSourceId : String
-  target : String
-  targetSnapshot : String
-  producerAgentRun : String
-  summary : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure ReviewDispositionRecord where
-  findingEntryId : String
-  decision : DispositionDecision
+structure WorkWithdrawalRecord where
+  correctionEntryId : String
   reason : String
-  decidedByRun : String
+  withdrawnByRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
-structure ReviewVerificationRecord where
-  reviewId : String
-  findingEntryId : String
-  reviewEntryId : String
-  evidenceEntryId : String
-  target : String
-  snapshot : String
-  verifiedByRun : String
-  resolved : Bool
+/-- Auditable evidence that the responsible agent satisfied a suspended Work's
+recorded resume condition. Basis entries remain part of immutable history. -/
+structure WorkResumeRecord where
+  condition : String
+  satisfaction : String
+  basisEntryIds : List String
+  resumedByRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
-structure UserCorrectionRecord where
-  content : String
-  resolvedByEntryId : Option String := none
-  resolutionReason : Option String := none
-  incorporatedIn : Option String := none
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure KPTRecord where
-  keep : Option String := none
-  problem : Option String := none
-  tryNext : Option String := none
-  appliesKptEntryId : Option String := none
-  appliedByEntryId : Option String := none
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure ProofSourceDigest where
-  path : String
-  digest : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
-
-structure LeanProofReceiptRecord where
-  claimId : String
-  claimInput : ClaimInput
+/-- Immutable authority created atomically with successful Work completion. -/
+structure WorkCompletionRecord where
+  workId : String
+  designRevision : String
+  planId : String
+  inputRevision : Nat
   inputDigest : String
-  sourceDigests : List ProofSourceDigest
-  toolchain : String
-  exitCode : Nat
-  outputDigest : String
-  kernelAccepted : Bool
+  completedByRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+structure DesignRejectionRecord where
+  designId : String
+  reason : String
+  rejectedByRun : String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
+/-- Closed set of entries that may become immutable project history. -/
 inductive EntryPayload where
   | task (value : TaskRecord)
   | workDesignAdoption (value : WorkDesignAdoptionRecord)
   | workHandoff (value : WorkHandoffRecord)
+  | workWithdrawal (value : WorkWithdrawalRecord)
+  | workResume (value : WorkResumeRecord)
+  | workCompletion (value : WorkCompletionRecord)
+  | designRejection (value : DesignRejectionRecord)
   | commandProfile (value : CommandProfileRecord)
   | commandExecution (value : CommandExecutionRecord)
   | artifactObservation (value : ArtifactObservationRecord)
@@ -156,6 +68,8 @@ inductive EntryPayload where
   | finding (value : FindingRecord)
   | reviewDisposition (value : ReviewDispositionRecord)
   | reviewVerification (value : ReviewVerificationRecord)
+  | reviewHandoff (value : ReviewHandoffRecord)
+  | reviewConclusion (value : ReviewConclusionRecord)
   | userCorrection (value : UserCorrectionRecord)
   | kpt (value : KPTRecord)
   | leanProofReceipt (value : LeanProofReceiptRecord)

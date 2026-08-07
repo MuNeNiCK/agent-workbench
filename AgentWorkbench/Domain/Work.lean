@@ -3,11 +3,20 @@ import Lean.Data.Json
 namespace AgentWorkbench
 
 inductive WorkStatus where
-  | focused
+  | active
   | suspended
-  | blocked
   | completed
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+  | withdrawn
+  deriving Repr, DecidableEq, Lean.ToJson
+
+instance : Lean.FromJson WorkStatus where
+  fromJson? json := do
+    match ← json.getStr? with
+    | "active" | "focused" => pure .active
+    | "suspended" | "blocked" => pure .suspended
+    | "completed" => pure .completed
+    | "withdrawn" => pure .withdrawn
+    | value => throw s!"invalid Work status: {value}"
 
 inductive DispositionDecision where
   | accepted
@@ -19,11 +28,14 @@ structure Work where
   id : String
   outcome : String
   scope : String
-  designRevision : String
+  baselineDesignRevision : Option String := none
+  designRevision : Option String := none
   status : WorkStatus
   responsibleAgentRun : String
-  delegatedReviewDecisions : List DispositionDecision := []
   resumeCondition : Option String := none
+  /-- Present only when migration changed a legacy status and user action may
+  be required before resume. -/
+  migrationDiagnostic : Option String := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 end AgentWorkbench

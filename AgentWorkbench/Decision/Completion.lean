@@ -7,19 +7,34 @@ structure TargetObservation where
   snapshot : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+structure CompletionInput where
+  work : Work
+  design : DesignRevision
+  plan : ImplementationPlan
+  currentEntries : List LedgerEntry
+  observations : List TargetObservation
+  claimDigests : List CurrentClaimDigest
+  deriving Repr, DecidableEq, Lean.ToJson
+
+def completionInput
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : Except String CompletionInput := do
+  let projection ← match currentProjection? state with
+    | some value => pure value
+    | none => throw "completion input requires a current Work and Design"
+  let plan ← match state.currentPlanFor? projection.work.id with
+    | some value => pure value
+    | none => throw "completion input requires a current materialized Plan"
+  pure {
+    work := projection.work
+    design := projection.design
+    plan := plan
+    currentEntries := projection.entries
+    observations := observations
+    claimDigests := digests }
+
 def currentSnapshot? (observations : List TargetObservation) (target : String) : Option String :=
   uniqueBy? observations (·.target) target |>.map (·.snapshot)
-
-def requiredTasksClosed (projection : CurrentProjection) : Bool :=
-  projection.entries.all (fun entry =>
-    match entry.payload with
-    | .task task => !task.required || task.closed
-    | _ => true)
-
-def designSourcesCurrent
-    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
-  projection.design.sourceDocuments.all (fun source =>
-    currentSnapshot? observations source.target == some source.snapshot)
 
 def evidenceEntryCurrent
     (projection : CurrentProjection) (observations : List TargetObservation)
@@ -35,11 +50,35 @@ def evidenceEntryCurrent
       | some target, some snapshot =>
           evidence.successful &&
           currentSnapshot? observations target == some snapshot &&
+          evidence.environmentSnapshots.any (fun environment => environment.all fun input =>
+            currentSnapshot? observations input.target == some input.snapshot) &&
+          evidence.inputSnapshots.any (fun inputs => inputs.all fun input =>
+            currentSnapshot? observations input.target == some input.snapshot) &&
           projection.entries.any (fun candidate =>
             candidate.id == evidence.profileEntryId &&
             match candidate.payload with | .commandProfile _ => true | _ => false)
       | _, _ => false
   | _ => false
+
+def requiredTasksClosed
+    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
+  projection.entries.all (fun entry =>
+    match entry.payload with
+    | .task task => !task.required || (task.closed &&
+        task.verificationTaskEntryId.isSome &&
+        !task.verificationEvidenceEntryIds.isEmpty &&
+        task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
+        task.verificationEvidenceEntryIds.all fun evidenceId =>
+          projection.entries.any fun evidenceEntry =>
+            evidenceEntry.id == evidenceId &&
+            evidenceEntryCurrent projection observations evidenceEntry &&
+            match evidenceEntry.payload with
+            | .artifactObservation evidence =>
+                evidence.taskEntryId == task.verificationTaskEntryId
+            | .commandExecution evidence =>
+                evidence.taskEntryId == task.verificationTaskEntryId
+            | _ => false)
+    | _ => true)
 
 def criterionEvidenceRecorded
     (projection : CurrentProjection) (criterion : AcceptanceCriterion) : Bool :=
@@ -130,11 +169,11 @@ theorem claimHasReceipt_implies_recorded
 def acceptedFindingResolved
     (projection : CurrentProjection) (observations : List TargetObservation)
     (findingEntry : LedgerEntry) (finding : FindingRecord) : Bool :=
-  let accepted := projection.entries.any (fun entry =>
-    match entry.payload with
+  let accepted := findingDispositionIn? projection.entries findingEntry.id projection.work.id
+    |>.any fun entry => match entry.payload with
     | .reviewDisposition disposition =>
-        disposition.findingEntryId == findingEntry.id && disposition.decision == .accepted
-    | _ => false)
+        disposition.decision == .accepted
+    | _ => false
   if !accepted then true else
   projection.entries.any (fun entry =>
     match entry.payload with
@@ -171,8 +210,9 @@ def completionReady
   match currentProjection? state with
   | none => false
   | some projection =>
-      designSourcesCurrent projection observations &&
-      requiredTasksClosed projection &&
+      projection.design.sourceArchiveAvailable &&
+      (state.currentPlanFor? projection.work.id).isSome &&
+      requiredTasksClosed projection observations &&
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) &&
       projection.design.leanClaims.all (claimHasReceipt projection digests) &&

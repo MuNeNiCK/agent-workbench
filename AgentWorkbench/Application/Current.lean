@@ -3,6 +3,7 @@ import AgentWorkbench.Adapter.Snapshot
 import AgentWorkbench.Adapter.ProofInput
 import AgentWorkbench.Adapter.Runtime
 import AgentWorkbench.Adapter.ReviewTarget
+import AgentWorkbench.Adapter.Process
 
 namespace AgentWorkbench
 
@@ -16,12 +17,6 @@ def evaluateCurrentInputs
   | none => pure { observations := [], claimDigests := [] }
   | some projection =>
       let mut observations := []
-      for source in projection.design.sourceDocuments do
-        try
-          let snapshot ← Snapshot.target projectRoot source.target
-          if !observations.any (fun prior => prior.target == source.target) then
-            observations := observations ++ [TargetObservation.mk source.target snapshot]
-        catch _ => pure ()
       for criterion in projection.design.acceptanceCriteria do
         if criterionEvidenceRecorded projection criterion then
           try
@@ -31,6 +26,19 @@ def evaluateCurrentInputs
           catch _ => pure ()
       for entry in projection.entries do
         match entry.payload with
+        | .commandExecution execution =>
+            for input in execution.inputSnapshots.getD [] do
+              try
+                if !observations.any (fun prior => prior.target == input.target) then
+                  let snapshot ← Snapshot.target projectRoot input.target
+                  observations := observations ++ [TargetObservation.mk input.target snapshot]
+              catch _ => pure ()
+            for environment in execution.environmentSnapshots.getD [] do
+              if environment.target.startsWith "env:" &&
+                  !observations.any (fun prior => prior.target == environment.target) then
+                let name := environment.target.drop 4 |>.toString
+                let identity := Process.environmentIdentity name (← IO.getEnv name)
+                observations := observations ++ [TargetObservation.mk identity.1 identity.2]
         | .review review =>
             try
               let snapshot ← ReviewTarget.currentSnapshot projectRoot state review.purpose review.target

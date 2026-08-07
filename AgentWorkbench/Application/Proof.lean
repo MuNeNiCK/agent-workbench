@@ -1,6 +1,7 @@
 import AgentWorkbench.Application.Ledger
 import AgentWorkbench.Adapter.ProofInput
 import AgentWorkbench.Adapter.ProofBuild
+import AgentWorkbench.Adapter.ProofElaboration
 import AgentWorkbench.Adapter.Process
 import AgentWorkbench.Adapter.Runtime
 
@@ -43,7 +44,7 @@ private def proofCommand
     workingDirectory := match check.workingDirectory with
       | some configured => some configured
       | none => some defaultWorkingDirectory
-    environment := check.environment.push ("ELAN_HOME", runtime.elanHome.toString) }
+    environment := check.environment }
 
 private def proofRootPath (projectRoot : System.FilePath) (claim : LeanClaim) : System.FilePath :=
   let configured : System.FilePath := claim.input.proofRoot
@@ -68,17 +69,12 @@ private def buildSourcesCommand
     (runtime : Runtime.Layout) (claim : LeanClaim) : CommandSpec :=
   { executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "-H", "-R", "--no-cache", "build"] ++
-      claim.input.declaredSources.toArray.map (·.path)
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+      claim.input.declaredSources.toArray.map (·.path) }
 
 private def kernelCommand
-    (runtime : Runtime.Layout) (leanPaths : List System.FilePath)
-    (checker : System.FilePath) : CommandSpec :=
+    (runtime : Runtime.Layout) (checker : System.FilePath) : CommandSpec :=
   { executable := runtime.elanExecutable.toString
-    arguments := #["run", ProofToolchain.identifier, "lake", "env", "lean", checker.toString]
-    environment := #[
-      ("ELAN_HOME", runtime.elanHome.toString),
-      ("LEAN_PATH", System.SearchPath.toString leanPaths)] }
+    arguments := #["run", ProofToolchain.identifier, "lake", "env", "lean", checker.toString] }
 
 private def outputDigest (stdout stderr : String) : String :=
   let stdoutBytes := stdout.toUTF8.size
@@ -87,32 +83,40 @@ private def outputDigest (stdout stderr : String) : String :=
 
 def runProofClaim
     (projectRoot : System.FilePath) (runtime : Runtime.Layout) (state : ProjectState)
-    (request : ProofRunRequest) : IO (ProjectState × ProofRunResult) := do
+    (request : ProofRunRequest) (baselines : List ProofBuild.OutputBaseline)
+    (layouts : List ProofBuild.OutputLayout) : IO (ProjectState × ProofRunResult) := do
   let (projection, claim) ← findCurrentClaim state request.claimId
   if !(← runtime.elanExecutable.pathExists) then
     throw (IO.userError s!"project-local Elan is missing: {runtime.elanExecutable}")
   let proofRoot := proofRootPath projectRoot claim
-  let baselines ← ProofBuild.captureBaselines projectRoot claim
-  let (buildOutput, checks?) ← ProofBuild.withFreshOutputs baselines
+  let (buildOutput, checks?) ← ProofBuild.withFreshOutputs layouts
     (do
       let buildDirectories ← ProofBuild.buildDirectories projectRoot runtime claim
       ProofBuild.validateDiscoveredOutputs baselines buildDirectories
       let (beforeDigest, sourceDigests) ← ProofInput.evaluate projectRoot runtime claim
-      let result ← Process.execute projectRoot {
+      let result ← Process.executeWithOverrides projectRoot {
         (buildSourcesCommand runtime claim) with workingDirectory := some proofRoot.toString }
+        #[("ELAN_HOME", runtime.elanHome.toString)]
       pure (result, beforeDigest, sourceDigests))
     (fun buildInput leanPaths => do
       let (beforeDigest, _) := buildInput
       let (builtDigest, _) ← ProofInput.evaluate projectRoot runtime claim
       if builtDigest != beforeDigest then
         throw (IO.userError "proof input changed while rebuilding declared sources")
+      let elaboration ← ProofElaboration.run projectRoot proofRoot runtime claim leanPaths
+      if elaboration.elaboratedPropositionDigest != claim.elaboratedPropositionDigest ||
+          elaboration.propositionDependencies != claim.propositionDependencies then
+        throw (IO.userError "elaborated proposition differs from the accepted Design Claim")
       let kernelResult ← IO.FS.withTempDir (fun temporary => do
         let checker := temporary / "Claim.lean"
         IO.FS.writeFile checker (checkerSource claim)
-        Process.execute projectRoot {
-          (kernelCommand runtime leanPaths checker) with
-            workingDirectory := some proofRoot.toString })
-      let configuredResult ← Process.execute projectRoot (proofCommand projectRoot runtime claim)
+        Process.executeWithOverrides projectRoot {
+          (kernelCommand runtime checker) with
+            workingDirectory := some proofRoot.toString }
+          #[("ELAN_HOME", runtime.elanHome.toString),
+            ("LEAN_PATH", System.SearchPath.toString leanPaths)])
+      let configuredResult ← Process.executeWithOverrides projectRoot
+        (proofCommand projectRoot runtime claim) #[("ELAN_HOME", runtime.elanHome.toString)]
       let (checkedDigest, sourceDigests) ← ProofInput.evaluate projectRoot runtime claim
       if checkedDigest != beforeDigest then
         throw (IO.userError "proof input changed during fresh build, kernel check, or configured check")
@@ -138,6 +142,8 @@ def runProofClaim
   let stderr := buildResult.stderr ++ kernelResult.stderr ++ precheck.stderr
   let exitCode := if buildResult.exitCode != 0 then buildResult.exitCode
     else if kernelResult.exitCode != 0 then kernelResult.exitCode else precheck.exitCode
+  if !accepted then
+    throw (IO.userError s!"Lean Claim verification failed without recording a receipt:\n{stderr}")
   let entry : LedgerEntry :=
     { id := request.entryId
       order := nextEntryOrder state
@@ -147,6 +153,9 @@ def runProofClaim
       payload := .leanProofReceipt {
         claimId := claim.id
         claimInput := claim.input
+        elaboratedPropositionDigest := claim.elaboratedPropositionDigest
+        propositionDependencies := claim.propositionDependencies
+        assumptionDependencies := claim.input.assumptions.mergeSort (· < ·)
         inputDigest := digest.inputDigest
         sourceDigests
         toolchain := ProofToolchain.identifier

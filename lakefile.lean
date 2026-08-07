@@ -8,11 +8,14 @@ require leansqlite from git
   "https://github.com/leanprover/leansqlite.git" @ "v4.32.0"
 
 require Blake3 from git
-  "https://github.com/MuNeNiCK/Blake3.lean.git" @
-    "4d4ec7d21b43fcc0cf89a93e3344b10fbd2e0754"
+  "https://github.com/MuNeNiCK/Blake3.lean.git" @ "main"
+
+require MD4Lean from git
+  "https://github.com/acmepjz/md4lean.git" @ "main"
 
 lean_lib AgentWorkbench
 lean_lib AgentWorkbenchTest
+lean_lib AgentWorkbenchProof
 
 @[default_target]
 lean_exe «agent-workbench» where

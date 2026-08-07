@@ -17,7 +17,7 @@ def currentBinding (state : ProjectState) : Except String (DesignRevision × Wor
   let work ← match state.currentWork? with
     | some value => pure value
     | none => throw "no focused Work"
-  if work.designRevision != design.id then
+  if work.designRevision != some design.id then
     throw "focused Work is not bound to the current accepted Design"
   pure (design, work)
 

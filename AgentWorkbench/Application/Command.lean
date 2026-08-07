@@ -3,6 +3,7 @@ import AgentWorkbench.Decision.Command
 import AgentWorkbench.Adapter.Process
 import AgentWorkbench.Adapter.Snapshot
 import AgentWorkbench.Adapter.ReviewTarget
+import AgentWorkbench.Application.Current
 
 namespace AgentWorkbench
 
@@ -28,7 +29,22 @@ def runCommandProfile
   let resolved ← match resolveCommandProfile? projectRoot state request.profileEntryId with
     | some value => pure value
     | none => throw (IO.userError s!"no applicable Command Profile {request.profileEntryId}")
-  let result ← Process.execute projectRoot resolved.command
+  if let some criterionId := request.criterionId then
+    unless resolved.criterionIds.contains criterionId do
+      throw (IO.userError s!"criterion {criterionId} is not bound to the Command Profile")
+  let inputs ← evaluateCurrentInputs projectRoot state
+  unless commandAuthorized state inputs.claimDigests resolved do
+    throw (IO.userError
+      "Command Profile requires the current Plan, an open dependency-ready Task, and current Claim receipts")
+  let mut inputSnapshots := []
+  for target in resolved.inputTargets do
+    inputSnapshots := inputSnapshots ++ [{
+      target, snapshot := ← Snapshot.target projectRoot target }]
+  let environment ← Process.resolveEnvironment resolved.command.environment
+  let environmentSnapshots := environment.toList.map fun (name, value) =>
+    let identity := Process.environmentIdentity name value
+    ({ target := identity.1, snapshot := identity.2 } : InputSnapshot)
+  let result ← Process.executeResolved projectRoot resolved.command environment
   let snapshot ← match resolved.target with
     | some identity =>
         if identity.startsWith "design:" then
@@ -44,7 +60,11 @@ def runCommandProfile
       designRevision := some projection.design.id
       payload := .commandExecution {
         profileEntryId := resolved.profileEntryId
+        taskEntryId := resolved.taskEntryId
+        outputScope := resolved.outputScope
         criterionId := request.criterionId
+        inputSnapshots := some inputSnapshots
+        environmentSnapshots := some environmentSnapshots
         target := resolved.target
         snapshot
         command := resolved.command

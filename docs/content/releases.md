@@ -13,9 +13,11 @@ Each GitHub Release publishes one native archive and one SHA-256 checksum for ea
 - macOS aarch64
 - Windows x86_64
 
-An archive contains the native Workbench executable, the matching official Elan executable, and
-redistribution licenses for Agent Workbench, LeanSQLite, Blake3.lean, BLAKE3, Lean, and Elan. The Lean
-toolchain is acquired project-locally by native `init`; setup does not assume a global installation.
+An archive contains the native Workbench executable, the matching official Elan executable,
+redistribution licenses for Agent Workbench, LeanSQLite, Blake3.lean, BLAKE3, Lean, and Elan, the
+release-matched Skill and setup helpers below `skill/agent-workbench/`, and the public README and
+reference pages. The Lean toolchain is acquired project-locally by native `init`; setup does not
+assume a global installation.
 
 ## Setup boundary
 
@@ -32,9 +34,11 @@ Release CI uses GitHub-hosted native runners without Docker or QEMU. For each pl
 
 1. builds the runtime, domain/integration tests, and isolated proof tests;
 2. runs both test executables;
-3. stages the runtime, Elan, and licenses;
+3. stages the runtime, Elan, licenses, release-matched Skill, and public documentation;
 4. installs the candidate Skill through `gh skill install`;
-5. exercises setup and the public semantic-operation route, including concurrent proof execution;
+5. exercises Skill installation, first initialization, idempotent setup, the operation index, and
+   the first public Work transition; the full semantic and concurrent routes remain in the native
+   product test executable;
 6. packages the archive and checksum; and
 7. uploads its assets.
 

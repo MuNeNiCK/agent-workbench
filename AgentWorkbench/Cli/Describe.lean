@@ -8,6 +8,7 @@ import AgentWorkbench.Application.Guidance
 import AgentWorkbench.Application.Review
 import AgentWorkbench.Application.Command
 import AgentWorkbench.Application.Proof
+import AgentWorkbench.Application.Plan
 import AgentWorkbench.Decision.Operation
 
 namespace AgentWorkbench.Cli
@@ -51,8 +52,9 @@ private def claim : LeanClaim :=
     input := {
       statementId := statement.id, statementText := statement.text
       mapping := "the Lean witness checks the selected Design proposition"
-      proposition := "True", witness := "designClaim", proofRoot := "proof"
-      declaredSources := [{ path := "Proof.lean" }]
+      proposition := "ExampleDesign.Property", witness := "ExampleDesign.property"
+      proofRoot := ".agent-workbench/design/proofs/example"
+      declaredSources := [{ path := "ExampleDesign.lean" }]
       check := { executable := "lake", arguments := #["build"] }
       toolchain := Runtime.toolchain } }
 
@@ -60,19 +62,70 @@ def operationContracts : List OperationContract :=
   [ noInput "init" "initialize project-local runtime and state"
   , noInput "describe" "list operations; append an operation name for its contract"
   , contract "design propose" "propose a successor; parent/status/order are derived"
-      ({ producerAgentRun := "agent-run-1", statements := [statement]
+      ({ producerAgentRun := "agent-run-1", changeRationale := "record the initial Design"
+         sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
+         sourceUnitDispositions := [], statementCoverage := []
+         statements := [statement]
          acceptanceCriteria := [criterion, artifactCriterion]
          leanClaims := [claim] } : DesignProposalRequest)
+  , contract "design amend" "replace a candidate with an immutable amended candidate"
+      ({ producerAgentRun := "agent-run-1", changeRationale := "address the accepted correction"
+         amendsCandidate := some "design-1", sourceUnitDispositions := []
+         sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
+         statementCoverage := [], statements := [statement]
+         acceptanceCriteria := [criterion, artifactCriterion], leanClaims := [claim] } :
+        DesignProposalRequest)
   , contract "design accept" "accept a candidate while no Work is focused"
       ({ id := "design-1" } : IdInput)
+  , contract "design reject" "reject a candidate without changing accepted Design"
+      ({ designId := "design-1", entryId := "design-rejection-1"
+         reason := "candidate does not satisfy the fixed requirement" } : DesignRejectRequest)
   , contract "design get" "read a DesignRevision by ID" ({ id := "design-1" } : IdInput)
+  , contract "design inspect-sources" "inspect non-authoritative Design drafts without changing state"
+      ({ sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"] } :
+        DesignSourceInspectionInput)
+  , contract "design source" "read one exact archived Design source from SQLite"
+      ({ designId := "design-1", target := "file:.agent-workbench/design/product/design.md" } :
+        DesignSourceInput)
+  , contract "design diff" "compare two immutable archived Design source sets"
+      ({ beforeDesignId := "design-1", afterDesignId := "design-2" } : DesignDiffInput)
+  , contract "design export" "stream an ordered exact-byte archive to standard output"
+      ({ id := "design-1" } : IdInput)
+  , contract "plan propose" "propose a complete Work-bound implementation Plan"
+      ({ producerAgentRun := "agent-run-1", reason := "implement the accepted Design delta"
+         sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"]
+         sourceUnitDispositions := [], statementDispositions := [], steps := [] } :
+        PlanProposalRequest)
+  , contract "plan inspect-sources" "inspect non-authoritative Plan drafts without changing state"
+      ({ workId := "work-1"
+         sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"] } :
+        PlanSourceInspectionInput)
+  , contract "plan replace" "replace the current candidate head or current Plan"
+      ({ predecessorPlanId := some "plan-1", producerAgentRun := "agent-run-1"
+         reason := "incorporate the accepted change"
+         sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"]
+         sourceUnitDispositions := [], statementDispositions := [], steps := [] } :
+        PlanProposalRequest)
+  , contract "plan materialize" "atomically make a candidate Plan current and derive its Task graph"
+      ({ id := "plan-1" } : IdInput)
+  , contract "plan get" "read an immutable Implementation Plan by ID"
+      ({ id := "plan-1" } : IdInput)
+  , contract "plan source" "read one exact archived Plan source from SQLite"
+      ({ planId := "plan-1", target := "file:.agent-workbench/design/plans/work-1/plan.md" } :
+        PlanSourceInput)
+  , contract "plan diff" "compare two immutable archived Plan source sets"
+      ({ beforePlanId := "plan-1", afterPlanId := "plan-2" } : PlanDiffInput)
+  , contract "plan export" "stream an ordered exact-byte Plan archive to standard output"
+      ({ id := "plan-1" } : IdInput)
   , contract "work start" "start Work on the accepted Design; status/binding are derived"
       ({ id := "work-1", outcome := "produce the accepted artifact", scope := "project"
-         responsibleAgentRun := "agent-run-1"
-         delegatedReviewDecisions := [.accepted, .rejected, .replaced] } : WorkStartRequest)
+         responsibleAgentRun := "agent-run-1" } : WorkStartRequest)
   , contract "work get" "read Work by ID" ({ id := "work-1" } : IdInput)
   , contract "work focus" "focus a resumable Work" ({ id := "work-1" } : IdInput)
-  , contract "work resume" "resume a resumable Work" ({ id := "work-1" } : IdInput)
+  , contract "work resume" "resume only with recorded condition-satisfaction evidence" ({
+      workId := "work-1", entryId := "resume-1"
+      satisfaction := "the required clarification is recorded"
+      basisEntryIds := ["correction-1"], agentRun := "responsible-agent" } : WorkResumeRequest)
   , contract "work suspend" "suspend focused Work with an explicit return condition"
       ({ workId := "work-1", resumeCondition := "continue after requirement clarification" } : SuspendInput)
   , contract "work handoff" "transfer responsibility without replacing Work"
@@ -80,24 +133,28 @@ def operationContracts : List OperationContract :=
          reason := "continue the same Work in another agent run" } : HandoffInput)
   , contract "work adopt-design" "bind suspended Work to the accepted successor after impact inspection"
       ({ workId := "work-1", entryId := "adoption-1"
-         impactDisposition := "re-observe successor-bound evidence"
-         agentRun := "agent-run-1" } : AdoptDesignInput)
+         agentRun := "agent-run-1" } : WorkAdoptDesignRequest)
+  , contract "work adoption-impact" "derive the exact successor-Design impact before adoption"
+      ({ id := "work-1" } : IdInput)
+  , contract "work withdraw" "terminate Work unsuccessfully under an effective User Correction"
+      ({ workId := "work-1", entryId := "withdrawal-1", correctionEntryId := "correction-1"
+         reason := "the user withdrew this outcome" } : WorkWithdrawRequest)
   , noInput "work complete" "complete focused Work only when derived readiness is true"
-  , contract "task add" "add a current-bound Task; order/status/binding are derived"
-      ({ entryId := "task-1", criterionId := some criterion.id
-         description := "create artifact", required := true } : TaskAddRequest)
   , contract "task close" "close and supersede a current Task"
       ({ entryId := "task-closed", taskEntryId := "task-1" } : TaskCloseRequest)
   , contract "profile define" "define a current-bound Command Profile"
       ({ entryId := "profile-1", purpose := "verify artifact"
-         target := some "file:artifact.txt"
+         taskEntryId := "task-plan-1-step-1", inputTargets := []
+         outputScope := "file:artifact.txt", criterionIds := [criterion.id]
          command := { executable := "test", arguments := #["-f", "artifact.txt"] } } : ProfileDefineRequest)
   , contract "profile replace" "replace a current Command Profile"
       ({ entryId := "profile-2", profileEntryId := "profile-1"
-         purpose := "verify artifact", target := some "file:artifact.txt"
+         purpose := "verify artifact", taskEntryId := "task-plan-1-step-1"
+         inputTargets := [], outputScope := "file:artifact.txt", criterionIds := [criterion.id]
          command := { executable := "test", arguments := #["-s", "artifact.txt"] } } : ProfileReplaceRequest)
   , contract "artifact observe" "record criterion evidence; target/snapshot/binding are derived"
-      ({ entryId := "evidence-1", criterionId := artifactCriterion.id
+      ({ entryId := "evidence-1", taskEntryId := "task-plan-1-step-1"
+         criterionId := artifactCriterion.id
          operation := "inspect artifact", result := "artifact exists"
          successful := true } : ArtifactObserveRequest)
   , contract "correction record" "record current user intent"
@@ -117,21 +174,30 @@ def operationContracts : List OperationContract :=
          actionEntryId := "command-1", outcome := "Try applied successfully" } : KptApplyRequest)
   , contract "review start" "start a fresh Review; snapshot/binding are derived"
       ({ entryId := "review-fresh", reviewId := "review-1"
-         purpose := ReviewPurpose.implementation, targetSourceId := "command-1"
+         purpose := ReviewPurpose.implementation
          reviewerAgentRun := "reviewer-run-1" } : ReviewStartRequest)
   , contract "review resume" "continue the same Review; identity/target/reviewer are derived"
       ({ entryId := "review-resume", continuesEntryId := "review-fresh"
        } : ReviewResumeRequest)
+  , contract "review handoff" "transfer the same fixed Review to an independent reviewer"
+      ({ entryId := "review-handoff-1", reviewEntryId := "review-fresh"
+         successorReviewerRun := "reviewer-run-2", reason := "reviewer is unavailable" } :
+        ReviewHandoffRequest)
   , contract "review finding" "record an advisory Finding under an existing Review"
       ({ entryId := "finding-1", reviewEntryId := "review-fresh"
          subject := findingSubject, summary := "artifact does not match" } : FindingRecordRequest)
   , contract "review disposition" "resolve advisory authority using the responsible Work run"
       ({ entryId := "disposition-1", findingEntryId := "finding-1"
          decision := DispositionDecision.accepted, reason := "evidence confirms mismatch" } : DispositionRecordRequest)
+  , contract "review conclude" "record the active reviewer's advisory conclusion"
+      ({ entryId := "review-conclusion-1", reviewEntryId := "review-fresh"
+         clean := true, summary := "no findings" } : ReviewConclusionRequest)
   , contract "review verify" "verify a Finding through resumed Review and exact evidence"
       ({ entryId := "verification-1", findingEntryId := "finding-1"
          reviewEntryId := "review-resume", evidenceEntryId := "evidence-2" } : VerificationRecordRequest)
   , contract "review context" "read isolated fresh/resume Review input"
+      ({ id := "review-fresh" } : IdInput)
+  , contract "review inspect" "read the complete persisted Review lineage"
       ({ id := "review-fresh" } : IdInput)
   , contract "entry get" "read a resulting LedgerEntry by ID" ({ id := "task-1" } : IdInput)
   , contract "history" "read bounded history after an order"
@@ -149,17 +215,22 @@ def operationContracts : List OperationContract :=
       ({ claimId := "claim-1", entryId := "proof-1" } : ProofRunRequest)
   ]
 
-def operationIndex (state : ProjectState) : OperationIndex :=
+def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIndex :=
   { instruction := "use an applicable operation; run `describe OPERATION` for its native contract"
     operations := operationContracts.map (·.operation)
     applicableOperations := operationContracts.filter
-      (fun contract => operationApplicable state contract.operation) |>.map (·.operation) }
+      (fun contract => Operation.parse? contract.operation |>.any
+        (operationApplicable state inputs.observations inputs.claimDigests))
+      |>.map (·.operation) }
 
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
 
-def describedOperation? (state : ProjectState) (operation : String) : Option OperationContract :=
+def describedOperation?
+    (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=
   (operationContract? operation).map fun contract =>
-    { contract with applicable := operationApplicable state operation }
+    let applicable := (Operation.parse? operation).any
+      (operationApplicable state inputs.observations inputs.claimDigests)
+    { contract with applicable }
 
 end AgentWorkbench.Cli

@@ -41,7 +41,7 @@ structure CurrentProjection where
 def currentProjection? (state : ProjectState) : Option CurrentProjection := do
   let design ← state.currentDesign?
   let work ← state.currentWork?
-  if work.designRevision != design.id then none else
+  if work.designRevision != some design.id then none else
   pure { design, work, entries := effectiveEntries state design work }
 
 end AgentWorkbench

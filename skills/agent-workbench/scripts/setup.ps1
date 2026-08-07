@@ -39,7 +39,21 @@ try {
   $destination = Join-Path $ProjectRoot ".agent-workbench/bin"
   New-Item -ItemType Directory -Force -Path $destination | Out-Null
   Expand-Archive -Force $archivePath $destination
-  & (Join-Path $destination "agent-workbench.exe") --project $ProjectRoot init
+  $runtime = Join-Path $destination "agent-workbench.exe"
+  if (Test-Path (Join-Path $ProjectRoot ".agent-workbench/state.db")) {
+    $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0) {
+      $contextOutput
+    } elseif ($contextOutput -match 'unsupported schema revision 1; expected 2') {
+      & $runtime --project $ProjectRoot init
+      if ($LASTEXITCODE -ne 0) { throw "Agent Workbench migration failed" }
+    } else {
+      throw $contextOutput
+    }
+  } else {
+    & $runtime --project $ProjectRoot init
+    if ($LASTEXITCODE -ne 0) { throw "Agent Workbench initialization failed" }
+  }
 } finally {
   if (Test-Path $temporary) { Remove-Item -Recurse -Force $temporary }
 }

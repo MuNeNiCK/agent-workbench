@@ -31,15 +31,24 @@ reading authoritative state. Ownership remains held through managed external eff
 and state commit. A concurrent invocation waits, then rechecks applicability against the state it
 observes after acquiring ownership.
 
-The ownership mechanism is a project-local SQLite transaction. It is released when the process
-connection closes; there is no user-managed lock file or stale-lock deletion procedure. Read-only
-operations such as `context`, `describe`, `ready`, history, and entity lookup do not take this lock.
+The ownership mechanism is an operating-system lock on the project-local
+`.agent-workbench/mutation.lock` file. It is released automatically when the process handle closes;
+the file's continued existence is not a stale lock and must not be deleted as a recovery step.
+SQLite then commits the validated state change in one transaction. Read-only operations open SQLite
+without schema-creation or migration capability and do not take the mutation lock.
+
+An older schema is therefore not migrated by `context` or another read operation. Re-run the
+matching installed Skill's setup entry point. It recognizes the explicit v0.2.7 schema response and
+delegates migration to native `init`; it does not reinterpret other database errors as an upgrade.
 
 ## Failed operations
 
 Invalid input, unknown fields, inapplicable intent, a failed command, or an ordinarily failing proof
-does not create successful evidence or a successful state transition. Managed proof output layouts
-are restored on the operation's success and handled failure paths.
+does not create successful evidence or a successful state transition. Managed command outputs and
+proof build layouts are journaled before change. An uncommitted command output is restored to its
+recorded baseline; an output whose state commit completed is retained. Proof build layouts are
+restored after success and handled failure, and an interrupted journal is recovered before the next
+mutation.
 
 If an external condition caused failure, correct it, read current context again, and retry the same
 semantic intent. Never forge a receipt, delete a private lock, or edit SQLite state.
