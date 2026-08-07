@@ -22,7 +22,7 @@ This is an intentional consistency boundary, not a request for the user to edit 
 | `accepted` | Current normative design | `design accept` selects it |
 | `superseded` | Former accepted Design or amended candidate retained as immutable history | Derived by successor acceptance or candidate amendment |
 | `rejected` | Candidate explicitly rejected without changing accepted authority | `design reject` |
-| `replaced` | Legacy decoded status | No new v0.2.8 transition creates it |
+| `replaced` | Legacy decoded status | No new v0.2.9 transition creates it |
 
 `design propose` and `design amend` require a focused Work and capture exact declared Markdown bytes
 from its private Design workspace. The accepted parent, Work binding, identity, digest, and candidate
