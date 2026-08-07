@@ -72,9 +72,16 @@ private def verifyArchiveMembers
   let leanPrefix ← IO.Process.output { cmd := "lean", args := #["--print-prefix"] }
   unless leanPrefix.exitCode == 0 do
     throw (IO.userError "cannot locate the pinned Lean toolchain")
-  let arName := if System.Platform.isWindows then "llvm-ar.exe" else "llvm-ar"
-  let ar := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin" / arName
-  let listing ← IO.Process.output { cmd := ar.toString, args := #["t", archive] }
+  let bin := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin"
+  let executable := bin / "llvm-ar.exe"
+  let extensionless := bin / "llvm-ar"
+  let ar ← if ← executable.pathExists then pure executable
+    else if ← extensionless.pathExists then pure extensionless
+    else pure <| System.FilePath.mk "llvm-ar"
+  let listing ← try
+      IO.Process.output { cmd := ar.toString, args := #["t", archive] }
+    catch error =>
+      throw (IO.userError s!"cannot start reviewed native archive inspector {ar}: {error}")
   unless listing.exitCode == 0 do
     throw (IO.userError s!"cannot inspect reviewed native archive {archive}: {listing.stderr}")
   let members := listing.stdout.splitOn "\n" |>.filterMap fun line =>
