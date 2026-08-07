@@ -59,8 +59,9 @@ private def sourcePath
     fail s!"Claim {claimId} source escapes its proof root: {source.path}"
   pure canonical
 
-private def targetFor (projectRoot path : System.FilePath) : String :=
-  "file:" ++ ProofInput.pathIdentity projectRoot.normalize path.normalize
+private def targetFor (claim : LeanClaim) (source : SourceInput) : String :=
+  let root := claim.input.proofRoot.replace "\\" "/" |>.dropEndWhile (· == '/') |>.toString
+  "file:" ++ root ++ "/" ++ source.path.replace "\\" "/"
 
 private def ensureCompleteClosure
     (projectRoot : System.FilePath) (runtime : Runtime.Layout)
@@ -101,7 +102,7 @@ private def bindClaim
   let mut captured := known
   let mut boundSources := []
   for (source, path) in claim.input.declaredSources.zip paths do
-    let target := targetFor projectRoot path
+    let target := targetFor claim source
     let capture ← match captured.find? (·.target == target) with
       | some value => pure value
       | none => do
