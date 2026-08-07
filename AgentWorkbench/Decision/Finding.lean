@@ -62,11 +62,24 @@ private def remediationTaskEntryId? (entry : LedgerEntry) : Option String :=
   | .commandExecution value => value.taskEntryId
   | _ => none
 
+/-- Exact files only cover themselves. A tree observation also covers files and
+subtrees below that tree, but never a sibling or parent target. -/
+def implementationTargetCovers (evidenceTarget findingTarget : String) : Bool :=
+  if evidenceTarget == findingTarget then true
+  else if evidenceTarget.startsWith "tree:" then
+    let root := evidenceTarget.drop 5
+    if root == "." then
+      findingTarget.startsWith "tree:" || findingTarget.startsWith "file:"
+    else
+      findingTarget.startsWith s!"tree:{root}/" ||
+        findingTarget.startsWith s!"file:{root}/"
+  else false
+
 private def findingTargetMatches
     (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
     (target : String) : Bool :=
   match finding.subject.kind with
-  | .implementationComponent => finding.subject.id == target
+  | .implementationComponent => implementationTargetCovers target finding.subject.id
   | .criterion =>
       findingEntry.designRevision.bind state.design? |>.bind (·.criterion? finding.subject.id)
         |>.any (·.target == target)

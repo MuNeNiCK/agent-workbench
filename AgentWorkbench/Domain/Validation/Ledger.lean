@@ -236,11 +236,18 @@ private def validateReview
             s!"review {entry.id} changes its Work producer provenance"
         let expectedTargetIds := implementationReviewOutputTargetIds currentEntries plan
           |>.mergeSort (· < ·)
-        let implementationTargets := deduplicateReviewTargetComponents <|
+        let recordedImplementationTargets :=
           review.targetManifest.filter (·.kind == "implementation_target")
+        let implementationTargets := if review.targetManifestVersion == 1 then
+          recordedImplementationTargets
+        else
+          deduplicateReviewTargetComponents recordedImplementationTargets
         let actualTargetIds := implementationTargets.map (·.id) |>.mergeSort (· < ·)
         ensure (actualTargetIds == expectedTargetIds && uniqueStrings actualTargetIds)
           s!"review {entry.id} changes its exact implementation output targets"
+        ensure (review.targetManifestVersion == 0 || implementationTargets.all fun component =>
+          component.producerAgentRuns == [work.responsibleAgentRun])
+          s!"review {entry.id} changes implementation target producer provenance"
         let structuralKinds := ["design", "plan", "work", "implementation_target"]
         let actualLedgerComponents := normalizeReviewTargetComponents <|
           review.targetManifest.filter fun component => !structuralKinds.contains component.kind

@@ -13,6 +13,14 @@ private def startedReview (root : System.FilePath) : IO ProjectState :=
 
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
+    expect (implementationTargetCovers "tree:AgentWorkbench" "tree:AgentWorkbench/Domain")
+      "a containing tree observation did not cover its reviewed subtree"
+    expect (implementationTargetCovers "tree:AgentWorkbench" "file:AgentWorkbench/Domain/Review.lean")
+      "a containing tree observation did not cover its reviewed file"
+    expect (!implementationTargetCovers "tree:AgentWorkbenchTest" "tree:AgentWorkbench/Domain")
+      "an unrelated tree observation covered a reviewed component"
+    expect (!implementationTargetCovers "file:AgentWorkbench.lean" "tree:AgentWorkbench")
+      "a file observation covered a different reviewed tree"
     IO.FS.writeFile (root / "artifact.txt") "candidate"
     let projectSnapshot ← Snapshot.target root "tree:."
     IO.FS.createDirAll (root / ".agent-workbench" / "toolchains")
@@ -85,6 +93,38 @@ def run : IO Unit :=
       else entry
     expectError (validateState { reviewed with ledgerEntries := duplicateTargetEntries })
       "Implementation Review accepted conflicting duplicate implementation targets"
+    let identicalDuplicateTargetEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            match value.targetManifest.find? (·.kind == "implementation_target") with
+            | some target =>
+                let manifest := normalizeReviewTargetComponents (value.targetManifest ++ [target])
+                { entry with payload := .review { value with
+                    targetManifest := manifest
+                    targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+            | none => entry
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := identicalDuplicateTargetEntries })
+      "Implementation Review accepted an identical duplicate implementation target"
+    let forgedTargetProducerEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.map fun component =>
+              if component.kind == "implementation_target" then
+                { component with producerAgentRuns := ["forged-target-producer"] }
+              else component
+            let manifestProducers := manifest.foldl (fun found component =>
+              component.producerAgentRuns.foldl (fun runs producer =>
+                if producer.isEmpty || runs.contains producer then runs else runs ++ [producer]) found) []
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress
+                producerAgentRuns := manifestProducers } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := forgedTargetProducerEntries })
+      "Implementation Review accepted forged implementation target producer provenance"
     let reorderedEntries := reviewed.ledgerEntries.map fun entry =>
       if entry.id == "review-1" then match entry.payload with
         | .review value =>
