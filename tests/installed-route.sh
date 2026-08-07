@@ -115,7 +115,7 @@ operations=value["operations"]
 assert "work start" in operations
 assert "design inspect-sources" in operations
 assert "plan propose" in operations
-assert "task close" in operations
+assert "task close" in operations, {"check":"operation-index","operations":operations}
 assert "task add" not in operations
 assert "formal-check" not in operations
 '
@@ -222,7 +222,7 @@ value=json.load(sys.stdin)
 receipt=value["entry"]["payload"]["leanProofReceipt"]["value"]
 assert receipt["kernelAccepted"] is True
 assert receipt["elaboratedPropositionDigest"].startswith("blake3:")
-assert receipt["propositionDependencies"]
+assert receipt["propositionDependencies"], {"check":"proof-dependencies","receipt":receipt}
 assert receipt["assumptionDependencies"] == []
 '
 before_stale=$("$awb" --project "$project" context)
@@ -241,7 +241,8 @@ after=json.loads(sys.stdin.readline())
 assert after["stateRevision"] == before["stateRevision"]
 assert before["context"]["focused"]["claimGaps"] == []
 assert after["context"]["focused"]["claimGaps"] == [
-    {"claimId":"claim-route","kind":"missingInputDigest"}]
+    {"claimId":"claim-route","kind":"missingInputDigest"}], {
+        "check":"stale-claim-gap","before":before,"after":after}
 '
 printf '%s\n' '{"afterOrder":0,"limit":100}' \
   | "$awb" --project "$project" history | python3 -c '
