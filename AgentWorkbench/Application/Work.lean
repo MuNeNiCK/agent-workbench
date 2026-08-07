@@ -24,6 +24,14 @@ structure WorkAdoptDesignRequest where
   agentRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+structure WorkResumeRequest where
+  workId : String
+  entryId : String
+  satisfaction : String
+  basisEntryIds : List String
+  agentRun : String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
 structure WorkAdoptionImpact where
   workId : String
   predecessorDesignId : Option String
@@ -118,20 +126,45 @@ def focusWork (state : ProjectState) (workId : String) : Except String ProjectSt
   validated { state with
     revision := state.revision + 1, focusedWorkId := some workId }
 
-def resumeWork (state : ProjectState) (workId : String) : Except String ProjectState := do
+def resumeWork (state : ProjectState) (request : WorkResumeRequest) : Except String ProjectState := do
   if state.focusedWorkId.isSome then throw "another Work is already focused"
-  let work ← match state.work? workId with
+  let work ← match state.work? request.workId with
     | some value => pure value
-    | none => throw s!"work {workId} does not exist"
-  if work.status != .suspended then throw s!"work {workId} is not suspended"
+    | none => throw s!"work {request.workId} does not exist"
+  if work.status != .suspended then throw s!"work {request.workId} is not suspended"
   if work.designRevision != state.acceptedDesignId then
-    throw s!"work {workId} must explicitly adopt the accepted design before resume"
+    throw s!"work {request.workId} must explicitly adopt the accepted design before resume"
+  if request.agentRun != work.responsibleAgentRun then
+    throw "only the responsible work agent may satisfy the resume condition"
+  let condition ← match work.resumeCondition with
+    | some value => pure value
+    | none => throw "suspended Work has no recorded resume condition"
+  if request.satisfaction.isEmpty || request.basisEntryIds.isEmpty then
+    throw "Work resume requires a satisfaction statement and at least one immutable basis entry"
+  if request.basisEntryIds.eraseDups.length != request.basisEntryIds.length then
+    throw "Work resume basis entries must be unique"
+  for basisId in request.basisEntryIds do
+    let basis ← match state.entry? basisId with
+      | some value => pure value
+      | none => throw s!"resume basis entry {basisId} does not exist"
+    if entryIsSuperseded state basis || basis.workId != some work.id ||
+        basis.designRevision != work.designRevision then
+      throw s!"resume basis entry {basisId} is not current for the suspended Work"
+  if (state.entry? request.entryId).isSome then
+    throw s!"entry id {request.entryId} already exists"
   let works := state.works.map fun candidate =>
-    if candidate.id == workId then
+    if candidate.id == request.workId then
       { candidate with status := .active, resumeCondition := none }
     else candidate
+  let resumeEntry : LedgerEntry := {
+    id := request.entryId, order := nextEntryOrder state, scope := work.scope
+    workId := some work.id, designRevision := work.designRevision
+    payload := .workResume {
+      condition, satisfaction := request.satisfaction
+      basisEntryIds := request.basisEntryIds, resumedByRun := request.agentRun } }
   validated { state with
-    revision := state.revision + 1, focusedWorkId := some workId, works }
+    revision := state.revision + 1, focusedWorkId := some request.workId, works
+    ledgerEntries := state.ledgerEntries ++ [resumeEntry] }
 
 def adoptDesignForWork
     (state : ProjectState) (request : WorkAdoptDesignRequest) : Except String ProjectState := do

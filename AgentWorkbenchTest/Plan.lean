@@ -35,19 +35,36 @@ private def dependencyPlanState : ProjectState :=
     status := .candidate
     contentDigest := "blake3:new"
     steps := [changedA, stepB] }
-  let task (order : Nat) (step : PlanStep) : LedgerEntry := {
-    id := s!"old-task-{step.id}", order, scope := work.scope
+  let task (id : String) (order : Nat) (step : PlanStep) (closed : Bool)
+      (sourceId evidenceId : String := "") : LedgerEntry := {
+    id, order, scope := work.scope
     workId := some work.id, designRevision := some design.id
+    supersedes := if closed then [sourceId] else []
     payload := .task {
       planId := some oldPlan.id, planStepId := some step.id
       lineageId := some s!"{work.id}:{step.id}"
       dependencyLineageIds := step.dependsOnStepIds.map (fun id => s!"{work.id}:{id}")
       outputScopes := step.outputScopes, verificationCriterionIds := step.verificationCriterionIds
-      materializedAtOrder := 1, description := step.description, required := true, closed := true } }
-  { revision := 4, acceptedDesignId := some design.id, focusedWorkId := some work.id
+      verificationEvidenceEntryIds := if closed then [evidenceId] else []
+      verificationTaskEntryId := if closed then some sourceId else none
+      materializedAtOrder := 0, description := step.description, required := true, closed } }
+  let evidence (id : String) (order : Nat) (taskId : String) : LedgerEntry := {
+    id, order, scope := work.scope, workId := some work.id, designRevision := some design.id
+    payload := .artifactObservation {
+      taskEntryId := some taskId, outputScope := some criterion.target
+      criterionId := criterion.id, target := criterion.target, snapshot := s!"blake3:{id}"
+      operation := "verify Plan Task", result := "verified", successful := true
+      producerAgentRun := work.responsibleAgentRun } }
+  let taskAOpen := task "old-task-a-open" 1 stepA false
+  let taskBOpen := task "old-task-b-open" 2 stepB false
+  let evidenceA := evidence "old-evidence-a" 3 taskAOpen.id
+  let taskA := task "old-task-a" 4 stepA true taskAOpen.id evidenceA.id
+  let evidenceB := evidence "old-evidence-b" 5 taskBOpen.id
+  let taskB := task "old-task-b" 6 stepB true taskBOpen.id evidenceB.id
+  { revision := 8, acceptedDesignId := some design.id, focusedWorkId := some work.id
     designRevisions := [design], works := [work]
     implementationPlans := [oldPlan, candidate]
-    ledgerEntries := [task 1 stepA, task 2 stepB] }
+    ledgerEntries := [taskAOpen, taskBOpen, evidenceA, taskA, evidenceB, taskB] }
 
 def run : IO Unit := do
   expectError (closeTask baseState [] { entryId := "task-closed", taskEntryId := "task-open" })

@@ -210,7 +210,10 @@ def constructiveSuccessorLifecycle : Except String ProjectState := do
   let acceptedSuccessor ← acceptDesign suspended successor.id
   let adopted ← adoptDesignForWork acceptedSuccessor {
     workId := "work-route", entryId := "adoption-route", agentRun := "agent-route" }
-  let resumed ← resumeWork adopted "work-route"
+  let resumed ← resumeWork adopted {
+    workId := "work-route", entryId := "resume-route"
+    satisfaction := "the accepted successor was adopted"
+    basisEntryIds := ["adoption-route"], agentRun := "agent-route" }
   handoffWork resumed "work-route" "handoff-route" "agent-successor" "continue the same outcome"
 
 private def constructiveSuccessorFinal : ProjectState :=

@@ -33,7 +33,7 @@ theorem completion_ready_has_complete_current_authority
       currentProjection? state = some projection ∧
       state.currentPlanFor? projection.work.id = some plan ∧
       projection.design.sourceArchiveAvailable = true ∧
-      requiredTasksClosed projection = true ∧
+      requiredTasksClosed projection observations = true ∧
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) = true ∧
       projection.design.leanClaims.all (claimHasReceipt projection digests) = true ∧

@@ -137,8 +137,13 @@ def recordFinding
   let design ← match state.design? designId with
     | some value => pure value
     | none => throw s!"no DesignRevision {designId}"
-  if !findingSubjectCurrent design request.subject then
-    throw "Finding subject is not an exact subject in the fixed Review Design"
+  let subjectIsFixed := match request.subject.kind with
+    | .implementationComponent =>
+        review.purpose == .implementation && review.targetManifest.any (fun component =>
+          component.id == request.subject.id && component.snapshot == request.subject.exactQuote)
+    | _ => findingSubjectCurrent design request.subject
+  if !subjectIsFixed then
+    throw "Finding subject is not an exact subject in the fixed Review target"
   appendEntry state {
     id := request.entryId, order := nextEntryOrder state, scope := reviewEntry.scope
     workId := reviewEntry.workId, designRevision := reviewEntry.designRevision
@@ -205,9 +210,8 @@ def recordVerification
   if activeReviewerRun state review == producer then
     throw "remediation evidence producer cannot verify its own output"
   if !(review.targetManifest.any fun component =>
-      component.kind == "implementation_target" && component.id == target &&
-        component.snapshot == snapshot) then
-    throw "remediation target is absent from the resumed Review manifest"
+      component.kind == "implementation_target" && component.id == target) then
+    throw "remediation target is absent from the fixed Review manifest"
   appendEntry state {
     id := request.entryId, order := nextEntryOrder state, scope := reviewEntry.scope
     workId := reviewEntry.workId, designRevision := reviewEntry.designRevision

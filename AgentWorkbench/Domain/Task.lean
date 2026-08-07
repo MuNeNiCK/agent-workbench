@@ -9,6 +9,10 @@ structure TaskRecord where
   dependencyLineageIds : List String := []
   outputScopes : List String := []
   verificationCriterionIds : List String := []
+  /-- Exact evidence entries used to close this Task. Completion revalidates
+  these identities; evidence for a sibling Task cannot substitute for them. -/
+  verificationEvidenceEntryIds : List String := []
+  verificationTaskEntryId : Option String := none
   materializedAtOrder : Nat := 0
   retired : Bool := false
   criterionId : Option String := none
@@ -24,6 +28,8 @@ private structure PersistedTaskRecord where
   dependencyLineageIds : List String
   outputScopes : List String
   verificationCriterionIds : List String
+  verificationEvidenceEntryIds : List String := []
+  verificationTaskEntryId : Option String := none
   materializedAtOrder : Nat
   retired : Bool
   criterionId : Option String
@@ -46,6 +52,8 @@ instance : Lean.FromJson TaskRecord where
         planId := value.planId, planStepId := value.planStepId, lineageId := value.lineageId
         dependencyLineageIds := value.dependencyLineageIds, outputScopes := value.outputScopes
         verificationCriterionIds := value.verificationCriterionIds
+        verificationEvidenceEntryIds := value.verificationEvidenceEntryIds
+        verificationTaskEntryId := value.verificationTaskEntryId
         materializedAtOrder := value.materializedAtOrder, retired := value.retired
         criterionId := value.criterionId, description := value.description
         required := value.required, closed := value.closed }

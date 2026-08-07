@@ -16,10 +16,20 @@ private def workLifecycle : IO Unit := do
   let suspended ← fromExcept <| suspendWork started work.id "resume after the Design is accepted"
   expect (suspended.focusedWorkId.isNone && (suspended.work? work.id).any (·.status == .suspended))
     "suspend did not separate focus from Work status"
-  let resumed ← fromExcept <| resumeWork suspended work.id
-  let handed ← fromExcept <| handoffWork resumed work.id "handoff-1" "agent-b" "continue same outcome"
-  expect ((handed.work? work.id).any fun current =>
-    current.outcome == work.outcome && current.baselineDesignRevision == work.baselineDesignRevision &&
+  expectError (resumeWork suspended {
+    workId := work.id, entryId := "resume-without-basis"
+    satisfaction := "the condition is not actually evidenced", basisEntryIds := []
+    agentRun := work.responsibleAgentRun })
+    "Work resumed without an immutable satisfaction basis"
+  let boundWork := AgentWorkbenchTest.work
+  let suspendedBound ← fromExcept <| suspendWork baseState boundWork.id "resume after recorded basis"
+  let resumed ← fromExcept <| resumeWork suspendedBound {
+    workId := boundWork.id, entryId := "resume-1", satisfaction := "the Task basis is recorded"
+    basisEntryIds := ["task-open"], agentRun := boundWork.responsibleAgentRun }
+  let handed ← fromExcept <| handoffWork resumed boundWork.id "handoff-1" "agent-b" "continue same outcome"
+  expect ((handed.work? boundWork.id).any fun current =>
+    current.outcome == boundWork.outcome &&
+      current.baselineDesignRevision == boundWork.baselineDesignRevision &&
       current.responsibleAgentRun == "agent-b")
     "handoff changed Work authority beyond responsibility"
 

@@ -16,6 +16,60 @@ private def expectCompletionRejected (state : ProjectState) (message : String) :
   expectError (completeFocusedWork state observations [] "blake3:completion-input") message
   expect (state == before) s!"{message}; rejected pure completion changed its input state"
 
+private def siblingTaskEvidenceState : ProjectState :=
+  let stepA : PlanStep := { step with id := "shared-a", description := "produce the first output" }
+  let stepB : PlanStep := { step with id := "shared-b", description := "produce the second output" }
+  let unitA : DesignSourceUnit := { planUnit with id := "shared-unit-a", text := stepA.description }
+  let unitB : DesignSourceUnit := { planUnit with id := "shared-unit-b", text := stepB.description }
+  let sharedPlan : ImplementationPlan := { plan with
+    id := "plan-shared", contentDigest := "blake3:plan-shared"
+    sourceUnits := [unitA, unitB]
+    sourceUnitDispositions := [
+      { unitId := unitA.id, stepId := some stepA.id },
+      { unitId := unitB.id, stepId := some stepB.id }]
+    statementDispositions := [{
+      statementId := statement.id, statementText := statement.text, deltaKind := .added
+      stepIds := [stepA.id, stepB.id] }]
+    steps := [stepA, stepB] }
+  let openTask (id : String) (order : Nat) (planStep : PlanStep) : LedgerEntry := {
+    id, order, scope := work.scope, workId := some work.id, designRevision := some design.id
+    payload := .task {
+      planId := some sharedPlan.id, planStepId := some planStep.id
+      lineageId := some s!"{work.id}:{planStep.id}"
+      outputScopes := planStep.outputScopes
+      verificationCriterionIds := planStep.verificationCriterionIds
+      materializedAtOrder := 0, description := planStep.description
+      required := true, closed := false } }
+  let evidence (id : String) (order : Nat) (taskId snapshot : String) : LedgerEntry := {
+    id, order, scope := work.scope, workId := some work.id, designRevision := some design.id
+    payload := .artifactObservation {
+      taskEntryId := some taskId, outputScope := some criterion.target
+      criterionId := criterion.id, target := criterion.target, snapshot
+      operation := "verify exact Task output", result := "verified", successful := true
+      producerAgentRun := work.responsibleAgentRun } }
+  let closedTask (id : String) (order : Nat) (source : LedgerEntry)
+      (proof : LedgerEntry) (planStep : PlanStep) : LedgerEntry := {
+    id, order, scope := work.scope, workId := some work.id, designRevision := some design.id
+    supersedes := [source.id]
+    payload := .task {
+      planId := some sharedPlan.id, planStepId := some planStep.id
+      lineageId := some s!"{work.id}:{planStep.id}"
+      outputScopes := planStep.outputScopes
+      verificationCriterionIds := planStep.verificationCriterionIds
+      verificationEvidenceEntryIds := [proof.id]
+      verificationTaskEntryId := some source.id
+      materializedAtOrder := 0, description := planStep.description
+      required := true, closed := true } }
+  let openA := openTask "shared-open-a" 1 stepA
+  let proofA := evidence "shared-evidence-a" 2 openA.id "blake3:older-output"
+  let closedA := closedTask "shared-closed-a" 3 openA proofA stepA
+  let openB := openTask "shared-open-b" 4 stepB
+  let proofB := evidence "shared-evidence-b" 5 openB.id "blake3:current-output"
+  let closedB := closedTask "shared-closed-b" 6 openB proofB stepB
+  { revision := 8, acceptedDesignId := some design.id, focusedWorkId := some work.id
+    designRevisions := [design], works := [work], implementationPlans := [sharedPlan]
+    ledgerEntries := [openA, proofA, closedA, openB, proofB, closedB] }
+
 def run : IO Unit := do
   let noPlan : ProjectState := { baseState with
     implementationPlans := [], ledgerEntries := [] }
@@ -26,13 +80,15 @@ def run : IO Unit := do
   expectCompletionRejected baseState "completion accepted an open required Task"
 
   let closed ← currentClosedState
-  let closedEntry ← match closed.entry? "task-closed" with
-    | some value => pure value
-    | none => throw (IO.userError "closed Task fixture is missing")
-  let noEvidence : ProjectState := { closed with
-    ledgerEntries := [taskEntry, closedEntry] }
-  fromExcept (validateState noEvidence)
-  expectCompletionRejected noEvidence "completion accepted a Criterion without current evidence"
+  expectError (completeFocusedWork closed
+    [{ target := criterion.target, snapshot := "blake3:changed-after-task-close" }] []
+    "blake3:completion-input")
+    "completion accepted a Task whose exact closing evidence became stale"
+  let siblingState := siblingTaskEvidenceState
+  fromExcept (validateState siblingState)
+  expect (!completionReady siblingState
+    [{ target := criterion.target, snapshot := "blake3:current-output" }] [])
+    "current evidence from a sibling Task substituted for stale evidence bound to another Task"
 
   let corrected ← fromExcept <| recordCorrection closed {
     entryId := "correction-completion-gap", content := "change the current expected result" }

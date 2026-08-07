@@ -27,6 +27,15 @@ structure WorkWithdrawalRecord where
   withdrawnByRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+/-- Auditable evidence that the responsible agent satisfied a suspended Work's
+recorded resume condition. Basis entries remain part of immutable history. -/
+structure WorkResumeRecord where
+  condition : String
+  satisfaction : String
+  basisEntryIds : List String
+  resumedByRun : String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
 /-- Immutable authority created atomically with successful Work completion. -/
 structure WorkCompletionRecord where
   workId : String
@@ -49,6 +58,7 @@ inductive EntryPayload where
   | workDesignAdoption (value : WorkDesignAdoptionRecord)
   | workHandoff (value : WorkHandoffRecord)
   | workWithdrawal (value : WorkWithdrawalRecord)
+  | workResume (value : WorkResumeRecord)
   | workCompletion (value : WorkCompletionRecord)
   | designRejection (value : DesignRejectionRecord)
   | commandProfile (value : CommandProfileRecord)

@@ -1,5 +1,25 @@
 import AgentWorkbench.Adapter.Store
+import AgentWorkbench.Adapter.StoreRecovery
+import AgentWorkbench.Adapter.ManagedOutput
+import AgentWorkbench.Adapter.OperationLock
+import AgentWorkbench.Adapter.DesignSource
+import AgentWorkbench.Adapter.PlanSource
+import AgentWorkbench.Adapter.ContentDigest
+import AgentWorkbench.Adapter.ProofBuild
 import AgentWorkbench.Adapter.DesignClaim
+import AgentWorkbench.Application.Design
+import AgentWorkbench.Application.Work
+import AgentWorkbench.Application.Completion
+import AgentWorkbench.Application.Command
+import AgentWorkbench.Application.Proof
+import AgentWorkbench.Application.Current
+import AgentWorkbench.Application.Plan
+import AgentWorkbench.Application.Task
+import AgentWorkbench.Application.Profile
+import AgentWorkbench.Application.Artifact
+import AgentWorkbench.Application.Guidance
+import AgentWorkbench.Application.Review
+import AgentWorkbench.Application.Mutation
 
 namespace AgentWorkbench.Store
 
@@ -8,9 +28,6 @@ private def fail (message : String) : IO α := throw (IO.userError message)
 private def fromExcept : Except String α → IO α
   | .ok value => pure value
   | .error message => fail message
-
-private def encode [Lean.ToJson α] (value : α) : String :=
-  (Lean.toJson value).compress
 
 private def updateOperation
     (store : WriteStore) (operation : Operation)
@@ -176,7 +193,8 @@ private def runCommandProfile
   let token := (AgentWorkbench.ContentDigest.string
     s!"{prior.revision}:{request.entryId}:{request.profileEntryId}").drop 7 |>.toString
   let operationId := s!"command-{token}"
-  beginManagedOperation store operationId prior.revision "retain-command-output" (encode baseline)
+  beginManagedOperation store operationId prior.revision "retain-command-output"
+    (Codec.encode baseline)
   let cleanupUncommitted : IO Unit := do
     AgentWorkbench.ManagedOutput.restore projectRoot baseline
     clearManagedOperation store operationId
@@ -219,7 +237,8 @@ private def runProofClaim
   let operationId := s!"proof-{token}"
   let layouts ← AgentWorkbench.ProofBuild.outputLayouts baselines token
   let manifest : AgentWorkbench.ProofBuild.ManagedOutputManifest := { layouts }
-  beginManagedOperation store operationId prior.revision "restore-proof-outputs" (encode manifest)
+  beginManagedOperation store operationId prior.revision "restore-proof-outputs"
+    (Codec.encode manifest)
   let execution ← try
       AgentWorkbench.runProofClaim projectRoot
         (AgentWorkbench.Runtime.layout projectRoot) prior request baselines layouts

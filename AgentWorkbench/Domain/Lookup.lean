@@ -72,6 +72,7 @@ def EntryPayload.tag : EntryPayload → String
   | .workDesignAdoption _ => "work_design_adoption"
   | .workHandoff _ => "work_handoff"
   | .workWithdrawal _ => "work_withdrawal"
+  | .workResume _ => "work_resume"
   | .workCompletion _ => "work_completion"
   | .designRejection _ => "design_rejection"
   | .commandProfile _ => "command_profile"

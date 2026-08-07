@@ -36,6 +36,10 @@ failures. Migration preserves the recorded Designs, Works, and ledger history, m
 historical source archives as unavailable, and advances project state once. Later setup runs are
 read-only and idempotent.
 
+A legacy `blocked` Work is migrated to `suspended` with a persisted diagnostic explaining the
+translation and requiring its recorded resume condition to be verified before resume. The status
+change is therefore visible through ordinary Work inspection rather than hidden in migration code.
+
 The POSIX setup entry point is invoked through `sh`, so installed script executable mode is not a
 requirement. Once setup finishes, the Skill calls the native Workbench executable directly; shell is
 not the application workflow.

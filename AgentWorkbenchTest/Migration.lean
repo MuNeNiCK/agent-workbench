@@ -207,7 +207,10 @@ def run : IO Unit := do
     let _ ← Store.executeMutation root database (.designAccept successor.id)
     let _ ← Store.executeMutation root database (.workAdoptDesign {
       workId := "work-v1", entryId := "adoption-v2", agentRun := "agent-old" })
-    let _ ← Store.executeMutation root database (.workResume "work-v1")
+    let _ ← Store.executeMutation root database (.workResume {
+      workId := "work-v1", entryId := "resume-v2"
+      satisfaction := "the accepted successor was adopted"
+      basisEntryIds := ["adoption-v2"], agentRun := "agent-old" })
 
     let planRoot := privateRoot / "plans" / "work-v1"
     IO.FS.createDirAll planRoot
@@ -258,6 +261,22 @@ def run : IO Unit := do
         | .workCompletion _ => false
         | _ => true)
       "migration rejected or fabricated authority for a v0.2.7 completed Work"
+
+  -- A legacy blocked status cannot be translated silently. The retained Work
+  -- exposes an explicit recovery diagnostic before any later resume attempt.
+  IO.FS.withTempDir fun root => do
+    let database := root / "state.db"
+    createV1Database database
+    let connection ← AgentWorkbench.SQLite.open database
+    AgentWorkbench.SQLite.execute connection
+      "UPDATE project_metadata SET focused_work_id = NULL WHERE singleton = 1" #[]
+    AgentWorkbench.SQLite.execute connection
+      "UPDATE works SET status = 'blocked', document = replace(document,
+       '\"status\":\"focused\"', '\"status\":\"blocked\"') WHERE id = 'work-v1'" #[]
+    let migrated ← Store.loadState (← Store.open database)
+    expect ((migrated.work? "work-v1").any fun value =>
+      value.status == .suspended && value.migrationDiagnostic.isSome)
+      "blocked migration changed status without an explicit recovery diagnostic"
 
   -- Init is the upgrade transition used by setup when a read-only context reports schema revision
   -- 1. The migrated Store owns that exceptional applicability and still advances semantic state

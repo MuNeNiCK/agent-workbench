@@ -62,6 +62,7 @@ private def createSchemaV2 (connection : AgentWorkbench.SQLite.Connection) : IO 
       design_revision_id TEXT,
       responsible_run TEXT NOT NULL,
       resume_condition TEXT,
+      migration_diagnostic TEXT,
       document TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS works_by_design ON works(design_revision_id);
@@ -174,11 +175,12 @@ private def migrateV1ToV2 (connection : AgentWorkbench.SQLite.Connection) : IO U
       design_revision_id TEXT,
       responsible_run TEXT NOT NULL,
       resume_condition TEXT,
+      migration_diagnostic TEXT,
       document TEXT NOT NULL
     ) STRICT;
     INSERT INTO works(
       id, status, scope, outcome, baseline_design_id, design_revision_id,
-      responsible_run, resume_condition, document
+      responsible_run, resume_condition, migration_diagnostic, document
     )
       SELECT id,
         CASE status WHEN 'focused' THEN 'active' WHEN 'blocked' THEN 'suspended' ELSE status END,
@@ -188,7 +190,12 @@ private def migrateV1ToV2 (connection : AgentWorkbench.SQLite.Connection) : IO U
         design_revision,
         json_extract(document, '$.responsibleAgentRun'),
         NULLIF(json_extract(document, '$.resumeCondition'), ''),
-        document FROM works_v1;
+        CASE status WHEN 'blocked' THEN
+          'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming'
+          ELSE NULL END,
+        CASE status WHEN 'blocked' THEN json_set(document, '$.migrationDiagnostic',
+          'legacy blocked status migrated to suspended; verify the recorded resume condition before resuming')
+          ELSE document END FROM works_v1;
     DROP TABLE works_v1;
     CREATE INDEX works_by_design ON works(design_revision_id);
     CREATE INDEX works_by_scope_status ON works(scope, status);

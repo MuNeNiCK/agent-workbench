@@ -36,12 +36,6 @@ def completionInput
 def currentSnapshot? (observations : List TargetObservation) (target : String) : Option String :=
   uniqueBy? observations (·.target) target |>.map (·.snapshot)
 
-def requiredTasksClosed (projection : CurrentProjection) : Bool :=
-  projection.entries.all (fun entry =>
-    match entry.payload with
-    | .task task => !task.required || task.closed
-    | _ => true)
-
 def evidenceEntryCurrent
     (projection : CurrentProjection) (observations : List TargetObservation)
     (entry : LedgerEntry) : Bool :=
@@ -63,6 +57,26 @@ def evidenceEntryCurrent
             match candidate.payload with | .commandProfile _ => true | _ => false)
       | _, _ => false
   | _ => false
+
+def requiredTasksClosed
+    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
+  projection.entries.all (fun entry =>
+    match entry.payload with
+    | .task task => !task.required || (task.closed &&
+        task.verificationTaskEntryId.isSome &&
+        !task.verificationEvidenceEntryIds.isEmpty &&
+        task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
+        task.verificationEvidenceEntryIds.all fun evidenceId =>
+          projection.entries.any fun evidenceEntry =>
+            evidenceEntry.id == evidenceId &&
+            evidenceEntryCurrent projection observations evidenceEntry &&
+            match evidenceEntry.payload with
+            | .artifactObservation evidence =>
+                evidence.taskEntryId == task.verificationTaskEntryId
+            | .commandExecution evidence =>
+                evidence.taskEntryId == task.verificationTaskEntryId
+            | _ => false)
+    | _ => true)
 
 def criterionEvidenceRecorded
     (projection : CurrentProjection) (criterion : AcceptanceCriterion) : Bool :=
@@ -196,7 +210,7 @@ def completionReady
   | some projection =>
       projection.design.sourceArchiveAvailable &&
       (state.currentPlanFor? projection.work.id).isSome &&
-      requiredTasksClosed projection &&
+      requiredTasksClosed projection observations &&
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) &&
       projection.design.leanClaims.all (claimHasReceipt projection digests) &&

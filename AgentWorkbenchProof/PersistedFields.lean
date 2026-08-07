@@ -67,8 +67,8 @@ def designRevision : DesignRevision → List FieldCoverage
        "acceptanceCriteria", "leanClaims"]
 
 def work : Work → List FieldCoverage
-  | .mk _ _ _ _ _ _ _ _ => cover .workLifecycle ["id", "outcome", "scope", "baselineDesignRevision",
-      "designRevision", "status", "responsibleAgentRun", "resumeCondition"]
+  | .mk _ _ _ _ _ _ _ _ _ => cover .workLifecycle ["id", "outcome", "scope", "baselineDesignRevision",
+      "designRevision", "status", "responsibleAgentRun", "resumeCondition", "migrationDiagnostic"]
 
 def planSource : PlanSource → List FieldCoverage
   | .mk _ _ => cover .planTask ["target", "digest"]
@@ -123,6 +123,7 @@ def sqliteColumnOwner : StoreSchema.PersistedColumn → InvariantFamily
   | .designSourceDigest | .designSourceContent => .designHistory
   | .metadataFocusedWork | .workId | .workStatus | .workScope | .workOutcome
   | .workBaselineDesign | .workDesign | .workResponsible | .workResumeCondition
+  | .workMigrationDiagnostic
   | .workDocument => .workLifecycle
   | .planId | .planWork | .planDesign | .planPredecessor | .planStatus | .planProducer
   | .planReason | .planDigest | .planDocument | .planBasisPlan | .planBasisOrdinal

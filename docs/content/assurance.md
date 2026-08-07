@@ -83,3 +83,13 @@ Lean does not establish:
 Workbench keeps these boundaries explicit and uses current external evidence where theorem proving
 would be dishonest. It applies the same claim mechanism to selected propositions about its own
 production decision functions.
+
+## Workbench's own transition assurance
+
+For Workbench releases, the private Lean suite imports the production mutation and state types. A
+closed effect map assigns each public mutation the top-level state components it may change;
+successful execution rejects changes outside that set. Lean proves exhaustively that every permitted
+component has an owning invariant family, that successful prepared mutations satisfy the effect
+boundary, and that their result satisfies the production state invariants. Constructor and
+persisted-field coverage is positional, so adding a mutation, payload, field, or SQLite column makes
+the release proof fail until its ownership is assigned.

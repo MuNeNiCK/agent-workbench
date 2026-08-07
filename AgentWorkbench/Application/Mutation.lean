@@ -24,7 +24,7 @@ inductive Mutation where
   | workStart (request : WorkStartRequest)
   | workFocus (workId : String)
   | workSuspend (workId resumeCondition : String)
-  | workResume (workId : String)
+  | workResume (request : WorkResumeRequest)
   | workHandoff (workId entryId successorRun reason : String)
   | workAdoptDesign (request : WorkAdoptDesignRequest)
   | workWithdraw (request : WorkWithdrawRequest)
@@ -99,7 +99,7 @@ def Mutation.pureTransition? : Mutation → Option (ProjectState → Except Stri
   | .workStart request => some (fun state => startWorkRequest state request)
   | .workFocus workId => some (fun state => focusWork state workId)
   | .workSuspend workId condition => some (fun state => suspendWork state workId condition)
-  | .workResume workId => some (fun state => resumeWork state workId)
+  | .workResume request => some (fun state => resumeWork state request)
   | .workHandoff workId entryId successorRun reason =>
       some (fun state => handoffWork state workId entryId successorRun reason)
   | .workAdoptDesign request => some (fun state => adoptDesignForWork state request)
@@ -151,6 +151,59 @@ def pureTransitionPostcondition (prior next : ProjectState) : Bool :=
   next.revision == prior.revision + 1 && workIdentityPreserved prior next &&
     immutableHistoryPreserved prior next
 
+/-- Closed top-level authority surface. A mutation may change only components
+listed for its public semantic operation. This is checked before commit and is
+also consumed by the private exhaustive Lean proof. -/
+inductive StateComponent where
+  | acceptedDesign | focusedWork | designs | works | plans | ledger
+  deriving Repr, DecidableEq
+
+def StateComponent.all : List StateComponent :=
+  [.acceptedDesign, .focusedWork, .designs, .works, .plans, .ledger]
+
+def Operation.permittedStateComponents : Operation → List StateComponent
+  | .init => []
+  | .designPropose | .designAmend => [.designs]
+  | .designAccept => [.acceptedDesign, .designs, .works]
+  | .designReject => [.designs, .ledger]
+  | .workStart => [.focusedWork, .works]
+  | .workFocus => [.focusedWork]
+  | .workSuspend => [.focusedWork, .works]
+  | .workResume => [.focusedWork, .works, .ledger]
+  | .workHandoff | .workAdoptDesign => [.works, .ledger]
+  | .workWithdraw | .workComplete => [.focusedWork, .works, .ledger]
+  | .planPropose | .planReplace => [.plans]
+  | .planMaterialize => [.plans, .ledger]
+  | .taskClose | .profileDefine | .profileReplace | .artifactObserve
+  | .correctionRecord | .correctionSupersede | .correctionResolve | .correctionIncorporate
+  | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
+  | .reviewFinding | .reviewDisposition | .reviewConclude | .reviewVerify
+  | .commandRun | .proofRun => [.ledger]
+  | .describe | .designGet | .designInspectSources | .designSource | .designDiff
+  | .designExport | .workGet | .workAdoptionImpact | .planGet | .planInspectSources
+  | .planSource | .planDiff | .planExport | .reviewContext | .reviewInspect
+  | .entryGet | .history | .context | .ready | .commandShow | .proofDigest => []
+
+def stateComponentUnchanged
+    (component : StateComponent) (prior next : ProjectState) : Bool :=
+  match component with
+  | .acceptedDesign => prior.acceptedDesignId == next.acceptedDesignId
+  | .focusedWork => prior.focusedWorkId == next.focusedWorkId
+  | .designs => prior.designRevisions == next.designRevisions
+  | .works => prior.works == next.works
+  | .plans => prior.implementationPlans == next.implementationPlans
+  | .ledger => prior.ledgerEntries == next.ledgerEntries
+
+def transitionEffectsPermitted
+    (operation : Operation) (prior next : ProjectState) : Bool :=
+  StateComponent.all.all fun component =>
+    operation.permittedStateComponents.contains component ||
+      stateComponentUnchanged component prior next
+
+def semanticTransitionPostcondition
+    (operation : Operation) (prior next : ProjectState) : Bool :=
+  pureTransitionPostcondition prior next && transitionEffectsPermitted operation prior next
+
 def Mutation.executePure (mutation : Mutation) (state : ProjectState) : Except String ProjectState :=
   match mutation.pureTransition? with
   | none => .error s!"mutation {mutation.operation.name} requires an external observation"
@@ -158,8 +211,8 @@ def Mutation.executePure (mutation : Mutation) (state : ProjectState) : Except S
       match transition state with
       | .error message => .error message
       | .ok next =>
-          if pureTransitionPostcondition state next then validated next
-          else .error "pure mutation violated revision, Work identity, or immutable history"
+          if semanticTransitionPostcondition mutation.operation state next then validated next
+          else .error "pure mutation violated its revision, authority, history, or effect boundary"
 
 /-- A public mutation after every required external observation has been fixed as immutable input. -/
 inductive PreparedMutation where
@@ -226,8 +279,8 @@ def PreparedMutation.execute
   match prepared.transition state with
   | .error message => .error message
   | .ok next =>
-      if pureTransitionPostcondition state next then validated next
-      else .error "prepared mutation violated revision, Work identity, or immutable history"
+      if semanticTransitionPostcondition prepared.operation state next then validated next
+      else .error "prepared mutation violated its revision, authority, history, or effect boundary"
 
 def PreparedMutation.executeApplicable
     (prepared : PreparedMutation) (state : ProjectState) : Except String ProjectState :=

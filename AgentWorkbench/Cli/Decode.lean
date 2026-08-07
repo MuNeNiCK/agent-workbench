@@ -64,8 +64,7 @@ def decodeMutation? (command : List String) : IO (Option Mutation) :=
       let input ← readInput (α := SuspendInput) "work suspend"
       pure (some (.workSuspend input.workId input.resumeCondition))
   | some .workResume => do
-      let input ← readInput (α := IdInput) "work resume"
-      pure (some (.workResume input.id))
+      pure (some (.workResume (← readInput "work resume")))
   | some .workHandoff => do
       let input ← readInput (α := HandoffInput) "work handoff"
       pure (some (.workHandoff input.workId input.entryId input.successorRun input.reason))

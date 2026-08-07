@@ -27,6 +27,7 @@ def closeTask
     | _ => throw s!"entry {request.taskEntryId} is not a Task"
   if task.closed then throw s!"Task {request.taskEntryId} is already closed"
   if task.retired then throw s!"Task {request.taskEntryId} is retired"
+  let mut verificationEvidenceEntryIds : List String := []
   if task.planId.isSome then
     for dependency in task.dependencyLineageIds do
       let satisfied := state.ledgerEntries.any fun entry =>
@@ -37,7 +38,7 @@ def closeTask
         | _ => false
       if !satisfied then throw s!"Task dependency is not closed: {dependency}"
     for criterionId in task.verificationCriterionIds do
-      let witnessed := projection.entries.any fun entry =>
+      let witness := projection.entries.find? fun entry =>
         entry.order > task.materializedAtOrder && entry.workId == some work.id &&
         entry.designRevision == some design.id && evidenceEntryCurrent projection observations entry &&
         match entry.payload with
@@ -50,8 +51,15 @@ def closeTask
             task.outputScopes.contains evidence.outputScope.get! &&
             evidence.criterionId == some criterionId && evidence.successful
         | _ => false
-      if !witnessed then
-        throw s!"Task {request.taskEntryId} has no post-materialization evidence for {criterionId}"
-  appendCurrentEntry state request.entryId (.task { task with closed := true }) [prior.id]
+      let witness ← match witness with
+        | some value => pure value
+        | none =>
+          throw s!"Task {request.taskEntryId} has no post-materialization evidence for {criterionId}"
+      verificationEvidenceEntryIds := verificationEvidenceEntryIds ++ [witness.id]
+  let closedTask : TaskRecord := { task with
+    closed := true
+    verificationEvidenceEntryIds := verificationEvidenceEntryIds.eraseDups
+    verificationTaskEntryId := some prior.id }
+  appendCurrentEntry state request.entryId (.task closedTask) [prior.id]
 
 end AgentWorkbench

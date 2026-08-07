@@ -12,7 +12,7 @@ inductive PersistedColumn where
   | designSourceDesign | designSourceOrdinal | designSourceTarget | designSourceMediaKind
   | designSourceDigest | designSourceContent
   | workId | workStatus | workScope | workOutcome | workBaselineDesign | workDesign
-  | workResponsible | workResumeCondition | workDocument
+  | workResponsible | workResumeCondition | workMigrationDiagnostic | workDocument
   | planId | planWork | planDesign | planPredecessor | planStatus | planProducer | planReason
   | planDigest | planDocument
   | planBasisPlan | planBasisOrdinal | planBasisLedgerEntry
@@ -32,7 +32,7 @@ def PersistedColumn.table : PersistedColumn → String
   | .designSourceDesign | .designSourceOrdinal | .designSourceTarget | .designSourceMediaKind
   | .designSourceDigest | .designSourceContent => "design_sources"
   | .workId | .workStatus | .workScope | .workOutcome | .workBaselineDesign | .workDesign
-  | .workResponsible | .workResumeCondition | .workDocument => "works"
+  | .workResponsible | .workResumeCondition | .workMigrationDiagnostic | .workDocument => "works"
   | .planId | .planWork | .planDesign | .planPredecessor | .planStatus | .planProducer
   | .planReason | .planDigest | .planDocument => "implementation_plans"
   | .planBasisPlan | .planBasisOrdinal | .planBasisLedgerEntry =>
@@ -75,6 +75,7 @@ def PersistedColumn.name : PersistedColumn → String
   | .workDesign => "design_revision_id"
   | .workResponsible => "responsible_run"
   | .workResumeCondition => "resume_condition"
+  | .workMigrationDiagnostic => "migration_diagnostic"
   | .workDocument => "document"
   | .planId => "id"
   | .planWork => "work_id"
@@ -115,7 +116,7 @@ def PersistedColumn.all : List PersistedColumn :=
    .designSourceDesign, .designSourceOrdinal, .designSourceTarget, .designSourceMediaKind,
    .designSourceDigest, .designSourceContent,
    .workId, .workStatus, .workScope, .workOutcome, .workBaselineDesign, .workDesign,
-   .workResponsible, .workResumeCondition, .workDocument,
+   .workResponsible, .workResumeCondition, .workMigrationDiagnostic, .workDocument,
    .planId, .planWork, .planDesign, .planPredecessor, .planStatus, .planProducer, .planReason,
    .planDigest, .planDocument,
    .planBasisPlan, .planBasisOrdinal, .planBasisLedgerEntry,

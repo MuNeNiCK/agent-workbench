@@ -28,6 +28,19 @@ def run : IO Unit :=
       review.producerAgentRuns.contains plan.producerAgentRun &&
       review.producerAgentRuns.contains work.responsibleAgentRun)
       "Implementation Review did not derive complete producer provenance"
+    let artifactComponent ← match review.targetManifest.find? (fun value =>
+        value.kind == "implementation_target" && value.id == criterion.target) with
+      | some value => pure value
+      | none => throw (IO.userError "Implementation Review omitted the planned output component")
+    let implementationSubject : FindingSubject := {
+      kind := .implementationComponent
+      id := artifactComponent.id
+      exactQuote := artifactComponent.snapshot }
+    let implementationFound ← fromExcept <| recordFinding reviewed {
+      entryId := "finding-implementation-component", reviewEntryId := "review-1"
+      subject := implementationSubject
+      summary := "the fixed implementation output is incomplete" }
+    fromExcept (validateState implementationFound)
     let mut selfReviewRejected := false
     try
       let _ ← startReview root baseState {
@@ -95,6 +108,14 @@ def run : IO Unit :=
       result := "artifact now satisfies the Criterion", successful := true }
     let resumed ← resumeReview root remediated {
       entryId := "review-resume", continuesEntryId := "review-1" }
+    let tamperedEntries := resumed.ledgerEntries.map fun entry =>
+      if entry.id == "review-resume" then match entry.payload with
+        | .review value => { entry with payload := .review {
+            value with targetSnapshot := "blake3:replaced-resume-target" } }
+        | _ => entry
+      else entry
+    expectError (validateState { resumed with ledgerEntries := tamperedEntries })
+      "resumed Review accepted replacement of the immutable root target"
     let verified ← fromExcept <| recordVerification resumed {
       entryId := "verification-1", findingEntryId := "finding-1"
       reviewEntryId := "review-resume", evidenceEntryId := "evidence-remediation" }

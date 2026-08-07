@@ -33,6 +33,9 @@ structure Work where
   status : WorkStatus
   responsibleAgentRun : String
   resumeCondition : Option String := none
+  /-- Present only when migration changed a legacy status and user action may
+  be required before resume. -/
+  migrationDiagnostic : Option String := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 end AgentWorkbench

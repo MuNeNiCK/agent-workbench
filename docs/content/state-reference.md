@@ -46,7 +46,7 @@ Important transitions:
 |---|---|---|---|
 | Start a new outcome | `work start` | New Work becomes focused; it binds the accepted Design or retains an empty baseline before initial Design | Another Work is focused |
 | Pause current work | `work suspend` | Work becomes suspended and records a non-empty resume condition | Named Work is not focused |
-| Continue retained work | `work resume` or `work focus` | Suspended/active Work becomes focused | Another Work is focused or successor adoption is required |
+| Continue retained work | `work resume` or `work focus` | Suspended/active Work becomes focused | Resume lacks a non-empty satisfaction statement and at least one current same-Work/Design basis entry; another Work is focused; or successor adoption is required |
 | Move retained Work to a successor design | `work adopt-design` | Design binding changes; Work remains unfocused | Work was not suspended, successor is not a descendant, or requester is not responsible |
 | Transfer agent responsibility | `work handoff` | Responsible agent run changes; Work and evidence boundary remain | Work is not focused or successor is already responsible |
 | Complete | `work complete` | Work becomes completed, focus clears, and the exact completion-input digest is recorded atomically | Derived readiness is false |
@@ -92,7 +92,7 @@ records.
 `ready` is false if any of these current conditions holds:
 
 - the accepted Design or current Plan/source archive is incomplete or inconsistent;
-- a required Task remains open;
+- a required Task remains open, or the exact Task-bound evidence used to close it is no longer current;
 - an acceptance criterion lacks current evidence of the declared kind;
 - a selected Lean claim lacks a current kernel-accepted receipt;
 - a user correction remains effective; or

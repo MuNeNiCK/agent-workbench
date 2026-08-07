@@ -91,8 +91,9 @@ criterion.
 - Treat KPT as retained learning. A Try becomes relevant when a later action applies it; it does
   not become a requirement by itself.
 - Suspend before switching work or accepting a successor design. Resume the same Work when its
-  return condition is met. Explicitly adopt a successor design before resuming predecessor-bound
-  Work.
+  return condition is met. `work resume` must record a non-empty satisfaction statement and at
+  least one current same-Work/Design ledger entry as its immutable basis; never discard a condition
+  by resuming immediately. Explicitly adopt a successor design before resuming predecessor-bound Work.
 
 ## Review
 
@@ -109,3 +110,5 @@ reviewer-context modes, not review types.
 - Treat findings as advisory until the responsible work agent records an accepted, rejected, or
   replaced disposition under the accepted design. Only an accepted unresolved finding blocks
   completion.
+- Ground a Design Finding in an exact statement, criterion, or assumption. Ground an
+  Implementation Finding in an exact component ID and snapshot from the fixed Review manifest.

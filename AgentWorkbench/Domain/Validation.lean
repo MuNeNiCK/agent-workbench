@@ -86,6 +86,7 @@ def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit :
     let completions := state.ledgerEntries.filter fun entry =>
       entry.workId == some work.id && match entry.payload with
       | .workCompletion value => value.workId == work.id
+      | .workResume _ => false
       | _ => false
     if work.status == .completed then
       let legacyUnavailable := work.designRevision.any fun designId =>

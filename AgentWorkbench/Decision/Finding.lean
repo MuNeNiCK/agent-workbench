@@ -15,6 +15,7 @@ def findingSubjectCurrent (design : DesignRevision) (subject : FindingSubject) :
       statement.id == subject.id && statement.text == subject.exactQuote)
   | .assumption => design.statements.any (fun statement =>
       statement.id == subject.id && statement.assumptions.contains subject.exactQuote)
+  | .implementationComponent => false
 
 def designFindingSubject? (design : DesignRevision) : Option FindingSubject :=
   match design.statements, design.acceptanceCriteria with
@@ -51,7 +52,8 @@ def reviewFindingApplicable (state : ProjectState) : Bool :=
     match entry.payload, entry.designRevision with
     | .review review, some designId =>
         review.context == .fresh &&
-          (state.design? designId).any (fun design => (designFindingSubject? design).isSome)
+          (review.purpose == .implementation && !review.targetManifest.isEmpty ||
+            (state.design? designId).any (fun design => (designFindingSubject? design).isSome))
     | _, _ => false
 
 end AgentWorkbench

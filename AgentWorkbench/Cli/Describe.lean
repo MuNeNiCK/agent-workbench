@@ -122,7 +122,10 @@ def operationContracts : List OperationContract :=
          responsibleAgentRun := "agent-run-1" } : WorkStartRequest)
   , contract "work get" "read Work by ID" ({ id := "work-1" } : IdInput)
   , contract "work focus" "focus a resumable Work" ({ id := "work-1" } : IdInput)
-  , contract "work resume" "resume a resumable Work" ({ id := "work-1" } : IdInput)
+  , contract "work resume" "resume only with recorded condition-satisfaction evidence" ({
+      workId := "work-1", entryId := "resume-1"
+      satisfaction := "the required clarification is recorded"
+      basisEntryIds := ["correction-1"], agentRun := "responsible-agent" } : WorkResumeRequest)
   , contract "work suspend" "suspend focused Work with an explicit return condition"
       ({ workId := "work-1", resumeCondition := "continue after requirement clarification" } : SuspendInput)
   , contract "work handoff" "transfer responsibility without replacing Work"

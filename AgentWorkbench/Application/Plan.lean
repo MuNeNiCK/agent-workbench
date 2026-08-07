@@ -122,6 +122,16 @@ def materializePlan
       | .task task, some oldPlan =>
           task.closed && !affected.contains step.id && oldPlan.steps.any fun oldStep => oldStep == step
       | _, _ => false
+    let preservedEvidence := if preservedClosed then
+      priorTask.map (fun entry => match entry.payload with
+        | .task task => task.verificationEvidenceEntryIds
+        | _ => []) |>.getD []
+      else []
+    let preservedTaskEntryId := if preservedClosed then
+      priorTask.bind (fun entry => match entry.payload with
+        | .task task => task.verificationTaskEntryId
+        | _ => none)
+      else none
     let entry : LedgerEntry := {
       id := s!"task-{candidate.id}-{step.id}"
       order := firstOrder + created, scope := work.scope
@@ -132,6 +142,8 @@ def materializePlan
         dependencyLineageIds := step.dependsOnStepIds.map (taskLineage work.id)
         outputScopes := step.outputScopes
         verificationCriterionIds := step.verificationCriterionIds
+        verificationEvidenceEntryIds := preservedEvidence
+        verificationTaskEntryId := preservedTaskEntryId
         materializedAtOrder := firstOrder, description := step.description
         required := true, closed := preservedClosed } }
     entries := entries ++ [entry]

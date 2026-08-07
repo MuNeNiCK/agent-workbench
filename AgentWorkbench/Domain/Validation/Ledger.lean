@@ -58,6 +58,26 @@ private def validateTask
         let _ ← requireSome (design.criterion? criterionId)
           s!"task {entry.id} references missing criterion {criterionId}"
   | _, _, _ => throw s!"task {entry.id} has a partial Plan binding"
+  if task.planId.isSome && task.required && !task.retired then
+    if task.closed then
+      let sourceTaskId ← requireSome task.verificationTaskEntryId
+        s!"closed task {entry.id} has no verification source Task"
+      ensure (task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
+        uniqueStrings task.verificationEvidenceEntryIds)
+        s!"closed task {entry.id} does not bind one exact evidence entry per criterion"
+      for evidenceId in task.verificationEvidenceEntryIds do
+        let evidenceEntry ← requireSome (state.entry? evidenceId)
+          s!"closed task {entry.id} references missing evidence {evidenceId}"
+        ensure (evidenceEntry.order < entry.order && evidenceEntry.workId == entry.workId &&
+          evidenceEntry.designRevision == entry.designRevision &&
+          match evidenceEntry.payload with
+          | .artifactObservation evidence => evidence.taskEntryId == some sourceTaskId
+          | .commandExecution evidence => evidence.taskEntryId == some sourceTaskId
+          | _ => false)
+          s!"closed task {entry.id} has evidence from another Task or binding"
+    else
+      ensure (task.verificationEvidenceEntryIds.isEmpty && task.verificationTaskEntryId.isNone)
+        s!"open task {entry.id} already carries closing evidence"
 
 private def validateEvidenceBinding
     (state : ProjectState) (entry : LedgerEntry)
@@ -151,9 +171,15 @@ private def validateReview
         ensure (plan.workId == work.id && plan.designRevision == designId &&
           planComponent.snapshot == plan.contentDigest)
           s!"review {entry.id} changes its fixed Plan identity or digest"
+        let coverageOrder := match review.context with
+          | .fresh => entry.order
+          | .resume => (state.ledgerEntries.find? fun candidate =>
+              match candidate.payload with
+              | .review value => value.reviewId == review.reviewId && value.context == .fresh
+              | _ => false) |>.map (·.order) |>.getD entry.order
         let taskIds := state.ledgerEntries.filterMap fun candidate =>
           if candidate.scope != entry.scope || candidate.workId != entry.workId ||
-              candidate.designRevision != entry.designRevision || candidate.order >= entry.order ||
+              candidate.designRevision != entry.designRevision || candidate.order >= coverageOrder ||
               isSuperseded state candidate then none
           else match candidate.payload with
             | .task task => if task.planId == some plan.id && !task.retired then some candidate.id else none
@@ -162,13 +188,13 @@ private def validateReview
           value.kind == "task" && value.id == id)
           s!"review {entry.id} omits part of the current Task graph"
         let acceptedFindingIds := state.ledgerEntries.filterMap fun candidate =>
-          if candidate.order >= entry.order || candidate.workId != entry.workId then none else
+          if candidate.order >= coverageOrder || candidate.workId != entry.workId then none else
           match candidate.payload with
           | .reviewDisposition value =>
               if value.decision == .accepted then some value.findingEntryId else none
           | _ => none
         let requiredLedgerIds := state.ledgerEntries.filterMap fun candidate =>
-          if candidate.order >= entry.order || candidate.workId != entry.workId ||
+          if candidate.order >= coverageOrder || candidate.workId != entry.workId ||
               isSuperseded state candidate then none else
           let required : Bool := match candidate.payload with
             | .task task => task.planId == some plan.id && !task.retired
@@ -202,7 +228,9 @@ private def validateReview
         s!"resumed review {entry.id} references a non-review entry"
       ensure (priorEntry.order < entry.order && prior.reviewId == review.reviewId &&
         prior.purpose == review.purpose && prior.targetSourceId == review.targetSourceId &&
-        prior.target == review.target &&
+        prior.target == review.target && prior.targetSnapshot == review.targetSnapshot &&
+        prior.targetManifest == review.targetManifest &&
+        prior.producerAgentRuns == review.producerAgentRuns &&
         activeReviewerBefore state prior.reviewId prior.reviewerAgentRun entry.order ==
           review.reviewerAgentRun &&
         priorEntry.scope == entry.scope && priorEntry.workId == entry.workId &&
@@ -245,6 +273,10 @@ private def validateFinding
         s!"finding {entry.id} references a missing statement assumption"
       ensure (statement.assumptions.contains finding.subject.exactQuote)
         s!"finding {entry.id} does not quote an exact current assumption"
+  | .implementationComponent =>
+      ensure (review.purpose == .implementation && review.targetManifest.any (fun component =>
+        component.id == finding.subject.id && component.snapshot == finding.subject.exactQuote))
+        s!"finding {entry.id} does not identify an exact fixed implementation component"
 
 private def validateDisposition
     (state : ProjectState) (entry : LedgerEntry)
@@ -278,8 +310,7 @@ private def validateVerification
     activeReviewerBefore state review.reviewId review.reviewerAgentRun entry.order ==
       verification.verifiedByRun &&
     review.targetManifest.any (fun component =>
-      component.kind == "implementation_target" && component.id == verification.target &&
-        component.snapshot == verification.snapshot))
+      component.kind == "implementation_target" && component.id == verification.target))
     s!"verification {entry.id} is not derived from the resumed Review manifest"
   ensure (reviewEntry.order < entry.order && reviewEntry.scope == entry.scope &&
     reviewEntry.workId == entry.workId && reviewEntry.designRevision == entry.designRevision)
@@ -350,6 +381,19 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
         correctionEntry.workId == entry.workId && correctionOpen &&
         !value.reason.isEmpty && value.withdrawnByRun == work.responsibleAgentRun)
         s!"Work withdrawal {entry.id} lacks current Correction authority"
+  | .workResume value =>
+      let workId ← requireSome entry.workId s!"Work resume {entry.id} is not Work-bound"
+      let _ ← requireSome (state.work? workId) s!"Work resume {entry.id} has missing Work"
+      ensure (!value.condition.isEmpty && !value.satisfaction.isEmpty &&
+        !value.basisEntryIds.isEmpty && uniqueStrings value.basisEntryIds &&
+        !value.resumedByRun.isEmpty)
+        s!"Work resume {entry.id} has incomplete satisfaction evidence"
+      for basisId in value.basisEntryIds do
+        let basis ← requireSome (state.entry? basisId)
+          s!"Work resume {entry.id} has missing basis {basisId}"
+        ensure (basis.order < entry.order && basis.workId == entry.workId &&
+          basis.designRevision == entry.designRevision)
+          s!"Work resume {entry.id} crosses its Work or Design binding"
   | .workCompletion value =>
       let workId ← requireSome entry.workId s!"Work completion {entry.id} is not Work-bound"
       let work ← requireSome (state.work? workId) s!"Work completion {entry.id} has missing Work"

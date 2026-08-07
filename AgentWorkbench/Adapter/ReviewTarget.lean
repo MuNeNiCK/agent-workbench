@@ -36,6 +36,7 @@ private def entryProducerRuns (work : Work) (entry : LedgerEntry) : List String 
   | .reviewDisposition value => [value.decidedByRun]
   | .workHandoff value => [value.predecessorRun, value.successorRun]
   | .workWithdrawal value => [value.withdrawnByRun]
+  | .workResume value => [value.resumedByRun]
   | .workCompletion value => [value.completedByRun]
   | .designRejection value => [value.rejectedByRun]
   | .workDesignAdoption value => [value.adoptedByRun]
@@ -82,7 +83,7 @@ private def workHistoryComponents
   state.ledgerEntries.filterMap fun entry =>
     if entry.workId != some work.id then none else
     match entry.payload with
-    | .workHandoff _ | .workDesignAdoption _ | .workWithdrawal _ =>
+    | .workHandoff _ | .workDesignAdoption _ | .workWithdrawal _ | .workResume _ =>
         some (component entry.payload.tag entry.id (entryDigest entry)
           (entryProducerRuns work entry))
     | _ => none
@@ -116,6 +117,17 @@ private def currentTargetComponents
         result := result ++ [value]
   pure result
 
+private def plannedTargetComponents
+    (projectRoot : System.FilePath) (work : Work) (entries : List LedgerEntry) : IO (List ReviewTargetComponent) := do
+  let targets := distinctStrings <| entries.flatMap fun entry => match entry.payload with
+    | .task task => if task.retired then [] else task.outputScopes
+    | _ => []
+  let mut result := []
+  for target in targets do
+    let snapshot ← Snapshot.target projectRoot target
+    result := result ++ [component "implementation_target" target snapshot [work.responsibleAgentRun]]
+  pure result
+
 private def freezeDesign (state : ProjectState) (designId : String) : Except String Fixed := do
   let design ← match state.design? designId with
     | some value => pure value
@@ -137,6 +149,7 @@ private def freezeImplementation
   let some plan := state.currentPlanFor? projection.work.id
     | pure (.error "Implementation Review requires the current implementation plan")
   let targetComponents ← currentTargetComponents projectRoot projection.entries
+  let plannedComponents ← plannedTargetComponents projectRoot projection.work projection.entries
   let manifest := normalizeComponents (
     [ component "design" projection.design.id projection.design.revisionContentDigest
         [projection.design.producerAgentRun]
@@ -145,7 +158,7 @@ private def freezeImplementation
         (ContentDigest.string (Lean.toJson projection.work).compress)
         (workProducerRuns state projection.work)
     ] ++ workHistoryComponents state projection.work ++
-      implementationLedgerComponents projection plan ++ targetComponents)
+      implementationLedgerComponents projection plan ++ plannedComponents ++ targetComponents)
   let producers := distinctStrings (manifest.flatMap (·.producerAgentRuns))
   pure (.ok {
     sourceId := projection.work.id
@@ -169,11 +182,16 @@ def freeze
 
 def refreeze
     (projectRoot : System.FilePath) (state : ProjectState) (prior : ReviewRecord) : IO (Except String Fixed) := do
-  let fixed ← freeze projectRoot state prior.purpose <|
-    match prior.purpose with | .design => some prior.targetSourceId | .implementation => none
-  pure <| fixed.bind fun value =>
-    if value.sourceId == prior.targetSourceId && value.target == prior.target then pure value
-    else throw "resumed Review changed its fixed target"
+  let _ := projectRoot
+  let _ := state
+  -- A resumed Review continues the immutable root target. Remediation is
+  -- separately bound evidence and cannot rewrite what the root reviewer saw.
+  pure (.ok {
+    sourceId := prior.targetSourceId
+    target := prior.target
+    snapshot := prior.targetSnapshot
+    manifest := prior.targetManifest
+    producerAgentRuns := prior.producerAgentRuns })
 
 def currentSnapshot
     (projectRoot : System.FilePath) (state : ProjectState)

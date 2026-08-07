@@ -110,7 +110,11 @@ private def exerciseAdoptIncorporateAndWithdraw : IO Unit :=
     let _ ← invokeJson root .workAdoptDesign ({
       workId := "work-successor", entryId := "adoption-successor"
       agentRun := "agent-public-lifecycle" } : WorkAdoptDesignRequest)
-    let _ ← invokeJson root .workResume ({ id := "work-successor" } : AgentWorkbench.Cli.IdInput)
+    let _ ← invokeJson root .workResume ({
+      workId := "work-successor", entryId := "resume-successor"
+      satisfaction := "the accepted successor was adopted"
+      basisEntryIds := ["adoption-successor"]
+      agentRun := "agent-public-lifecycle" } : WorkResumeRequest)
     let _ ← invokeJson root .correctionIncorporate ({
       entryId := "correction-successor-incorporated"
       correctionEntryId := "correction-successor" } : CorrectionIncorporateRequest)

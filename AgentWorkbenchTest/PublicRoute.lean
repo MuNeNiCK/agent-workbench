@@ -57,14 +57,6 @@ def run : IO Unit :=
     let _ ← invokeJson root ["work", "start"] ({
       id := "work-route", outcome := "produce a public-route artifact"
       scope := "project", responsibleAgentRun := "agent-route" } : WorkStartRequest)
-    let _ ← invokeJson root ["work", "suspend"] ({
-      workId := "work-route", resumeCondition := "continue the same installed route" } : AgentWorkbench.Cli.SuspendInput)
-    let _ ← invokeJson root ["work", "resume"]
-      ({ id := "work-route" } : AgentWorkbench.Cli.IdInput)
-    let _ ← invokeJson root ["work", "handoff"] ({
-      workId := "work-route", entryId := "handoff-route"
-      successorRun := "agent-route-2", reason := "continue through a distinct responsible run" } : AgentWorkbench.Cli.HandoffInput)
-
     let designPath := designDirectory / "design.md"
     IO.FS.writeFile designPath "The artifact exists.\n"
     let designTarget := "file:.agent-workbench/design/product/design.md"
@@ -96,6 +88,15 @@ def run : IO Unit :=
       entryId := "correction-route-current"
       correctionEntryId := "correction-route-initial"
       content := "use the current command route as the clarified action" } : CorrectionSupersedeRequest)
+    let _ ← invokeJson root ["work", "suspend"] ({
+      workId := "work-route", resumeCondition := "resume after the clarification is recorded" } : AgentWorkbench.Cli.SuspendInput)
+    let _ ← invokeJson root ["work", "resume"] ({
+      workId := "work-route", entryId := "resume-route"
+      satisfaction := "the current clarification records the required basis"
+      basisEntryIds := ["correction-route-current"], agentRun := "agent-route" } : WorkResumeRequest)
+    let _ ← invokeJson root ["work", "handoff"] ({
+      workId := "work-route", entryId := "handoff-route"
+      successorRun := "agent-route-2", reason := "continue through a distinct responsible run" } : AgentWorkbench.Cli.HandoffInput)
     let _ ← invokeJson root ["kpt", "record"] ({
       entryId := "kpt-route", tryNext := some "run the current Task-bound Command Profile" } : KptRecordRequest)
 

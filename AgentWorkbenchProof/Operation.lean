@@ -64,7 +64,7 @@ theorem successful_pure_mutation_is_valid
       cases applied : value prior with
       | error message => simp [Mutation.executePure, transition, applied] at success
       | ok candidate =>
-          cases post : pureTransitionPostcondition prior candidate with
+          cases post : semanticTransitionPostcondition mutation.operation prior candidate with
           | false => simp [Mutation.executePure, transition, applied, post] at success
           | true =>
               have validatedResult : validated candidate = .ok next := by
@@ -82,13 +82,16 @@ theorem successful_pure_mutation_preserves_authority
       cases applied : value prior with
       | error message => simp [transition, applied] at success
       | ok candidate =>
-          cases post : pureTransitionPostcondition prior candidate with
+          cases post : semanticTransitionPostcondition mutation.operation prior candidate with
           | false => simp [transition, applied, post] at success
           | true =>
               have equal : candidate = next :=
                 (validated_success candidate next (by
                   simpa [transition, applied, post] using success)).1.symm
-              simpa [equal] using post
+              have semanticNext : semanticTransitionPostcondition mutation.operation prior next = true := by
+                simpa [equal] using post
+              simp [semanticTransitionPostcondition] at semanticNext
+              exact semanticNext.1
 
 theorem every_prepared_mutation_is_classified_as_mutating (prepared : PreparedMutation) :
     prepared.operation.kind = .mutation := by
@@ -105,7 +108,7 @@ theorem successful_prepared_mutation_is_valid
   cases applied : prepared.transition prior with
   | error message => simp [PreparedMutation.execute, applied] at success
   | ok candidate =>
-      cases post : pureTransitionPostcondition prior candidate with
+      cases post : semanticTransitionPostcondition prepared.operation prior candidate with
       | false => simp [PreparedMutation.execute, applied, post] at success
       | true =>
           exact validated_preserves candidate next (by
@@ -118,13 +121,34 @@ theorem successful_prepared_mutation_preserves_authority
   cases applied : prepared.transition prior with
   | error message => simp [PreparedMutation.execute, applied] at success
   | ok candidate =>
-      cases post : pureTransitionPostcondition prior candidate with
+      cases post : semanticTransitionPostcondition prepared.operation prior candidate with
       | false => simp [PreparedMutation.execute, applied, post] at success
       | true =>
           have equal : candidate = next :=
             (validated_success candidate next (by
               simpa [PreparedMutation.execute, applied, post] using success)).1.symm
-          simpa [equal] using post
+          have semanticNext : semanticTransitionPostcondition prepared.operation prior next = true := by
+            simpa [equal] using post
+          simp [semanticTransitionPostcondition] at semanticNext
+          exact semanticNext.1
+
+theorem successful_prepared_mutation_respects_effect_map
+    (prepared : PreparedMutation) (prior next : ProjectState)
+    (success : prepared.execute prior = .ok next) :
+    transitionEffectsPermitted prepared.operation prior next = true := by
+  cases applied : prepared.transition prior with
+  | error message => simp [PreparedMutation.execute, applied] at success
+  | ok candidate =>
+      cases post : semanticTransitionPostcondition prepared.operation prior candidate with
+      | false => simp [PreparedMutation.execute, applied, post] at success
+      | true =>
+          have equal : candidate = next :=
+            (validated_success candidate next (by
+              simpa [PreparedMutation.execute, applied, post] using success)).1.symm
+          have semanticNext : semanticTransitionPostcondition prepared.operation prior next = true := by
+            simpa [equal] using post
+          simp [semanticTransitionPostcondition] at semanticNext
+          exact semanticNext.2
 
 theorem successful_prepared_mutation_preserves_every_existing_work_identity
     (prepared : PreparedMutation) (prior next : ProjectState)

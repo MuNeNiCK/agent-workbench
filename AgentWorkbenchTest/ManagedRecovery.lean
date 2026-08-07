@@ -1,5 +1,6 @@
 import AgentWorkbenchTest.Fixture
 import AgentWorkbench.Adapter.Store
+import AgentWorkbench.Adapter.StoreRecovery
 import AgentWorkbench.Adapter.SQLite
 import AgentWorkbench.Adapter.ProofBuild
 import AgentWorkbench.Adapter.ManagedOutput

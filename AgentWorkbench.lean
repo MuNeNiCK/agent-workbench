@@ -28,6 +28,7 @@ import AgentWorkbench.Adapter.SQLite
 import AgentWorkbench.Adapter.OperationLock
 import AgentWorkbench.Adapter.ManagedOutput
 import AgentWorkbench.Adapter.Store
+import AgentWorkbench.Adapter.StoreRecovery
 import AgentWorkbench.Adapter.StoreSchemaInventory
 import AgentWorkbench.Adapter.MutationStore
 import AgentWorkbench.Adapter.ContentDigest

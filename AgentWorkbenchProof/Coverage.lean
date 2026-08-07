@@ -8,7 +8,8 @@ open AgentWorkbench
 /-- Every persisted payload constructor is assigned without a wildcard. -/
 def payloadInvariantCoverage : EntryPayload → InvariantFamily
   | .task _ => .planTask
-  | .workDesignAdoption _ | .workHandoff _ | .workWithdrawal _ | .workCompletion _ => .workLifecycle
+  | .workDesignAdoption _ | .workHandoff _ | .workWithdrawal _ | .workResume _
+  | .workCompletion _ => .workLifecycle
   | .designRejection _ => .designHistory
   | .commandProfile _ | .commandExecution _ | .artifactObservation _
   | .review _ | .finding _ | .reviewDisposition _ | .reviewVerification _
@@ -18,14 +19,15 @@ def payloadInvariantCoverage : EntryPayload → InvariantFamily
 /-- Positional payload-record coverage. A field added to any persisted payload makes this match
 fail to compile until its authority meaning is assigned. -/
 def payloadFieldCoverage : EntryPayload → List String
-  | .task (.mk _ _ _ _ _ _ _ _ _ _ _ _) =>
+  | .task (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
       ["planId", "planStepId", "lineageId", "dependencyLineageIds", "outputScopes",
-       "verificationCriterionIds", "materializedAtOrder", "retired", "criterionId",
-       "description", "required", "closed"]
+       "verificationCriterionIds", "verificationEvidenceEntryIds", "verificationTaskEntryId",
+       "materializedAtOrder", "retired", "criterionId", "description", "required", "closed"]
   | .workDesignAdoption (.mk _ _ _ _) =>
       ["predecessor", "successor", "impactDisposition", "adoptedByRun"]
   | .workHandoff (.mk _ _ _) => ["predecessorRun", "successorRun", "reason"]
   | .workWithdrawal (.mk _ _ _) => ["correctionEntryId", "reason", "withdrawnByRun"]
+  | .workResume (.mk _ _ _ _) => ["condition", "satisfaction", "basisEntryIds", "resumedByRun"]
   | .workCompletion (.mk _ _ _ _ _ _) =>
       ["workId", "designRevision", "planId", "inputRevision", "inputDigest", "completedByRun"]
   | .designRejection (.mk _ _ _) => ["designId", "reason", "rejectedByRun"]
@@ -79,6 +81,20 @@ def mutationInvariantCoverage : Mutation → List InvariantFamily
 
 theorem every_mutation_has_invariant_coverage (mutation : Mutation) :
     (mutationInvariantCoverage mutation).isEmpty = false := by
+  cases mutation <;> rfl
+
+def stateComponentInvariant : StateComponent → InvariantFamily
+  | .acceptedDesign | .designs => .designHistory
+  | .focusedWork | .works => .workLifecycle
+  | .plans => .planTask
+  | .ledger => .ledgerAuthority
+
+/-- The executable effect boundary and the private theorem-family assignment
+are connected exhaustively. Adding an operation or state component cannot
+leave a permitted effect without an owning invariant family. -/
+theorem every_permitted_mutation_effect_has_invariant_coverage (mutation : Mutation) :
+    mutation.operation.permittedStateComponents.all (fun component =>
+      (mutationInvariantCoverage mutation).contains (stateComponentInvariant component)) = true := by
   cases mutation <;> rfl
 
 end AgentWorkbenchProof

@@ -81,6 +81,7 @@ inductive FindingSubjectKind where
   | statement
   | criterion
   | assumption
+  | implementationComponent
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure FindingSubject where
