@@ -96,6 +96,7 @@ def startReview
     payload := .review {
       reviewId := request.reviewId, purpose := request.purpose, context := .fresh
       targetSourceId := fixed.sourceId, target := fixed.target, targetSnapshot := fixed.snapshot
+      targetManifestVersion := fixed.manifestVersion
       targetManifest := fixed.manifest, producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := request.reviewerAgentRun } })
 
@@ -119,6 +120,7 @@ def resumeReview
       reviewId := prior.reviewId, purpose := prior.purpose, context := .resume
       continuesEntryId := some priorEntry.id, targetSourceId := prior.targetSourceId
       target := prior.target, targetSnapshot := fixed.snapshot, targetManifest := fixed.manifest
+      targetManifestVersion := fixed.manifestVersion
       producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := reviewerRun } })
 

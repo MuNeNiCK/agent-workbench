@@ -102,6 +102,9 @@ reviewer-context modes, not review types.
 
 - Use `fresh` for an immutable design or implementation snapshot with no prior review,
   finding, or remediation context. The reviewer run must differ from the target producer run.
+- For Implementation Review, treat the returned Design, current Plan, immutable Work identity, and
+  producer provenance as one fixed target derived by Workbench. Do not reconstruct or substitute
+  these components from conversation or prior state.
 - Give a reviewer only `review context` for its Review entry. A fresh result has an empty lineage;
   do not supply ordinary Current Context or a prior conversation to that reviewer.
 - Use `resume` to continue the same review identifier and exact target, including verification of an

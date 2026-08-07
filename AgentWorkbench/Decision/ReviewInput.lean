@@ -18,6 +18,46 @@ structure ReviewInspection where
   lineage : List LedgerEntry
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+private structure ReviewWorkIdentity where
+  id : String
+  outcome : String
+  scope : String
+  baselineDesignRevision : Option String
+  deriving Repr, DecidableEq, Lean.ToJson
+
+def reviewWorkIdentitySnapshot (work : Work) : String :=
+  ContentDigest.string (Lean.toJson ({
+    id := work.id
+    outcome := work.outcome
+    scope := work.scope
+    baselineDesignRevision := work.baselineDesignRevision
+  } : ReviewWorkIdentity)).compress
+
+private def handoffRecordsFor
+    (state : ProjectState) (workId : String) : List (Nat × WorkHandoffRecord) :=
+  state.ledgerEntries.filterMap fun entry =>
+    if entry.workId != some workId then none else
+    match entry.payload with
+    | .workHandoff value => some (entry.order, value)
+    | _ => none
+
+def reviewWorkProducerRunsAt
+    (state : ProjectState) (work : Work) (coverageOrder : Nat) : List String :=
+  let handoffs : List (Nat × WorkHandoffRecord) := handoffRecordsFor state work.id
+    |>.mergeSort (fun (left right : Nat × WorkHandoffRecord) => left.1 < right.1)
+  let before : List (Nat × WorkHandoffRecord) :=
+    handoffs.filter (fun value => value.1 < coverageOrder)
+  let responsibleAt : String :=
+    match before.foldl (fun (_ : Option String) value => some value.2.successorRun) none with
+    | some value => value
+    | none =>
+        match (handoffs.find? fun value => value.1 >= coverageOrder) with
+        | some value => value.2.predecessorRun
+        | none => work.responsibleAgentRun
+  (before.flatMap (fun value => [value.2.predecessorRun, value.2.successorRun]) ++
+    [responsibleAt]).foldl (fun (found : List String) (value : String) =>
+      if value.isEmpty || found.contains value then found else found ++ [value]) []
+
 def acceptedImplementationFindingIdsIn
     (entries : List LedgerEntry) (workId : String) : List String :=
   entries.filterMap fun entry =>

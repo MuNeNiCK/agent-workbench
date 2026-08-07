@@ -125,10 +125,19 @@ private def updatePlanStatus (store : WriteStore) (plan : ImplementationPlan) : 
 
 private def persistPlanChanges
     (store : WriteStore) (prior next : ProjectState) : IO Unit := do
+  -- Release the partial unique index before promoting a successor. StoreRead
+  -- orders IDs lexicographically, so plan-10 may otherwise be visited before
+  -- plan-9 and collide while both rows are momentarily current.
+  for plan in next.implementationPlans do
+    match prior.implementationPlans.find? (fun old => old.id == plan.id) with
+    | some old =>
+        if old.status == .current && plan.status != .current then updatePlanStatus store plan
+    | none => pure ()
   for plan in next.implementationPlans do
     match prior.implementationPlans.find? (fun old => old.id == plan.id) with
     | none => insertPlan store plan
-    | some old => if old.status != plan.status then updatePlanStatus store plan
+    | some old =>
+        if old.status != plan.status && old.status != .current then updatePlanStatus store plan
 
 private def insertPlanSource
     (store : WriteStore) (planId : String) (ordinal : Nat)

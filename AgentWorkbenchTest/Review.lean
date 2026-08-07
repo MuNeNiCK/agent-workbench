@@ -5,7 +5,9 @@ namespace AgentWorkbenchTest.Review
 open AgentWorkbench AgentWorkbenchTest
 
 private def startedReview (root : System.FilePath) : IO ProjectState :=
-  startReview root baseState {
+  let predecessor := { plan with
+    id := "plan-0", status := .superseded, contentDigest := "blake3:superseded-plan" }
+  startReview root { baseState with implementationPlans := [predecessor, plan] } {
     entryId := "review-1", reviewId := "review-lineage-1", purpose := .implementation
     reviewerAgentRun := "reviewer-1" }
 
@@ -24,7 +26,19 @@ def run : IO Unit :=
     let review ← match reviewEntry.payload with
       | .review value => pure value
       | _ => throw (IO.userError "Review entry has wrong payload")
+    let encodedReview := (Lean.toJson review).compress
+    let persistedWithoutVersion := encodedReview.replace "\"targetManifestVersion\":1," ""
+    expect (persistedWithoutVersion != encodedReview)
+      "Review fixture did not contain the current manifest version"
+    let decodedV0 ← match Lean.Json.parse persistedWithoutVersion with
+      | .error message => throw (IO.userError message)
+      | .ok json => match (Lean.fromJson? json : Except String ReviewRecord) with
+        | .error message => throw (IO.userError message)
+        | .ok value => pure value
+    expect (decodedV0.targetManifestVersion == 0)
+      "Review decoder did not retain a pre-version manifest as historical format"
     expect (review.targetSourceId == work.id && review.target == s!"work:{work.id}" &&
+      review.targetManifestVersion == 1 &&
       review.targetManifest.any (fun value => value.kind == "design" && value.id == design.id) &&
       review.targetManifest.any (fun value => value.kind == "plan" && value.id == plan.id) &&
       review.targetManifest.any (fun value => value.kind == "task" && value.id == "task-open"))
@@ -96,6 +110,65 @@ def run : IO Unit :=
       else entry
     expectError (validateState { reviewed with ledgerEntries := foreignDesignEntries })
       "Implementation Review accepted an unrelated Design component"
+    let supersededPlanEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.map fun component =>
+              if component.kind == "plan" then { component with
+                id := "plan-0", snapshot := "blake3:superseded-plan" }
+              else component
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := supersededPlanEntries })
+      "Implementation Review accepted a superseded same-Design Plan"
+    let forgedWorkEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.map fun component =>
+              if component.kind == "work" then { component with snapshot := "blake3:forged-work" }
+              else component
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := forgedWorkEntries })
+      "Implementation Review accepted a forged Work identity snapshot"
+    let forgedPlanProducerEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.map fun component =>
+              if component.kind == "plan" then
+                { component with producerAgentRuns := ["forged-planner"] }
+              else component
+            let manifestProducers := manifest.foldl (fun found component =>
+              component.producerAgentRuns.foldl (fun runs producer =>
+                if producer.isEmpty || runs.contains producer then runs else runs ++ [producer]) found) []
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress
+                producerAgentRuns := manifestProducers } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := forgedPlanProducerEntries })
+      "Implementation Review accepted forged structural producer provenance"
+    let legacyEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.map fun component =>
+              if component.kind == "work" then { component with
+                snapshot := ContentDigest.string (Lean.toJson work).compress }
+              else component
+            { entry with payload := .review { value with
+                targetManifestVersion := 0
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    fromExcept (validateState { reviewed with ledgerEntries := legacyEntries })
     let extraProducerEntries := reviewed.ledgerEntries.map fun entry =>
       if entry.id == "review-1" then match entry.payload with
         | .review value => { entry with payload := .review {

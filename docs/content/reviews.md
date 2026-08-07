@@ -10,6 +10,11 @@ for every change unless the accepted design selects it.
 - **Implementation Review** examines a fixed Design/Plan/Task/evidence manifest together with the
   current snapshots of its planned output targets.
 
+The Design, current Plan, immutable Work identity, and their producer provenance are derived from
+the authoritative project state when the target is captured. A caller cannot substitute a
+superseded Plan, rewrite the Work identity, or choose different structural producers while keeping
+an otherwise self-consistent manifest.
+
 `fresh` and `resume` describe reviewer context. They are not additional review types.
 
 ## Fresh review

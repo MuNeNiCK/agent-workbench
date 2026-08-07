@@ -132,6 +132,8 @@ private def activeReviewerBefore
 private def validateReview
     (state : ProjectState) (entry : LedgerEntry) (review : ReviewRecord) : Except String Unit := do
   let producers := review.producerAgentRuns
+  ensure (review.targetManifestVersion <= 1)
+    s!"review {entry.id} has an unsupported target manifest version"
   ensure entry.designRevision.isSome s!"review {entry.id} is not design-bound"
   ensure (!review.reviewId.isEmpty && !review.targetSourceId.isEmpty &&
     !review.target.isEmpty && !review.targetSnapshot.isEmpty && !producers.isEmpty)
@@ -209,8 +211,29 @@ private def validateReview
         ensure (review.targetManifest == normalizeReviewTargetComponents review.targetManifest)
           s!"review {entry.id} changes canonical manifest ordering"
         let workComponents := review.targetManifest.filter (·.kind == "work")
-        ensure (workComponents.length == 1 && workComponents.head?.any (·.id == work.id))
-          s!"review {entry.id} omits or duplicates its fixed Work"
+        let workComponent ← match workComponents with
+          | [value] => pure value
+          | _ => throw s!"review {entry.id} omits or duplicates its fixed Work"
+        ensure (workComponent.id == work.id)
+          s!"review {entry.id} changes its fixed Work identity"
+        if review.targetManifestVersion == 1 then
+          let taskPlanIds := currentEntries.foldl (fun found candidate =>
+            match candidate.payload with
+            | .task task => match task.planId with
+              | some id => if task.retired || found.contains id then found else found ++ [id]
+              | none => found
+            | _ => found) []
+          ensure (taskPlanIds == [plan.id])
+            s!"review {entry.id} Plan is not the authoritative Plan at target capture"
+          ensure (designComponent.producerAgentRuns == [design.producerAgentRun])
+            s!"review {entry.id} changes its fixed Design producer provenance"
+          ensure (planComponent.producerAgentRuns == [plan.producerAgentRun])
+            s!"review {entry.id} changes its fixed Plan producer provenance"
+          ensure (workComponent.snapshot == reviewWorkIdentitySnapshot work)
+            s!"review {entry.id} changes its immutable Work identity"
+          ensure (workComponent.producerAgentRuns ==
+              reviewWorkProducerRunsAt state work coverageOrder)
+            s!"review {entry.id} changes its Work producer provenance"
         let expectedTargetIds := implementationReviewOutputTargetIds currentEntries plan
           |>.mergeSort (· < ·)
         let implementationTargets := deduplicateReviewTargetComponents <|
@@ -249,6 +272,7 @@ private def validateReview
       ensure (priorEntry.order < entry.order && prior.reviewId == review.reviewId &&
         prior.purpose == review.purpose && prior.targetSourceId == review.targetSourceId &&
         prior.target == review.target && prior.targetSnapshot == review.targetSnapshot &&
+        prior.targetManifestVersion == review.targetManifestVersion &&
         prior.targetManifest == review.targetManifest &&
         prior.producerAgentRuns == review.producerAgentRuns &&
         activeReviewerBefore state prior.reviewId prior.reviewerAgentRun entry.order ==

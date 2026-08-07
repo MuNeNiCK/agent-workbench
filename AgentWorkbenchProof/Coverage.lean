@@ -40,9 +40,10 @@ def payloadFieldCoverage : EntryPayload → List String
   | .artifactObservation (.mk _ _ _ _ _ _ _ _ _) =>
       ["taskEntryId", "outputScope", "criterionId", "target", "snapshot", "operation", "result",
        "successful", "producerAgentRun"]
-  | .review (.mk _ _ _ _ _ _ _ _ _ _) =>
+  | .review (.mk _ _ _ _ _ _ _ _ _ _ _) =>
       ["reviewId", "purpose", "context", "continuesEntryId", "targetSourceId", "target",
-       "targetSnapshot", "targetManifest", "producerAgentRuns", "reviewerAgentRun"]
+       "targetSnapshot", "targetManifestVersion", "targetManifest", "producerAgentRuns",
+       "reviewerAgentRun"]
   | .finding (.mk _ _ _ _ _ _ _) =>
       ["reviewId", "subject", "targetSourceId", "target", "targetSnapshot", "producerAgentRuns",
        "summary"]

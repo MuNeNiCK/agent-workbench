@@ -11,12 +11,16 @@ structure Fixed where
   sourceId : String
   target : String
   snapshot : String
+  manifestVersion : Nat := 0
   manifest : List ReviewTargetComponent
   producerAgentRuns : List String
 
 private def distinctStrings (values : List String) : List String :=
   values.foldl (fun found value =>
     if value.isEmpty || found.contains value then found else found ++ [value]) []
+
+private def reviewCoverageOrder (state : ProjectState) : Nat :=
+  state.ledgerEntries.foldl (fun found entry => max found entry.order) 0 + 1
 
 private def component
     (kind id snapshot : String) (producers : List String := []) : ReviewTargetComponent :=
@@ -26,13 +30,6 @@ private def implementationLedgerComponents
     (projection : CurrentProjection) (plan : ImplementationPlan) : List ReviewTargetComponent :=
   implementationReviewLedgerEntries projection.entries plan projection.work.id |>.map fun entry =>
     reviewLedgerComponent projection.work entry
-
-private def workProducerRuns (state : ProjectState) (work : Work) : List String :=
-  distinctStrings <| state.ledgerEntries.flatMap (fun entry =>
-    if entry.workId != some work.id then [] else
-    match entry.payload with
-    | .workHandoff value => [value.predecessorRun, value.successorRun]
-    | _ => []) ++ [work.responsibleAgentRun]
 
 private def workHistoryComponents
     (state : ProjectState) (work : Work) : List ReviewTargetComponent :=
@@ -107,8 +104,8 @@ private def freezeImplementation
         [projection.design.producerAgentRun]
     , component "plan" plan.id plan.contentDigest [plan.producerAgentRun]
     , component "work" projection.work.id
-        (ContentDigest.string (Lean.toJson projection.work).compress)
-        (workProducerRuns state projection.work)
+        (reviewWorkIdentitySnapshot projection.work)
+        (reviewWorkProducerRunsAt state projection.work (reviewCoverageOrder state))
     ] ++ workHistoryComponents state projection.work ++
       implementationLedgerComponents projection plan ++ plannedComponents ++ targetComponents)
   let producers := distinctStrings (manifest.flatMap (·.producerAgentRuns))
@@ -116,6 +113,7 @@ private def freezeImplementation
     sourceId := projection.work.id
     target := s!"work:{projection.work.id}"
     snapshot := ContentDigest.string (Lean.toJson manifest).compress
+    manifestVersion := 1
     manifest
     producerAgentRuns := producers })
 
@@ -142,6 +140,7 @@ def refreeze
     sourceId := prior.targetSourceId
     target := prior.target
     snapshot := prior.targetSnapshot
+    manifestVersion := prior.targetManifestVersion
     manifest := prior.targetManifest
     producerAgentRuns := prior.producerAgentRuns })
 
