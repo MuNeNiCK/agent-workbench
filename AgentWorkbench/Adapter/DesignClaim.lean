@@ -60,10 +60,15 @@ private def ensureCompleteClosure
   let closure ← ProofInput.sourceClosurePaths projectRoot runtime claim
   let canonicalProjectRoot ← IO.FS.realPath projectRoot
   let packagesRoot := proofRoot / ".lake" / "packages"
+  let mut declaredIdentities := []
+  for source in declared do
+    let canonical ← IO.FS.realPath source
+    declaredIdentities := declaredIdentities ++ [canonical.normalize.toString]
   for dependency in closure do
     let canonical ← IO.FS.realPath dependency
     if pathWithin canonicalProjectRoot canonical && !pathWithin packagesRoot canonical &&
-        canonical.extension == some "lean" && !declared.contains canonical then
+        canonical.extension == some "lean" &&
+        !declaredIdentities.contains canonical.normalize.toString then
       fail s!"Claim {claim.id} omits local Lean dependency from declaredSources: {canonical}"
 
 private def bindClaim
