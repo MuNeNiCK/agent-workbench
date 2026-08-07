@@ -14,6 +14,15 @@ for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
     LICENSE-lean4 LICENSES-lean4 LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$staging/$license"
 done
+for required in SKILL.md release-version scripts/setup.sh scripts/setup.ps1; do
+  test -f "$staging/skill/agent-workbench/$required"
+done
+diff -r "$staging/skill/agent-workbench" "$skill_source"
+test -f "$staging/README.md"
+for document in assurance concepts getting-started index installation operation-reference recovery \
+    releases reviews state-reference workflow; do
+  test -f "$staging/docs/$document.md"
+done
 
 git -C "$project" init -q
 if [[ -n "${AGENT_WORKBENCH_SKILL_REPOSITORY:-}" ]]; then
@@ -75,6 +84,11 @@ for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
     LICENSE-lean4 LICENSES-lean4 LICENSE-elan-APACHE LICENSE-elan-MIT; do
   test -f "$project/.agent-workbench/bin/$license"
 done
+for required in SKILL.md release-version scripts/setup.sh scripts/setup.ps1; do
+  test -f "$project/.agent-workbench/bin/skill/agent-workbench/$required"
+done
+test -f "$project/.agent-workbench/bin/README.md"
+test -f "$project/.agent-workbench/bin/docs/getting-started.md"
 test -x "$awb" || [[ "$awb" == *.exe ]]
 
 printf '%s\n' "$first_setup" | python3 -c '

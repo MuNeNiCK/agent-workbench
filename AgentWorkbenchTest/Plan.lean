@@ -67,6 +67,20 @@ private def dependencyPlanState : ProjectState :=
     ledgerEntries := [taskAOpen, taskBOpen, evidenceA, taskA, evidenceB, taskB] }
 
 def run : IO Unit := do
+  let extraStep : PlanStep := {
+    id := "step-extra", description := "perform unrelated work"
+    outputScopes := [criterion.target], verificationCriterionIds := [criterion.id] }
+  let extraUnit : DesignSourceUnit := {
+    planUnit with id := "plan-unit-extra", text := extraStep.description }
+  let planWithExtraStep : ImplementationPlan := {
+    plan with
+    sourceUnits := [planUnit, extraUnit]
+    sourceUnitDispositions := [
+      { unitId := planUnit.id, stepId := some step.id },
+      { unitId := extraUnit.id, stepId := some extraStep.id }]
+    steps := [step, extraStep] }
+  expectError (validateState { baseState with implementationPlans := [planWithExtraStep] })
+    "Plan accepted a Markdown-grounded step with no Design delta or Finding obligation"
   expectError (closeTask baseState [] { entryId := "task-closed", taskEntryId := "task-open" })
     "Task closed without successful post-materialization evidence"
   let closed ← fromExcept <| closeTask evidencedState

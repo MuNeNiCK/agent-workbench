@@ -126,6 +126,13 @@ jobs:
           cp "$(lean --print-prefix)/LICENSES" stage/LICENSES-lean4
           cp elan-LICENSE-APACHE stage/LICENSE-elan-APACHE
           cp elan-LICENSE-MIT stage/LICENSE-elan-MIT
+      - name: Stage Skill and public documentation
+        shell: bash
+        run: |
+          mkdir -p stage/skill stage/docs
+          cp -R skills/agent-workbench stage/skill/agent-workbench
+          cp README.md stage/README.md
+          cp docs/content/*.md stage/docs/
       - name: Test installed public route
         shell: bash
         env:

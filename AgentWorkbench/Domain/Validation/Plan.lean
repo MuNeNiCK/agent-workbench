@@ -24,6 +24,7 @@ def validatePlan
   ensure (uniqueStrings (plan.steps.map (·.id)) &&
     uniqueStrings (plan.statementDispositions.map (·.statementId)))
     s!"Plan {plan.id} has duplicate step or Statement disposition IDs"
+  let acceptedFindingIds := acceptedImplementationFindingIds state work.id design.id
   for disposition in plan.sourceUnitDispositions do
     let _ ← requireSome (uniqueBy? plan.sourceUnits (·.id) disposition.unitId)
       s!"Plan {plan.id} classifies an unknown source unit {disposition.unitId}"
@@ -64,12 +65,8 @@ def validatePlan
       let _ ← requireSome (design.criterion? criterionId)
         s!"Plan step {step.id} references missing Criterion {criterionId}"
     for findingId in step.acceptedFindingEntryIds do
-      let finding ← requireSome (state.entry? findingId)
-        s!"Plan step {step.id} references missing Finding {findingId}"
-      ensure (finding.workId == some work.id &&
-        (match finding.payload with | .finding _ => true | _ => false) &&
-        findingAccepted state findingId work.id)
-        s!"Plan step {step.id} references a Finding without accepted disposition"
+      ensure (acceptedFindingIds.contains findingId)
+        s!"Plan step {step.id} references a Finding outside the accepted Implementation Review"
   let expected ← expectedStatementDeltas state work design
   ensure (expected.length == plan.statementDispositions.length)
     s!"Plan {plan.id} does not cover the complete Work baseline delta"
@@ -90,6 +87,12 @@ def validatePlan
     else
       ensure (disposition.stepIds.isEmpty && disposition.noActionReason == delta.noActionReason)
         s!"Plan {plan.id} changes the accepted no-action choice for {delta.statementId}"
+  for step in plan.steps do
+    let coversStatementDelta := plan.statementDispositions.any fun disposition =>
+      disposition.stepIds.contains step.id
+    let coversAcceptedFinding := step.acceptedFindingEntryIds.any acceptedFindingIds.contains
+    ensure (coversStatementDelta || coversAcceptedFinding)
+      s!"Plan step {step.id} covers no Statement delta or accepted Implementation Finding"
   if let some predecessorId := plan.predecessorPlanId then
     let predecessor ← requireSome (state.plan? predecessorId)
       s!"Plan {plan.id} references missing predecessor {predecessorId}"
