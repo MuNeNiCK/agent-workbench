@@ -1,0 +1,111 @@
+import AgentWorkbenchTest.Fixture
+
+namespace AgentWorkbenchTest.BuildBoundary
+
+private def containsText (text fragment : String) : Bool :=
+  (text.splitOn fragment).length > 1
+
+private def normalized (path : String) : String :=
+  path.replace "\\" "/"
+
+private def readRequired (path : System.FilePath) : IO String := do
+  unless ← path.pathExists do
+    throw (IO.userError s!"missing build-boundary input: {path}")
+  IO.FS.readFile path
+
+private def productionSources : IO (Array System.FilePath) := do
+  let nested ← (System.FilePath.mk "AgentWorkbench").walkDir
+  pure <| #[System.FilePath.mk "AgentWorkbench.lean", System.FilePath.mk "Main.lean"] ++
+    nested.filter (fun path => path.extension == some "lean")
+
+private def verifyProductionSourceBoundary : IO Unit := do
+  for path in ← productionSources do
+    let source ← IO.FS.readFile path
+    expect (!containsText source "import AgentWorkbenchProof")
+      s!"production imports the private proof library: {path}"
+    expect (!containsText source "@[extern")
+      s!"production declares a repository-owned FFI boundary: {path}"
+
+private def reviewedExecutableNames : List String :=
+  ["agent-workbench", "agent-workbench-tests", "agent-workbench-proof-tests"]
+
+private def verifyExecutableRoots : IO Unit := do
+  let lakefile ← readRequired "lakefile.lean"
+  let declared := lakefile.splitOn "\n" |>.filterMap fun line =>
+    let line := line.trimAscii.toString
+    if line.startsWith "lean_exe " then
+      let rest := (line.drop "lean_exe ".length).trimAscii.toString
+      some <| (rest.splitOn " ").head?.getD ""
+        |>.replace "«" "" |>.replace "»" ""
+    else none
+  expect (declared == reviewedExecutableNames)
+    s!"unreviewed executable root(s): declared={declared}, reviewed={reviewedExecutableNames}"
+
+private def isGeneratedLeanObject (path : String) : Bool :=
+  containsText path "/.lake/build/ir/" &&
+    (path.endsWith ".c.o.export" || path.endsWith ".c.obj.export")
+
+private def isReviewedNativeDependency (path : String) : Bool :=
+  (containsText path "/.lake/packages/Blake3/.lake/build/lib/" &&
+      containsText path "libblake3_c") ||
+  containsText path "/.lake/packages/MD4Lean/.lake/build/md4c/" ||
+  containsText path "/.lake/packages/MD4Lean/.lake/build/wrapper/" ||
+  (containsText path "/.lake/packages/leansqlite/.lake/build/lib/" &&
+      containsText path "libleansqlite")
+
+private def archivePath? (response marker : String) : Option String :=
+  response.splitOn "\n" |>.findSome? fun line =>
+    let path := normalized line |>.trimAscii.toString |>.replace "\"" ""
+    if containsText path marker then some path else none
+
+private def archiveMemberStem (member : String) : String :=
+  let name := normalized member |>.splitOn "/" |>.getLast!
+  if name.endsWith ".obj" then (name.dropEnd 4).toString
+  else if name.endsWith ".o" then (name.dropEnd 2).toString
+  else name
+
+private def verifyArchiveMembers
+    (response marker : String) (expected : List String) : IO Unit := do
+  let archive ← match archivePath? response marker with
+    | some path => pure path
+    | none => throw (IO.userError s!"missing reviewed native archive {marker}")
+  let leanPrefix ← IO.Process.output { cmd := "lean", args := #["--print-prefix"] }
+  unless leanPrefix.exitCode == 0 do
+    throw (IO.userError "cannot locate the pinned Lean toolchain")
+  let arName := if System.Platform.isWindows then "llvm-ar.exe" else "llvm-ar"
+  let ar := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin" / arName
+  let listing ← IO.Process.output { cmd := ar.toString, args := #["t", archive] }
+  unless listing.exitCode == 0 do
+    throw (IO.userError s!"cannot inspect reviewed native archive {archive}: {listing.stderr}")
+  let members := listing.stdout.splitOn "\n" |>.filterMap fun line =>
+    let member := line.trimAscii.toString
+    if member.isEmpty then none else some (archiveMemberStem member)
+  expect (members.length == expected.length && expected.all members.contains)
+    s!"native archive membership changed for {archive}: actual={members}, reviewed={expected}"
+
+private def verifyProductLinkResponse : IO Unit := do
+  let suffix := if System.Platform.isWindows then ".exe.rsp" else ".rsp"
+  let responsePath : System.FilePath := s!".lake/build/bin/agent-workbench{suffix}"
+  let response := normalized (← readRequired responsePath)
+  expect (!containsText response "/AgentWorkbenchProof")
+    "product link response reaches the private proof library"
+  let objectSuffix := if System.Platform.isWindows then ".c.obj.export" else ".c.o.export"
+  for module in ["/AgentWorkbench/Cli/Main", "/Blake3/C", "/MD4Lean/FFI", "/SQLite/FFI"] do
+    let required := module ++ objectSuffix
+    expect (containsText response required)
+      s!"product link response is missing reviewed dependency {required}"
+  let packageInputs := response.splitOn "\n" |>.map normalized |>.filter fun line =>
+    containsText line "/.lake/packages/"
+  for input in packageInputs do
+    let path := input.trimAscii.toString.replace "\"" ""
+    expect (isGeneratedLeanObject path || isReviewedNativeDependency path)
+      s!"unreviewed package-native link input: {path}"
+  verifyArchiveMembers response "libblake3_c" ["blake3", "blake3_dispatch", "blake3_portable", "ffi_c"]
+  verifyArchiveMembers response "libleansqlite" ["sqlite3", "leansqlite", "shathree"]
+
+def run : IO Unit := do
+  verifyProductionSourceBoundary
+  verifyExecutableRoots
+  verifyProductLinkResponse
+
+end AgentWorkbenchTest.BuildBoundary

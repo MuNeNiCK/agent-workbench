@@ -15,7 +15,8 @@ authority.
   project design.
 - A later correction replaces the affected current requirement instead of being lost among old chat
   messages.
-- Interrupted work can resume with the same outcome, remaining tasks, and verification gaps.
+- Interrupted work can resume with the same outcome, accepted Design, materialized Plan/Tasks, and
+  verification gaps.
 - The agent uses project-recorded commands instead of guessing how to build or verify the result.
 - Verification results stop counting when the design, checked files, or verification method changes.
 - Completion requires the current evidence selected by the project; a verbal “done” is not enough.
@@ -29,7 +30,7 @@ Lean is acquired and operated by Workbench; the user does not need to install or
 Install the Skill into the repository:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.7 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.8 \
   --agent codex --scope project
 ```
 
@@ -52,10 +53,11 @@ Use $agent-workbench. Read the current project context and continue the focused 
 Tell me if a user decision is actually required.
 ```
 
-The Skill installs its verified project-local runtime on first use. Workbench data is stored under
-`.agent-workbench`; a project-installed Skill is stored under `.agents/skills/agent-workbench`.
-Workbench does not edit the repository's Git policy, so the repository decides whether those paths
-are tracked or ignored.
+The Skill installs its verified project-local runtime on first use. Workbench state and the private
+Design/Plan editing workspace are stored under `.agent-workbench`; a project-installed Skill is
+stored under `.agents/skills/agent-workbench`. SQLite is the sole authority after a proposal; later
+draft edits do not rewrite Design history. Workbench is not a Git-policy manager, so the repository
+must keep private Workbench paths out of version control when that is its policy.
 
 Supported releases are available for Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x86_64.
 

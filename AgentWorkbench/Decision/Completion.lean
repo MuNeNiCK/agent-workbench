@@ -7,6 +7,32 @@ structure TargetObservation where
   snapshot : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+structure CompletionInput where
+  work : Work
+  design : DesignRevision
+  plan : ImplementationPlan
+  currentEntries : List LedgerEntry
+  observations : List TargetObservation
+  claimDigests : List CurrentClaimDigest
+  deriving Repr, DecidableEq, Lean.ToJson
+
+def completionInput
+    (state : ProjectState) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : Except String CompletionInput := do
+  let projection ← match currentProjection? state with
+    | some value => pure value
+    | none => throw "completion input requires a current Work and Design"
+  let plan ← match state.currentPlanFor? projection.work.id with
+    | some value => pure value
+    | none => throw "completion input requires a current materialized Plan"
+  pure {
+    work := projection.work
+    design := projection.design
+    plan := plan
+    currentEntries := projection.entries
+    observations := observations
+    claimDigests := digests }
+
 def currentSnapshot? (observations : List TargetObservation) (target : String) : Option String :=
   uniqueBy? observations (·.target) target |>.map (·.snapshot)
 
@@ -15,11 +41,6 @@ def requiredTasksClosed (projection : CurrentProjection) : Bool :=
     match entry.payload with
     | .task task => !task.required || task.closed
     | _ => true)
-
-def designSourcesCurrent
-    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
-  projection.design.sourceDocuments.all (fun source =>
-    currentSnapshot? observations source.target == some source.snapshot)
 
 def evidenceEntryCurrent
     (projection : CurrentProjection) (observations : List TargetObservation)
@@ -35,6 +56,8 @@ def evidenceEntryCurrent
       | some target, some snapshot =>
           evidence.successful &&
           currentSnapshot? observations target == some snapshot &&
+          evidence.inputSnapshots.any (fun inputs => inputs.all fun input =>
+            currentSnapshot? observations input.target == some input.snapshot) &&
           projection.entries.any (fun candidate =>
             candidate.id == evidence.profileEntryId &&
             match candidate.payload with | .commandProfile _ => true | _ => false)
@@ -171,7 +194,8 @@ def completionReady
   match currentProjection? state with
   | none => false
   | some projection =>
-      designSourcesCurrent projection observations &&
+      projection.design.sourceArchiveAvailable &&
+      (state.currentPlanFor? projection.work.id).isSome &&
       requiredTasksClosed projection &&
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) &&

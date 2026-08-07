@@ -3,6 +3,7 @@ import AgentWorkbench.Decision.Command
 import AgentWorkbench.Adapter.Process
 import AgentWorkbench.Adapter.Snapshot
 import AgentWorkbench.Adapter.ReviewTarget
+import AgentWorkbench.Application.Current
 
 namespace AgentWorkbench
 
@@ -28,6 +29,17 @@ def runCommandProfile
   let resolved ← match resolveCommandProfile? projectRoot state request.profileEntryId with
     | some value => pure value
     | none => throw (IO.userError s!"no applicable Command Profile {request.profileEntryId}")
+  if let some criterionId := request.criterionId then
+    unless resolved.criterionIds.contains criterionId do
+      throw (IO.userError s!"criterion {criterionId} is not bound to the Command Profile")
+  let inputs ← evaluateCurrentInputs projectRoot state
+  unless commandAuthorized state inputs.claimDigests resolved do
+    throw (IO.userError
+      "Command Profile requires the current Plan, an open dependency-ready Task, and current Claim receipts")
+  let mut inputSnapshots := []
+  for target in resolved.inputTargets do
+    inputSnapshots := inputSnapshots ++ [{
+      target, snapshot := ← Snapshot.target projectRoot target }]
   let result ← Process.execute projectRoot resolved.command
   let snapshot ← match resolved.target with
     | some identity =>
@@ -44,7 +56,10 @@ def runCommandProfile
       designRevision := some projection.design.id
       payload := .commandExecution {
         profileEntryId := resolved.profileEntryId
+        taskEntryId := resolved.taskEntryId
+        outputScope := resolved.outputScope
         criterionId := request.criterionId
+        inputSnapshots := some inputSnapshots
         target := resolved.target
         snapshot
         command := resolved.command

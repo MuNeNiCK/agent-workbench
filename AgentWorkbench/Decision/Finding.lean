@@ -47,10 +47,11 @@ def findingInputsEligible
     findingSubjectCurrent projection.design subject
 
 def reviewFindingApplicable (state : ProjectState) : Bool :=
-  match currentProjection? state with
-  | none => false
-  | some projection =>
-      (designFindingSubject? projection.design).isSome &&
-        projection.entries.any isFindingRootReview
+  state.ledgerEntries.any fun entry =>
+    match entry.payload, entry.designRevision with
+    | .review review, some designId =>
+        review.context == .fresh &&
+          (state.design? designId).any (fun design => (designFindingSubject? design).isSome)
+    | _, _ => false
 
 end AgentWorkbench

@@ -14,6 +14,9 @@ private def baseline (directory : System.FilePath) (existed : Bool) :
     AgentWorkbench.ProofBuild.OutputBaseline :=
   { directory, existed, parentExisted := true }
 
+private def layouts (value : AgentWorkbench.ProofBuild.OutputBaseline) (token : String) :=
+  AgentWorkbench.ProofBuild.outputLayouts [value] token
+
 private def directoryEntries (path : System.FilePath) : IO (List String) := do
   let entries ← path.readDir
   pure (entries.toList.map (·.fileName) |>.mergeSort (· < ·))
@@ -23,7 +26,8 @@ private def exerciseExistingOutput (parent : System.FilePath) : IO Unit := do
   IO.FS.createDirAll output
   IO.FS.writeFile (output / "preserved") "original output"
   let before ← directoryEntries parent
-  let (buildOutput, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs [baseline output true]
+  let (buildOutput, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs
+    (← layouts (baseline output true) "existing")
     (do
       expect (!(← output.pathExists)) "existing output remained visible during rebuild"
       IO.FS.createDirAll (output / "lib" / "lean")
@@ -48,7 +52,8 @@ private def exerciseFailedBuild (parent : System.FilePath) : IO Unit := do
   IO.FS.createDirAll output
   IO.FS.writeFile (output / "preserved") "original output"
   let before ← directoryEntries parent
-  let (buildOutput, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs [baseline output true]
+  let (buildOutput, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs
+    (← layouts (baseline output true) "failed")
     (do
       IO.FS.createDirAll output
       IO.FS.writeFile (output / "partial") "failed build output"
@@ -66,7 +71,8 @@ private def exerciseFailedBuild (parent : System.FilePath) : IO Unit := do
 private def exerciseAbsentOutput (parent : System.FilePath) : IO Unit := do
   let output := parent / "absent"
   let before ← directoryEntries parent
-  let (_, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs [baseline output false]
+  let (_, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs
+    (← layouts (baseline output false) "absent")
     (do
       IO.FS.createDirAll (output / "lib" / "lean")
       IO.FS.writeFile (output / "lib" / "lean" / "Fresh.olean") "fresh output"
@@ -85,7 +91,8 @@ private def exerciseCallbackFailure (parent : System.FilePath) : IO Unit := do
   let before ← directoryEntries parent
   let mut failed := false
   try
-    let _ ← AgentWorkbench.ProofBuild.withFreshOutputs [baseline output true]
+    let _ ← AgentWorkbench.ProofBuild.withFreshOutputs
+      (← layouts (baseline output true) "callback")
       (do
         IO.FS.createDirAll (output / "lib" / "lean")
         IO.FS.writeFile (output / "lib" / "lean" / "Fresh.olean") "fresh output"
@@ -104,7 +111,7 @@ private def exerciseAbsentOutputParent (root : System.FilePath) : IO Unit := do
   IO.FS.createDirAll package
   let output := package / ".lake" / "build"
   let (_, checkResult?) ← AgentWorkbench.ProofBuild.withFreshOutputs
-    [{ directory := output, existed := false, parentExisted := false }]
+    (← layouts { directory := output, existed := false, parentExisted := false } "absent-parent")
     (do
       IO.FS.createDirAll (output / "lib" / "lean")
       IO.FS.writeFile (output / "lib" / "lean" / "Fresh.olean") "fresh output"

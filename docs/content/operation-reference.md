@@ -28,14 +28,15 @@ source snapshots unless that field belongs to the returned intent contract.
 | Area | Operations |
 |---|---|
 | Setup and discovery | `init`, `describe` |
-| Design | `design propose`, `design accept`, `design get` |
-| Work | `work start`, `work get`, `work focus`, `work resume`, `work suspend`, `work handoff`, `work adopt-design`, `work complete` |
-| Task | `task add`, `task close` |
+| Design | `design propose`, `design amend`, `design accept`, `design reject`, `design get`, `design inspect-sources`, `design source`, `design diff`, `design export` |
+| Work | `work start`, `work get`, `work focus`, `work resume`, `work suspend`, `work handoff`, `work adoption-impact`, `work adopt-design`, `work withdraw`, `work complete` |
+| Implementation Plan | `plan propose`, `plan replace`, `plan materialize`, `plan get`, `plan inspect-sources`, `plan source`, `plan diff`, `plan export` |
+| Task | `task close` (Tasks are materialized from the current Plan; there is no manual Task creation operation) |
 | Command Profile | `profile define`, `profile replace`, `command show`, `command run` |
 | Artifact evidence | `artifact observe` |
 | User correction | `correction record`, `correction supersede`, `correction resolve`, `correction incorporate` |
 | KPT | `kpt record`, `kpt apply` |
-| Review | `review start`, `review resume`, `review finding`, `review disposition`, `review verify`, `review context` |
+| Review | `review start`, `review resume`, `review handoff`, `review finding`, `review disposition`, `review conclude`, `review verify`, `review context`, `review inspect` |
 | Lean proof | `proof digest`, `proof run` |
 | Read models | `entry get`, `history`, `context`, `ready` |
 
@@ -52,6 +53,12 @@ Workbench.
 5. For a Command Profile, call `command show` before `command run`.
 6. Use `ready` as the completion decision.
 
+Declare every file or other observable input on which a Command Profile's result depends. A
+successful `command run` binds its evidence to the observed state of those inputs as well as the
+resolved command and target. Changing any declared input makes that evidence stale. Records created
+by an older Workbench version without input observations remain readable, but cannot satisfy current
+evidence requirements until the command is run again.
+
 Applicability shown by `describe` is guidance, not the transaction boundary. Every mutation acquires
 project ownership and rechecks applicability against authoritative state before commit. A concurrent
 operation may therefore make a previously displayed request inapplicable; the rejected request does
@@ -66,7 +73,11 @@ Review. Its target provenance is derived from that Review rather than supplied b
 
 - `context` returns the bounded current projection.
 - `ready` returns the derived completion decision and current gaps.
-- `design get`, `work get`, and `entry get` return one entity by stable ID.
+- `design get`, `plan get`, `work get`, and `entry get` return one entity by stable ID.
+- `design source/diff/export` and `plan source/diff/export` read immutable SQLite archives, never
+  later draft files.
+- `work adoption-impact` derives the exact consequences of adopting the accepted successor before
+  the binding changes.
 - `review context` returns isolated fresh or resumed reviewer input.
 - `history` returns entries after an order and accepts a limit from 1 through 100.
 - `command show` resolves one applicable profile without executing it.

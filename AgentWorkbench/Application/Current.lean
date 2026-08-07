@@ -16,12 +16,6 @@ def evaluateCurrentInputs
   | none => pure { observations := [], claimDigests := [] }
   | some projection =>
       let mut observations := []
-      for source in projection.design.sourceDocuments do
-        try
-          let snapshot ← Snapshot.target projectRoot source.target
-          if !observations.any (fun prior => prior.target == source.target) then
-            observations := observations ++ [TargetObservation.mk source.target snapshot]
-        catch _ => pure ()
       for criterion in projection.design.acceptanceCriteria do
         if criterionEvidenceRecorded projection criterion then
           try
@@ -31,6 +25,13 @@ def evaluateCurrentInputs
           catch _ => pure ()
       for entry in projection.entries do
         match entry.payload with
+        | .commandExecution execution =>
+            for input in execution.inputSnapshots.getD [] do
+              try
+                if !observations.any (fun prior => prior.target == input.target) then
+                  let snapshot ← Snapshot.target projectRoot input.target
+                  observations := observations ++ [TargetObservation.mk input.target snapshot]
+              catch _ => pure ()
         | .review review =>
             try
               let snapshot ← ReviewTarget.currentSnapshot projectRoot state review.purpose review.target

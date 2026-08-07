@@ -6,8 +6,8 @@ concepts, not steps the user must manually create.
 ## DesignRevision
 
 A DesignRevision is one immutable version of the project design accepted for Workbench decisions. It
-contains design statements, explicit assumptions, acceptance criteria, optional Lean claims, and
-snapshots of any declared readable design documents.
+contains exact archived private Markdown bytes, their canonical CommonMark source-unit graph,
+design statements, explicit assumptions, acceptance criteria, and optional Lean claims.
 
 The coding agent constructs the design from the user's outcome and project research. The user is not
 required to write a Workbench design package. When a requirement changes, a strict successor keeps
@@ -22,10 +22,21 @@ and an optional resume condition. Only one Work can be focused at a time.
 Suspending or handing off Work does not replace its outcome. A successor design is adopted explicitly
 before predecessor-bound Work can resume.
 
-## Task
+## Implementation Plan and Task
 
-A Task is an executable unit within Work. Required open Tasks block completion. A Task cannot silently
-invent a new acceptance criterion; those come from the accepted DesignRevision.
+An Implementation Plan is an immutable, Work-bound mapping from the Work's original Design baseline
+to its currently adopted Design. It covers every added, modified, and removed Statement plus accepted
+Implementation Findings, gives construction dependencies and output scopes, and has no Task
+authority until materialized.
+
+A Task is one required construction unit derived atomically from a materialized Plan step. There is
+no manual Task-add route. Replacing a Plan preserves unaffected lineages and reopens every changed
+step and transitive dependent. Required open Tasks block completion, and closing one requires current
+post-materialization evidence for that exact Task and output scope.
+
+Successful completion creates one immutable Work-completion record in the authoritative ledger. It
+binds the Work, adopted Design, current Plan, responsible run, prior state revision, and canonical
+completion-input digest. Work status alone is not completion authority.
 
 ## Acceptance criterion and evidence
 
@@ -50,8 +61,11 @@ rules.
 ## Command Profile
 
 A Command Profile is the project's recorded way to perform a command: executable, argument vector,
-working directory, relevant environment, purpose, and optional target. The agent shows the resolved
-command and executes that same resolution, avoiding tool-name and argument guessing.
+working directory, relevant environment, purpose, optional target, and the files or other inputs on
+which the result depends. The agent shows the resolved command and executes that same resolution,
+avoiding tool-name and argument guessing. A successful run records the observed state of every
+declared input. If an input changes later, evidence from that run is stale and the command must be
+run again.
 
 ## User correction
 

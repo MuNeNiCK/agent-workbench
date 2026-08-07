@@ -6,6 +6,7 @@ structure OutputBaseline where
   directory : System.FilePath
   existed : Bool
   parentExisted : Bool
+  digest : Option String := none
 
 private structure ManifestPackage where
   type : String
@@ -19,14 +20,18 @@ private structure LakeManifest where
   packages : Array ManifestPackage := #[]
   deriving Lean.FromJson
 
-private structure OutputLayout where
+structure OutputLayout where
   original : System.FilePath
   existed : Bool
   parentExisted : Bool
   backup : System.FilePath
   isolated : System.FilePath
-  wasBackedUp : System.FilePath
-  wasAbsent : System.FilePath
+  baselineDigest : Option String := none
+  deriving Repr, Lean.ToJson, Lean.FromJson
+
+structure ManagedOutputManifest where
+  layouts : List OutputLayout
+  deriving Repr, Lean.ToJson, Lean.FromJson
 
 private def samePath (left right : System.FilePath) : Bool :=
   left.normalize == right.normalize
@@ -126,6 +131,18 @@ def buildDirectories
 private def removeIfPresent (path : System.FilePath) : IO Unit := do
   if ← path.pathExists then IO.FS.removeDirAll path
 
+partial def directoryDigest (directory : System.FilePath) : IO String := do
+  let entries ← directory.readDir
+  let sorted := entries.toList.mergeSort (fun left right => left.fileName < right.fileName)
+  let mut material := ""
+  for entry in sorted do
+    let path := directory / entry.fileName
+    if ← path.isDir then
+      material := material ++ s!"d:{entry.fileName}:{← directoryDigest path}\n"
+    else
+      material := material ++ s!"f:{entry.fileName}:{← ContentDigest.file path}\n"
+  pure (ContentDigest.string material)
+
 private def canonicalRoot (path : System.FilePath) : IO System.FilePath := do
   if ← path.pathExists then IO.FS.realPath path else pure path
 
@@ -156,13 +173,21 @@ def captureBaselines
       let output := packageRoot / ".lake" / "build"
       if !directories.any (samePath · output) then
         directories := directories ++ [output]
-  let mut baselines := []
+  let mut baselines : List OutputBaseline := []
   for directory in directories do
     let parentExisted ← match directory.parent with
       | some parent => parent.pathExists
       | none => pure false
-    baselines := baselines ++ [{
-      directory, existed := (← directory.pathExists), parentExisted }]
+    let existed ← directory.pathExists
+    let digest : Option String ← if existed then do
+      pure (some (← directoryDigest directory))
+    else pure none
+    let baseline : OutputBaseline := {
+      directory := directory
+      existed := existed
+      parentExisted := parentExisted
+      digest := digest }
+    baselines := baselines ++ [baseline]
   pure baselines
 
 def validateDiscoveredOutputs
@@ -171,40 +196,47 @@ def validateDiscoveredOutputs
     unless baselines.any (fun baseline => samePath baseline.directory directory) do
       throw (IO.userError s!"Lean output is outside the pre-operation Lake manifest: {directory}")
 
-private def restore (layouts : List OutputLayout) : IO Unit := do
+def restoreLayouts (layouts : List OutputLayout) : IO Unit := do
   for layout in layouts.reverse do
-    if ← layout.wasBackedUp.pathExists then
-      removeIfPresent layout.original
-      removeIfPresent layout.isolated
+    if layout.existed then
       if ← layout.backup.pathExists then
+        if let some expected := layout.baselineDigest then
+          if (← directoryDigest layout.backup) != expected then
+            throw (IO.userError s!"proof output backup digest changed: {layout.backup}")
+        removeIfPresent layout.original
+        removeIfPresent layout.isolated
         IO.FS.rename layout.backup layout.original
+      else if ← layout.original.pathExists then
+        removeIfPresent layout.isolated
       else
-        throw (IO.userError s!"proof output backup disappeared before restoration: {layout.original}")
-    else if ← layout.wasAbsent.pathExists then
+        throw (IO.userError s!"proof output and its durable backup are both missing: {layout.original}")
+    else
       removeIfPresent layout.original
       removeIfPresent layout.isolated
       if !layout.parentExisted then
         if let some parent := layout.original.parent then removeIfPresent parent
 
+def outputLayouts
+    (baselines : List OutputBaseline) (operationToken : String) : IO (List OutputLayout) := do
+  let mut layouts := []
+  for (baseline, index) in baselines.zipIdx do
+    let directory := baseline.directory
+    let parent ← match directory.parent with
+      | some value => pure value
+      | none => throw (IO.userError s!"Lean build directory has no parent: {directory}")
+    layouts := layouts ++ [{
+      original := directory
+      existed := baseline.existed
+      parentExisted := baseline.parentExisted
+      backup := parent / s!".agent-workbench-backup-{operationToken}-{index}"
+      isolated := parent / s!".agent-workbench-isolated-{operationToken}-{index}"
+      baselineDigest := baseline.digest }]
+  pure layouts
+
 def withFreshOutputs {α β : Type}
-    (baselines : List OutputBaseline) (build : IO (Process.Result × β))
+    (layouts : List OutputLayout) (build : IO (Process.Result × β))
     (check : β → List System.FilePath → IO α) : IO ((Process.Result × β) × Option α) :=
-  IO.FS.withTempDir fun marker => do
-    let token := marker.components.getLast?.getD "isolated"
-    let mut layouts := []
-    for (baseline, index) in baselines.zipIdx do
-      let directory := baseline.directory
-      let parent ← match directory.parent with
-        | some value => pure value
-        | none => throw (IO.userError s!"Lean build directory has no parent: {directory}")
-      layouts := layouts ++ [{
-        original := directory
-        existed := baseline.existed
-        parentExisted := baseline.parentExisted
-        backup := parent / s!".agent-workbench-old-{token}-{index}"
-        isolated := parent / s!".agent-workbench-proof-{token}-{index}"
-        wasBackedUp := marker / s!"backed-up-{index}"
-        wasAbsent := marker / s!"absent-{index}" }]
+  do
     try
       for layout in layouts do
         if ← layout.backup.pathExists then
@@ -214,15 +246,12 @@ def withFreshOutputs {α β : Type}
         if layout.existed then
           if !(← layout.original.pathExists) then
             throw (IO.userError s!"pre-existing proof output disappeared during discovery: {layout.original}")
+          if let some expected := layout.baselineDigest then
+            if (← directoryDigest layout.original) != expected then
+              throw (IO.userError s!"proof output changed after baseline capture: {layout.original}")
           IO.FS.rename layout.original layout.backup
-          try
-            IO.FS.writeFile layout.wasBackedUp ""
-          catch error =>
-            IO.FS.rename layout.backup layout.original
-            throw error
         else
           removeIfPresent layout.original
-          IO.FS.writeFile layout.wasAbsent ""
       let buildOutput ← build
       let buildResult := buildOutput.1
       if buildResult.exitCode != 0 then return (buildOutput, none)
@@ -236,6 +265,6 @@ def withFreshOutputs {α β : Type}
       let leanPaths := isolated.map (fun layout => layout.isolated / "lib" / "lean")
       pure (buildOutput, some (← check buildOutput.2 leanPaths))
     finally
-      restore layouts
+      restoreLayouts layouts
 
 end AgentWorkbench.ProofBuild

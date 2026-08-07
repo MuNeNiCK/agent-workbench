@@ -1,9 +1,7 @@
-import AgentWorkbench.Adapter.SQLite
-
 namespace AgentWorkbench.OperationLock
 
 private def lockPath (projectRoot : System.FilePath) : System.FilePath :=
-  projectRoot / ".agent-workbench" / "mutation-lock.db"
+  projectRoot / ".agent-workbench" / "mutation.lock"
 
 /--
 Serializes public semantic mutations before they read authoritative project state.
@@ -12,7 +10,8 @@ released automatically when the action finishes or the process connection closes
 -/
 def withProjectMutationLock (projectRoot : System.FilePath) (action : IO α) : IO α := do
   IO.FS.createDirAll (projectRoot / ".agent-workbench")
-  let connection ← AgentWorkbench.SQLite.openWithTimeout (lockPath projectRoot) 86400000
-  AgentWorkbench.SQLite.immediateTransaction connection action
+  let handle ← IO.FS.Handle.mk (lockPath projectRoot) .append
+  handle.lock true
+  try action finally handle.unlock
 
 end AgentWorkbench.OperationLock

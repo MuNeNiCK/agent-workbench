@@ -41,12 +41,16 @@ evidence or a replacement Review to force the operation.
 
 A Finding is advisory. The responsible work agent records an allowed disposition with a reason:
 
-- `accepted` means the mismatch must be resolved and verified;
+- `accepted` means the mismatch becomes a causal obligation;
 - `rejected` means it is not adopted under the accepted design;
 - `replaced` means a later disposition supersedes it.
 
-A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. Only an accepted
-finding without current resumed-review verification blocks completion.
+A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. For a Design
+Review, candidate amendment must name the accepted Finding as a change basis; the old Review remains
+immutable and cannot authorize the new candidate. For an Implementation Review, an accepted
+output-changing Finding must be included in a replacement Plan before materialization and is resolved
+through current evidence in the same resumed Review lineage. Only an accepted unresolved Finding in
+current implementation authority blocks completion.
 
 ## Diagnosing review state
 

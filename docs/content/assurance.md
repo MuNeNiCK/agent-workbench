@@ -2,7 +2,7 @@
 
 Read this page when deciding whether a project property should use Lean, auditing a proof receipt, or
 diagnosing why a receipt became stale. Lean is one evidence mechanism inside Workbench, not the
-product's workflow or a promise that the whole project is formally verified.
+product's workflow or a promise that every project behavior is represented and verified in Lean.
 
 ## When Lean is useful
 
@@ -20,16 +20,22 @@ Each selected claim binds:
 - one exact design statement and its text-to-proposition mapping;
 - a proposition and witness declaration;
 - explicit allowed kernel assumptions;
-- a proof root and declared source inputs;
+- a proof root below `.agent-workbench/design/proofs/` and the complete local Lean source closure;
 - a configured preparation check; and
 - the product's one fully qualified pinned toolchain identity.
 
 The mapping remains visible because Lean cannot prove that natural-language intent was translated
 completely or correctly.
 
+The Design proposal reads each declared Lean source into the same immutable SQLite archive as the
+Markdown Design, derives its digest, rejects an omitted local dependency, and asks the pinned Lean
+toolchain to elaborate the proposition. The resulting proposition digest and dependency set belong
+to the DesignRevision. Editing a live proof draft after proposal cannot change that Design.
+
 ## What happens during proof execution
 
-Workbench derives the complete source and package-configuration closure, then protects every normal
+Workbench re-derives the source and package-configuration closure, checks it against the accepted
+Design identity, then protects every normal
 non-toolchain Lake output involved in the proof. It rebuilds those inputs without cache, removes the
 fresh compiled outputs from normal lookup paths, and runs a generated checker whose import path can
 see only the isolated fresh outputs plus the pinned toolchain.
@@ -49,7 +55,8 @@ A receipt counts only while all of these remain current:
 
 - exact claim structure and statement text;
 - proposition, witness, assumptions, mapping, and check definition;
-- proof root and ordered source/configuration closure;
+- proof root, archived Lean bytes, ordered source/configuration closure, elaborated proposition
+  digest, and proposition dependency set;
 - pinned toolchain identity;
 - focused Work and accepted DesignRevision binding.
 

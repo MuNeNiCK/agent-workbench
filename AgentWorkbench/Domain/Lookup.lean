@@ -16,6 +16,24 @@ def ProjectState.work? (state : ProjectState) (id : String) : Option Work :=
 def ProjectState.entry? (state : ProjectState) (id : String) : Option LedgerEntry :=
   uniqueBy? state.ledgerEntries (·.id) id
 
+def ProjectState.plan? (state : ProjectState) (id : String) : Option ImplementationPlan :=
+  uniqueBy? state.implementationPlans (·.id) id
+
+def ProjectState.currentPlanFor? (state : ProjectState) (workId : String) : Option ImplementationPlan :=
+  let designId := (state.work? workId).bind (·.designRevision)
+  match state.implementationPlans.filter (fun plan =>
+      plan.workId == workId && plan.status == .current && some plan.designRevision == designId) with
+  | [plan] => some plan
+  | _ => none
+
+/-- The last materialized Plan remains the replacement predecessor after Design adoption, but is
+not current authority until a Plan for the adopted Design is materialized. -/
+def ProjectState.materializedPlanFor? (state : ProjectState) (workId : String) : Option ImplementationPlan :=
+  match state.implementationPlans.filter (fun plan =>
+      plan.workId == workId && plan.status == .current) with
+  | [plan] => some plan
+  | _ => none
+
 def ProjectState.currentDesign? (state : ProjectState) : Option DesignRevision := do
   let id ← state.acceptedDesignId
   let design ← state.design? id
@@ -24,7 +42,7 @@ def ProjectState.currentDesign? (state : ProjectState) : Option DesignRevision :
 def ProjectState.currentWork? (state : ProjectState) : Option Work := do
   let id ← state.focusedWorkId
   let work ← state.work? id
-  if work.status == .focused then some work else none
+  if work.status == .active then some work else none
 
 def DesignRevision.criterion? (design : DesignRevision) (id : String) : Option AcceptanceCriterion :=
   uniqueBy? design.acceptanceCriteria (·.id) id
@@ -34,6 +52,9 @@ def DesignRevision.statement? (design : DesignRevision) (id : String) : Option S
 
 def DesignRevision.claim? (design : DesignRevision) (id : String) : Option LeanClaim :=
   uniqueBy? design.leanClaims (·.id) id
+
+def DesignRevision.assumption? (design : DesignRevision) (id : String) : Option DesignAssumption :=
+  uniqueBy? design.assumptions (·.id) id
 
 def ProjectState.designDescendsFrom
     (state : ProjectState) (ancestor descendant : String) : Bool :=
@@ -50,6 +71,9 @@ def EntryPayload.tag : EntryPayload → String
   | .task _ => "task"
   | .workDesignAdoption _ => "work_design_adoption"
   | .workHandoff _ => "work_handoff"
+  | .workWithdrawal _ => "work_withdrawal"
+  | .workCompletion _ => "work_completion"
+  | .designRejection _ => "design_rejection"
   | .commandProfile _ => "command_profile"
   | .commandExecution _ => "command_execution"
   | .artifactObservation _ => "artifact_observation"
@@ -57,6 +81,8 @@ def EntryPayload.tag : EntryPayload → String
   | .finding _ => "finding"
   | .reviewDisposition _ => "review_disposition"
   | .reviewVerification _ => "review_verification"
+  | .reviewHandoff _ => "review_handoff"
+  | .reviewConclusion _ => "review_conclusion"
   | .userCorrection _ => "user_correction"
   | .kpt _ => "kpt"
   | .leanProofReceipt _ => "lean_proof_receipt"

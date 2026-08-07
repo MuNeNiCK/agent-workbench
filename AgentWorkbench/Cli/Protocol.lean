@@ -6,16 +6,38 @@ structure IdInput where
   id : String
   deriving Lean.ToJson, Lean.FromJson
 
+structure DesignSourceInspectionInput where
+  sourceDocumentTargets : List String
+  deriving Lean.ToJson, Lean.FromJson
+
+structure DesignSourceInput where
+  designId : String
+  target : String
+  deriving Lean.ToJson, Lean.FromJson
+
+structure DesignDiffInput where
+  beforeDesignId : String
+  afterDesignId : String
+  deriving Lean.ToJson, Lean.FromJson
+
+structure PlanSourceInspectionInput where
+  workId : String
+  sourceDocumentTargets : List String
+  deriving Lean.ToJson, Lean.FromJson
+
+structure PlanSourceInput where
+  planId : String
+  target : String
+  deriving Lean.ToJson, Lean.FromJson
+
+structure PlanDiffInput where
+  beforePlanId : String
+  afterPlanId : String
+  deriving Lean.ToJson, Lean.FromJson
+
 structure SuspendInput where
   workId : String
   resumeCondition : String
-  deriving Lean.ToJson, Lean.FromJson
-
-structure AdoptDesignInput where
-  workId : String
-  entryId : String
-  impactDisposition : String
-  agentRun : String
   deriving Lean.ToJson, Lean.FromJson
 
 structure HandoffInput where
@@ -48,13 +70,13 @@ def StateResult.ofState (state : ProjectState) : StateResult :=
 
 structure ContextResult where
   stateRevision : Nat
-  context : Option CurrentContext
+  context : Option ProjectContext
   deriving Lean.ToJson
 
 structure ReadinessResult where
   stateRevision : Nat
   ready : Bool
-  context : Option CurrentContext
+  context : Option ProjectContext
   deriving Lean.ToJson
 
 end AgentWorkbench.Cli

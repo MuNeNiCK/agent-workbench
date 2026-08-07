@@ -34,7 +34,9 @@ Release CI uses GitHub-hosted native runners without Docker or QEMU. For each pl
 2. runs both test executables;
 3. stages the runtime, Elan, and licenses;
 4. installs the candidate Skill through `gh skill install`;
-5. exercises setup and the public semantic-operation route, including concurrent proof execution;
+5. exercises Skill installation, first initialization, idempotent setup, the operation index, and
+   the first public Work transition; the full semantic and concurrent routes remain in the native
+   product test executable;
 6. packages the archive and checksum; and
 7. uploads its assets.
 

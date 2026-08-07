@@ -8,7 +8,7 @@ not require a global Workbench CLI, Elan, Lean, Docker, or QEMU.
 From the repository root:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.7 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.8 \
   --agent codex --scope project
 ```
 
@@ -29,6 +29,12 @@ verifies the archive's GitHub build-provenance attestation for the repository, r
 tag, then verifies the published SHA-256 checksum before extracting below `.agent-workbench/bin`.
 Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.32.2`
 below `.agent-workbench/toolchains`.
+
+When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
+schema-revision mismatch is handed to native `init` for migration; other read failures remain
+failures. Migration preserves the recorded Designs, Works, and ledger history, marks unavailable
+historical source archives as unavailable, and advances project state once. Later setup runs are
+read-only and idempotent.
 
 The POSIX setup entry point is invoked through `sh`, so installed script executable mode is not a
 requirement. Once setup finishes, the Skill calls the native Workbench executable directly; shell is
@@ -52,7 +58,11 @@ An unsupported OS/architecture pair is rejected before installation is treated a
 | `.agent-workbench/bin` | Native runtime, bundled Elan, and redistribution licenses | No |
 | `.agent-workbench/toolchains` | Project-local pinned Lean toolchain | No |
 | `.agent-workbench/state.db` | Transactional project state | Never |
-| `.agent-workbench/mutation-lock.db` | Process-safe mutation serialization | Never |
+| `.agent-workbench/mutation.lock` | Process-safe mutation serialization; file existence alone is not a held lock | Never |
+| `.agent-workbench/design/product` | Private editable project requirements and constraints | Coding agent |
+| `.agent-workbench/design/implementation` | Private editable architecture and technology decisions | Coding agent |
+| `.agent-workbench/design/plans/<work-id>` | Private editable implementation-plan sources | Coding agent |
+| `.agent-workbench/design/proofs` | Project Lean sources selected by Design Claims | Coding agent |
 
 Workbench does not modify `.gitignore`, Git configuration, or the index. The project decides whether
 `.agents` and `.agent-workbench` are tracked, ignored, or provisioned another way. In this repository

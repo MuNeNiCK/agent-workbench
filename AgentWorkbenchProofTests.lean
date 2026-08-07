@@ -1,4 +1,5 @@
 import AgentWorkbenchTest.ProofBuild
+import AgentWorkbenchProof
 
 def main : IO Unit := do
   AgentWorkbenchTest.ProofBuild.run

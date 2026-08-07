@@ -22,9 +22,9 @@ the Skill or shell.
 5. Use only the returned current context for the next action. Query history separately when needed;
    do not treat matching old text as current.
 
-Current Context returns bounded stable references. Retrieve details with `design get`, `work get`,
-or `entry get`; page older entries with `history`. Do not replace the bounded context with a full
-ledger dump.
+Current Context returns bounded stable references. Retrieve details with `design get`, `plan get`,
+`work get`, or `entry get`; page older entries with `history`. A null focus does not prove that no
+Design or retained Work exists. Do not replace the bounded context with a full ledger dump.
 
 The setup script only acquires and verifies the release archive. After setup, invoke the native
 binary directly.
@@ -38,15 +38,15 @@ revision change.
 
 ```text
 describe [operation]
-design propose | accept | get
-work start | focus | resume | suspend | handoff | adopt-design | complete
-work get
-task add | close
+design inspect-sources | propose | amend | accept | reject | get | source | diff | export
+work start | focus | resume | suspend | handoff | adoption-impact | adopt-design | withdraw | complete | get
+plan inspect-sources | propose | replace | materialize | get | source | diff | export
+task close
 profile define | replace
 artifact observe
 correction record | supersede | resolve | incorporate
 kpt record | apply
-review start | resume | finding | disposition | verify | context
+review start | resume | handoff | finding | disposition | conclude | verify | context | inspect
 entry get
 context | history
 ready
@@ -57,12 +57,24 @@ proof digest | run
 There is no generic mutation or `entry append`. System-owned order, scope, Work/Design binding,
 supersession, status, and Design ancestry are derived by the native semantic operation.
 
+For an initial outcome, keep one Work from empty baseline through private Design-source capture,
+candidate acceptance, selected Claim receipts, Work-specific Plan proposal/materialization, derived
+Tasks, evidence, and completion. Never create Tasks manually or split Design/proof/planning into
+replacement Works. A Plan candidate has no productive authority until materialization.
+
+When selecting a Lean Claim, place its proposition, witness, and complete local Lean source closure
+below `.agent-workbench/design/proofs/` before `design propose`. Declare every local source; do not
+invent or copy `expectedDigest`. Proposal derives the digests from the captured bytes, rejects an
+omitted dependency, and stores the pinned elaborated proposition with the immutable Design.
+
 `context`, `ready`, and `work complete` compute current target snapshots and Lean input digests
 internally; do not supply or guess them.
 
 Use `command show` before execution when presenting a next command. Use `command run` to execute
-that same Command Profile resolution and record its argv, cwd, environment, output digests, and
-target snapshot. Never replace it with a guessed command or a shell command string.
+that same Command Profile resolution and record its argv, cwd, environment, output digests, target
+snapshot, and every declared input observation. Declare every input on which the result depends. If
+one changes, treat the run as stale and rerun it. Evidence created without input observations is
+historical only. Never replace a Profile with a guessed command or a shell command string.
 
 Treat `ready` as the completion decision. A verbal done report, commit, clean tree, KPT, or review
 completion cannot override `ready: false` unless the accepted design explicitly makes it a
@@ -70,8 +82,12 @@ criterion.
 
 ## Preserve authority
 
-- Treat the accepted DesignRevision as normative. Record a changed requirement as a user
-  correction and construct a successor design; do not silently add a task or criterion.
+- Treat the accepted DesignRevision as normative. Record a changed requirement as a User
+  Correction and construct a successor Design from private sources; do not silently add a Task,
+  Criterion, Claim, or implementation mechanism.
+- Map the complete Work-baseline-to-current-Design delta into one Work-specific Implementation Plan.
+  Materialize that Plan to derive Tasks; do not turn already accepted constraints into new
+  requirements or repeated confirmation work.
 - Treat KPT as retained learning. A Try becomes relevant when a later action applies it; it does
   not become a requirement by itself.
 - Suspend before switching work or accepting a successor design. Resume the same Work when its
@@ -87,8 +103,9 @@ reviewer-context modes, not review types.
   finding, or remediation context. The reviewer run must differ from the target producer run.
 - Give a reviewer only `review context` for its Review entry. A fresh result has an empty lineage;
   do not supply ordinary Current Context or a prior conversation to that reviewer.
-- Use `resume` to continue the same review identifier and target, including verification of an
-  existing finding. Do not create a fresh review to verify its fix.
+- Use `resume` to continue the same review identifier and exact target, including verification of an
+  implementation fix. An amended Design is a new immutable target: its old Review stays readable but
+  cannot authorize the new candidate.
 - Treat findings as advisory until the responsible work agent records an accepted, rejected, or
   replaced disposition under the accepted design. Only an accepted unresolved finding blocks
   completion.

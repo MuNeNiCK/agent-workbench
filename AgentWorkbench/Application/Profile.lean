@@ -6,7 +6,10 @@ namespace AgentWorkbench
 structure ProfileDefineRequest where
   entryId : String
   purpose : String
-  target : Option String := none
+  taskEntryId : String
+  inputTargets : List String := []
+  outputScope : String
+  criterionIds : List String
   command : CommandSpec
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
@@ -14,17 +17,25 @@ structure ProfileReplaceRequest where
   entryId : String
   profileEntryId : String
   purpose : String
-  target : Option String := none
+  taskEntryId : String
+  inputTargets : List String := []
+  outputScope : String
+  criterionIds : List String
   command : CommandSpec
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 private def payload
-    (purpose : String) (target : Option String) (command : CommandSpec) : EntryPayload :=
-  .commandProfile { purpose, target, command }
+    (purpose taskEntryId : String) (inputTargets : List String)
+    (outputScope : String) (criterionIds : List String) (command : CommandSpec) : EntryPayload :=
+  .commandProfile {
+    purpose, taskEntryId := some taskEntryId, inputTargets := some inputTargets
+    outputScope := some outputScope, criterionIds := some criterionIds
+    target := some outputScope, command }
 
 def defineProfile
     (state : ProjectState) (request : ProfileDefineRequest) : Except String ProjectState :=
-  appendCurrentEntry state request.entryId (payload request.purpose request.target request.command)
+  appendCurrentEntry state request.entryId (payload request.purpose request.taskEntryId
+    request.inputTargets request.outputScope request.criterionIds request.command)
 
 def replaceProfile
     (state : ProjectState) (request : ProfileReplaceRequest) : Except String ProjectState := do
@@ -40,6 +51,7 @@ def replaceProfile
   | .commandProfile _ => pure ()
   | _ => throw s!"entry {request.profileEntryId} is not a Command Profile"
   appendCurrentEntry state request.entryId
-    (payload request.purpose request.target request.command) [prior.id]
+    (payload request.purpose request.taskEntryId request.inputTargets request.outputScope
+      request.criterionIds request.command) [prior.id]
 
 end AgentWorkbench
