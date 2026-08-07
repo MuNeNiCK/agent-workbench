@@ -263,6 +263,45 @@ private def migrateV1ToV2 (connection : AgentWorkbench.SQLite.Connection) : IO U
       UNIQUE(plan_id, ordinal),
       FOREIGN KEY(plan_id) REFERENCES implementation_plans(id)
     ) STRICT;
+    WITH RECURSIVE scrub_design(id, claim_index, document) AS (
+      SELECT id, 0, structured_document FROM design_revisions
+      UNION ALL
+      SELECT id, claim_index + 1,
+        json_set(document,
+          '$.leanClaims[' || claim_index || '].input.check.environment',
+          json(COALESCE((
+            SELECT json_group_array(CASE json_type(value)
+              WHEN 'array' THEN json_extract(value, '$[0]') ELSE value END)
+            FROM json_each(document,
+              '$.leanClaims[' || claim_index || '].input.check.environment')), '[]')))
+      FROM scrub_design
+      WHERE claim_index < json_array_length(document, '$.leanClaims')
+    )
+    UPDATE design_revisions
+      SET structured_document = (SELECT document FROM scrub_design
+        WHERE scrub_design.id = design_revisions.id
+        ORDER BY claim_index DESC LIMIT 1);
+    UPDATE ledger_entries SET document = json_set(document,
+      '$.payload.commandProfile.value.command.environment',
+      json(COALESCE((SELECT json_group_array(CASE json_type(value)
+        WHEN 'array' THEN json_extract(value, '$[0]') ELSE value END)
+        FROM json_each(document,
+          '$.payload.commandProfile.value.command.environment')), '[]')))
+      WHERE payload_kind = 'command-profile';
+    UPDATE ledger_entries SET document = json_set(document,
+      '$.payload.commandExecution.value.command.environment',
+      json(COALESCE((SELECT json_group_array(CASE json_type(value)
+        WHEN 'array' THEN json_extract(value, '$[0]') ELSE value END)
+        FROM json_each(document,
+          '$.payload.commandExecution.value.command.environment')), '[]')))
+      WHERE payload_kind = 'command-execution';
+    UPDATE ledger_entries SET document = json_set(document,
+      '$.payload.leanProofReceipt.value.claimInput.check.environment',
+      json(COALESCE((SELECT json_group_array(CASE json_type(value)
+        WHEN 'array' THEN json_extract(value, '$[0]') ELSE value END)
+        FROM json_each(document,
+          '$.payload.leanProofReceipt.value.claimInput.check.environment')), '[]')))
+      WHERE payload_kind = 'lean-proof-receipt';
     UPDATE project_metadata SET schema_revision = 2 WHERE singleton = 1;"
 
 def initializeStoreSchema (connection : AgentWorkbench.SQLite.Connection) : IO OpenResult := do

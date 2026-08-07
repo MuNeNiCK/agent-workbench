@@ -24,15 +24,15 @@ def initializeProject (projectRoot : System.FilePath) : IO Unit := do
   IO.FS.createDirAll (designRoot / "implementation")
   IO.FS.createDirAll (designRoot / "plans")
   IO.FS.createDirAll (designRoot / "proofs")
-  let available ← Process.execute projectRoot {
+  let available ← Process.executeWithOverrides projectRoot {
     executable := runtime.elanExecutable.toString
-    arguments := #["run", toolchain, "lean", "--version"]
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+    arguments := #["run", toolchain, "lean", "--version"] }
+    #[("ELAN_HOME", runtime.elanHome.toString)]
   if available.exitCode != 0 then
-    let installed ← Process.execute projectRoot {
+    let installed ← Process.executeWithOverrides projectRoot {
       executable := runtime.elanExecutable.toString
-      arguments := #["toolchain", "install", toolchain]
-      environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+      arguments := #["toolchain", "install", toolchain] }
+      #[("ELAN_HOME", runtime.elanHome.toString)]
     if installed.exitCode != 0 then
       throw (IO.userError s!"project-local Lean toolchain acquisition failed: {installed.stderr}")
 

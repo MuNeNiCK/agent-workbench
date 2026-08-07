@@ -49,7 +49,7 @@ private def createV1Database (path : System.FilePath) (focused : Bool := true) :
     declaredSources := [{ path := "Legacy.lean" }]
     check := { executable := "lake", arguments := #["build"] }
     toolchain := ProofToolchain.identifier }
-  let designDocument :=
+  let designDocument := (
     "{\"id\":\"design-v1\",\"parent\":null,\"createdAfterEntryOrder\":0," ++
     "\"status\":\"accepted\",\"producerAgentRun\":\"agent-old\"," ++
     "\"sourceDocuments\":[{\"target\":\"file:legacy-design.md\",\"snapshot\":\"blake3:legacy-source\"}]," ++
@@ -57,7 +57,8 @@ private def createV1Database (path : System.FilePath) (focused : Bool := true) :
     "\"acceptanceCriteria\":[{\"id\":\"criterion-v1\",\"statementId\":null," ++
     "\"statement\":\"retain legacy task\",\"target\":\"file:legacy\",\"evidenceKind\":\"artifact\"}]," ++
     "\"leanClaims\":[{\"id\":\"claim-v1\",\"input\":" ++
-      (Lean.toJson legacyClaimInput).compress ++ "}]}"
+      (Lean.toJson legacyClaimInput).compress ++ "}]}") |>.replace
+        "\"environment\":[]" "\"environment\":[[\"API_TOKEN\",\"legacy-secret-value\"]]"
   let workDocument :=
     "{\"id\":\"work-v1\",\"outcome\":\"continue the retained outcome\"," ++
     "\"scope\":\"project\",\"designRevision\":\"design-v1\",\"status\":\"focused\"," ++
@@ -114,6 +115,7 @@ private def createV1Database (path : System.FilePath) (focused : Bool := true) :
     |>.replace "\"elaboratedPropositionDigest\":\"\"," ""
     |>.replace "\"propositionDependencies\":[]," ""
     |>.replace "\"assumptionDependencies\":[]," ""
+    |>.replace "\"environment\":[]" "\"environment\":[[\"API_TOKEN\",\"legacy-secret-value\"]]"
   if legacyReceiptDocument == currentReceiptDocument then
     throw (IO.userError "test fixture did not produce a v0.2.7 proof receipt")
   AgentWorkbench.SQLite.execute connection
@@ -149,6 +151,8 @@ def run : IO Unit := do
     expect (design.sourceDocuments ==
       [({ target := "file:legacy-design.md", snapshot := "blake3:legacy-source" } : DesignSource)])
       "migration could not decode the exact v0.2.7 Design source shape"
+    expect (design.leanClaims.head?.any (·.input.check.environment == #["API_TOKEN"]))
+      "migration did not project a legacy Design command environment to names"
     expect (work.status == .active && work.baselineDesignRevision.isNone &&
       work.designRevision == some design.id && work.outcome == "continue the retained outcome")
       "migration changed retained Work identity or failed to map its lifecycle"
@@ -168,6 +172,13 @@ def run : IO Unit := do
       | _ => false)
       "migration could not retain a v0.2.7 proof receipt as stale history"
     let connection ← AgentWorkbench.SQLite.openReadOnly database
+    let persistedDesign ← AgentWorkbench.SQLite.queryScalar connection
+      "SELECT structured_document FROM design_revisions WHERE id = 'design-v1'" #[]
+    let persistedReceipt ← AgentWorkbench.SQLite.queryScalar connection
+      "SELECT document FROM ledger_entries WHERE id = 'proof-v1'" #[]
+    expect (!persistedDesign.contains "legacy-secret-value" &&
+      !persistedReceipt.contains "legacy-secret-value")
+      "migration retained a raw legacy environment value"
     expect ((← AgentWorkbench.SQLite.queryScalar connection
       "SELECT CAST(schema_revision AS TEXT) FROM project_metadata WHERE singleton = 1" #[]) == "2")
       "migration did not advance the schema revision atomically"

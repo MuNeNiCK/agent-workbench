@@ -23,6 +23,7 @@ structure CommandExecutionRecord where
   outputScope : Option String := none
   criterionId : Option String := none
   inputSnapshots : Option (List InputSnapshot) := none
+  environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String := none
   snapshot : Option String := none
   command : CommandSpec
@@ -39,6 +40,7 @@ private structure PersistedCommandExecutionRecord where
   outputScope : Option String
   criterionId : Option String
   inputSnapshots : Option (List InputSnapshot)
+  environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String
   snapshot : Option String
   command : CommandSpec
@@ -54,6 +56,8 @@ private structure LegacyCommandExecutionRecord where
   taskEntryId : Option String := none
   outputScope : Option String := none
   criterionId : Option String := none
+  inputSnapshots : Option (List InputSnapshot) := none
+  environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String := none
   snapshot : Option String := none
   command : CommandSpec
@@ -67,19 +71,30 @@ private structure LegacyCommandExecutionRecord where
 instance : Lean.FromJson CommandExecutionRecord where
   fromJson? json :=
     match (Lean.fromJson? json : Except String PersistedCommandExecutionRecord) with
-    | .ok value => pure {
+    | .ok value =>
+      let environmentSnapshots := value.environmentSnapshots.orElse fun _ => some <|
+        value.command.environment.toList.map fun name =>
+          ({ target := s!"env:{name}", snapshot := "blake3:legacy-unavailable" } : InputSnapshot)
+      pure {
         profileEntryId := value.profileEntryId, taskEntryId := value.taskEntryId
         outputScope := value.outputScope, criterionId := value.criterionId
-        inputSnapshots := value.inputSnapshots, target := value.target, snapshot := value.snapshot
+        inputSnapshots := value.inputSnapshots, environmentSnapshots
+        target := value.target, snapshot := value.snapshot
         command := value.command, exitCode := value.exitCode
         stdoutDigest := value.stdoutDigest, stderrDigest := value.stderrDigest
         successful := value.successful, producerAgentRun := value.producerAgentRun }
     | .error currentError =>
         match (Lean.fromJson? json : Except String LegacyCommandExecutionRecord) with
-        | .ok value => pure {
+        | .ok value =>
+          let environmentSnapshots := value.environmentSnapshots.orElse fun _ => some <|
+            value.command.environment.toList.map fun name =>
+              ({ target := s!"env:{name}", snapshot := "blake3:legacy-unavailable" } : InputSnapshot)
+          pure {
             profileEntryId := value.profileEntryId, taskEntryId := value.taskEntryId
             outputScope := value.outputScope, criterionId := value.criterionId
-            inputSnapshots := none, target := value.target, snapshot := value.snapshot
+            inputSnapshots := value.inputSnapshots
+            environmentSnapshots
+            target := value.target, snapshot := value.snapshot
             command := value.command, exitCode := value.exitCode
             stdoutDigest := value.stdoutDigest, stderrDigest := value.stderrDigest
             successful := value.successful, producerAgentRun := value.producerAgentRun }

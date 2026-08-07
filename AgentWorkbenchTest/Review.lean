@@ -79,6 +79,18 @@ def run : IO Unit :=
     let disposed ← fromExcept <| recordDisposition nonclean {
       entryId := "disposition-1", findingEntryId := "finding-1"
       decision := .accepted, reason := "the fixed target confirms the mismatch" }
+    let replacedDisposition ← fromExcept <| recordDisposition disposed {
+      entryId := "disposition-2", findingEntryId := "finding-1"
+      decision := .replaced, reason := "the later responsible-agent decision replaces acceptance" }
+    expect (!replacedDisposition.findingAccepted "finding-1" work.id &&
+      !(acceptedImplementationFindingIds replacedDisposition work.id design.id).contains "finding-1")
+      "a replaced Finding disposition left the earlier acceptance authoritative"
+    let replacementEntry ← match replacedDisposition.entry? "disposition-2" with
+      | some value => pure value
+      | none => throw (IO.userError "replacement disposition was not recorded")
+    expect (replacementEntry.supersedes == ["disposition-1"])
+      "replacement disposition did not supersede prior disposition history"
+    fromExcept (validateState replacedDisposition)
     let omittedPlan : ImplementationPlan := {
       plan with
       id := "plan-finding-omitted"

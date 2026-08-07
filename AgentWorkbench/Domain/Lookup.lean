@@ -16,6 +16,36 @@ def ProjectState.work? (state : ProjectState) (id : String) : Option Work :=
 def ProjectState.entry? (state : ProjectState) (id : String) : Option LedgerEntry :=
   uniqueBy? state.ledgerEntries (·.id) id
 
+/-- The latest responsible-agent disposition is the current authority for one Finding. -/
+def findingDispositionIn?
+    (entries : List LedgerEntry) (findingId workId : String) : Option LedgerEntry :=
+  entries.foldl (fun latest entry =>
+    if entry.workId != some workId then latest else
+    match entry.payload with
+    | .reviewDisposition disposition =>
+        if disposition.findingEntryId != findingId then latest
+        else match latest with
+          | some prior => if prior.order < entry.order then some entry else latest
+          | none => some entry
+    | _ => latest) none
+
+def ProjectState.findingDisposition?
+    (state : ProjectState) (findingId workId : String) : Option LedgerEntry :=
+  findingDispositionIn? state.ledgerEntries findingId workId
+
+def ProjectState.findingAccepted (state : ProjectState) (findingId workId : String) : Bool :=
+  state.findingDisposition? findingId workId |>.any fun entry =>
+    match entry.payload with
+    | .reviewDisposition disposition => disposition.decision == .accepted
+    | _ => false
+
+def ProjectState.findingAcceptedAt
+    (state : ProjectState) (findingId workId : String) (maximumOrder : Nat) : Bool :=
+  findingDispositionIn? (state.ledgerEntries.filter (·.order <= maximumOrder)) findingId workId
+    |>.any fun entry => match entry.payload with
+      | .reviewDisposition disposition => disposition.decision == .accepted
+      | _ => false
+
 def ProjectState.plan? (state : ProjectState) (id : String) : Option ImplementationPlan :=
   uniqueBy? state.implementationPlans (·.id) id
 

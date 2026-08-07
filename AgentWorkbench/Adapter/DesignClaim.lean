@@ -135,8 +135,7 @@ private def buildSourcesCommand
     (runtime : Runtime.Layout) (claim : LeanClaim) : CommandSpec :=
   { executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "-H", "-R", "--no-cache",
-      "build"] ++ claim.input.declaredSources.toArray.map (·.path)
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+      "build"] ++ claim.input.declaredSources.toArray.map (·.path) }
 
 def elaborateWithRuntime
     (projectRoot : System.FilePath) (runtime : Runtime.Layout) (claim : LeanClaim)
@@ -147,8 +146,9 @@ def elaborateWithRuntime
   let (buildOutput, elaboration?) ← ProofBuild.withFreshOutputs layouts
     (do
       let before ← ProofInput.evaluate projectRoot runtime claim
-      let result ← Process.execute projectRoot {
+      let result ← Process.executeWithOverrides projectRoot {
         (buildSourcesCommand runtime claim) with workingDirectory := some proofRoot.toString }
+        #[("ELAN_HOME", runtime.elanHome.toString)]
       pure (result, before.1))
     (fun before leanPaths => do
       let built ← ProofInput.evaluate projectRoot runtime claim

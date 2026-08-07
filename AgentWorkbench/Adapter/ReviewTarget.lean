@@ -48,23 +48,29 @@ private def entryProducerRuns (work : Work) (entry : LedgerEntry) : List String 
   | .reviewHandoff value => [value.predecessorReviewerRun, value.successorReviewerRun]
   | .reviewConclusion value => [value.reviewerAgentRun]
 
-private def acceptedDispositionIds (entries : List LedgerEntry) : List String :=
+private def acceptedDispositionIds (entries : List LedgerEntry) (workId : String) : List String :=
   entries.filterMap fun entry =>
     match entry.payload with
-    | .reviewDisposition value =>
-        if value.decision == .accepted then some value.findingEntryId else none
+    | .finding _ =>
+        if (findingDispositionIn? entries entry.id workId).any fun dispositionEntry =>
+          match dispositionEntry.payload with
+          | .reviewDisposition value => value.decision == .accepted
+          | _ => false
+        then some entry.id else none
     | _ => none
 
 private def implementationLedgerComponents
     (projection : CurrentProjection) (plan : ImplementationPlan) : List ReviewTargetComponent :=
-  let acceptedFindings := acceptedDispositionIds projection.entries
+  let acceptedFindings := acceptedDispositionIds projection.entries projection.work.id
   projection.entries.filterMap fun entry =>
     let selected : Bool := match entry.payload with
       | .task value => value.planId == some plan.id && !value.retired
       | .commandExecution _ | .artifactObservation _ | .leanProofReceipt _ => true
       | .userCorrection _ => true
       | .finding _ => acceptedFindings.contains entry.id
-      | .reviewDisposition value => value.decision == .accepted
+      | .reviewDisposition value => acceptedFindings.contains value.findingEntryId &&
+          ((findingDispositionIn? projection.entries value.findingEntryId projection.work.id)
+            |>.any (·.id == entry.id))
       | _ => false
     if selected then
       some (component entry.payload.tag entry.id (entryDigest entry)

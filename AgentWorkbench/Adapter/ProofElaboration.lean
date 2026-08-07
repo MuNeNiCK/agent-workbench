@@ -57,13 +57,12 @@ def run
   IO.FS.withTempDir fun temporary => do
     let analyzer := temporary / "Proposition.lean"
     IO.FS.writeFile analyzer (analyzerSource claim.input)
-    let result ← Process.execute projectRoot {
+    let result ← Process.executeWithOverrides projectRoot {
       executable := runtime.elanExecutable.toString
       arguments := #["run", ProofToolchain.identifier, "lean", analyzer.toString]
-      workingDirectory := some proofRoot.toString
-      environment := #[
-        ("ELAN_HOME", runtime.elanHome.toString),
-        ("LEAN_PATH", System.SearchPath.toString leanPaths)] }
+      workingDirectory := some proofRoot.toString }
+      #[("ELAN_HOME", runtime.elanHome.toString),
+        ("LEAN_PATH", System.SearchPath.toString leanPaths)]
     if result.exitCode != 0 then
       throw (IO.userError s!"cannot elaborate Claim {claim.id}:\n{result.stderr}")
     match parseResult result.stdout with

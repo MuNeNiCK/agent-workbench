@@ -77,13 +77,8 @@ replacement-Plan Task that explicitly owns this accepted Finding. -/
 def findingRemediationBindingCurrent
     (state : ProjectState) (findingEntry evidenceEntry : LedgerEntry)
     (finding : FindingRecord) (target : String) : Bool :=
-  let accepted := state.ledgerEntries.any fun entry =>
-    entry.order > findingEntry.order && entry.workId == findingEntry.workId &&
-      entry.designRevision == findingEntry.designRevision &&
-      match entry.payload with
-      | .reviewDisposition value =>
-          value.findingEntryId == findingEntry.id && value.decision == .accepted
-      | _ => false
+  let accepted := findingEntry.workId.any fun workId =>
+    state.findingAccepted findingEntry.id workId
   match findingEntry.workId, remediationTaskEntryId? evidenceEntry with
   | some workId, some sourceTaskEntryId =>
       let sourceTaskEntry? := state.entry? sourceTaskEntryId

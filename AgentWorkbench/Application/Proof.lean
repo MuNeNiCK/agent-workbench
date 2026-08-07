@@ -44,7 +44,7 @@ private def proofCommand
     workingDirectory := match check.workingDirectory with
       | some configured => some configured
       | none => some defaultWorkingDirectory
-    environment := check.environment.push ("ELAN_HOME", runtime.elanHome.toString) }
+    environment := check.environment }
 
 private def proofRootPath (projectRoot : System.FilePath) (claim : LeanClaim) : System.FilePath :=
   let configured : System.FilePath := claim.input.proofRoot
@@ -69,17 +69,12 @@ private def buildSourcesCommand
     (runtime : Runtime.Layout) (claim : LeanClaim) : CommandSpec :=
   { executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "-H", "-R", "--no-cache", "build"] ++
-      claim.input.declaredSources.toArray.map (·.path)
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+      claim.input.declaredSources.toArray.map (·.path) }
 
 private def kernelCommand
-    (runtime : Runtime.Layout) (leanPaths : List System.FilePath)
-    (checker : System.FilePath) : CommandSpec :=
+    (runtime : Runtime.Layout) (checker : System.FilePath) : CommandSpec :=
   { executable := runtime.elanExecutable.toString
-    arguments := #["run", ProofToolchain.identifier, "lake", "env", "lean", checker.toString]
-    environment := #[
-      ("ELAN_HOME", runtime.elanHome.toString),
-      ("LEAN_PATH", System.SearchPath.toString leanPaths)] }
+    arguments := #["run", ProofToolchain.identifier, "lake", "env", "lean", checker.toString] }
 
 private def outputDigest (stdout stderr : String) : String :=
   let stdoutBytes := stdout.toUTF8.size
@@ -99,8 +94,9 @@ def runProofClaim
       let buildDirectories ← ProofBuild.buildDirectories projectRoot runtime claim
       ProofBuild.validateDiscoveredOutputs baselines buildDirectories
       let (beforeDigest, sourceDigests) ← ProofInput.evaluate projectRoot runtime claim
-      let result ← Process.execute projectRoot {
+      let result ← Process.executeWithOverrides projectRoot {
         (buildSourcesCommand runtime claim) with workingDirectory := some proofRoot.toString }
+        #[("ELAN_HOME", runtime.elanHome.toString)]
       pure (result, beforeDigest, sourceDigests))
     (fun buildInput leanPaths => do
       let (beforeDigest, _) := buildInput
@@ -114,10 +110,13 @@ def runProofClaim
       let kernelResult ← IO.FS.withTempDir (fun temporary => do
         let checker := temporary / "Claim.lean"
         IO.FS.writeFile checker (checkerSource claim)
-        Process.execute projectRoot {
-          (kernelCommand runtime leanPaths checker) with
-            workingDirectory := some proofRoot.toString })
-      let configuredResult ← Process.execute projectRoot (proofCommand projectRoot runtime claim)
+        Process.executeWithOverrides projectRoot {
+          (kernelCommand runtime checker) with
+            workingDirectory := some proofRoot.toString }
+          #[("ELAN_HOME", runtime.elanHome.toString),
+            ("LEAN_PATH", System.SearchPath.toString leanPaths)])
+      let configuredResult ← Process.executeWithOverrides projectRoot
+        (proofCommand projectRoot runtime claim) #[("ELAN_HOME", runtime.elanHome.toString)]
       let (checkedDigest, sourceDigests) ← ProofInput.evaluate projectRoot runtime claim
       if checkedDigest != beforeDigest then
         throw (IO.userError "proof input changed during fresh build, kernel check, or configured check")

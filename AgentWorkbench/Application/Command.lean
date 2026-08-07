@@ -40,7 +40,11 @@ def runCommandProfile
   for target in resolved.inputTargets do
     inputSnapshots := inputSnapshots ++ [{
       target, snapshot := ← Snapshot.target projectRoot target }]
-  let result ← Process.execute projectRoot resolved.command
+  let environment ← Process.resolveEnvironment resolved.command.environment
+  let environmentSnapshots := environment.toList.map fun (name, value) =>
+    let identity := Process.environmentIdentity name value
+    ({ target := identity.1, snapshot := identity.2 } : InputSnapshot)
+  let result ← Process.executeResolved projectRoot resolved.command environment
   let snapshot ← match resolved.target with
     | some identity =>
         if identity.startsWith "design:" then
@@ -60,6 +64,7 @@ def runCommandProfile
         outputScope := resolved.outputScope
         criterionId := request.criterionId
         inputSnapshots := some inputSnapshots
+        environmentSnapshots := some environmentSnapshots
         target := resolved.target
         snapshot
         command := resolved.command

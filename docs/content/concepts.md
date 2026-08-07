@@ -61,8 +61,9 @@ rules.
 ## Command Profile
 
 A Command Profile is the project's recorded way to perform a command: executable, argument vector,
-working directory, relevant environment, purpose, optional target, and the files or other inputs on
-which the result depends. The agent shows the resolved command and executes that same resolution,
+working directory, relevant environment-variable names, purpose, optional target, and the files or
+other inputs on which the result depends. Values are inherited at execution time; only their BLAKE3
+identity is recorded, never the raw value. The agent shows the resolved command and executes that same resolution,
 avoiding tool-name and argument guessing. A successful run records the observed state of every
 declared input. If an input changes later, evidence from that run is stale and the command must be
 run again.

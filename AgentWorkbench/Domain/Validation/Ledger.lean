@@ -188,12 +188,17 @@ private def validateReview
         ensure (taskIds.all fun id => review.targetManifest.any fun value =>
           value.kind == "task" && value.id == id)
           s!"review {entry.id} omits part of the current Task graph"
-        let acceptedFindingIds := state.ledgerEntries.filterMap fun candidate =>
-          if candidate.order >= coverageOrder || candidate.workId != entry.workId then none else
-          match candidate.payload with
-          | .reviewDisposition value =>
-              if value.decision == .accepted then some value.findingEntryId else none
-          | _ => none
+        let priorEntries := state.ledgerEntries.filter fun candidate =>
+          candidate.order < coverageOrder && candidate.workId == entry.workId
+        let acceptedFindingIds := priorEntries.filterMap fun candidate =>
+          match candidate.payload, entry.workId with
+          | .finding _, some workId =>
+              if (findingDispositionIn? priorEntries candidate.id workId).any fun dispositionEntry =>
+                match dispositionEntry.payload with
+                | .reviewDisposition value => value.decision == .accepted
+                | _ => false
+              then some candidate.id else none
+          | _, _ => none
         let requiredLedgerIds := state.ledgerEntries.filterMap fun candidate =>
           if candidate.order >= coverageOrder || candidate.workId != entry.workId ||
               isSuperseded state candidate then none else
@@ -203,7 +208,10 @@ private def validateReview
                 candidate.designRevision == entry.designRevision
             | .userCorrection _ => candidate.designRevision == entry.designRevision
             | .finding _ => acceptedFindingIds.contains candidate.id
-            | .reviewDisposition value => value.decision == .accepted
+            | .reviewDisposition value => acceptedFindingIds.contains value.findingEntryId &&
+                ((entry.workId.bind fun workId =>
+                  findingDispositionIn? priorEntries value.findingEntryId workId)
+                  |>.any (·.id == candidate.id))
             | .workHandoff _ | .workDesignAdoption _ => true
             | _ => false
           if required then some candidate.id else none
@@ -434,6 +442,10 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
           ensure (profile.command.executable == value.command.executable &&
             profile.command.arguments == value.command.arguments &&
             profile.command.environment == value.command.environment &&
+            value.environmentSnapshots.any (fun snapshots =>
+              snapshots.map (·.target) == profile.command.environment.toList.map ("env:" ++ ·) &&
+              uniqueStrings (snapshots.map (·.target)) &&
+              snapshots.all fun snapshot => validContentDigest snapshot.snapshot) &&
             value.command.workingDirectory.isSome && profile.target == value.target &&
             profile.taskEntryId == value.taskEntryId && profile.outputScope == value.outputScope &&
             value.inputSnapshots.all (fun snapshots =>

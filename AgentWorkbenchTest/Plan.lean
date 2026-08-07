@@ -67,6 +67,31 @@ private def dependencyPlanState : ProjectState :=
     ledgerEntries := [taskAOpen, taskBOpen, evidenceA, taskA, evidenceB, taskB] }
 
 def run : IO Unit := do
+  let baseline : DesignRevision := { design with id := "design-baseline", status := .superseded }
+  let successor : DesignRevision := { design with
+    id := "design-successor"
+    statements := [{ statement with assumptions := ["the service is online"] }] }
+  let changedWork : Work := { work with
+    baselineDesignRevision := some baseline.id, designRevision := some successor.id }
+  let changedState : ProjectState := { baseState with
+    acceptedDesignId := some successor.id, designRevisions := [baseline, successor]
+    works := [changedWork], implementationPlans := [], ledgerEntries := [] }
+  let changedDeltas ← fromExcept <| expectedStatementDeltas changedState changedWork successor
+  expect (changedDeltas.length == 1 && changedDeltas.head?.any (·.kind == .modified))
+    "Plan delta omitted a Statement assumption change with unchanged ID and text"
+  let coverageSuccessor : DesignRevision := { design with
+    id := "design-coverage-successor"
+    acceptanceCriteria := [{ criterion with statement := "the changed artifact is verified" }] }
+  let coverageWork : Work := { work with
+    baselineDesignRevision := some baseline.id, designRevision := some coverageSuccessor.id }
+  let coverageState : ProjectState := { baseState with
+    acceptedDesignId := some coverageSuccessor.id
+    designRevisions := [baseline, coverageSuccessor], works := [coverageWork]
+    implementationPlans := [], ledgerEntries := [] }
+  let coverageDeltas ← fromExcept <|
+    expectedStatementDeltas coverageState coverageWork coverageSuccessor
+  expect (coverageDeltas.length == 1 && coverageDeltas.head?.any (·.kind == .modified))
+    "Plan delta omitted a changed Criterion selected by an unchanged Statement"
   let extraStep : PlanStep := {
     id := "step-extra", description := "perform unrelated work"
     outputScopes := [criterion.target], verificationCriterionIds := [criterion.id] }

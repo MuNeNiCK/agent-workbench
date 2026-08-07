@@ -59,6 +59,10 @@ resolved command and target. Changing any declared input makes that evidence sta
 by an older Workbench version without input observations remain readable, but cannot satisfy current
 evidence requirements until the command is run again.
 
+The `environment` field contains variable names only. `command run` inherits those values from its
+caller, executes with that exact resolution, and records only BLAKE3 identities so tokens and other
+secret values are not written to Workbench state or returned by queries.
+
 Applicability shown by `describe` is guidance, not the transaction boundary. Every mutation acquires
 project ownership and rechecks applicability against authoritative state before commit. A concurrent
 operation may therefore make a previously displayed request inapplicable; the rejected request does

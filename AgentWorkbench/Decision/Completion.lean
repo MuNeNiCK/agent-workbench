@@ -50,6 +50,8 @@ def evidenceEntryCurrent
       | some target, some snapshot =>
           evidence.successful &&
           currentSnapshot? observations target == some snapshot &&
+          evidence.environmentSnapshots.any (fun environment => environment.all fun input =>
+            currentSnapshot? observations input.target == some input.snapshot) &&
           evidence.inputSnapshots.any (fun inputs => inputs.all fun input =>
             currentSnapshot? observations input.target == some input.snapshot) &&
           projection.entries.any (fun candidate =>
@@ -167,11 +169,11 @@ theorem claimHasReceipt_implies_recorded
 def acceptedFindingResolved
     (projection : CurrentProjection) (observations : List TargetObservation)
     (findingEntry : LedgerEntry) (finding : FindingRecord) : Bool :=
-  let accepted := projection.entries.any (fun entry =>
-    match entry.payload with
+  let accepted := findingDispositionIn? projection.entries findingEntry.id projection.work.id
+    |>.any fun entry => match entry.payload with
     | .reviewDisposition disposition =>
-        disposition.findingEntryId == findingEntry.id && disposition.decision == .accepted
-    | _ => false)
+        disposition.decision == .accepted
+    | _ => false
   if !accepted then true else
   projection.entries.any (fun entry =>
     match entry.payload with

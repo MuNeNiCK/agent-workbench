@@ -67,11 +67,11 @@ private structure ModuleSetup where
 private def moduleSetup
     (projectRoot : System.FilePath) (proofRoot : System.FilePath)
     (runtime : Runtime.Layout) (source : System.FilePath) : IO ModuleSetup := do
-  let result ← Process.execute projectRoot {
+  let result ← Process.executeWithOverrides projectRoot {
     executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "setup-file", source.toString]
-    workingDirectory := some proofRoot.toString
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+    workingDirectory := some proofRoot.toString }
+    #[("ELAN_HOME", runtime.elanHome.toString)]
   if result.exitCode != 0 then
     throw (IO.userError s!"cannot resolve Lean module name for {source}: {result.stderr}")
   let json ← match Lean.Json.parse result.stdout with
@@ -85,12 +85,12 @@ private def queryOutput
     (projectRoot : System.FilePath) (proofRoot : System.FilePath)
     (runtime : Runtime.Layout) (source : System.FilePath)
     (querySource : String) : IO System.FilePath := do
-  let result ← Process.execute projectRoot {
+  let result ← Process.executeWithOverrides projectRoot {
     executable := runtime.elanExecutable.toString
     arguments := #["run", ProofToolchain.identifier, "lake", "query",
       s!"{querySource}:olean", "--text"]
-    workingDirectory := some proofRoot.toString
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+    workingDirectory := some proofRoot.toString }
+    #[("ELAN_HOME", runtime.elanHome.toString)]
   if result.exitCode != 0 then
     throw (IO.userError s!"cannot resolve isolated Lean output for {source}: {result.stderr}")
   let outputs := result.stdout.splitOn "\n" |>.filterMap (fun line =>

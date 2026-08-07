@@ -96,6 +96,27 @@ theorem current_command_evidence_has_input_snapshots
         simp [evidenceEntryCurrent, payload, target, snapshot, inputs] at current
   | some value => rfl
 
+theorem current_command_evidence_has_environment_identity
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (entry : LedgerEntry) (record : CommandExecutionRecord)
+    (payload : entry.payload = .commandExecution record)
+    (current : evidenceEntryCurrent projection observations entry = true) :
+    record.environmentSnapshots.isSome = true := by
+  cases environment : record.environmentSnapshots with
+  | none =>
+      cases target : record.target <;> cases snapshot : record.snapshot <;>
+        simp [evidenceEntryCurrent, payload, target, snapshot, environment] at current
+  | some value => rfl
+
+theorem replaced_current_disposition_is_not_accepted
+    (state : ProjectState) (findingId workId : String)
+    (entry : LedgerEntry) (disposition : ReviewDispositionRecord)
+    (current : state.findingDisposition? findingId workId = some entry)
+    (payload : entry.payload = .reviewDisposition disposition)
+    (replaced : disposition.decision = .replaced) :
+    state.findingAccepted findingId workId = false := by
+  simp [ProjectState.findingAccepted, current, payload, replaced]
+
 /-- Current evidence cannot cross the current Work or Design binding. -/
 theorem current_evidence_has_exact_work_and_design
     (projection : CurrentProjection) (observations : List TargetObservation)

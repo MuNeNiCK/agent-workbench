@@ -36,12 +36,12 @@ private def proofRootPath (projectRoot : System.FilePath) (claim : LeanClaim) : 
 private def sourceDependencies
     (projectRoot : System.FilePath) (runtime : Runtime.Layout) (claim : LeanClaim)
     (source : System.FilePath) : IO (List System.FilePath) := do
-  let result ← Process.execute projectRoot {
+  let result ← Process.executeWithOverrides projectRoot {
     executable := runtime.elanExecutable.toString
     arguments := #["run", claim.input.toolchain, "lake", "env", "lean", "--src-deps",
       source.toString]
-    workingDirectory := some (proofRootPath projectRoot claim).toString
-    environment := #[("ELAN_HOME", runtime.elanHome.toString)] }
+    workingDirectory := some (proofRootPath projectRoot claim).toString }
+    #[("ELAN_HOME", runtime.elanHome.toString)]
   if result.exitCode != 0 then
     throw (IO.userError s!"cannot resolve Lean source dependencies for {source}: {result.stderr}")
   pure (result.stdout.splitOn "\n" |>.filterMap (fun line =>

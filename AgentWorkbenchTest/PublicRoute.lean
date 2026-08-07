@@ -146,6 +146,37 @@ def run : IO Unit :=
       taskEntryId := taskId, inputTargets := ["file:command-input.txt"]
       outputScope := criterion.target
       criterionIds := [commandCriterion.id], command := successfulCommand } : ProfileDefineRequest)
+    let secretProfile := Lean.Json.mkObj [
+      ("entryId", "profile-secret-projection"),
+      ("purpose", "verify environment disclosure projection"),
+      ("taskEntryId", taskId),
+      ("inputTargets", Lean.Json.arr #[]),
+      ("outputScope", criterion.target),
+      ("criterionIds", Lean.Json.arr #[commandCriterion.id]),
+      ("command", Lean.Json.mkObj [
+        ("executable", testHelper.toString),
+        ("arguments", Lean.Json.arr #[]),
+        ("workingDirectory", Lean.Json.null),
+        ("environment", Lean.Json.arr #[Lean.Json.arr #["API_TOKEN", "super-secret-value"]])])]
+    let beforeSecretInput ← Store.loadState (← Store.openReadOnly database)
+    let projectedProfile ← invoke root ["profile", "define"] (some secretProfile.compress)
+    expect (projectedProfile.exitCode != 0)
+      "profile definition accepted a raw environment value"
+    expect ((← Store.loadState (← Store.openReadOnly database)) == beforeSecretInput)
+      "rejected raw environment input changed authoritative state"
+    let environmentIdentityCommand : CommandSpec := {
+      successfulCommand with environment := #["API_TOKEN"] }
+    let _ ← invokeJson root ["profile", "define"] ({
+      entryId := "profile-environment-identity"
+      purpose := "record only an environment name"
+      taskEntryId := taskId, outputScope := criterion.target
+      criterionIds := [commandCriterion.id]
+      command := environmentIdentityCommand } : ProfileDefineRequest)
+    let projectedEntry ← invoke root ["entry", "get"]
+      (some (Lean.toJson ({ id := "profile-environment-identity" } : AgentWorkbench.Cli.IdInput)).compress)
+    expect (projectedEntry.exitCode == 0 && projectedEntry.stdout.contains "API_TOKEN" &&
+      !projectedEntry.stdout.contains "super-secret-value")
+      "persisted Command Profile retained a raw environment value"
     let _ ← invokeJson root ["profile", "replace"] ({
       entryId := "profile-route-current", profileEntryId := "profile-route"
       purpose := "produce the current Task output", taskEntryId := taskId

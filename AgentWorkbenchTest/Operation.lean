@@ -33,6 +33,9 @@ def run : IO Unit := do
     "successful init did not advance authoritative state exactly once"
   expect (!operationApplicable initialized .init)
     "init remained applicable after authoritative initialization"
+  let noPlan : ProjectState := { baseState with implementationPlans := [], ledgerEntries := [] }
+  expect (!operationApplicable noPlan .workComplete)
+    "completion was advertised without a structurally valid completion request"
   let names := AgentWorkbench.Operation.all.map (·.name)
   expect (names.all fun name => names.count name == 1)
     "closed public operation inventory contains duplicate names"

@@ -1,4 +1,6 @@
 import AgentWorkbench.Decision.Finding
+import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Decision.PlanCoverage
 import AgentWorkbench.Domain.Operation
 
 namespace AgentWorkbench
@@ -23,6 +25,45 @@ private def hasDependencyReadyTask (state : ProjectState) : Bool :=
                     !dependencyTask.retired
               | _ => false
         | _ => false
+
+def planMaterializationStructurallyReady (state : ProjectState) : Bool :=
+  match currentProjection? state with
+  | none => false
+  | some projection =>
+      match state.implementationPlans.find? fun plan =>
+          plan.workId == projection.work.id && plan.designRevision == projection.design.id &&
+            plan.status == .candidate &&
+            !(state.implementationPlans.any fun successor =>
+              successor.predecessorPlanId == some plan.id && successor.status == .candidate) with
+      | none => false
+      | some candidate =>
+          let requiredFindings := acceptedImplementationFindingIds
+            state projection.work.id projection.design.id
+          let coveredFindings := candidate.steps.flatMap (·.acceptedFindingEntryIds)
+          projection.design.leanClaims.all (claimReceiptRecorded projection) &&
+            requiredFindings.all coveredFindings.contains
+
+def completionStructurallyReady (state : ProjectState) : Bool :=
+  match currentProjection? state with
+  | none => false
+  | some projection =>
+      projection.design.sourceArchiveAvailable &&
+      (state.currentPlanFor? projection.work.id).isSome &&
+      projection.entries.all (fun entry => match entry.payload with
+        | .task task => !task.required || (task.closed &&
+            task.verificationTaskEntryId.isSome &&
+            !task.verificationEvidenceEntryIds.isEmpty)
+        | .userCorrection correction => correction.resolvedByEntryId.isSome ||
+            correction.incorporatedIn == some projection.design.id
+        | .finding _ =>
+            if !state.findingAccepted entry.id projection.work.id then true else
+            projection.entries.any fun candidate => match candidate.payload with
+              | .reviewVerification verification =>
+                  verification.findingEntryId == entry.id && verification.resolved
+              | _ => false
+        | _ => true) &&
+      projection.design.acceptanceCriteria.all (criterionEvidenceRecorded projection) &&
+      projection.design.leanClaims.all (claimReceiptRecorded projection)
 
 def operationApplicable (state : ProjectState) (operation : Operation) : Bool :=
   let current := (currentProjection? state).isSome
@@ -66,12 +107,9 @@ def operationApplicable (state : ProjectState) (operation : Operation) : Bool :=
   | .planReplace => current && state.currentWork?.any (fun work =>
       state.implementationPlans.any fun plan =>
         plan.workId == work.id && (plan.status == .current || plan.status == .candidate))
-  | .planMaterialize => current && state.currentWork?.any (fun work =>
-      state.implementationPlans.any fun plan =>
-        plan.workId == work.id && plan.designRevision == work.designRevision.getD "" &&
-          plan.status == .candidate)
+  | .planMaterialize => planMaterializationStructurallyReady state
   | .correctionRecord | .kptRecord => focusedWork
-  | .workComplete => current
+  | .workComplete => completionStructurallyReady state
   | .reviewStart => current || (focusedWork && state.designRevisions.any fun design =>
       design.status == .candidate && design.workId == state.focusedWorkId)
   | .profileDefine => hasDependencyReadyTask state

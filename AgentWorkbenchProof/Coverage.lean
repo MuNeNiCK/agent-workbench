@@ -33,8 +33,9 @@ def payloadFieldCoverage : EntryPayload → List String
   | .designRejection (.mk _ _ _) => ["designId", "reason", "rejectedByRun"]
   | .commandProfile (.mk _ _ _ _ _ _ _) =>
       ["purpose", "taskEntryId", "inputTargets", "outputScope", "criterionIds", "target", "command"]
-  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _) =>
-      ["profileEntryId", "taskEntryId", "outputScope", "criterionId", "inputSnapshots", "target", "snapshot",
+  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
+      ["profileEntryId", "taskEntryId", "outputScope", "criterionId", "inputSnapshots",
+       "environmentSnapshots", "target", "snapshot",
        "command", "exitCode", "stdoutDigest", "stderrDigest", "successful", "producerAgentRun"]
   | .artifactObservation (.mk _ _ _ _ _ _ _ _ _) =>
       ["taskEntryId", "outputScope", "criterionId", "target", "snapshot", "operation", "result",

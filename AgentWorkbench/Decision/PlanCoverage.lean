@@ -15,6 +15,24 @@ private def coverageChoice?
   let coverage ← uniqueBy? design.statementCoverage (·.statementId) statementId
   some (coverage.implementationRequired, coverage.noImplementationReason)
 
+private def statementAuthorityChanged
+    (baseline current : DesignRevision) (statementId : String) : Bool :=
+  match baseline.statement? statementId, current.statement? statementId,
+      uniqueBy? baseline.statementCoverage (·.statementId) statementId,
+      uniqueBy? current.statementCoverage (·.statementId) statementId with
+  | some oldStatement, some newStatement, some oldCoverage, some newCoverage =>
+      let oldClaims := oldCoverage.leanClaims.selectedIds.filterMap baseline.claim?
+      let newClaims := newCoverage.leanClaims.selectedIds.filterMap current.claim?
+      let oldCriteria := oldCoverage.acceptanceCriteria.selectedIds.filterMap baseline.criterion?
+      let newCriteria := newCoverage.acceptanceCriteria.selectedIds.filterMap current.criterion?
+      oldStatement != newStatement ||
+        oldCoverage.leanClaims != newCoverage.leanClaims ||
+        oldCoverage.acceptanceCriteria != newCoverage.acceptanceCriteria ||
+        oldCoverage.implementationRequired != newCoverage.implementationRequired ||
+        oldCoverage.noImplementationReason != newCoverage.noImplementationReason ||
+        oldClaims != newClaims || oldCriteria != newCriteria
+  | _, _, _, _ => true
+
 private def removalChoice?
     (state : ProjectState) (baseline current : String) (statementId : String) :
     Option RemovedStatementTombstone :=
@@ -58,7 +76,7 @@ def expectedStatementDeltas
               implementationRequired := removed.implementationRequired
               noActionReason := removed.noImplementationReason }]
         | some current =>
-            if current.text != statement.text then
+            if statementAuthorityChanged baseline design statement.id then
               let (required, reason) ← match coverageChoice? design current.id with
                 | some value => pure value
                 | none => throw s!"modified Statement {current.id} has no implementation choice"
@@ -93,12 +111,7 @@ def acceptedImplementationFindingIds
           | .review review => review.reviewId == finding.reviewId &&
               review.context == .fresh && review.purpose == .implementation
           | _ => false
-        let accepted := state.ledgerEntries.any fun dispositionEntry =>
-          dispositionEntry.workId == some workId && dispositionEntry.designRevision == some designId &&
-          match dispositionEntry.payload with
-          | .reviewDisposition disposition =>
-              disposition.findingEntryId == findingEntry.id && disposition.decision == .accepted
-          | _ => false
+        let accepted := state.findingAccepted findingEntry.id workId
         if implementationRoot && accepted then some findingEntry.id else none
     | _ => none
 

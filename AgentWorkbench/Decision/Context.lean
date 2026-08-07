@@ -96,11 +96,11 @@ private def claimGap?
 
 private def isAcceptedFinding
     (projection : CurrentProjection) (findingEntry : LedgerEntry) : Bool :=
-  projection.entries.any (fun entry =>
+  findingDispositionIn? projection.entries findingEntry.id projection.work.id |>.any fun entry =>
     match entry.payload with
     | .reviewDisposition disposition =>
-        disposition.findingEntryId == findingEntry.id && disposition.decision == .accepted
-    | _ => false)
+        disposition.decision == .accepted
+    | _ => false
 
 def currentContext?
     (state : ProjectState) (observations : List TargetObservation)

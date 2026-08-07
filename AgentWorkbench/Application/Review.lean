@@ -164,9 +164,11 @@ def recordDisposition
   let work ← match state.work? workId with
     | some value => pure value
     | none => throw s!"no Work {workId}"
+  let priorDispositionIds := (state.findingDisposition? finding.id work.id).toList.map (·.id)
   appendEntry state {
     id := request.entryId, order := nextEntryOrder state, scope := finding.scope
     workId := finding.workId, designRevision := finding.designRevision
+    supersedes := priorDispositionIds
     payload := .reviewDisposition {
       findingEntryId := request.findingEntryId, decision := request.decision
       reason := request.reason, decidedByRun := work.responsibleAgentRun } }

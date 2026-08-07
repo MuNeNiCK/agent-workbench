@@ -208,4 +208,54 @@ theorem successful_applicable_mutation_preserves_ledger_authority
     validateLedgerAuthorityInvariant next = .ok () :=
   (successful_applicable_mutation_is_valid prepared prior next success).ledgerAuthority
 
+/-- Completion is advertised only after the persisted state has a current Plan and every
+non-observational completion input has a possible witness. External freshness is rechecked under
+the mutation lock. -/
+theorem advertised_completion_has_structural_request (state : ProjectState)
+    (advertised : operationApplicable state .workComplete = true) :
+    ∃ projection plan,
+      currentProjection? state = some projection ∧
+      state.currentPlanFor? projection.work.id = some plan ∧
+      projection.design.sourceArchiveAvailable = true ∧
+      projection.design.acceptanceCriteria.all (criterionEvidenceRecorded projection) = true ∧
+      projection.design.leanClaims.all (claimReceiptRecorded projection) = true := by
+  have ready : completionStructurallyReady state = true := by
+    simpa [operationApplicable] using advertised
+  unfold completionStructurallyReady at ready
+  split at ready
+  · simp at ready
+  · rename_i projection projectionEq
+    cases planEq : state.currentPlanFor? projection.work.id with
+    | none => simp [planEq] at ready
+    | some plan =>
+        refine ⟨projection, plan, projectionEq, planEq, ?_⟩
+        simp [planEq] at ready
+        grind
+
+/-- Plan materialization is not advertised merely because an arbitrary candidate exists. -/
+theorem advertised_plan_materialization_has_structural_request (state : ProjectState)
+    (advertised : operationApplicable state .planMaterialize = true) :
+    ∃ (projection : CurrentProjection) (candidate : ImplementationPlan),
+      currentProjection? state = some projection ∧
+      state.implementationPlans.find? (fun plan =>
+        plan.workId == projection.work.id && plan.designRevision == projection.design.id &&
+          plan.status == .candidate &&
+          !(state.implementationPlans.any fun successor =>
+            successor.predecessorPlanId == some plan.id && successor.status == .candidate)) =
+        some candidate ∧
+      projection.design.leanClaims.all (claimReceiptRecorded projection) = true := by
+  have ready : planMaterializationStructurallyReady state = true := by
+    simpa [operationApplicable] using advertised
+  unfold planMaterializationStructurallyReady at ready
+  split at ready
+  · simp at ready
+  · rename_i projection projectionEq
+    split at ready
+    · simp at ready
+    · rename_i candidate candidateEq
+      refine ⟨projection, candidate, projectionEq, candidateEq, ?_⟩
+      cases receiptEq : projection.design.leanClaims.all (claimReceiptRecorded projection) with
+      | false => simp [receiptEq] at ready
+      | true => rfl
+
 end AgentWorkbenchProof

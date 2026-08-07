@@ -42,7 +42,8 @@ structure CommandSpec where
   executable : String
   arguments : Array String := #[]
   workingDirectory : Option String := none
-  environment : Array (String × String) := #[]
+  /-- Names inherited from the caller environment. Values are never persisted. -/
+  environment : Array String := #[]
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure ClaimInput where

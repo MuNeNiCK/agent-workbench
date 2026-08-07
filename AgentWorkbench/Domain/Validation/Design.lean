@@ -50,7 +50,7 @@ private def validArchivedOrLegacyDigest (design : DesignRevision) (value : Strin
 
 def validateCommand (command : CommandSpec) : Except String Unit := do
   ensure (!command.executable.isEmpty) "command executable is empty"
-  ensure (command.environment.toList.map (·.1) |> uniqueStrings)
+  ensure (command.environment.toList |> uniqueStrings)
     "command environment contains duplicate keys"
 
 def validateDesign (design : DesignRevision) : Except String Unit := do
@@ -219,11 +219,7 @@ def validateDesign (design : DesignRevision) : Except String Unit := do
           s!"Design {design.id} contains an unbound Lean source archive"
 
 def findingAccepted (state : ProjectState) (findingId workId : String) : Bool :=
-  state.ledgerEntries.any fun entry =>
-    entry.workId == some workId && match entry.payload with
-    | .reviewDisposition disposition =>
-        disposition.findingEntryId == findingId && disposition.decision == .accepted
-    | _ => false
+  state.findingAccepted findingId workId
 
 def changeBasisValid
     (state : ProjectState) (design : DesignRevision) (basisId : String) : Bool :=
@@ -233,12 +229,8 @@ def changeBasisValid
       if basis.order > design.createdAfterEntryOrder || basis.workId != design.workId then false
       else match basis.payload with
       | .userCorrection _ => true
-      | .finding _ => state.ledgerEntries.any fun entry =>
-          entry.order <= design.createdAfterEntryOrder && entry.workId == design.workId &&
-          match entry.payload with
-          | .reviewDisposition disposition =>
-              disposition.findingEntryId == basis.id && disposition.decision == .accepted
-          | _ => false
+      | .finding _ => design.workId.any fun workId =>
+          state.findingAcceptedAt basis.id workId design.createdAfterEntryOrder
       | _ => false
 
 def validateDesignRelations
@@ -277,7 +269,8 @@ def validateDesignRelations
       s!"Design {design.id} has cyclic candidate amendment ancestry"
     let acceptedFindingBases := state.ledgerEntries.filterMap fun entry =>
       if entry.designRevision == some predecessorId && entry.workId == design.workId &&
-          entry.order <= design.createdAfterEntryOrder && findingAccepted state entry.id (design.workId.getD "") then
+          entry.order <= design.createdAfterEntryOrder &&
+          state.findingAcceptedAt entry.id (design.workId.getD "") design.createdAfterEntryOrder then
         match entry.payload with | .finding _ => some entry.id | _ => none
       else none
     ensure (acceptedFindingBases.all design.changeBasisEntryIds.contains)

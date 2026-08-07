@@ -71,7 +71,7 @@ omitted dependency, and stores the pinned elaborated proposition with the immuta
 internally; do not supply or guess them.
 
 Use `command show` before execution when presenting a next command. Use `command run` to execute
-that same Command Profile resolution and record its argv, cwd, environment, output digests, target
+that same Command Profile resolution and record its argv, cwd, environment identity, output digests, target
 snapshot, and every declared input observation. Declare every input on which the result depends. If
 one changes, treat the run as stale and rerun it. Evidence created without input observations is
 historical only. Never replace a Profile with a guessed command or a shell command string.
