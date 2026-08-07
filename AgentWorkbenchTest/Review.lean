@@ -11,6 +11,110 @@ private def startedReview (root : System.FilePath) : IO ProjectState :=
     entryId := "review-1", reviewId := "review-lineage-1", purpose := .implementation
     reviewerAgentRun := "reviewer-1" }
 
+private def historicalReviewSurvivesWorkHandoff (root : System.FilePath) : IO Unit := do
+  let reviewed ← startedReview root
+  let found ← fromExcept <| recordFinding reviewed {
+    entryId := "finding-before-handoff", reviewEntryId := "review-1"
+    subject := { kind := .criterion, id := criterion.id, exactQuote := criterion.statement }
+    summary := "the candidate needs remediation" }
+  let concluded ← fromExcept <| concludeReview found {
+    entryId := "review-before-handoff-conclusion", reviewEntryId := "review-1"
+    clean := false, summary := "one Finding was recorded" }
+  let disposed ← fromExcept <| recordDisposition concluded {
+    entryId := "disposition-before-handoff", findingEntryId := "finding-before-handoff"
+    decision := .accepted, reason := "the fixed target demonstrates the mismatch" }
+  let handed ← fromExcept <| handoffWork disposed work.id "work-handoff-after-review"
+    "agent-2" "continue the same Work without rewriting its history"
+  fromExcept (validateState handed)
+  let inspection ← match reviewInspection? handed "review-1" with
+    | some value => pure value
+    | none => throw (IO.userError "historical Review disappeared after Work handoff")
+  expect (inspection.lineage.any (·.id == "disposition-before-handoff") &&
+    (handed.work? work.id).any (·.responsibleAgentRun == "agent-2"))
+    "Work handoff rewrote historical Review or disposition authorship"
+
+private def historicalReviewSurvivesDesignAdoption (root : System.FilePath) : IO Unit := do
+  let reviewed ← startedReview root
+  let predecessor : DesignRevision := { design with status := .superseded }
+  let successor : DesignRevision := {
+    design with
+    id := "design-review-successor"
+    parent := some design.id
+    status := .accepted
+    revisionContentDigest := "blake3:design-review-successor"
+    changeRationale := "adopt a strict successor after the historical Review" }
+  let suspendedWork : Work := {
+    work with
+    status := .suspended
+    resumeCondition := some "adopt the accepted successor" }
+  let before : ProjectState := {
+    reviewed with
+    revision := reviewed.revision + 1
+    acceptedDesignId := some successor.id, focusedWorkId := none
+    designRevisions := [predecessor, successor], works := [suspendedWork] }
+  fromExcept (validateState before)
+  let adopted ← fromExcept <| adoptDesignForWork before {
+    workId := work.id, entryId := "adoption-after-review", agentRun := work.responsibleAgentRun }
+  fromExcept (validateState adopted)
+  let inspection ← match reviewInspection? adopted "review-1" with
+    | some value => pure value
+    | none => throw (IO.userError "historical Review disappeared after Design adoption")
+  expect (inspection.designId == design.id &&
+    (adopted.work? work.id).any (·.designRevision == some successor.id))
+    "successor Design adoption rewrote the historical Implementation Review binding"
+
+private def freshReviewUsesBoundedCompletionProjection (root : System.FilePath) : IO Unit := do
+  let mut state := baseState
+  for index in [1:13] do
+    state ← observeArtifact root state {
+      entryId := s!"bounded-evidence-{index}", taskEntryId := "task-open"
+      criterionId := criterion.id, operation := s!"observation {index}"
+      result := "the same current artifact exists", successful := true }
+  let snapshot ← Snapshot.target root criterion.target
+  let closed ← fromExcept <| closeTask state [{ target := criterion.target, snapshot }]
+    { entryId := "task-bounded-closed", taskEntryId := "task-open" }
+  let reviewed ← startReview root closed {
+    entryId := "review-bounded", reviewId := "review-bounded", purpose := .implementation
+    reviewerAgentRun := "reviewer-bounded" }
+  let reviewEntry ← match reviewed.entry? "review-bounded" with
+    | some entry => pure entry
+    | _ => throw (IO.userError "bounded Review was not recorded")
+  let review ← match reviewEntry.payload with
+    | .review value => pure value
+    | _ => throw (IO.userError "bounded Review entry has the wrong payload")
+  let evidenceComponents := review.targetManifest.filter (·.kind == "artifact_observation")
+  expect (evidenceComponents.map (·.id) == ["bounded-evidence-1"])
+    "fresh Review accumulated unselected evidence history"
+  expect (review.targetManifest.length == 6)
+    "fresh Review projection grew beyond Design, Plan, Work, Task, selected evidence, and output"
+  fromExcept (validateState reviewed)
+  let projection ← match currentProjection? closed with
+    | some value => pure value
+    | none => throw (IO.userError "bounded fixture lost its current projection")
+  let v1LedgerComponents :=
+    implementationReviewLedgerEntriesV1 projection.entries plan work.id |>.map
+      (reviewLedgerComponentAt closed work reviewEntry.order)
+  let structuralKinds := ["design", "plan", "work", "implementation_target"]
+  let v1Manifest := normalizeReviewTargetComponents <|
+    review.targetManifest.filter (fun component => structuralKinds.contains component.kind) ++
+      v1LedgerComponents
+  let v1Producers := v1Manifest.foldl (fun found component =>
+    component.producerAgentRuns.foldl (fun runs producer =>
+      if producer.isEmpty || runs.contains producer then runs else runs ++ [producer]) found) []
+  let v1Review := { review with
+    targetManifestVersion := 1
+    targetManifest := v1Manifest
+    targetSnapshot := ContentDigest.string (Lean.toJson v1Manifest).compress
+    producerAgentRuns := v1Producers }
+  let decodedV1 ← match Lean.fromJson? (Lean.toJson v1Review) with
+    | .ok value => pure value
+    | .error message => throw (IO.userError s!"v1 Review decode failed: {message}")
+  let v1Entries := reviewed.ledgerEntries.map fun entry =>
+    if entry.id == "review-bounded" then { entry with payload := .review decodedV1 } else entry
+  expect ((v1Manifest.filter (·.kind == "artifact_observation")).length == 12)
+    "v1 regression fixture did not retain its historical unbounded projection"
+  fromExcept (validateState { reviewed with ledgerEntries := v1Entries })
+
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     expect (implementationTargetCovers "tree:AgentWorkbench" "tree:AgentWorkbench/Domain")
@@ -35,7 +139,7 @@ def run : IO Unit :=
       | .review value => pure value
       | _ => throw (IO.userError "Review entry has wrong payload")
     let encodedReview := (Lean.toJson review).compress
-    let persistedWithoutVersion := encodedReview.replace "\"targetManifestVersion\":1," ""
+    let persistedWithoutVersion := encodedReview.replace "\"targetManifestVersion\":2," ""
     expect (persistedWithoutVersion != encodedReview)
       "Review fixture did not contain the current manifest version"
     let decodedV0 ← match Lean.Json.parse persistedWithoutVersion with
@@ -46,7 +150,7 @@ def run : IO Unit :=
     expect (decodedV0.targetManifestVersion == 0)
       "Review decoder did not retain a pre-version manifest as historical format"
     expect (review.targetSourceId == work.id && review.target == s!"work:{work.id}" &&
-      review.targetManifestVersion == 1 &&
+      review.targetManifestVersion == 2 &&
       review.targetManifest.any (fun value => value.kind == "design" && value.id == design.id) &&
       review.targetManifest.any (fun value => value.kind == "plan" && value.id == plan.id) &&
       review.targetManifest.any (fun value => value.kind == "task" && value.id == "task-open"))
@@ -340,5 +444,8 @@ def run : IO Unit :=
       entryId := "verification-1", findingEntryId := "finding-1"
       reviewEntryId := "review-resume", evidenceEntryId := "evidence-remediation" }
     fromExcept (validateState verified)
+    historicalReviewSurvivesWorkHandoff root
+    historicalReviewSurvivesDesignAdoption root
+    freshReviewUsesBoundedCompletionProjection root
 
 end AgentWorkbenchTest.Review

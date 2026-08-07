@@ -132,7 +132,7 @@ private def activeReviewerBefore
 private def validateReview
     (state : ProjectState) (entry : LedgerEntry) (review : ReviewRecord) : Except String Unit := do
   let producers := review.producerAgentRuns
-  ensure (review.targetManifestVersion <= 1)
+  ensure (review.targetManifestVersion <= 2)
     s!"review {entry.id} has an unsupported target manifest version"
   ensure entry.designRevision.isSome s!"review {entry.id} is not design-bound"
   ensure (!review.reviewId.isEmpty && !review.targetSourceId.isEmpty &&
@@ -157,7 +157,7 @@ private def validateReview
         let work ← requireSome (state.work? review.targetSourceId)
           s!"review {entry.id} has no target Work"
         ensure (review.target == s!"work:{work.id}" && entry.workId == some work.id &&
-          work.scope == entry.scope && work.designRevision == entry.designRevision)
+          work.scope == entry.scope)
           s!"review {entry.id} target Work crosses its binding"
         let designId ← requireSome entry.designRevision s!"review {entry.id} has no Design"
         let design ← requireSome (state.design? designId)
@@ -200,11 +200,16 @@ private def validateReview
           replacement.order > candidate.order && replacement.supersedes.contains candidate.id
         let currentEntries := priorLedger.filter fun candidate =>
           entryAppliesTo state design work candidate && !supersededBeforeReview candidate
-        let historyEntries := implementationReviewHistoryEntries
-          (priorLedger.filter fun candidate => !supersededBeforeReview candidate) work.id
-        let expectedLedgerComponents := normalizeReviewTargetComponents <|
-          (implementationReviewLedgerEntries currentEntries plan work.id ++ historyEntries).map
-            (reviewLedgerComponent work)
+        let expectedLedgerComponents := normalizeReviewTargetComponents <| match
+            review.targetManifestVersion with
+          | 2 =>
+              (implementationReviewLedgerEntries currentEntries design plan work.id).map
+                (reviewLedgerComponent state work)
+          | _ =>
+              let historyEntries := implementationReviewHistoryEntriesV1
+                (priorLedger.filter fun candidate => !supersededBeforeReview candidate) work.id
+              (implementationReviewLedgerEntriesV1 currentEntries plan work.id ++ historyEntries).map
+                (reviewLedgerComponentAt state work coverageOrder)
         ensure (review.targetSnapshot ==
           ContentDigest.string (Lean.toJson review.targetManifest).compress)
           s!"review {entry.id} changes its fixed manifest digest"
@@ -216,7 +221,7 @@ private def validateReview
           | _ => throw s!"review {entry.id} omits or duplicates its fixed Work"
         ensure (workComponent.id == work.id)
           s!"review {entry.id} changes its fixed Work identity"
-        if review.targetManifestVersion == 1 then
+        if review.targetManifestVersion >= 1 then
           let taskPlanIds := currentEntries.foldl (fun found candidate =>
             match candidate.payload with
             | .task task => match task.planId with
@@ -238,7 +243,7 @@ private def validateReview
           |>.mergeSort (· < ·)
         let recordedImplementationTargets :=
           review.targetManifest.filter (·.kind == "implementation_target")
-        let implementationTargets := if review.targetManifestVersion == 1 then
+        let implementationTargets := if review.targetManifestVersion >= 1 then
           recordedImplementationTargets
         else
           deduplicateReviewTargetComponents recordedImplementationTargets
@@ -246,13 +251,14 @@ private def validateReview
         ensure (actualTargetIds == expectedTargetIds && uniqueStrings actualTargetIds)
           s!"review {entry.id} changes its exact implementation output targets"
         ensure (review.targetManifestVersion == 0 || implementationTargets.all fun component =>
-          component.producerAgentRuns == [work.responsibleAgentRun])
+          component.producerAgentRuns == [responsibleWorkAgentRunAt state work coverageOrder])
           s!"review {entry.id} changes implementation target producer provenance"
         let structuralKinds := ["design", "plan", "work", "implementation_target"]
         let actualLedgerComponents := normalizeReviewTargetComponents <|
           review.targetManifest.filter fun component => !structuralKinds.contains component.kind
         ensure (actualLedgerComponents == expectedLedgerComponents)
-          s!"review {entry.id} changes the exact current implementation component projection"
+          (s!"review {entry.id} changes the exact current implementation component projection: " ++
+            s!"recorded={actualLedgerComponents.map (·.id)}, expected={expectedLedgerComponents.map (·.id)}")
         ensure (review.targetManifest.all fun value =>
           value.producerAgentRuns.all producers.contains)
           s!"review {entry.id} manifest producer closure is incomplete"
@@ -344,7 +350,7 @@ private def validateDisposition
   let work ← requireSome (state.work? workId) s!"disposition {entry.id} has missing work"
   ensure (!disposition.decidedByRun.isEmpty)
     s!"disposition {entry.id} has no deciding agent run"
-  ensure (disposition.decidedByRun == work.responsibleAgentRun)
+  ensure (disposition.decidedByRun == responsibleWorkAgentRunAt state work entry.order)
     s!"disposition {entry.id} was not made by the responsible Work agent"
   ensure (!disposition.reason.isEmpty) s!"disposition {entry.id} has no grounded reason"
 
@@ -408,17 +414,19 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
   | .task value => validateTask state entry value
   | .workDesignAdoption value =>
       let workId ← requireSome entry.workId s!"design adoption {entry.id} is not work-bound"
-      let _ ← requireSome (state.work? workId) s!"design adoption {entry.id} has missing work"
+      let work ← requireSome (state.work? workId) s!"design adoption {entry.id} has missing work"
       let _ ← requireSome (state.design? value.successor)
         s!"design adoption {entry.id} has missing successor"
       ensure (entry.designRevision == some value.successor &&
         state.designDescendsFrom value.predecessor value.successor &&
-        !value.adoptedByRun.isEmpty && !value.impactDisposition.isEmpty)
+        value.adoptedByRun == responsibleWorkAgentRunAt state work entry.order &&
+        !value.impactDisposition.isEmpty)
         s!"design adoption {entry.id} has invalid immutable transition evidence"
   | .workHandoff value =>
       let workId ← requireSome entry.workId s!"Work handoff {entry.id} is not work-bound"
-      let _ ← requireSome (state.work? workId) s!"Work handoff {entry.id} has missing Work"
-      ensure (!value.predecessorRun.isEmpty && !value.successorRun.isEmpty &&
+      let work ← requireSome (state.work? workId) s!"Work handoff {entry.id} has missing Work"
+      ensure (value.predecessorRun == responsibleWorkAgentRunAt state work entry.order &&
+        !value.successorRun.isEmpty &&
         value.predecessorRun != value.successorRun && !value.reason.isEmpty)
         s!"Work handoff {entry.id} has invalid immutable transition evidence"
   | .workWithdrawal value =>
@@ -432,14 +440,15 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
         | _ => false
       ensure (work.status == .withdrawn && correctionEntry.order < entry.order &&
         correctionEntry.workId == entry.workId && correctionOpen &&
-        !value.reason.isEmpty && value.withdrawnByRun == work.responsibleAgentRun)
+        !value.reason.isEmpty &&
+        value.withdrawnByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Work withdrawal {entry.id} lacks current Correction authority"
   | .workResume value =>
       let workId ← requireSome entry.workId s!"Work resume {entry.id} is not Work-bound"
-      let _ ← requireSome (state.work? workId) s!"Work resume {entry.id} has missing Work"
+      let work ← requireSome (state.work? workId) s!"Work resume {entry.id} has missing Work"
       ensure (!value.condition.isEmpty && !value.satisfaction.isEmpty &&
         !value.basisEntryIds.isEmpty && uniqueStrings value.basisEntryIds &&
-        !value.resumedByRun.isEmpty)
+        value.resumedByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Work resume {entry.id} has incomplete satisfaction evidence"
       for basisId in value.basisEntryIds do
         let basis ← requireSome (state.entry? basisId)
@@ -457,7 +466,7 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
         work.designRevision == some value.designRevision && plan.workId == work.id &&
         plan.designRevision == value.designRevision && plan.status == .current &&
         value.inputRevision < state.revision && validContentDigest value.inputDigest &&
-        value.completedByRun == work.responsibleAgentRun)
+        value.completedByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Work completion {entry.id} has invalid authority or input identity"
   | .designRejection value =>
       let design ← requireSome (state.design? value.designId)
@@ -466,7 +475,7 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
       let work ← requireSome (state.work? workId) s!"Design rejection {entry.id} has missing Work"
       ensure (design.status == .rejected && entry.designRevision == some design.id &&
         design.workId == entry.workId && !value.reason.isEmpty &&
-        value.rejectedByRun == work.responsibleAgentRun)
+        value.rejectedByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Design rejection {entry.id} has invalid provenance"
   | .commandProfile value =>
       validateCommand value.command

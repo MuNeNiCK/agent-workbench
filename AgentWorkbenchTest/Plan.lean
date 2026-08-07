@@ -128,6 +128,12 @@ def run : IO Unit := do
     steps := [step, extraStep] }
   expectError (validateState { baseState with implementationPlans := [planWithExtraStep] })
     "Plan accepted a Markdown-grounded step with no Design delta or Finding obligation"
+  let unreachableStep : PlanStep := {
+    step with outputScopes := ["file:unrelated-output"] }
+  let unreachablePlan : ImplementationPlan := {
+    plan with steps := [unreachableStep] }
+  expectError (validateState { baseState with implementationPlans := [unreachablePlan] })
+    "Plan accepted a Criterion whose target has no Task output route"
   expectError (closeTask baseState [] { entryId := "task-closed", taskEntryId := "task-open" })
     "Task closed without successful post-materialization evidence"
   let closed ← fromExcept <| closeTask evidencedState

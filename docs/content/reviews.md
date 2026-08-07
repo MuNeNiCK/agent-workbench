@@ -10,10 +10,19 @@ for every change unless the accepted design selects it.
 - **Implementation Review** examines a fixed Design/Plan/Task/evidence manifest together with the
   current snapshots of its planned output targets.
 
+The implementation manifest contains the current Task graph and the evidence selected by those
+Tasks, one current receipt per selected Claim, current Corrections, and accepted-Finding
+dispositions. Re-running a command does not append unselected execution history to every later
+Review. This keeps the only fresh-review input bounded by current Design and Plan cardinality.
+
 The Design, current Plan, immutable Work identity, and their producer provenance are derived from
 the authoritative project state when the target is captured. A caller cannot substitute a
 superseded Plan, rewrite the Work identity, or choose different structural producers while keeping
 an otherwise self-consistent manifest.
+
+A later Work handoff or successor-Design adoption does not rewrite or invalidate an older fixed
+Review. Historical authorship is checked at the entry's capture order; the new responsible run and
+new Design apply only to later operations.
 
 `fresh` and `resume` describe reviewer context. They are not additional review types.
 

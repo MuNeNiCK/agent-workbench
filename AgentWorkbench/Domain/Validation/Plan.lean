@@ -62,8 +62,11 @@ def validatePlan
       let _ ← requireSome (design.claim? claimId)
         s!"Plan step {step.id} references missing Claim {claimId}"
     for criterionId in step.verificationCriterionIds do
-      let _ ← requireSome (design.criterion? criterionId)
+      let criterion ← requireSome (design.criterion? criterionId)
         s!"Plan step {step.id} references missing Criterion {criterionId}"
+      if plan.status != .superseded then
+        ensure (step.outputScopes.contains criterion.target)
+          s!"Plan step {step.id} has no output route for Criterion {criterionId}"
     for findingId in step.acceptedFindingEntryIds do
       ensure (acceptedFindingIds.contains findingId)
         s!"Plan step {step.id} references a Finding outside the accepted Implementation Review"

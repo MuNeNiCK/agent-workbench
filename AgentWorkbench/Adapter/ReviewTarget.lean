@@ -27,54 +27,21 @@ private def component
   { kind, id, snapshot, producerAgentRuns := distinctStrings producers }
 
 private def implementationLedgerComponents
-    (projection : CurrentProjection) (plan : ImplementationPlan) : List ReviewTargetComponent :=
-  implementationReviewLedgerEntries projection.entries plan projection.work.id |>.map fun entry =>
-    reviewLedgerComponent projection.work entry
-
-private def workHistoryComponents
-    (state : ProjectState) (work : Work) : List ReviewTargetComponent :=
-  implementationReviewHistoryEntries
-    (state.ledgerEntries.filter fun entry => !entryIsSuperseded state entry) work.id
-    |>.map (reviewLedgerComponent work)
-
-private def currentTargetComponent?
-    (projectRoot : System.FilePath) (entry : LedgerEntry) : IO (Option ReviewTargetComponent) := do
-  match entry.payload with
-  | .artifactObservation value =>
-      let snapshot ← Snapshot.target projectRoot value.target
-      if value.successful && snapshot == value.snapshot then
-        pure (some (component "implementation_target" value.target snapshot
-          [value.producerAgentRun]))
-      else pure none
-  | .commandExecution value =>
-      match value.target, value.snapshot with
-      | some target, some recorded =>
-          let snapshot ← Snapshot.target projectRoot target
-          if value.successful && snapshot == recorded then
-            pure (some (component "implementation_target" target snapshot
-              [value.producerAgentRun]))
-          else pure none
-      | _, _ => pure none
-  | _ => pure none
-
-private def currentTargetComponents
-    (projectRoot : System.FilePath) (entries : List LedgerEntry) : IO (List ReviewTargetComponent) := do
-  let mut result := []
-  for entry in entries do
-    if let some value ← currentTargetComponent? projectRoot entry then
-      if !(result.any fun prior => prior.id == value.id && prior.snapshot == value.snapshot) then
-        result := result ++ [value]
-  pure result
+    (state : ProjectState) (projection : CurrentProjection)
+    (plan : ImplementationPlan) : List ReviewTargetComponent :=
+  implementationReviewLedgerEntries projection.entries projection.design plan projection.work.id
+    |>.map fun entry => reviewLedgerComponent state projection.work entry
 
 private def plannedTargetComponents
-    (projectRoot : System.FilePath) (work : Work) (entries : List LedgerEntry) : IO (List ReviewTargetComponent) := do
+    (projectRoot : System.FilePath) (producerAgentRun : String)
+    (entries : List LedgerEntry) : IO (List ReviewTargetComponent) := do
   let targets := distinctStrings <| entries.flatMap fun entry => match entry.payload with
     | .task task => if task.retired then [] else task.outputScopes
     | _ => []
   let mut result := []
   for target in targets do
     let snapshot ← Snapshot.target projectRoot target
-    result := result ++ [component "implementation_target" target snapshot [work.responsibleAgentRun]]
+    result := result ++ [component "implementation_target" target snapshot [producerAgentRun]]
   pure result
 
 private def freezeDesign (state : ProjectState) (designId : String) : Except String Fixed := do
@@ -97,23 +64,23 @@ private def freezeImplementation
     | pure (.error "Implementation Review requires a current Work and accepted Design")
   let some plan := state.currentPlanFor? projection.work.id
     | pure (.error "Implementation Review requires the current implementation plan")
-  let targetComponents ← currentTargetComponents projectRoot projection.entries
-  let plannedComponents ← plannedTargetComponents projectRoot projection.work projection.entries
+  let coverageOrder := reviewCoverageOrder state
+  let plannedComponents ← plannedTargetComponents projectRoot
+    (responsibleWorkAgentRunAt state projection.work coverageOrder) projection.entries
   let manifest := normalizeReviewTargetComponents <| deduplicateReviewTargetComponents (
     [ component "design" projection.design.id projection.design.revisionContentDigest
         [projection.design.producerAgentRun]
     , component "plan" plan.id plan.contentDigest [plan.producerAgentRun]
     , component "work" projection.work.id
         (reviewWorkIdentitySnapshot projection.work)
-        (reviewWorkProducerRunsAt state projection.work (reviewCoverageOrder state))
-    ] ++ workHistoryComponents state projection.work ++
-      implementationLedgerComponents projection plan ++ plannedComponents ++ targetComponents)
+        (reviewWorkProducerRunsAt state projection.work coverageOrder)
+    ] ++ implementationLedgerComponents state projection plan ++ plannedComponents)
   let producers := distinctStrings (manifest.flatMap (·.producerAgentRuns))
   pure (.ok {
     sourceId := projection.work.id
     target := s!"work:{projection.work.id}"
     snapshot := ContentDigest.string (Lean.toJson manifest).compress
-    manifestVersion := 1
+    manifestVersion := 2
     manifest
     producerAgentRuns := producers })
 

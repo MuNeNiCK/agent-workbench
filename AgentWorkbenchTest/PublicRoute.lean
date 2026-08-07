@@ -183,15 +183,41 @@ def run : IO Unit :=
       inputTargets := ["file:command-input.txt"]
       outputScope := criterion.target, criterionIds := [commandCriterion.id]
       command := successfulCommand } : ProfileReplaceRequest)
-    let _ ← invokeJson root ["command", "run"] ({
-      profileEntryId := "profile-route-current", entryId := "command-route"
-      criterionId := some commandCriterion.id } : CommandRunRequest)
-    expect ((← IO.FS.readFile (root / "artifact.txt")).startsWith "command-output")
-      "successful public command did not retain its committed managed output"
+    let beforePostCommitFault ← Store.loadState (← Store.openReadOnly database)
+    let postCommitRejected ← try
+        let _ ← Store.executeMutationWithPostCommitVerification root database
+          (.commandRun {
+            profileEntryId := "profile-route-current", entryId := "command-route"
+            criterionId := some commandCriterion.id })
+          (throw (IO.userError "injected post-commit verification fault"))
+        pure false
+      catch _ => pure true
+    expect postCommitRejected
+      "post-commit verification fault did not reject the command response"
+    let afterPostCommitFault ← Store.loadState (← Store.openReadOnly database)
+    expect (afterPostCommitFault.revision == beforePostCommitFault.revision + 1 &&
+      afterPostCommitFault.ledgerEntries.any (fun entry => entry.id == "command-route"))
+      "post-commit verification fault lost committed command authority"
+    expect ((← IO.FS.readFile artifactPath).startsWith "command-output")
+      "post-commit verification fault restored the old managed output"
+    let recoveryRows ← AgentWorkbench.SQLite.queryTextRows
+      (AgentWorkbench.Store.readConnection (← Store.openReadOnly database))
+      "SELECT COALESCE(CAST(committed_state_revision AS TEXT), '')
+       FROM managed_operations WHERE committed_state_revision IS NOT NULL"
+      #[] 1
+    expect (recoveryRows.size == 1 && recoveryRows[0]![0]! == toString afterPostCommitFault.revision)
+      "post-commit verification fault cleared or misclassified the durable recovery marker"
     let _ ← invokeJson root ["correction", "resolve"] ({
       entryId := "correction-route-resolved"
       correctionEntryId := "correction-route-current", actionEntryId := "command-route"
       reason := "the current Task-bound command applied the clarification" } : CorrectionResolveRequest)
+    expect ((← IO.FS.readFile (root / "artifact.txt")).startsWith "command-output")
+      "managed-output recovery rolled back the committed command output"
+    let remainingRecoveryRows ← AgentWorkbench.SQLite.queryScalar
+      (AgentWorkbench.Store.readConnection (← Store.openReadOnly database))
+      "SELECT CAST(COUNT(*) AS TEXT) FROM managed_operations" #[]
+    expect (remainingRecoveryRows == "0")
+      "next operation did not recover and clear the committed managed-output marker"
     let _ ← invokeJson root ["kpt", "apply"] ({
       entryId := "kpt-route-applied", kptEntryId := "kpt-route"
       actionEntryId := "command-route", outcome := "the Try produced current command evidence" } : KptApplyRequest)
