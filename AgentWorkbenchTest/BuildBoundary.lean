@@ -92,8 +92,12 @@ private def verifyProductLinkResponse : IO Unit := do
   let objectSuffix := ".c.o.export"
   for module in ["/AgentWorkbench/Cli/Main", "/Blake3/C", "/MD4Lean/FFI", "/SQLite/FFI"] do
     let required := module ++ objectSuffix
-    expect (containsText response required)
-      s!"product link response is missing reviewed dependency {required}"
+    unless containsText response required do
+      let leaf := module.splitOn "/" |>.getLast!
+      let candidates := response.splitOn "\n" |>.filter fun line =>
+        containsText line leaf
+      throw (IO.userError
+        s!"product link response is missing reviewed dependency {required}; inputs={candidates}")
   let packageInputs := response.splitOn "\n" |>.map normalized |>.filter fun line =>
     containsText line "/.lake/packages/"
   for input in packageInputs do
