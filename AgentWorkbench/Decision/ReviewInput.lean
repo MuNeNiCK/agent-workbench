@@ -1,4 +1,5 @@
 import AgentWorkbench.Decision.Context
+import AgentWorkbench.Domain.ContentDigest
 
 namespace AgentWorkbench
 
@@ -40,6 +41,43 @@ def implementationReviewLedgerEntries
     | .reviewDisposition value => acceptedFindings.contains value.findingEntryId &&
         ((findingDispositionIn? entries value.findingEntryId workId).any (·.id == entry.id))
     | _ => false
+
+def implementationReviewHistoryEntries
+    (entries : List LedgerEntry) (workId : String) : List LedgerEntry :=
+  entries.filter fun entry =>
+    entry.workId == some workId && match entry.payload with
+    | .workHandoff _ | .workDesignAdoption _ | .workWithdrawal _ | .workResume _ => true
+    | _ => false
+
+def reviewEntryProducerRuns (work : Work) (entry : LedgerEntry) : List String :=
+  match entry.payload with
+  | .commandExecution value => [value.producerAgentRun]
+  | .artifactObservation value => [value.producerAgentRun]
+  | .reviewDisposition value => [value.decidedByRun]
+  | .workHandoff value => [value.predecessorRun, value.successorRun]
+  | .workWithdrawal value => [value.withdrawnByRun]
+  | .workResume value => [value.resumedByRun]
+  | .workCompletion value => [value.completedByRun]
+  | .designRejection value => [value.rejectedByRun]
+  | .workDesignAdoption value => [value.adoptedByRun]
+  | .task _ | .commandProfile _ | .userCorrection _ | .kpt _ | .leanProofReceipt _ =>
+      [work.responsibleAgentRun]
+  | .review value => value.producerAgentRuns
+  | .finding value => value.producerAgentRuns
+  | .reviewVerification value => [value.verifiedByRun]
+  | .reviewHandoff value => [value.predecessorReviewerRun, value.successorReviewerRun]
+  | .reviewConclusion value => [value.reviewerAgentRun]
+
+def reviewLedgerComponent (work : Work) (entry : LedgerEntry) : ReviewTargetComponent :=
+  { kind := entry.payload.tag
+    id := entry.id
+    snapshot := ContentDigest.string (Lean.toJson entry).compress
+    producerAgentRuns := (reviewEntryProducerRuns work entry).eraseDups }
+
+def normalizeReviewTargetComponents
+    (components : List ReviewTargetComponent) : List ReviewTargetComponent :=
+  components.mergeSort (fun left right =>
+    if left.kind == right.kind then left.id < right.id else left.kind < right.kind)
 
 private def belongsToReview (reviewId : String) (findingIds : List String)
     (entry : LedgerEntry) : Bool :=

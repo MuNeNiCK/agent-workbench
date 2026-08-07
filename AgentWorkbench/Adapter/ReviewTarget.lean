@@ -18,42 +18,14 @@ private def distinctStrings (values : List String) : List String :=
   values.foldl (fun found value =>
     if value.isEmpty || found.contains value then found else found ++ [value]) []
 
-private def normalizeComponents
-    (components : List ReviewTargetComponent) : List ReviewTargetComponent :=
-  components.mergeSort (fun left right =>
-    if left.kind == right.kind then left.id < right.id else left.kind < right.kind)
-
 private def component
     (kind id snapshot : String) (producers : List String := []) : ReviewTargetComponent :=
   { kind, id, snapshot, producerAgentRuns := distinctStrings producers }
 
-private def entryDigest (entry : LedgerEntry) : String :=
-  ContentDigest.string (Lean.toJson entry).compress
-
-private def entryProducerRuns (work : Work) (entry : LedgerEntry) : List String :=
-  match entry.payload with
-  | .commandExecution value => [value.producerAgentRun]
-  | .artifactObservation value => [value.producerAgentRun]
-  | .reviewDisposition value => [value.decidedByRun]
-  | .workHandoff value => [value.predecessorRun, value.successorRun]
-  | .workWithdrawal value => [value.withdrawnByRun]
-  | .workResume value => [value.resumedByRun]
-  | .workCompletion value => [value.completedByRun]
-  | .designRejection value => [value.rejectedByRun]
-  | .workDesignAdoption value => [value.adoptedByRun]
-  | .task _ | .commandProfile _ | .userCorrection _ | .kpt _ | .leanProofReceipt _ =>
-      [work.responsibleAgentRun]
-  | .review value => value.producerAgentRuns
-  | .finding value => value.producerAgentRuns
-  | .reviewVerification value => [value.verifiedByRun]
-  | .reviewHandoff value => [value.predecessorReviewerRun, value.successorReviewerRun]
-  | .reviewConclusion value => [value.reviewerAgentRun]
-
 private def implementationLedgerComponents
     (projection : CurrentProjection) (plan : ImplementationPlan) : List ReviewTargetComponent :=
   implementationReviewLedgerEntries projection.entries plan projection.work.id |>.map fun entry =>
-    component entry.payload.tag entry.id (entryDigest entry)
-      (entryProducerRuns projection.work entry)
+    reviewLedgerComponent projection.work entry
 
 private def workProducerRuns (state : ProjectState) (work : Work) : List String :=
   distinctStrings <| state.ledgerEntries.flatMap (fun entry =>
@@ -64,13 +36,9 @@ private def workProducerRuns (state : ProjectState) (work : Work) : List String 
 
 private def workHistoryComponents
     (state : ProjectState) (work : Work) : List ReviewTargetComponent :=
-  state.ledgerEntries.filterMap fun entry =>
-    if entry.workId != some work.id then none else
-    match entry.payload with
-    | .workHandoff _ | .workDesignAdoption _ | .workWithdrawal _ | .workResume _ =>
-        some (component entry.payload.tag entry.id (entryDigest entry)
-          (entryProducerRuns work entry))
-    | _ => none
+  implementationReviewHistoryEntries
+    (state.ledgerEntries.filter fun entry => !entryIsSuperseded state entry) work.id
+    |>.map (reviewLedgerComponent work)
 
 private def currentTargetComponent?
     (projectRoot : System.FilePath) (entry : LedgerEntry) : IO (Option ReviewTargetComponent) := do
@@ -134,7 +102,7 @@ private def freezeImplementation
     | pure (.error "Implementation Review requires the current implementation plan")
   let targetComponents ← currentTargetComponents projectRoot projection.entries
   let plannedComponents ← plannedTargetComponents projectRoot projection.work projection.entries
-  let manifest := normalizeComponents (
+  let manifest := normalizeReviewTargetComponents (
     [ component "design" projection.design.id projection.design.revisionContentDigest
         [projection.design.producerAgentRun]
     , component "plan" plan.id plan.contentDigest [plan.producerAgentRun]

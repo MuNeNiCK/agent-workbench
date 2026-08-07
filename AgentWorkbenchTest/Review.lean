@@ -33,6 +33,18 @@ def run : IO Unit :=
       review.producerAgentRuns.contains plan.producerAgentRun &&
       review.producerAgentRuns.contains work.responsibleAgentRun)
       "Implementation Review did not derive complete producer provenance"
+    let injectedComponent : ReviewTargetComponent := {
+      kind := "finding", id := "historical-finding"
+      snapshot := "blake3:historical-finding"
+      producerAgentRuns := [work.responsibleAgentRun] }
+    let injectedEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value => { entry with payload := .review {
+            value with targetManifest := value.targetManifest ++ [injectedComponent] } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := injectedEntries })
+      "Implementation Review accepted an extra historical ledger component"
     let artifactComponent ← match review.targetManifest.find? (fun value =>
         value.kind == "implementation_target" && value.id == criterion.target) with
       | some value => pure value
@@ -104,7 +116,7 @@ def run : IO Unit :=
     let omittedState := { disposed with
       implementationPlans := disposed.implementationPlans ++ [omittedPlan] }
     fromExcept (validateState omittedState)
-    expectError (materializePlan omittedState omittedPlan.id [])
+    expectError (materializePlan omittedState omittedPlan.id [] [])
       "Plan materialization omitted an accepted Implementation Review Finding"
     let coveredStep := { step with acceptedFindingEntryIds := ["finding-1"] }
     let coveredPlan : ImplementationPlan := {
@@ -115,7 +127,7 @@ def run : IO Unit :=
     let coveredState := { disposed with
       implementationPlans := disposed.implementationPlans ++ [coveredPlan] }
     fromExcept (validateState coveredState)
-    let covered ← fromExcept <| materializePlan coveredState coveredPlan.id []
+    let covered ← fromExcept <| materializePlan coveredState coveredPlan.id [] []
     expect ((covered.currentPlanFor? work.id).any (·.id == coveredPlan.id))
       "accepted Implementation Review Finding could not become an explicit Plan obligation"
     IO.FS.writeFile (root / "artifact.txt") "remediated"

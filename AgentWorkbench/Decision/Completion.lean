@@ -60,11 +60,10 @@ def evidenceEntryCurrent
       | _, _ => false
   | _ => false
 
-def requiredTasksClosed
-    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
-  projection.entries.all (fun entry =>
-    match entry.payload with
-    | .task task => !task.required || (task.closed &&
+def taskClosedWithCurrentEvidence
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (task : TaskRecord) : Bool :=
+  task.closed &&
         task.verificationTaskEntryId.isSome &&
         !task.verificationEvidenceEntryIds.isEmpty &&
         task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
@@ -77,7 +76,13 @@ def requiredTasksClosed
                 evidence.taskEntryId == task.verificationTaskEntryId
             | .commandExecution evidence =>
                 evidence.taskEntryId == task.verificationTaskEntryId
-            | _ => false)
+            | _ => false
+
+def requiredTasksClosed
+    (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
+  projection.entries.all (fun entry =>
+    match entry.payload with
+    | .task task => !task.required || taskClosedWithCurrentEvidence projection observations task
     | _ => true)
 
 def criterionEvidenceRecorded

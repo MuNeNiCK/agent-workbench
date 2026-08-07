@@ -81,7 +81,8 @@ private def affectedStepIds
   close candidate.steps.length direct
 
 def materializePlan
-    (state : ProjectState) (planId : String) (digests : List CurrentClaimDigest) :
+    (state : ProjectState) (planId : String) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) :
     Except String ProjectState := do
   let (design, work) ← currentBinding state
   let candidate ← match state.plan? planId with
@@ -120,7 +121,8 @@ def materializePlan
     let preservedClosed := priorTask.any fun entry =>
       match entry.payload, priorPlan with
       | .task task, some oldPlan =>
-          task.closed && !affected.contains step.id && oldPlan.steps.any fun oldStep => oldStep == step
+          taskClosedWithCurrentEvidence projection observations task &&
+            !affected.contains step.id && oldPlan.steps.any fun oldStep => oldStep == step
       | _, _ => false
     let preservedEvidence := if preservedClosed then
       priorTask.map (fun entry => match entry.payload with

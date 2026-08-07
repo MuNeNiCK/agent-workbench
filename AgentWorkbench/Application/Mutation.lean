@@ -221,7 +221,8 @@ inductive PreparedMutation where
   | designAmend (candidate : DesignRevision)
   | planPropose (candidate : ImplementationPlan)
   | planReplace (candidate : ImplementationPlan)
-  | planMaterialize (planId : String) (claimDigests : List CurrentClaimDigest)
+  | planMaterialize (planId : String) (observations : List TargetObservation)
+      (claimDigests : List CurrentClaimDigest)
   | taskClose (request : TaskCloseRequest) (observations : List TargetObservation)
   | workComplete (observations : List TargetObservation) (claimDigests : List CurrentClaimDigest)
       (inputDigest : String)
@@ -238,7 +239,7 @@ def PreparedMutation.operation : PreparedMutation → Operation
   | .designAmend _ => .designAmend
   | .planPropose _ => .planPropose
   | .planReplace _ => .planReplace
-  | .planMaterialize _ _ => .planMaterialize
+  | .planMaterialize _ _ _ => .planMaterialize
   | .taskClose _ _ => .taskClose
   | .workComplete _ _ _ => .workComplete
   | .artifactObservation _ => .artifactObserve
@@ -259,7 +260,8 @@ def PreparedMutation.transition
   | .direct mutation => mutation.executePure state
   | .designPropose candidate | .designAmend candidate => proposeDesign state candidate
   | .planPropose candidate | .planReplace candidate => proposePlan state candidate
-  | .planMaterialize planId digests => materializePlan state planId digests
+  | .planMaterialize planId observations digests =>
+      materializePlan state planId observations digests
   | .taskClose request observations => closeTask state observations request
   | .workComplete observations digests inputDigest =>
       completeFocusedWork state observations digests inputDigest
@@ -283,11 +285,11 @@ def PreparedMutation.execute
       else .error "prepared mutation violated its revision, authority, history, or effect boundary"
 
 def PreparedMutation.currentObservations : PreparedMutation → List TargetObservation
-  | .taskClose _ values | .workComplete values _ _ => values
+  | .planMaterialize _ values _ | .taskClose _ values | .workComplete values _ _ => values
   | _ => []
 
 def PreparedMutation.currentClaimDigests : PreparedMutation → List CurrentClaimDigest
-  | .planMaterialize _ values | .workComplete _ values _ => values
+  | .planMaterialize _ _ values | .workComplete _ values _ => values
   | _ => []
 
 def PreparedMutation.executeApplicable

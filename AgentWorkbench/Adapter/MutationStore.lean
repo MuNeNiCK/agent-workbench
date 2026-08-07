@@ -125,7 +125,8 @@ private def materializePlanRequest
   let prior ← loadState store
   let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
   let next ← fromExcept
-    ((AgentWorkbench.PreparedMutation.planMaterialize planId inputs.claimDigests).executeApplicable prior)
+    ((AgentWorkbench.PreparedMutation.planMaterialize
+      planId inputs.observations inputs.claimDigests).executeApplicable prior)
   commitOperation store .planMaterialize prior.revision next
   pure next
 

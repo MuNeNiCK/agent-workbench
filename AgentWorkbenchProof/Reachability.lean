@@ -93,7 +93,7 @@ def constructiveNormalPath : Except String ProjectState := do
   let proposed ← proposeDesign started routeDesign
   let accepted ← acceptDesign proposed routeDesign.id
   let planned ← proposePlan accepted routePlan
-  let materialized ← materializePlan planned routePlan.id []
+  let materialized ← materializePlan planned routePlan.id [] []
   let evidenceA ← appendCurrentEntry materialized "evidence-a"
     (routeEvidence "task-plan-1-a")
   let closedA ← closeTask evidenceA

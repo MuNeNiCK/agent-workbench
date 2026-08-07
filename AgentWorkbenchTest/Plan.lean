@@ -143,12 +143,27 @@ def run : IO Unit := do
   fromExcept (validateState closed)
   let dependencyState := dependencyPlanState
   fromExcept (validateState dependencyState)
-  let replaced ← fromExcept <| materializePlan dependencyState "plan-new" []
+  let replaced ← fromExcept <| materializePlan dependencyState "plan-new" [] []
   for taskId in ["task-plan-new-a", "task-plan-new-b"] do
     let entry ← match replaced.entry? taskId with
       | some value => pure value
       | none => throw (IO.userError s!"replacement omitted Task {taskId}")
     expect (match entry.payload with | .task value => !value.closed | _ => false)
       s!"Plan replacement did not reopen affected transitive Task {taskId}"
+  let oldPlan ← match dependencyState.plan? "plan-old" with
+    | some value => pure value
+    | none => throw (IO.userError "dependency fixture omitted its current Plan")
+  let samePlan : ImplementationPlan := { oldPlan with
+    id := "plan-same", predecessorPlanId := some oldPlan.id
+    status := .candidate, contentDigest := "blake3:same" }
+  let staleState : ProjectState := { dependencyState with
+    implementationPlans := [oldPlan, samePlan] }
+  let staleReplaced ← fromExcept <| materializePlan staleState samePlan.id [] []
+  for taskId in ["task-plan-same-a", "task-plan-same-b"] do
+    let entry ← match staleReplaced.entry? taskId with
+      | some value => pure value
+      | none => throw (IO.userError s!"stale replacement omitted Task {taskId}")
+    expect (match entry.payload with | .task value => !value.closed | _ => false)
+      s!"Plan replacement preserved closed Task {taskId} with stale evidence"
 
 end AgentWorkbenchTest.Plan

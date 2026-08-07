@@ -190,20 +190,21 @@ private def validateReview
         ensure (taskIds.all fun id => review.targetManifest.any fun value =>
           value.kind == "task" && value.id == id)
           s!"review {entry.id} omits part of the current Task graph"
-        let currentEntries := effectiveEntries state design work |>.filter (·.order < coverageOrder)
-        let requiredCurrentIds :=
-          implementationReviewLedgerEntries currentEntries plan work.id |>.map (·.id)
-        let requiredHistoryIds := state.ledgerEntries.filterMap fun candidate =>
-          if candidate.order >= coverageOrder || candidate.workId != entry.workId ||
-              isSuperseded state candidate then none else
-          match candidate.payload with
-          | .workHandoff _ | .workDesignAdoption _ => some candidate.id
-          | _ => none
-        let requiredLedgerIds := requiredCurrentIds ++ requiredHistoryIds
-        let missingLedgerIds := requiredLedgerIds.filter fun id =>
-          !review.targetManifest.any (·.id == id)
-        ensure missingLedgerIds.isEmpty
-          s!"review {entry.id} omits required implementation components: {String.intercalate ", " missingLedgerIds}"
+        let priorLedger := state.ledgerEntries.filter (·.order < coverageOrder)
+        let supersededBeforeReview (candidate : LedgerEntry) := priorLedger.any fun replacement =>
+          replacement.order > candidate.order && replacement.supersedes.contains candidate.id
+        let currentEntries := priorLedger.filter fun candidate =>
+          entryAppliesTo state design work candidate && !supersededBeforeReview candidate
+        let historyEntries := implementationReviewHistoryEntries
+          (priorLedger.filter fun candidate => !supersededBeforeReview candidate) work.id
+        let expectedLedgerComponents := normalizeReviewTargetComponents <|
+          (implementationReviewLedgerEntries currentEntries plan work.id ++ historyEntries).map
+            (reviewLedgerComponent work)
+        let structuralKinds := ["design", "plan", "work", "implementation_target"]
+        let actualLedgerComponents := normalizeReviewTargetComponents <|
+          review.targetManifest.filter fun component => !structuralKinds.contains component.kind
+        ensure (actualLedgerComponents == expectedLedgerComponents)
+          s!"review {entry.id} changes the exact current implementation component projection"
         ensure (review.targetManifest.all fun value =>
           value.producerAgentRuns.all producers.contains)
           s!"review {entry.id} manifest producer closure is incomplete"
