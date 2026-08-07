@@ -17,6 +17,30 @@ structure ReviewInspection where
   lineage : List LedgerEntry
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+def acceptedImplementationFindingIdsIn
+    (entries : List LedgerEntry) (workId : String) : List String :=
+  entries.filterMap fun entry =>
+    match entry.payload with
+    | .finding _ =>
+        if (findingDispositionIn? entries entry.id workId).any fun dispositionEntry =>
+          match dispositionEntry.payload with
+          | .reviewDisposition value => value.decision == .accepted
+          | _ => false
+        then some entry.id else none
+    | _ => none
+
+def implementationReviewLedgerEntries
+    (entries : List LedgerEntry) (plan : ImplementationPlan) (workId : String) : List LedgerEntry :=
+  let acceptedFindings := acceptedImplementationFindingIdsIn entries workId
+  entries.filter fun entry => match entry.payload with
+    | .task value => value.planId == some plan.id && !value.retired
+    | .commandExecution _ | .artifactObservation _ | .leanProofReceipt _ => true
+    | .userCorrection _ => true
+    | .finding _ => acceptedFindings.contains entry.id
+    | .reviewDisposition value => acceptedFindings.contains value.findingEntryId &&
+        ((findingDispositionIn? entries value.findingEntryId workId).any (·.id == entry.id))
+    | _ => false
+
 private def belongsToReview (reviewId : String) (findingIds : List String)
     (entry : LedgerEntry) : Bool :=
   match entry.payload with

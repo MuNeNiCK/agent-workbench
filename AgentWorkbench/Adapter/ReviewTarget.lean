@@ -1,6 +1,7 @@
 import AgentWorkbench.Domain.State
 import AgentWorkbench.Domain.Lookup
 import AgentWorkbench.Decision.Projection
+import AgentWorkbench.Decision.ReviewInput
 import AgentWorkbench.Adapter.Snapshot
 import AgentWorkbench.Adapter.ContentDigest
 
@@ -48,34 +49,11 @@ private def entryProducerRuns (work : Work) (entry : LedgerEntry) : List String 
   | .reviewHandoff value => [value.predecessorReviewerRun, value.successorReviewerRun]
   | .reviewConclusion value => [value.reviewerAgentRun]
 
-private def acceptedDispositionIds (entries : List LedgerEntry) (workId : String) : List String :=
-  entries.filterMap fun entry =>
-    match entry.payload with
-    | .finding _ =>
-        if (findingDispositionIn? entries entry.id workId).any fun dispositionEntry =>
-          match dispositionEntry.payload with
-          | .reviewDisposition value => value.decision == .accepted
-          | _ => false
-        then some entry.id else none
-    | _ => none
-
 private def implementationLedgerComponents
     (projection : CurrentProjection) (plan : ImplementationPlan) : List ReviewTargetComponent :=
-  let acceptedFindings := acceptedDispositionIds projection.entries projection.work.id
-  projection.entries.filterMap fun entry =>
-    let selected : Bool := match entry.payload with
-      | .task value => value.planId == some plan.id && !value.retired
-      | .commandExecution _ | .artifactObservation _ | .leanProofReceipt _ => true
-      | .userCorrection _ => true
-      | .finding _ => acceptedFindings.contains entry.id
-      | .reviewDisposition value => acceptedFindings.contains value.findingEntryId &&
-          ((findingDispositionIn? projection.entries value.findingEntryId projection.work.id)
-            |>.any (·.id == entry.id))
-      | _ => false
-    if selected then
-      some (component entry.payload.tag entry.id (entryDigest entry)
-        (entryProducerRuns projection.work entry))
-    else none
+  implementationReviewLedgerEntries projection.entries plan projection.work.id |>.map fun entry =>
+    component entry.payload.tag entry.id (entryDigest entry)
+      (entryProducerRuns projection.work entry)
 
 private def workProducerRuns (state : ProjectState) (work : Work) : List String :=
   distinctStrings <| state.ledgerEntries.flatMap (fun entry =>

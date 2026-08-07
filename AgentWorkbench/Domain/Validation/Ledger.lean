@@ -1,5 +1,6 @@
 import AgentWorkbench.Domain.Validation.Design
 import AgentWorkbench.Decision.Finding
+import AgentWorkbench.Decision.ReviewInput
 
 namespace AgentWorkbench
 namespace Validation
@@ -189,35 +190,20 @@ private def validateReview
         ensure (taskIds.all fun id => review.targetManifest.any fun value =>
           value.kind == "task" && value.id == id)
           s!"review {entry.id} omits part of the current Task graph"
-        let priorEntries := state.ledgerEntries.filter fun candidate =>
-          candidate.order < coverageOrder && candidate.workId == entry.workId
-        let acceptedFindingIds := priorEntries.filterMap fun candidate =>
-          match candidate.payload, entry.workId with
-          | .finding _, some workId =>
-              if (findingDispositionIn? priorEntries candidate.id workId).any fun dispositionEntry =>
-                match dispositionEntry.payload with
-                | .reviewDisposition value => value.decision == .accepted
-                | _ => false
-              then some candidate.id else none
-          | _, _ => none
-        let requiredLedgerIds := state.ledgerEntries.filterMap fun candidate =>
+        let currentEntries := effectiveEntries state design work |>.filter (·.order < coverageOrder)
+        let requiredCurrentIds :=
+          implementationReviewLedgerEntries currentEntries plan work.id |>.map (·.id)
+        let requiredHistoryIds := state.ledgerEntries.filterMap fun candidate =>
           if candidate.order >= coverageOrder || candidate.workId != entry.workId ||
               isSuperseded state candidate then none else
-          let required : Bool := match candidate.payload with
-            | .task task => task.planId == some plan.id && !task.retired
-            | .commandExecution _ | .artifactObservation _ | .leanProofReceipt _ =>
-                candidate.designRevision == entry.designRevision
-            | .userCorrection _ => candidate.designRevision == entry.designRevision
-            | .finding _ => acceptedFindingIds.contains candidate.id
-            | .reviewDisposition value => acceptedFindingIds.contains value.findingEntryId &&
-                ((entry.workId.bind fun workId =>
-                  findingDispositionIn? priorEntries value.findingEntryId workId)
-                  |>.any (·.id == candidate.id))
-            | .workHandoff _ | .workDesignAdoption _ => true
-            | _ => false
-          if required then some candidate.id else none
-        ensure (requiredLedgerIds.all fun id => review.targetManifest.any (·.id == id))
-          s!"review {entry.id} omits a required implementation, evidence, Correction, or disposition component"
+          match candidate.payload with
+          | .workHandoff _ | .workDesignAdoption _ => some candidate.id
+          | _ => none
+        let requiredLedgerIds := requiredCurrentIds ++ requiredHistoryIds
+        let missingLedgerIds := requiredLedgerIds.filter fun id =>
+          !review.targetManifest.any (·.id == id)
+        ensure missingLedgerIds.isEmpty
+          s!"review {entry.id} omits required implementation components: {String.intercalate ", " missingLedgerIds}"
         ensure (review.targetManifest.all fun value =>
           value.producerAgentRuns.all producers.contains)
           s!"review {entry.id} manifest producer closure is incomplete"
