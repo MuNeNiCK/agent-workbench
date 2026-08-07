@@ -75,9 +75,17 @@ private def verifyArchiveMembers
   let bin := System.FilePath.mk leanPrefix.stdout.trimAscii.toString / "bin"
   let executable := bin / "llvm-ar.exe"
   let extensionless := bin / "llvm-ar"
-  let ar ← if ← executable.pathExists then pure executable
-    else if ← extensionless.pathExists then pure extensionless
-    else pure <| System.FilePath.mk "llvm-ar"
+  let ar ← match ← IO.getEnv "LEAN_AR" with
+    | some configured => pure <| System.FilePath.mk configured
+    | none => do
+      if ← executable.pathExists then
+        pure executable
+      else if ← extensionless.pathExists then
+        pure extensionless
+      else
+        match ← IO.getEnv "AR" with
+          | some configured => pure <| System.FilePath.mk configured
+          | none => pure <| System.FilePath.mk "ar"
   let listing ← try
       IO.Process.output { cmd := ar.toString, args := #["t", archive] }
     catch error =>
