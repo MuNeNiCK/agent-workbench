@@ -200,6 +200,19 @@ private def validateReview
         let expectedLedgerComponents := normalizeReviewTargetComponents <|
           (implementationReviewLedgerEntries currentEntries plan work.id ++ historyEntries).map
             (reviewLedgerComponent work)
+        ensure (review.targetSnapshot ==
+          ContentDigest.string (Lean.toJson review.targetManifest).compress)
+          s!"review {entry.id} changes its fixed manifest digest"
+        let workComponents := review.targetManifest.filter (·.kind == "work")
+        ensure (workComponents.length == 1 && workComponents.head?.any (·.id == work.id))
+          s!"review {entry.id} omits or duplicates its fixed Work"
+        let expectedTargetIds := implementationReviewOutputTargetIds currentEntries plan
+          |>.mergeSort (· < ·)
+        let implementationTargets := deduplicateReviewTargetComponents <|
+          review.targetManifest.filter (·.kind == "implementation_target")
+        let actualTargetIds := implementationTargets.map (·.id) |>.mergeSort (· < ·)
+        ensure (actualTargetIds == expectedTargetIds && uniqueStrings actualTargetIds)
+          s!"review {entry.id} changes its exact implementation output targets"
         let structuralKinds := ["design", "plan", "work", "implementation_target"]
         let actualLedgerComponents := normalizeReviewTargetComponents <|
           review.targetManifest.filter fun component => !structuralKinds.contains component.kind

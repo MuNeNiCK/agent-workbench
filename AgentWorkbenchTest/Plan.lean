@@ -165,5 +165,13 @@ def run : IO Unit := do
       | none => throw (IO.userError s!"stale replacement omitted Task {taskId}")
     expect (match entry.payload with | .task value => !value.closed | _ => false)
       s!"Plan replacement preserved closed Task {taskId} with stale evidence"
+  let mixedFreshnessReplaced ← fromExcept <| materializePlan staleState samePlan.id
+    [TargetObservation.mk criterion.target "blake3:old-evidence-b"] []
+  for taskId in ["task-plan-same-a", "task-plan-same-b"] do
+    let entry ← match mixedFreshnessReplaced.entry? taskId with
+      | some value => pure value
+      | none => throw (IO.userError s!"mixed-freshness replacement omitted Task {taskId}")
+    expect (match entry.payload with | .task value => !value.closed | _ => false)
+      s!"Plan replacement preserved dependent Task {taskId} after its dependency became stale"
 
 end AgentWorkbenchTest.Plan

@@ -102,7 +102,7 @@ private def freezeImplementation
     | pure (.error "Implementation Review requires the current implementation plan")
   let targetComponents ← currentTargetComponents projectRoot projection.entries
   let plannedComponents ← plannedTargetComponents projectRoot projection.work projection.entries
-  let manifest := normalizeReviewTargetComponents (
+  let manifest := normalizeReviewTargetComponents <| deduplicateReviewTargetComponents (
     [ component "design" projection.design.id projection.design.revisionContentDigest
         [projection.design.producerAgentRun]
     , component "plan" plan.id plan.contentDigest [plan.producerAgentRun]

@@ -45,6 +45,32 @@ def run : IO Unit :=
       else entry
     expectError (validateState { reviewed with ledgerEntries := injectedEntries })
       "Implementation Review accepted an extra historical ledger component"
+    let withoutWorkEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            let manifest := value.targetManifest.filter (·.kind != "work")
+            { entry with payload := .review { value with
+                targetManifest := manifest
+                targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := withoutWorkEntries })
+      "Implementation Review accepted a manifest with no fixed Work"
+    let duplicateTargetEntries := reviewed.ledgerEntries.map fun entry =>
+      if entry.id == "review-1" then match entry.payload with
+        | .review value =>
+            match value.targetManifest.find? (·.kind == "implementation_target") with
+            | some target =>
+                let manifest := value.targetManifest ++
+                  [{ target with snapshot := "blake3:conflicting-target" }]
+                { entry with payload := .review { value with
+                    targetManifest := manifest
+                    targetSnapshot := ContentDigest.string (Lean.toJson manifest).compress } }
+            | none => entry
+        | _ => entry
+      else entry
+    expectError (validateState { reviewed with ledgerEntries := duplicateTargetEntries })
+      "Implementation Review accepted conflicting duplicate implementation targets"
     let artifactComponent ← match review.targetManifest.find? (fun value =>
         value.kind == "implementation_target" && value.id == criterion.target) with
       | some value => pure value

@@ -79,6 +79,21 @@ def normalizeReviewTargetComponents
   components.mergeSort (fun left right =>
     if left.kind == right.kind then left.id < right.id else left.kind < right.kind)
 
+def deduplicateReviewTargetComponents
+    (components : List ReviewTargetComponent) : List ReviewTargetComponent :=
+  components.foldl (fun found component =>
+    if found.contains component then found else found ++ [component]) []
+
+def implementationReviewOutputTargetIds
+    (entries : List LedgerEntry) (plan : ImplementationPlan) : List String :=
+  entries.foldl (fun found entry => match entry.payload with
+    | .task task =>
+        if task.planId == some plan.id && !task.retired then
+          task.outputScopes.foldl (fun targets target =>
+            if targets.contains target then targets else targets ++ [target]) found
+        else found
+    | _ => found) []
+
 private def belongsToReview (reviewId : String) (findingIds : List String)
     (entry : LedgerEntry) : Bool :=
   match entry.payload with
