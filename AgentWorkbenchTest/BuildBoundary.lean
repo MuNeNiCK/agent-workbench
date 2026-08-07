@@ -13,11 +13,24 @@ private def readRequired (path : System.FilePath) : IO String := do
     throw (IO.userError s!"missing build-boundary input: {path}")
   IO.FS.readFile path
 
+private def firstExisting : List System.FilePath → IO (Option System.FilePath)
+  | [] => pure none
+  | path :: rest => do
+      if ← path.pathExists then pure (some path) else firstExisting rest
+
+private def findExecutable (names : List String) : IO (Option System.FilePath) := do
+  let some value ← IO.getEnv "PATH" | pure none
+  let separator := if System.Platform.isWindows then ";" else ":"
+  let candidates := value.splitOn separator |>.flatMap fun directory =>
+    names.map fun name => System.FilePath.mk directory / System.FilePath.mk name
+  firstExisting candidates
+
 private def pinnedLeanRoot : IO System.FilePath := do
   let lean ← match ← IO.getEnv "LEAN" with
     | some configured => pure <| System.FilePath.mk configured
-    | none => pure <| System.FilePath.mk <|
-        if System.Platform.isWindows then "lean.exe" else "lean"
+    | none => match ← findExecutable ["lean.exe", "lean"] with
+      | some path => pure path
+      | none => throw (IO.userError "cannot find the pinned Lean executable on PATH")
   let result ← try
       IO.Process.output { cmd := lean.toString, args := #["--print-prefix"] }
     catch error =>
