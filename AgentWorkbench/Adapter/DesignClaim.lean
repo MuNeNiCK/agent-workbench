@@ -17,6 +17,15 @@ private def fail (message : String) : IO α :=
 private def pathWithin (root path : System.FilePath) : Bool :=
   root.normalize.components.isPrefixOf path.normalize.components
 
+private def stablePathIdentity (path : System.FilePath) : String :=
+  let normalized := path.normalize.toString
+  -- macOS exposes the same temporary file through both `/var` and its
+  -- physical `/private/var` spelling. This is identity normalization, not a
+  -- second source-discovery rule.
+  if normalized.startsWith "/private/var/" then
+    (normalized.drop "/private".length).toString
+  else normalized
+
 private def proofRootPath
     (projectRoot : System.FilePath) (claim : LeanClaim) : IO System.FilePath := do
   let configured : System.FilePath := claim.input.proofRoot
@@ -63,12 +72,12 @@ private def ensureCompleteClosure
   let mut declaredIdentities := []
   for source in declared do
     let canonical ← IO.FS.realPath source
-    declaredIdentities := declaredIdentities ++ [canonical.normalize.toString]
+    declaredIdentities := declaredIdentities ++ [stablePathIdentity canonical]
   for dependency in closure do
     let canonical ← IO.FS.realPath dependency
     if pathWithin canonicalProjectRoot canonical && !pathWithin packagesRoot canonical &&
         canonical.extension == some "lean" &&
-        !declaredIdentities.contains canonical.normalize.toString then
+        !declaredIdentities.contains (stablePathIdentity canonical) then
       fail s!"Claim {claim.id} omits local Lean dependency from declaredSources: {canonical}"
 
 private def bindClaim
