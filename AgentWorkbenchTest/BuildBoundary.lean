@@ -25,12 +25,23 @@ private def findExecutable (names : List String) : IO (Option System.FilePath) :
     names.map fun name => System.FilePath.mk directory / System.FilePath.mk name
   firstExisting candidates
 
+private def findElanExecutable (names : List String) : IO (Option System.FilePath) := do
+  let elanHome := (← IO.getEnv "ELAN_HOME").map System.FilePath.mk
+  let home := (← IO.getEnv "HOME").map fun value => System.FilePath.mk value / ".elan"
+  let profile := (← IO.getEnv "USERPROFILE").map fun value => System.FilePath.mk value / ".elan"
+  let roots := [elanHome, home, profile].filterMap id
+  let candidates := roots.flatMap fun root =>
+    names.map fun name => root / "bin" / System.FilePath.mk name
+  firstExisting candidates
+
 private def pinnedLeanRoot : IO System.FilePath := do
   let lean ← match ← IO.getEnv "LEAN" with
     | some configured => pure <| System.FilePath.mk configured
-    | none => match ← findExecutable ["lean.exe", "lean"] with
+    | none => match ← findElanExecutable ["lean.exe", "lean"] with
       | some path => pure path
-      | none => throw (IO.userError "cannot find the pinned Lean executable on PATH")
+      | none => match ← findExecutable ["lean.exe", "lean"] with
+        | some path => pure path
+        | none => throw (IO.userError "cannot find the pinned Lean executable")
   let result ← try
       IO.Process.output { cmd := lean.toString, args := #["--print-prefix"] }
     catch error =>
