@@ -43,7 +43,7 @@ private def verifyExecutableRoots : IO Unit := do
 
 private def isGeneratedLeanObject (path : String) : Bool :=
   containsText path "/.lake/build/ir/" &&
-    (path.endsWith ".c.o.export" || path.endsWith ".c.obj.export")
+    (path.endsWith ".c.o.export" || path.endsWith ".c.o.noexport")
 
 private def isReviewedNativeDependency (path : String) : Bool :=
   (containsText path "/.lake/packages/Blake3/.lake/build/lib/" &&
@@ -89,7 +89,8 @@ private def verifyProductLinkResponse : IO Unit := do
   let response := normalized (← readRequired responsePath)
   expect (!containsText response "/AgentWorkbenchProof")
     "product link response reaches the private proof library"
-  let objectSuffix := ".c.o.export"
+  let objectSuffix :=
+    if System.Platform.isWindows then ".c.o.noexport" else ".c.o.export"
   for module in ["/AgentWorkbench/Cli/Main", "/Blake3/C", "/MD4Lean/FFI", "/SQLite/FFI"] do
     let required := module ++ objectSuffix
     unless containsText response required do
