@@ -101,6 +101,7 @@ private def verifyDeclarationCapabilityGraph : IO Unit := do
 
 private def verifyReleaseAuthorizationBoundary : IO Unit := do
   let workflow ← readRequired ".github/workflows/release.yml"
+  let verifier ← readRequired ".github/verify-release-authorization.py"
   let signer ← readRequired ".github/release-signers/munenick.asc"
   for required in [
       "Verify signed Workbench release authorization",
@@ -108,12 +109,20 @@ private def verifyReleaseAuthorizationBoundary : IO Unit := do
       "git verify-tag --raw",
       "agent-workbench release authorization v1",
       "ready-digest",
-      "fresh-review-conclusion-entry-id",
-      "fresh-review-clean"] do
-    expect (containsText workflow required)
+      "design-review-conclusion-entry-id",
+      "design-review-target-snapshot",
+      "design-review-clean",
+      "implementation-review-conclusion-entry-id",
+      "implementation-review-target-snapshot",
+      "implementation-review-clean"] do
+    expect (containsText (workflow ++ verifier) required)
       s!"release workflow omits authorization binding {required}"
   expect (containsText signer "BEGIN PGP PUBLIC KEY BLOCK")
     "release authorization signer key is missing"
+  let result ← IO.Process.output {
+    cmd := "python3", args := #[".github/verify-release-authorization.py", "self-test"] }
+  unless result.exitCode == 0 do
+    throw (IO.userError s!"release authorization fixture matrix failed: {result.stdout}{result.stderr}")
 
 private def isGeneratedLeanObject (path : String) : Bool :=
   containsText path "/.lake/build/ir/" &&

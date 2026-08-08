@@ -9,28 +9,25 @@ private def fail (message : String) : IO α :=
   throw (IO.userError message)
 
 private partial def unknownJsonFields
-    (path : String) (actual sample : Lean.Json) : List String :=
-  match actual, sample with
-  | .obj actualFields, .obj sampleFields =>
+    (path : String) (actual : Lean.Json) (schema : InputSchema) : List String :=
+  match actual, schema with
+  | .obj actualFields, .object schemaFields =>
       actualFields.toList.flatMap fun (key, value) =>
         let fieldPath := if path.isEmpty then key else s!"{path}.{key}"
-        match sampleFields.get? key with
+        match schemaFields.find? (fun field => field.1 == key) with
         | none => [fieldPath]
-        | some fieldSample => unknownJsonFields fieldPath value fieldSample
-  | .arr actualItems, .arr sampleItems =>
-      match sampleItems[0]? with
-      | none => []
-      | some itemSample =>
-          actualItems.toList.zipIdx.flatMap fun (value, index) =>
-            unknownJsonFields s!"{path}[{index}]" value itemSample
+        | some (_, fieldSchema) => unknownJsonFields fieldPath value fieldSchema
+  | .arr actualItems, .array itemSchema =>
+      actualItems.toList.zipIdx.flatMap fun (value, index) =>
+        unknownJsonFields s!"{path}[{index}]" value itemSchema
   | _, _ => []
 
 private def rejectUnknownFields (operation : String) (json : Lean.Json) : IO Unit := do
   if (operationContract? operation).isNone then
     fail s!"missing native contract for {operation}"
-  let some sample := operationInputSchema? operation
+  let some schema := operationInputSchema? operation
     | pure ()
-  let unknown := unknownJsonFields "" json sample
+  let unknown := unknownJsonFields "" json schema
   unless unknown.isEmpty do
     fail (s!"unknown fields for {operation}: {String.intercalate ", " unknown}; " ++
       s!"run `describe {operation}`")

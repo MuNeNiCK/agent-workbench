@@ -226,10 +226,26 @@ def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIn
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
 
-/-- A typed recursive shape for strict JSON field validation. Input examples stay concise for
-humans, while structured arrays are populated here so their object fields are never inferred from
-an empty example. -/
-def operationInputSchema? (operation : String) : Option Lean.Json :=
+/-- The recursive field shape accepted by one native JSON operation. `.value` deliberately makes
+no claim about scalar representation; objects and array elements retain their own field shape. -/
+inductive InputSchema where
+  | value
+  | object (fields : List (String × InputSchema))
+  | array (item : InputSchema)
+  deriving Repr, Inhabited
+
+private partial def schemaFromExample : Lean.Json → InputSchema
+  | .obj fields => .object (fields.toList.map fun (key, value) => (key, schemaFromExample value))
+  | .arr items => .array (items[0]?.map schemaFromExample |>.getD .value)
+  | _ => .value
+
+private def typedSchema [Lean.ToJson α] (value : α) : InputSchema :=
+  schemaFromExample (Lean.toJson value)
+
+/-- A type-checked recursive schema for strict JSON field validation. The human-facing examples
+stay concise. Structured arrays are populated only in this schema witness, so an empty example can
+never erase the object fields accepted for an array element. -/
+def operationInputSchema? (operation : String) : Option InputSchema :=
   let designSchema : DesignProposalRequest := {
     producerAgentRun := "agent-run-1"
     changeRationale := "record the Design"
@@ -270,9 +286,9 @@ def operationInputSchema? (operation : String) : Option Lean.Json :=
       verificationCriterionIds := [criterion.id]
       acceptedFindingEntryIds := ["finding-1"] }] }
   match operation with
-  | "design propose" | "design amend" => some (Lean.toJson designSchema)
-  | "plan propose" | "plan replace" => some (Lean.toJson planSchema)
-  | _ => (operationContract? operation).bind (·.inputExample)
+  | "design propose" | "design amend" => some (typedSchema designSchema)
+  | "plan propose" | "plan replace" => some (typedSchema planSchema)
+  | _ => (operationContract? operation).bind (·.inputExample) |>.map schemaFromExample
 
 def describedOperation?
     (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=

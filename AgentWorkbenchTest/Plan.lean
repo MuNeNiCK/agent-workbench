@@ -180,6 +180,24 @@ def run : IO Unit := do
     expect (match entry.payload with | .task value => !value.closed | _ => false)
       s!"Plan replacement preserved dependent Task {taskId} after its dependency became stale"
 
+  let reorderedPlan : ImplementationPlan := { oldPlan with
+    id := "plan-reordered", predecessorPlanId := some oldPlan.id
+    status := .candidate, contentDigest := "blake3:reordered"
+    sourceUnitDispositions := oldPlan.sourceUnitDispositions.reverse
+    statementDispositions := oldPlan.statementDispositions.map fun disposition =>
+      { disposition with stepIds := disposition.stepIds.reverse } }
+  let reorderedState : ProjectState := { dependencyState with
+    implementationPlans := [oldPlan, reorderedPlan] }
+  let reordered ← fromExcept <| materializePlan reorderedState reorderedPlan.id
+    [TargetObservation.mk criterion.target "blake3:old-evidence-a"] []
+  let reorderedTaskA ← match reordered.entry? "task-plan-reordered-a" with
+    | some value => pure value
+    | none => throw (IO.userError "reordered Plan omitted retained Task A")
+  expect (match reorderedTaskA.payload with
+    | .task value => value.closed && value.verificationEvidenceEntryIds == ["old-evidence-a"]
+    | _ => false)
+    "Plan replacement reopened a retained Task after obligation ordering changed only"
+
   let obligationBase := dependencyPlanState
   let obligationOld ← match obligationBase.plan? "plan-old" with
     | some value => pure value

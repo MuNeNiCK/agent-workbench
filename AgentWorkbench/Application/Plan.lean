@@ -83,8 +83,27 @@ private def sourceBindingsFor
 
 private def statementBindingsFor
     (plan : ImplementationPlan) (stepId : String) : List PlanStatementDisposition :=
-  plan.statementDispositions.filter (·.stepIds.contains stepId)
-    |>.mergeSort (fun left right => left.statementId < right.statementId)
+  (plan.statementDispositions.filter (·.stepIds.contains stepId)
+    |>.map fun disposition =>
+      -- The signature records this Statement-to-step edge. Assignments to sibling
+      -- steps are their authority, not part of this retained step's authority.
+      { disposition with stepIds := [stepId] }
+  ).mergeSort (fun left right => left.statementId < right.statementId)
+
+private structure StepObligationSignature where
+  sourceUnits : List PlanSourceUnitDisposition
+  statementDeltas : List PlanStatementDisposition
+  acceptedFindings : List String
+  deriving DecidableEq
+
+private def obligationSignature
+    (plan : ImplementationPlan) (step : PlanStep) : StepObligationSignature :=
+  { sourceUnits := sourceBindingsFor plan step.id
+    statementDeltas := statementBindingsFor plan step.id
+    acceptedFindings := step.acceptedFindingEntryIds.mergeSort (· < ·) }
+
+private def stepDefinition (step : PlanStep) : PlanStep :=
+  { step with acceptedFindingEntryIds := [] }
 
 private def affectedStepIds
     (prior : Option ImplementationPlan) (candidate : ImplementationPlan) : List String :=
@@ -92,9 +111,8 @@ private def affectedStepIds
     match prior with
     | some oldPlan => match uniqueBy? oldPlan.steps (·.id) step.id with
       | some old =>
-          if old == step &&
-              sourceBindingsFor oldPlan old.id == sourceBindingsFor candidate step.id &&
-              statementBindingsFor oldPlan old.id == statementBindingsFor candidate step.id then
+          if stepDefinition old == stepDefinition step &&
+              obligationSignature oldPlan old == obligationSignature candidate step then
             none
           else some step.id
       | none => some step.id
