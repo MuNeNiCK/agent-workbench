@@ -30,6 +30,11 @@ tag, then verifies the published SHA-256 checksum before extracting below `.agen
 Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.32.2`
 below `.agent-workbench/toolchains`.
 
+Every project entry runs setup as a cheap version check. It compares the installed Skill's release
+marker with the marker embedded in the private runtime bundle. A missing or different marker causes
+the exact pinned archive to replace the private runtime; a matching runtime performs no download or
+extraction. This prevents a newly installed Skill from silently continuing with an older runtime.
+
 When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
 schema-revision mismatch is handed to native `init` for migration; other read failures remain
 failures. Migration preserves the recorded Designs, Works, and ledger history, marks unavailable

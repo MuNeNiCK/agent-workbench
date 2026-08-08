@@ -132,6 +132,20 @@ second_setup=$(setup)
 [[ "$second_setup" == "$before" ]]
 after=$("$awb" --project "$project" context)
 [[ "$after" == "$before" ]]
+runtime_release="$project/.agent-workbench/bin/skill/agent-workbench/release-version"
+expected_release=$(sed -n '1p' "$installed_skill/release-version")
+printf '%s\n' 'v0.2.8' > "$runtime_release"
+printf '%s\n' 'stale runtime fixture' > "$awb"
+upgrade_setup=$(setup)
+[[ "$upgrade_setup" == "$before" ]]
+[[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
+if [[ "$awb" == *.exe ]]; then
+  cmp "$awb" "$staging/agent-workbench.exe"
+else
+  cmp "$awb" "$staging/agent-workbench"
+fi
+same_version_setup=$(setup)
+[[ "$same_version_setup" == "$before" ]]
 outside_workbench_status=$(git -C "$project" status --porcelain --untracked-files=all -- . \
   ':(exclude).agents/**' ':(exclude).agent-workbench/**')
 [[ -z "$outside_workbench_status" ]]
