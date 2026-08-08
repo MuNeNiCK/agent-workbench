@@ -17,7 +17,9 @@ the Skill or shell.
    installed POSIX script retaining an executable mode. Setup compares this Skill's
    `release-version` with the runtime bundle's embedded `skill/agent-workbench/release-version`;
    it acquires the pinned runtime when the executable or marker is absent or different, and is a
-   read-only context check when they already match.
+   read-only context check when they already match. During replacement, the prior complete bundle
+   remains recoverable until the new native runtime successfully completes `context` or `init`;
+   activation failure restores the prior bundle and leaves the pinned replacement retryable.
 3. Run `.agent-workbench/bin/agent-workbench --project PROJECT_ROOT context`.
 4. Run `... describe` and select only from `applicableOperations`. Before using an unfamiliar
    mutation, run `... describe OPERATION`; require `applicable: true` and use only its

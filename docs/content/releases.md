@@ -88,6 +88,11 @@ remaining gap, the wrong Work or Design target, a non-fresh or non-independent R
 a Finding, or a non-clean/missing conclusion. The Git note transports that checked record without
 changing the already reviewed commit; it is not an alternative source of release facts.
 
+Before emitting the record, `prepare` also derives the exact source/build target set from the fixed
+Implementation Review manifest. For each declared target it rejects tracked, staged, untracked, or
+ignored checkout content that differs from the authorized commit. Paths outside that reviewed set
+do not become release inputs merely because they exist in the same repository.
+
 Release CI imports the repository-pinned public key and requires exactly one GnuPG `VALIDSIG`
 record whose signing-key fingerprint is that pinned primary key. Signing subkeys are intentionally
 rejected; when GnuPG also emits a primary-key fingerprint, it must name the same key. CI then

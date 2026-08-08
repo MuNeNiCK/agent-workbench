@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -125,7 +126,41 @@ def workbench_query(executable: str, project: str, operation: str, payload: dict
     return json.loads(result.stdout)
 
 
-def verify_target_checkout(project: str, target_commit: str) -> None:
+def reviewed_checkout_targets(
+    implementation_inspection: dict[str, object], entry_id: str
+) -> list[str]:
+    review = implementation_inspection.get("review", {}).get("payload", {}).get("review", {}).get("value", {})
+    manifest = review.get("targetManifest")
+    if review.get("targetManifestVersion") != 3 or not isinstance(manifest, list):
+        raise AuthorizationError(f"{entry_id} has no current implementation target manifest")
+    targets: list[str] = []
+    for component in manifest:
+        if not isinstance(component, dict) or component.get("kind") != "implementation_target":
+            continue
+        target = component.get("id")
+        if not isinstance(target, str) or not target:
+            raise AuthorizationError(f"{entry_id} contains an invalid implementation target")
+        if target in targets:
+            raise AuthorizationError(f"{entry_id} contains a duplicate implementation target")
+        targets.append(target)
+    if not targets:
+        raise AuthorizationError(f"{entry_id} contains no reviewed implementation targets")
+    return targets
+
+
+def target_path(target: str) -> str:
+    kind, separator, configured = target.partition(":")
+    if not separator or kind not in {"file", "tree"}:
+        raise AuthorizationError(f"unsupported reviewed checkout target: {target}")
+    if not configured or configured == "." or "\\" in configured or configured.startswith("/"):
+        raise AuthorizationError(f"reviewed checkout target is not a project-relative path: {target}")
+    normalized = posixpath.normpath(configured)
+    if normalized != configured or normalized == ".." or normalized.startswith("../"):
+        raise AuthorizationError(f"reviewed checkout target escapes the project: {target}")
+    return configured
+
+
+def verify_target_checkout(project: str, target_commit: str, targets: list[str]) -> None:
     root = pathlib.Path(project).resolve()
     def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -133,11 +168,17 @@ def verify_target_checkout(project: str, target_commit: str) -> None:
         )
     if git("rev-parse", "HEAD").stdout.strip() != target_commit:
         raise AuthorizationError("release target differs from the current checkout")
-    if git("diff", "--quiet", target_commit, "--", ".", check=False).returncode != 0 or \
-            git("diff", "--cached", "--quiet", target_commit, "--", ".", check=False).returncode != 0:
-        raise AuthorizationError("tracked release inputs differ from the target commit")
-    if git("ls-files", "--others", "--exclude-standard").stdout.strip():
-        raise AuthorizationError("untracked release inputs are absent from the target commit")
+    for target in targets:
+        relative = target_path(target)
+        pathspec = f":(literal){relative}"
+        if git("diff", "--cached", "--quiet", target_commit, "--", pathspec, check=False).returncode != 0:
+            raise AuthorizationError(f"staged reviewed target differs from the target commit: {target}")
+        if git("diff", "--quiet", "--", pathspec, check=False).returncode != 0:
+            raise AuthorizationError(f"tracked reviewed target differs from the target commit: {target}")
+        if git("ls-files", "--others", "--exclude-standard", "--", pathspec).stdout.strip():
+            raise AuthorizationError(f"untracked content exists in reviewed target: {target}")
+        if git("ls-files", "--others", "--ignored", "--exclude-standard", "--", pathspec).stdout.strip():
+            raise AuthorizationError(f"ignored content exists in reviewed target: {target}")
 
 
 def clean_review_facts(
@@ -233,15 +274,27 @@ def prepare_record(
     design_review_entry_id: str,
     implementation_review_entry_id: str,
 ) -> str:
-    verify_target_checkout(project, target_commit)
-    return authorization_record_from_facts(
-        workbench_query(executable, project, "ready", {}),
-        workbench_query(executable, project, "review inspect", {"id": design_review_entry_id}),
-        workbench_query(executable, project, "review inspect", {"id": implementation_review_entry_id}),
+    ready = workbench_query(executable, project, "ready", {})
+    design_inspection = workbench_query(
+        executable, project, "review inspect", {"id": design_review_entry_id}
+    )
+    implementation_inspection = workbench_query(
+        executable, project, "review inspect", {"id": implementation_review_entry_id}
+    )
+    record = authorization_record_from_facts(
+        ready,
+        design_inspection,
+        implementation_inspection,
         target_commit,
         design_review_entry_id,
         implementation_review_entry_id,
     )
+    verify_target_checkout(
+        project,
+        target_commit,
+        reviewed_checkout_targets(implementation_inspection, implementation_review_entry_id),
+    )
+    return record
 
 
 def canonical_fixture(commit: str) -> str:
@@ -320,6 +373,21 @@ def self_test() -> None:
     }
 
     def review_fixture(entry_id: str, purpose: str, target: str) -> dict[str, object]:
+        manifest = []
+        manifest_version = 0
+        if purpose == "implementation":
+            manifest_version = 3
+            manifest = [{
+                "kind": "implementation_target",
+                "id": "tree:source",
+                "snapshot": digest,
+                "producerAgentRuns": ["producer"],
+            }, {
+                "kind": "implementation_target",
+                "id": "tree:build-input",
+                "snapshot": digest,
+                "producerAgentRuns": ["producer"],
+            }]
         return {
             "workId": "work-release",
             "currentTargetSnapshot": digest,
@@ -332,6 +400,8 @@ def self_test() -> None:
                 "target": target,
                 "targetSourceId": target.split(":", 1)[1],
                 "targetSnapshot": digest,
+                "targetManifestVersion": manifest_version,
+                "targetManifest": manifest,
             }}}},
             "lineage": [{
                 "id": f"conclusion-{purpose}",
@@ -392,15 +462,64 @@ def self_test() -> None:
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.name", "fixture"], cwd=root, check=True)
-        (root / "tracked.txt").write_text("current\n")
+        (root / ".gitignore").write_text("*.ignored\n")
+        (root / "source").mkdir()
+        (root / "source" / "tracked.txt").write_text("current\n")
+        (root / "build-input").mkdir()
+        (root / "build-input" / "tracked.txt").write_text("current\n")
+        (root / "unrelated").mkdir()
+        (root / "unrelated" / "tracked.txt").write_text("unrelated\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
         fixture_commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
         ).stdout.strip()
-        verify_target_checkout(str(root), fixture_commit)
-        (root / "tracked.txt").write_text("changed\n")
-        expect_rejected("dirty target checkout", lambda: verify_target_checkout(str(root), fixture_commit))
+        targets = reviewed_checkout_targets(implementation_review, "review-implementation")
+        verify_target_checkout(str(root), fixture_commit, targets)
+
+        (root / "unrelated" / "untracked.txt").write_text("not reviewed\n")
+        (root / "unrelated" / "injected.ignored").write_text("not reviewed\n")
+        verify_target_checkout(str(root), fixture_commit, targets)
+
+        tracked = root / "source" / "tracked.txt"
+        tracked.write_text("changed\n")
+        expect_rejected(
+            "tracked reviewed target divergence",
+            lambda: verify_target_checkout(str(root), fixture_commit, targets),
+        )
+        tracked.write_text("current\n")
+
+        tracked.write_text("staged\n")
+        subprocess.run(["git", "add", "source/tracked.txt"], cwd=root, check=True)
+        expect_rejected(
+            "staged reviewed target divergence",
+            lambda: verify_target_checkout(str(root), fixture_commit, targets),
+        )
+        tracked.write_text("current\n")
+        subprocess.run(["git", "add", "source/tracked.txt"], cwd=root, check=True)
+
+        untracked = root / "source" / "untracked.txt"
+        untracked.write_text("injected\n")
+        expect_rejected(
+            "untracked reviewed target divergence",
+            lambda: verify_target_checkout(str(root), fixture_commit, targets),
+        )
+        untracked.unlink()
+
+        ignored = root / "build-input" / "injected.ignored"
+        ignored.write_text("injected\n")
+        expect_rejected(
+            "ignored reviewed target divergence",
+            lambda: verify_target_checkout(str(root), fixture_commit, targets),
+        )
+        ignored.unlink()
+
+        invalid_manifest = copy.deepcopy(implementation_review)
+        invalid_manifest["review"]["payload"]["review"]["value"]["targetManifest"] = []
+        expect_rejected(
+            "missing reviewed target set",
+            lambda: reviewed_checkout_targets(invalid_manifest, "review-implementation"),
+        )
 
 
 def main() -> None:

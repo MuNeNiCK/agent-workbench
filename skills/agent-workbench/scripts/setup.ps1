@@ -15,6 +15,7 @@ $runtimeParent = Join-Path $ProjectRoot ".agent-workbench"
 $destination = Join-Path $runtimeParent "bin"
 $candidate = Join-Path $runtimeParent ".bin.next"
 $previous = Join-Path $runtimeParent ".bin.previous"
+$activationPending = Join-Path $runtimeParent ".bin.activation-pending"
 $runtime = Join-Path $destination "agent-workbench.exe"
 $temporary = ""
 $requiredFiles = @(
@@ -82,7 +83,13 @@ function Remove-PathIfPresent([string]$Path) {
 }
 
 function Restore-RuntimeSwap {
-  if (Test-Path -LiteralPath $previous) {
+  if (Test-Path -LiteralPath $activationPending) {
+    Remove-PathIfPresent $destination
+    if (Test-Path -LiteralPath $previous) {
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+    Remove-PathIfPresent $activationPending
+  } elseif (Test-Path -LiteralPath $previous) {
     if ((Test-Path -LiteralPath $destination) -and (Test-RuntimeBundle $destination)) {
       Remove-PathIfPresent $previous
     } else {
@@ -93,7 +100,8 @@ function Restore-RuntimeSwap {
   Remove-PathIfPresent $candidate
 }
 
-if ((Test-Path -LiteralPath $previous) -or (Test-Path -LiteralPath $candidate)) {
+if ((Test-Path -LiteralPath $previous) -or (Test-Path -LiteralPath $candidate) -or
+    (Test-Path -LiteralPath $activationPending)) {
   New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
   Restore-RuntimeSwap
 }
@@ -137,16 +145,12 @@ try {
     if (Test-Path -LiteralPath $destination) {
       Move-Item -LiteralPath $destination -Destination $previous
     }
+    New-Item -ItemType File -Path $activationPending | Out-Null
     try {
       Move-Item -LiteralPath $candidate -Destination $destination
     } catch {
-      if ((-not (Test-Path -LiteralPath $destination)) -and
-          (Test-Path -LiteralPath $previous)) {
-        Move-Item -LiteralPath $previous -Destination $destination
-      }
       throw "Failed to replace the Agent Workbench runtime bundle: $_"
     }
-    Remove-PathIfPresent $previous
   }
   if (Test-Path (Join-Path $ProjectRoot ".agent-workbench/state.db")) {
     $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
@@ -162,16 +166,28 @@ try {
     & $runtime --project $ProjectRoot init
     if ($LASTEXITCODE -ne 0) { throw "Agent Workbench initialization failed" }
   }
-} finally {
-  if ((-not (Test-Path -LiteralPath $destination)) -and
-      (Test-Path -LiteralPath $previous)) {
-    Move-Item -LiteralPath $previous -Destination $destination
-  }
-  Remove-PathIfPresent $candidate
-  if ((Test-Path -LiteralPath $destination) -and
-      (Test-Path -LiteralPath $previous)) {
+  if ($needsInstall) {
+    Remove-PathIfPresent $activationPending
     Remove-PathIfPresent $previous
   }
+} finally {
+  if (Test-Path -LiteralPath $activationPending) {
+    Remove-PathIfPresent $destination
+    if (Test-Path -LiteralPath $previous) {
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+    Remove-PathIfPresent $activationPending
+  } else {
+    if ((-not (Test-Path -LiteralPath $destination)) -and
+        (Test-Path -LiteralPath $previous)) {
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+    if ((Test-Path -LiteralPath $destination) -and
+        (Test-Path -LiteralPath $previous)) {
+      Remove-PathIfPresent $previous
+    }
+  }
+  Remove-PathIfPresent $candidate
   if ($temporary -and (Test-Path $temporary)) {
     Remove-Item -Recurse -Force $temporary
   }

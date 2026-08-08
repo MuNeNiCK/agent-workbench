@@ -34,10 +34,14 @@ Every project entry runs setup as a cheap version check. It compares the install
 marker with the marker embedded in the private runtime bundle. A missing or different marker causes
 the exact pinned archive to replace the private runtime. Setup extracts into a fresh sibling,
 requires the complete release bundle and matching marker, and then performs a recoverable directory
-swap; files that belonged only to the old bundle cannot survive the replacement. An interrupted
-swap is restored or finished by the next setup. For a matching complete runtime, the acquisition
-and version-check phase performs no download, extraction, or runtime-bundle write. This prevents a
-newly installed Skill from silently continuing with an older or partially replaced runtime.
+swap. The old bundle remains available while the replacement performs the required native
+`context` load or `init`. Successful activation removes the durable pending marker and commits the
+replacement; activation failure restores the exact old bundle, removes the failed candidate, and
+allows the pinned archive to be retried. A process interruption before that commit is rolled back
+on the next setup. Files that belonged only to a successfully replaced old bundle cannot survive
+the replacement. For a matching complete runtime, the acquisition and version-check phase performs
+no download, extraction, or runtime-bundle write. This prevents a newly installed Skill from
+silently continuing with an older, partially replaced, or non-activating runtime.
 
 When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
 schema-revision mismatch is handed to native `init` for migration; other read failures remain

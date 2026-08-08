@@ -119,17 +119,20 @@ PY
 fi
 
 if [[ -f "$staging/agent-workbench.exe" ]]; then
-  setup_archive() {
+  setup_archive_for() {
     powershell -NoProfile -ExecutionPolicy Bypass -File "$installed_skill/scripts/setup.ps1" \
-      -ProjectRoot "$project" -LocalArchive "$1" -LocalChecksum "$2"
+      -ProjectRoot "$1" -LocalArchive "$2" -LocalChecksum "$3"
   }
   awb="$project/.agent-workbench/bin/agent-workbench.exe"
 else
-  setup_archive() {
-    sh "$installed_skill/scripts/setup.sh" "$project" "$1" "$2"
+  setup_archive_for() {
+    sh "$installed_skill/scripts/setup.sh" "$1" "$2" "$3"
   }
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi
+setup_archive() {
+  setup_archive_for "$project" "$1" "$2"
+}
 setup() {
   setup_archive "$archive" "$checksum"
 }
@@ -195,6 +198,75 @@ if setup_archive "$incomplete_archive" "$incomplete_checksum" >/dev/null 2>&1; t
 fi
 [[ "$(runtime_snapshot)" == "$runtime_before_incomplete" ]]
 
+activation_failure_stage="$package_dir/activation-failure-stage"
+mkdir "$activation_failure_stage"
+cp -a "$staging/." "$activation_failure_stage/"
+if [[ -f "$staging/agent-workbench.exe" ]]; then
+  printf '%s\n' 'invalid executable used to inject activation failure' > \
+    "$activation_failure_stage/agent-workbench.exe"
+  activation_failure_archive="$package_dir/activation-failure-agent-workbench.zip"
+  (cd "$activation_failure_stage" && 7z a -tzip "$activation_failure_archive" . >/dev/null)
+else
+  printf '%s\n' '#!/bin/sh' 'echo "injected runtime activation failure" >&2' 'exit 71' > \
+    "$activation_failure_stage/agent-workbench"
+  activation_failure_archive="$package_dir/activation-failure-agent-workbench.tar.gz"
+  tar -czf "$activation_failure_archive" -C "$activation_failure_stage" .
+fi
+activation_failure_checksum="$activation_failure_archive.sha256"
+python3 - "$activation_failure_archive" <<'PY'
+import hashlib, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.with_name(path.name + ".sha256").write_text(
+    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n",
+    encoding="utf-8", newline="\n")
+PY
+
+# A structurally complete replacement is not current until its native context activation succeeds.
+# Failure restores the exact old bundle and leaves setup able to retry the pinned archive.
+runtime_before_context_activation_failure=$(runtime_snapshot)
+if setup_archive "$activation_failure_archive" "$activation_failure_checksum" \
+    >/dev/null 2>&1; then
+  echo "a context-failing runtime bundle unexpectedly remained installed" >&2
+  exit 1
+fi
+[[ "$(runtime_snapshot)" == "$runtime_before_context_activation_failure" ]]
+[[ ! -e "$project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$project/.agent-workbench/.bin.previous" ]]
+[[ ! -e "$project/.agent-workbench/.bin.next" ]]
+[[ "$("$awb" --project "$project" context)" == "$before" ]]
+assert_product_invariant
+context_activation_retry=$(setup)
+[[ "$context_activation_retry" == "$before" ]]
+[[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
+
+# Exercise the same rollback boundary for first-use init, where no prior runtime exists. The failed
+# candidate must disappear completely so the exact pinned archive can initialize on the next try.
+fresh_activation_project="$package_dir/fresh-activation-project"
+mkdir "$fresh_activation_project"
+printf '%s\n' 'fresh product content independent of Workbench' > \
+  "$fresh_activation_project/product.txt"
+fresh_product_before=$(cat "$fresh_activation_project/product.txt")
+if setup_archive_for "$fresh_activation_project" \
+    "$activation_failure_archive" "$activation_failure_checksum" \
+    >/dev/null 2>&1; then
+  echo "an init-failing runtime bundle unexpectedly remained installed" >&2
+  exit 1
+fi
+[[ ! -e "$fresh_activation_project/.agent-workbench/bin" ]]
+[[ ! -e "$fresh_activation_project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$fresh_activation_project/.agent-workbench/.bin.previous" ]]
+[[ ! -e "$fresh_activation_project/.agent-workbench/.bin.next" ]]
+[[ "$(cat "$fresh_activation_project/product.txt")" == "$fresh_product_before" ]]
+init_activation_retry=$(setup_archive_for "$fresh_activation_project" "$archive" "$checksum")
+printf '%s\n' "$init_activation_retry" | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["stateRevision"] == 1
+assert value["acceptedDesignId"] is None
+assert value["focusedWorkId"] is None
+'
+[[ "$(cat "$fresh_activation_project/product.txt")" == "$fresh_product_before" ]]
+
 mkdir "$project/.agent-workbench/bin/obsolete-runtime-directory"
 printf '%s\n' 'must not survive a bundle replacement' > \
   "$project/.agent-workbench/bin/obsolete-runtime-directory/stale-file"
@@ -210,19 +282,21 @@ else
   cmp "$awb" "$staging/agent-workbench"
 fi
 
-# Model an interruption after the prior runtime was renamed but before the candidate was
-# installed. The next setup must recover, discard the partial candidate, and retry the full
-# replacement. This route runs through setup.sh on POSIX and setup.ps1 on Windows CI.
+# Model an interruption after the candidate was swapped into place but before native activation
+# committed it. Even though the candidate is structurally complete, the pending marker makes the
+# next setup restore the prior runtime and retry the full replacement. This route runs through
+# setup.sh on POSIX and setup.ps1 on Windows CI.
 printf '%s\n' 'v0.2.8' > "$runtime_release"
 printf '%s\n' 'obsolete after interrupted replacement' > \
   "$project/.agent-workbench/bin/stale-after-interruption"
 mv "$project/.agent-workbench/bin" "$project/.agent-workbench/.bin.previous"
-mkdir "$project/.agent-workbench/.bin.next"
-printf '%s\n' 'partial candidate' > "$project/.agent-workbench/.bin.next/incomplete"
+cp -a "$staging/." "$project/.agent-workbench/bin/"
+touch "$project/.agent-workbench/.bin.activation-pending"
 retry_setup=$(setup)
 [[ "$retry_setup" == "$before" ]]
 [[ ! -e "$project/.agent-workbench/.bin.previous" ]]
 [[ ! -e "$project/.agent-workbench/.bin.next" ]]
+[[ ! -e "$project/.agent-workbench/.bin.activation-pending" ]]
 [[ ! -e "$project/.agent-workbench/bin/stale-after-interruption" ]]
 [[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
 if [[ "$awb" == *.exe ]]; then

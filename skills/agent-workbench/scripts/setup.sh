@@ -25,6 +25,7 @@ runtime_parent="$project_root/.agent-workbench"
 destination="$runtime_parent/bin"
 candidate="$runtime_parent/.bin.next"
 previous="$runtime_parent/.bin.previous"
+activation_pending="$runtime_parent/.bin.activation-pending"
 runtime="$destination/agent-workbench"
 temporary=
 context_error=
@@ -97,7 +98,13 @@ path_exists() {
 }
 
 recover_runtime_swap() {
-  if path_exists "$previous"; then
+  if path_exists "$activation_pending"; then
+    rm -rf "$destination"
+    if path_exists "$previous"; then
+      mv "$previous" "$destination"
+    fi
+    rm -rf "$activation_pending"
+  elif path_exists "$previous"; then
     if path_exists "$destination" && runtime_complete "$destination"; then
       rm -rf "$previous"
     else
@@ -113,15 +120,21 @@ recover_runtime_swap() {
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
-  if ! path_exists "$destination" && path_exists "$previous"; then
-    mv "$previous" "$destination" || true
+  if path_exists "$activation_pending"; then
+    rm -rf "$destination"
+    if path_exists "$previous"; then
+      mv "$previous" "$destination" || true
+    fi
+    rm -rf "$activation_pending"
+  else
+    if ! path_exists "$destination" && path_exists "$previous"; then
+      mv "$previous" "$destination" || true
+    fi
+    if path_exists "$destination" && path_exists "$previous"; then
+      rm -rf "$previous"
+    fi
   fi
-  if path_exists "$candidate"; then
-    rm -rf "$candidate"
-  fi
-  if path_exists "$destination" && path_exists "$previous"; then
-    rm -rf "$previous"
-  fi
+  rm -rf "$candidate"
   if [ -n "$temporary" ] && [ -d "$temporary" ]; then
     rm -rf "$temporary"
   fi
@@ -132,7 +145,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if path_exists "$previous" || path_exists "$candidate"; then
+if path_exists "$previous" || path_exists "$candidate" || path_exists "$activation_pending"; then
   mkdir -p "$runtime_parent"
   recover_runtime_swap
 fi
@@ -182,14 +195,11 @@ if [ "$needs_install" = true ]; then
   if path_exists "$destination"; then
     mv "$destination" "$previous"
   fi
+  : > "$activation_pending"
   if ! mv "$candidate" "$destination"; then
-    if ! path_exists "$destination" && path_exists "$previous"; then
-      mv "$previous" "$destination"
-    fi
     echo "failed to replace the Agent Workbench runtime bundle" >&2
     exit 1
   fi
-  rm -rf "$previous"
 fi
 if [ -f "$project_root/.agent-workbench/state.db" ]; then
   context_error=$(mktemp "${TMPDIR:-/tmp}/agent-workbench-context.XXXXXX")
@@ -204,4 +214,8 @@ if [ -f "$project_root/.agent-workbench/state.db" ]; then
   fi
 else
   "$runtime" --project "$project_root" init
+fi
+if [ "$needs_install" = true ]; then
+  rm -f "$activation_pending"
+  rm -rf "$previous"
 fi
