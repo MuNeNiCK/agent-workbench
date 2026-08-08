@@ -13,8 +13,8 @@ def findingSubjectCurrent (design : DesignRevision) (subject : FindingSubject) :
       criterion.id == subject.id && criterion.statement == subject.exactQuote)
   | .statement => design.statements.any (fun statement =>
       statement.id == subject.id && statement.text == subject.exactQuote)
-  | .assumption => design.statements.any (fun statement =>
-      statement.id == subject.id && statement.assumptions.contains subject.exactQuote)
+  | .assumption => design.assumptions.any (fun assumption =>
+      assumption.id == subject.id && assumption.text == subject.exactQuote)
   | .implementationComponent => false
 
 def designFindingSubject? (design : DesignRevision) : Option FindingSubject :=

@@ -109,6 +109,9 @@ def acceptDesign (state : ProjectState) (id : String) : Except String ProjectSta
 
 def rejectDesign
     (state : ProjectState) (request : DesignRejectRequest) : Except String ProjectState := do
+  let focusedWork ← match state.currentWork? with
+    | some value => pure value
+    | none => throw "Design rejection requires a focused Work"
   let candidate ← match state.design? request.designId with
     | some value => pure value
     | none => throw s!"design {request.designId} does not exist"
@@ -117,6 +120,8 @@ def rejectDesign
   let workId ← match candidate.workId with
     | some value => pure value
     | none => throw "Design candidate is not Work-bound"
+  if workId != focusedWork.id then
+    throw s!"Design candidate {candidate.id} is not bound to focused Work {focusedWork.id}"
   let work ← match state.work? workId with
     | some value => pure value
     | none => throw s!"no Work {workId}"

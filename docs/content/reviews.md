@@ -77,6 +77,9 @@ Plan must carry the Finding again and obtain new evidence before another resumed
 ## Diagnosing review state
 
 Use `review context` with a Review entry ID. Fresh context has an empty lineage. Resumed context
-contains only that same Review lineage. If the target, producer, reviewer, or lineage is unexpected,
+contains only that same Review lineage plus separate IDs of Finding-bound remediation Plans and the
+exact Task/evidence entries selected by those Plans. Remediation entries are not discarded by the
+lineage limit. The bounded Review lineage is newest-first, so recent
+remediation is retained when older Review history is truncated. If the target, producer, reviewer, or lineage is unexpected,
 do not work around it by creating an unrelated fresh review; inspect the fixed target source and the
 relevant Review entries first.

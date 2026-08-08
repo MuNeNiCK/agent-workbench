@@ -136,7 +136,8 @@ private def validateReview
     s!"review {entry.id} has an unsupported target manifest version"
   ensure entry.designRevision.isSome s!"review {entry.id} is not design-bound"
   ensure (!review.reviewId.isEmpty && !review.targetSourceId.isEmpty &&
-    !review.target.isEmpty && !review.targetSnapshot.isEmpty && !producers.isEmpty)
+    !review.target.isEmpty && !review.targetSnapshot.isEmpty && !producers.isEmpty &&
+    !review.reviewerAgentRun.isEmpty)
     s!"review {entry.id} has an incomplete fixed target"
   match review.purpose with
   | .design =>
@@ -326,9 +327,9 @@ private def validateFinding
       ensure (statement.text == finding.subject.exactQuote)
         s!"finding {entry.id} does not quote its exact current statement"
   | .assumption =>
-      let statement ← requireSome (design.statement? finding.subject.id)
-        s!"finding {entry.id} references a missing statement assumption"
-      ensure (statement.assumptions.contains finding.subject.exactQuote)
+      let assumption ← requireSome (design.assumption? finding.subject.id)
+        s!"finding {entry.id} references a missing assumption"
+      ensure (assumption.text == finding.subject.exactQuote)
         s!"finding {entry.id} does not quote an exact current assumption"
   | .implementationComponent =>
       ensure (review.purpose == .implementation && review.targetManifest.any (fun component =>

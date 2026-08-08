@@ -42,7 +42,27 @@ Release CI uses GitHub-hosted native runners without Docker or QEMU. For each pl
 6. packages the archive and checksum; and
 7. uploads its assets.
 
-The publish job runs only after all platform jobs succeed. The signed Git tag is the release identity.
+The publish job runs only after all platform jobs succeed. The signed annotated Git tag is both the
+release identity and the immutable release authorization. Its message has this exact form:
+
+```text
+agent-workbench release authorization v1
+work-id: <completed Work ID>
+target-commit: <tagged commit SHA>
+target-snapshot: blake3:<fresh Review target digest>
+ready-state-revision: <revision used for ready>
+ready-digest: blake3:<digest of the canonical ready result>
+fresh-review-entry-id: <fresh Review root entry>
+fresh-review-conclusion-entry-id: <clean conclusion entry>
+fresh-review-clean: true
+```
+
+Release CI imports the repository-pinned public key, verifies the tag signature against its exact
+fingerprint, requires the tag object and authorization to name the workflow commit, and rejects
+missing, duplicate, extra, or malformed authorization fields. Thus a passing build from an arbitrary
+`v*` tag cannot publish a release. The signer creates this tag only from the current `ready` result
+and the clean fresh Review of that exact candidate; the signed digests make those private Workbench
+records tamper-evident without publishing `.agent-workbench` state.
 
 These checks establish the tested distribution boundary. They do not turn external platform,
 network, filesystem, or natural-language properties into Lean theorems; see

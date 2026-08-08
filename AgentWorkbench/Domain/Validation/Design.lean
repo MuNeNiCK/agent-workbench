@@ -241,9 +241,8 @@ def validateDesignRelations
     ensure (parent.id != design.id && !state.designDescendsFrom design.id parent.id)
       s!"Design {design.id} has cyclic accepted ancestry"
     if design.sourceArchiveAvailable then
-      ensure (design.workId.isSome &&
-        (parent.workId.isNone || design.workId == parent.workId))
-        s!"Design {design.id} crosses its Work ancestry"
+      ensure design.workId.isSome
+        s!"Design {design.id} is not Work-bound"
       let expectedRemoved := parent.statements.filter fun statement =>
         (design.statement? statement.id).isNone
       ensure (expectedRemoved.length == design.removedStatements.length &&

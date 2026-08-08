@@ -69,6 +69,8 @@ private def activeReviewerRun (state : ProjectState) (review : ReviewRecord) : S
 def startReview
     (projectRoot : System.FilePath) (state : ProjectState)
     (request : ReviewStartRequest) : IO ProjectState := do
+  if request.reviewerAgentRun.isEmpty then
+    throw (IO.userError "Review requires a nonempty reviewer agent run")
   let _ := projectRoot
   let fixed ← match ← ReviewTarget.freeze projectRoot state request.purpose request.targetDesignRevision with
     | .ok value => pure value

@@ -261,6 +261,16 @@ def run : IO Unit :=
     let _ ← invokeJson root ["task", "close"] ({
       entryId := "task-closed-route", taskEntryId := taskId } : TaskCloseRequest)
 
+    let beforeEmptyReviewer ← Store.loadState (← Store.openReadOnly database)
+    let emptyReviewer ← invoke root ["review", "start"]
+      (some (Lean.toJson ({
+        entryId := "review-empty-route", reviewId := "review-empty-route"
+        purpose := ReviewPurpose.implementation, reviewerAgentRun := "" } : ReviewStartRequest)).compress)
+    expect (emptyReviewer.exitCode != 0)
+      "public Review route accepted an empty reviewer identity"
+    expect ((← Store.loadState (← Store.openReadOnly database)) == beforeEmptyReviewer)
+      "empty reviewer rejection changed authoritative state"
+
     let _ ← invokeJson root ["review", "start"] ({
       entryId := "review-route", reviewId := "review-lineage-route"
       purpose := ReviewPurpose.implementation, reviewerAgentRun := "reviewer-route-1" } : ReviewStartRequest)

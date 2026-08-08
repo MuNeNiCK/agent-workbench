@@ -7,6 +7,8 @@ structure ReviewInput where
   designId : String
   workId : Option String
   review : LedgerEntry
+  remediationPlanIds : List String
+  remediation : List EntryReference
   lineage : List EntryReference
   lineageTruncated : Bool
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
@@ -209,23 +211,50 @@ def reviewInput? (state : ProjectState) (reviewEntryId : String) : Option Review
     | .review value => some value
     | _ => none
   let designId ← reviewEntry.designRevision
+  let findingIds := state.ledgerEntries.filterMap (fun (entry : LedgerEntry) =>
+    match entry.payload with
+    | .finding value => if value.reviewId == review.reviewId then some entry.id else none
+    | _ => none)
+  let remediationPlanIds :=
+    match review.context with
+    | .fresh => []
+    | .resume =>
+        state.implementationPlans.filterMap fun plan =>
+          if plan.workId == reviewEntry.workId.getD "" &&
+              plan.designRevision == designId &&
+              plan.steps.any (fun step =>
+                step.acceptedFindingEntryIds.any findingIds.contains) then
+            some plan.id
+          else none
+  let remediationTaskEntries : List LedgerEntry := state.ledgerEntries.filter fun entry =>
+    match entry.payload with
+    | .task task => task.planId.any remediationPlanIds.contains
+    | _ => false
+  let remediationEvidenceIds : List String := remediationTaskEntries.flatMap fun (entry : LedgerEntry) =>
+    match entry.payload with
+    | .task task => task.verificationEvidenceEntryIds
+    | _ => []
+  let remediation := state.ledgerEntries.filter (fun entry =>
+    entry.order < reviewEntry.order && entry.scope == reviewEntry.scope &&
+    entry.workId == reviewEntry.workId && entry.designRevision == reviewEntry.designRevision &&
+    (remediationTaskEntries.any (·.id == entry.id) || remediationEvidenceIds.contains entry.id))
+    |>.mergeSort (fun left right => left.order > right.order)
   let lineage :=
     match review.context with
     | .fresh => []
     | .resume =>
-        let findingIds := state.ledgerEntries.filterMap (fun (entry : LedgerEntry) =>
-          match entry.payload with
-          | .finding value => if value.reviewId == review.reviewId then some entry.id else none
-          | _ => none)
         state.ledgerEntries.filter (fun (entry : LedgerEntry) =>
           entry.order < reviewEntry.order && entry.scope == reviewEntry.scope &&
           entry.workId == reviewEntry.workId && entry.designRevision == reviewEntry.designRevision &&
           belongsToReview review.reviewId findingIds entry)
+          |>.mergeSort (fun left right => left.order > right.order)
   pure {
     designId
     workId := reviewEntry.workId
     review := reviewEntry
-    lineage := (lineage.take currentContextLimit).map (fun entry => entry.reference)
+    remediationPlanIds
+    remediation := remediation.map (fun (entry : LedgerEntry) => entry.reference)
+    lineage := (lineage.take currentContextLimit).map (fun (entry : LedgerEntry) => entry.reference)
     lineageTruncated := lineage.length > currentContextLimit }
 
 def reviewInspection? (state : ProjectState) (reviewEntryId : String) : Option ReviewInspection := do

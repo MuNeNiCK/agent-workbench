@@ -132,6 +132,13 @@ def run : IO Unit :=
     expect ((← Snapshot.target root "tree:.") == projectSnapshot)
       "project snapshot included private Agent Workbench state"
     let reviewed ← startedReview root
+    let emptyReviewerRejected ← try
+      let _ ← startReview root baseState {
+        entryId := "review-empty-reviewer", reviewId := "review-empty-reviewer"
+        purpose := .implementation, reviewerAgentRun := "" }
+      pure false
+      catch _ => pure true
+    expect emptyReviewerRejected "Review accepted an empty reviewer identity"
     let reviewEntry ← match reviewed.entry? "review-1" with
       | some value => pure value
       | none => throw (IO.userError "Review was not recorded")
@@ -432,6 +439,32 @@ def run : IO Unit :=
       { entryId := "task-closed-remediation", taskEntryId := remediationTaskId }
     let resumed ← resumeReview root closedRemediation {
       entryId := "review-resume", continuesEntryId := "review-1" }
+    let resumedInput ← match reviewInput? resumed "review-resume" with
+      | some value => pure value
+      | none => throw (IO.userError "resumed Review input was unavailable")
+    let resumedRemediationIds := resumedInput.remediation.map (·.id)
+    expect (resumedInput.remediationPlanIds.contains coveredPlan.id &&
+      resumedRemediationIds.contains "task-closed-remediation" &&
+      resumedRemediationIds.contains "evidence-remediation")
+      "resumed Review input omitted its Finding-bound Plan, Task, or evidence"
+    expect (resumedInput.lineage.Pairwise fun left right => left.order > right.order)
+      "resumed Review input did not present newest relevant lineage first"
+    let syntheticLineage : List LedgerEntry := (List.range 40).map fun index => {
+      id := s!"synthetic-review-lineage-{index}", order := 100 + index, scope := work.scope
+      workId := some work.id, designRevision := some design.id
+      payload := .reviewConclusion {
+        reviewId := "review-lineage-1", reviewEntryId := "review-1"
+        reviewerAgentRun := "reviewer-1", clean := false
+        summary := s!"bounded historical conclusion {index}" } }
+    let shiftedEntries := resumed.ledgerEntries.map (fun entry =>
+      if entry.id == "review-resume" then { entry with order := 1000 } else entry) ++ syntheticLineage
+    let boundedInput ← match reviewInput? { resumed with ledgerEntries := shiftedEntries } "review-resume" with
+      | some value => pure value
+      | none => throw (IO.userError "bounded resumed Review input was unavailable")
+    expect (boundedInput.lineageTruncated && boundedInput.lineage.length == currentContextLimit &&
+      boundedInput.lineage.head?.any (·.order == 139) &&
+      boundedInput.lineage.getLast?.any (·.order == 108))
+      "resumed Review lineage retained the oldest records instead of the newest bounded window"
     let tamperedEntries := resumed.ledgerEntries.map fun entry =>
       if entry.id == "review-resume" then match entry.payload with
         | .review value => { entry with payload := .review {

@@ -8,7 +8,66 @@ permissions:
   contents: write
 
 jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify signed Workbench release authorization
+        shell: bash
+        env:
+          ALLOWED_SIGNER: 90D71F220DD653AA1C66FA23F8195A7A5BD1D5AF
+          TAG_NAME: ${{ github.ref_name }}
+          TARGET_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(git cat-file -t "$TAG_NAME")" = tag
+          gpg --batch --import .github/release-signers/munenick.asc
+          verification="$(git verify-tag --raw "$TAG_NAME" 2>&1)"
+          grep -F "[GNUPG:] VALIDSIG $ALLOWED_SIGNER " <<<"$verification"
+          git cat-file tag "$TAG_NAME" > "$RUNNER_TEMP/release-tag.txt"
+          python3 - "$RUNNER_TEMP/release-tag.txt" "$TARGET_COMMIT" <<'PY'
+          import pathlib, re, sys
+
+          raw = pathlib.Path(sys.argv[1]).read_text()
+          header, signed = raw.split("\n\n", 1)
+          message = signed.split("-----BEGIN PGP SIGNATURE-----", 1)[0].strip()
+          object_line = next((line for line in header.splitlines() if line.startswith("object ")), None)
+          if object_line != f"object {sys.argv[2]}":
+              raise SystemExit("release authorization tag does not target the workflow commit")
+          lines = message.splitlines()
+          if not lines or lines[0] != "agent-workbench release authorization v1":
+              raise SystemExit("missing release authorization v1 header")
+          fields = {}
+          for line in lines[1:]:
+              if not line.strip():
+                  continue
+              key, separator, value = line.partition(": ")
+              if not separator or key in fields or not value:
+                  raise SystemExit(f"invalid release authorization field: {line!r}")
+              fields[key] = value
+          required = {
+              "work-id", "target-commit", "target-snapshot", "ready-state-revision",
+              "ready-digest", "fresh-review-entry-id",
+              "fresh-review-conclusion-entry-id", "fresh-review-clean",
+          }
+          if set(fields) != required:
+              raise SystemExit(f"release authorization fields differ: {sorted(fields)}")
+          if fields["target-commit"] != sys.argv[2]:
+              raise SystemExit("authorized commit differs from tag target")
+          if fields["fresh-review-clean"] != "true":
+              raise SystemExit("release authorization does not attest a clean fresh Review")
+          if not fields["ready-state-revision"].isdigit():
+              raise SystemExit("ready state revision is not numeric")
+          digest = re.compile(r"blake3:[0-9a-f]{64}")
+          if not digest.fullmatch(fields["target-snapshot"]) or not digest.fullmatch(fields["ready-digest"]):
+              raise SystemExit("release authorization contains an invalid digest")
+          PY
+
   package:
+    needs: authorize
     permissions:
       contents: read
       id-token: write
@@ -170,7 +229,7 @@ jobs:
             agent-workbench-${{ matrix.target }}.*
 
   publish:
-    needs: package
+    needs: [authorize, package]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

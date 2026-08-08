@@ -63,8 +63,18 @@ private def verifyProductionSourceBoundary : IO Unit := do
     expect (!containsText source "@[extern")
       s!"production declares a repository-owned FFI boundary: {path}"
 
-private def reviewedExecutableNames : List String :=
-  ["agent-workbench", "agent-workbench-tests", "agent-workbench-proof-tests"]
+private structure RootManifest where
+  executable : String
+  deriving Lean.FromJson
+
+private def reviewedExecutableNames : IO (List String) := do
+  let source ← readRequired "tests/executable-capabilities.json"
+  let json ← match Lean.Json.parse source with
+    | .ok value => pure value
+    | .error message => throw (IO.userError s!"invalid executable capability manifest: {message}")
+  match (Lean.fromJson? json : Except String (List RootManifest)) with
+  | .ok value => pure (value.map (·.executable))
+  | .error message => throw (IO.userError s!"invalid executable capability manifest: {message}")
 
 private def verifyExecutableRoots : IO Unit := do
   let lakefile ← readRequired "lakefile.lean"
@@ -75,8 +85,35 @@ private def verifyExecutableRoots : IO Unit := do
       some <| (rest.splitOn " ").head?.getD ""
         |>.replace "«" "" |>.replace "»" ""
     else none
-  expect (declared == reviewedExecutableNames)
-    s!"unreviewed executable root(s): declared={declared}, reviewed={reviewedExecutableNames}"
+  let reviewed ← reviewedExecutableNames
+  expect (declared == reviewed)
+    s!"unreviewed executable root(s): declared={declared}, reviewed={reviewed}"
+
+private def verifyDeclarationCapabilityGraph : IO Unit := do
+  let lakeName := if System.Platform.isWindows then "lake.exe" else "lake"
+  let lake := (← pinnedLeanRoot) / "bin" / lakeName
+  unless ← lake.pathExists do
+    throw (IO.userError s!"missing pinned Lake executable for capability graph: {lake}")
+  let result ← IO.Process.output {
+    cmd := lake.toString, args := #["env", "lean", "tests/CapabilityGraph.lean"] }
+  unless result.exitCode == 0 do
+    throw (IO.userError s!"executable declaration capability graph failed: {result.stdout}{result.stderr}")
+
+private def verifyReleaseAuthorizationBoundary : IO Unit := do
+  let workflow ← readRequired ".github/workflows/release.yml"
+  let signer ← readRequired ".github/release-signers/munenick.asc"
+  for required in [
+      "Verify signed Workbench release authorization",
+      "90D71F220DD653AA1C66FA23F8195A7A5BD1D5AF",
+      "git verify-tag --raw",
+      "agent-workbench release authorization v1",
+      "ready-digest",
+      "fresh-review-conclusion-entry-id",
+      "fresh-review-clean"] do
+    expect (containsText workflow required)
+      s!"release workflow omits authorization binding {required}"
+  expect (containsText signer "BEGIN PGP PUBLIC KEY BLOCK")
+    "release authorization signer key is missing"
 
 private def isGeneratedLeanObject (path : String) : Bool :=
   containsText path "/.lake/build/ir/" &&
@@ -180,6 +217,8 @@ private def verifyQueryStoreCapability : IO Unit :=
 def run : IO Unit := do
   verifyProductionSourceBoundary
   verifyExecutableRoots
+  verifyDeclarationCapabilityGraph
+  verifyReleaseAuthorizationBoundary
   verifyProductLinkResponse
   verifyQueryStoreCapability
 
