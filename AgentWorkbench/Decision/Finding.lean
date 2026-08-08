@@ -75,11 +75,30 @@ def implementationTargetCovers (evidenceTarget findingTarget : String) : Bool :=
         findingTarget.startsWith s!"file:{root}/"
   else false
 
+/-- Resolve a fixed Implementation Review component to the product output targets it observed.
+Ledger-backed Review components use stable entry IDs, not path-shaped IDs; causal remediation must
+therefore compare against the target recorded by that immutable component. -/
+def implementationComponentTargets (state : ProjectState) (componentId : String) : List String :=
+  match state.entry? componentId with
+  | some entry => match entry.payload with
+    | .commandExecution value => value.target.orElse (fun _ => value.outputScope) |>.toList
+    | .artifactObservation value => [value.target]
+    | .commandProfile value => value.target.orElse (fun _ => value.outputScope) |>.toList
+    | .task value => value.outputScopes
+    | _ => [componentId]
+  | none => [componentId]
+
+def implementationComponentTargetCovers
+    (state : ProjectState) (evidenceTarget componentId : String) : Bool :=
+  (implementationComponentTargets state componentId).any fun componentTarget =>
+    implementationTargetCovers evidenceTarget componentTarget
+
 private def findingTargetMatches
     (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
     (target : String) : Bool :=
   match finding.subject.kind with
-  | .implementationComponent => implementationTargetCovers target finding.subject.id
+  | .implementationComponent =>
+      implementationComponentTargetCovers state target finding.subject.id
   | .criterion =>
       findingEntry.designRevision.bind state.design? |>.bind (·.criterion? finding.subject.id)
         |>.any (·.target == target)

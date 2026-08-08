@@ -115,6 +115,109 @@ private def freshReviewUsesBoundedCompletionProjection (root : System.FilePath) 
     "v1 regression fixture did not retain its historical unbounded projection"
   fromExcept (validateState { reviewed with ledgerEntries := v1Entries })
 
+private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO Unit := do
+  IO.FS.writeFile (root / "artifact.txt") "candidate"
+  let snapshot ← Snapshot.target root criterion.target
+  let closedTask : LedgerEntry := {
+    id := "task-evidence-component-closed", order := 3, scope := work.scope
+    workId := some work.id, designRevision := some design.id, supersedes := ["task-open"]
+    payload := .task {
+      planId := some plan.id, planStepId := some step.id
+      lineageId := some s!"{work.id}:{step.id}"
+      outputScopes := step.outputScopes
+      verificationCriterionIds := step.verificationCriterionIds
+      verificationEvidenceEntryIds := [evidenceEntry.id]
+      verificationTaskEntryId := some "task-open"
+      materializedAtOrder := 1, description := step.description
+      required := true, closed := true } }
+  let predecessor := { plan with
+    id := "plan-command-predecessor", status := .superseded
+    contentDigest := "blake3:command-predecessor" }
+  let initial : ProjectState := {
+    baseState with
+    revision := 5
+    implementationPlans := [predecessor, plan]
+    ledgerEntries := [taskEntry, evidenceEntry, closedTask] }
+  fromExcept (validateState initial)
+  let reviewed ← startReview root initial {
+    entryId := "review-command-component", reviewId := "review-command-component"
+    purpose := .implementation, reviewerAgentRun := "reviewer-command-component" }
+  let reviewRecord ← match reviewed.entry? "review-command-component" with
+    | some { payload := .review value, .. } => pure value
+    | _ => throw (IO.userError "command-component Review was not recorded")
+  let component ← match reviewRecord.targetManifest.find? (fun value =>
+      value.kind == "artifact_observation" && value.id == evidenceEntry.id) with
+    | some value => pure value
+    | none => throw (IO.userError "Review omitted the selected evidence component")
+  expect (implementationComponentTargetCovers reviewed criterion.target component.id)
+    "evidence component did not resolve to its recorded target"
+  expect (!implementationComponentTargetCovers reviewed "file:sibling.txt" component.id)
+    "a sibling target covered the evidence component"
+  let syntheticCommand : LedgerEntry := {
+    id := "synthetic-command-component", order := 100, scope := work.scope
+    workId := some work.id, designRevision := some design.id
+    payload := .commandExecution {
+      profileEntryId := "synthetic-profile"
+      target := some criterion.target, snapshot := some snapshot
+      command := { executable := "true", workingDirectory := some "." }
+      exitCode := 0, stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
+      successful := true, producerAgentRun := work.responsibleAgentRun } }
+  let syntheticState := {
+    reviewed with ledgerEntries := reviewed.ledgerEntries ++ [syntheticCommand] }
+  expect (implementationComponentTargetCovers syntheticState criterion.target syntheticCommand.id)
+    "command execution component did not resolve to its recorded target"
+  expect (!implementationComponentTargetCovers syntheticState
+    "file:sibling.txt" syntheticCommand.id)
+    "a sibling target covered the command execution component"
+  let found ← fromExcept <| recordFinding reviewed {
+    entryId := "finding-command-component", reviewEntryId := "review-command-component"
+    subject := {
+      kind := .implementationComponent
+      id := component.id
+      exactQuote := component.snapshot }
+    summary := "the fixed evidence component requires remediation" }
+  let concluded ← fromExcept <| concludeReview found {
+    entryId := "review-command-component-nonclean"
+    reviewEntryId := "review-command-component", clean := false
+    summary := "one evidence-component Finding was recorded" }
+  let disposed ← fromExcept <| recordDisposition concluded {
+    entryId := "disposition-command-component"
+    findingEntryId := "finding-command-component", decision := .accepted
+    reason := "the fixed evidence component demonstrates the mismatch" }
+  let remediationStep := { step with
+    acceptedFindingEntryIds := ["finding-command-component"] }
+  let remediationPlan : ImplementationPlan := {
+    plan with
+    id := "plan-command-remediation", predecessorPlanId := some plan.id
+    status := .candidate, steps := [remediationStep]
+    contentDigest := "blake3:command-remediation"
+    reason := "remediate the command evidence Finding" }
+  let candidate := { disposed with
+    implementationPlans := disposed.implementationPlans ++ [remediationPlan] }
+  fromExcept (validateState candidate)
+  let materialized ← fromExcept <| materializePlan candidate remediationPlan.id [] []
+  IO.FS.writeFile (root / "artifact.txt") "remediated"
+  let remediationTaskId := s!"task-{remediationPlan.id}-{remediationStep.id}"
+  let observed ← observeArtifact root materialized {
+    entryId := "evidence-command-remediation", taskEntryId := remediationTaskId
+    criterionId := criterion.id, operation := "inspect remediated command output"
+    result := "the output now satisfies the Criterion", successful := true }
+  let remediationSnapshot ← match observed.entry? "evidence-command-remediation" with
+    | some { payload := .artifactObservation value, .. } => pure value.snapshot
+    | _ => throw (IO.userError "command remediation evidence was not recorded")
+  let closed ← fromExcept <| closeTask observed
+    [{ target := criterion.target, snapshot := remediationSnapshot }]
+    { entryId := "task-command-remediation-closed", taskEntryId := remediationTaskId }
+  let resumed ← resumeReview root closed {
+    entryId := "review-command-component-resume"
+    continuesEntryId := "review-command-component" }
+  let verified ← fromExcept <| recordVerification resumed {
+    entryId := "verification-command-component"
+    findingEntryId := "finding-command-component"
+    reviewEntryId := "review-command-component-resume"
+    evidenceEntryId := "evidence-command-remediation" }
+  fromExcept (validateState verified)
+
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     expect (implementationTargetCovers "tree:AgentWorkbench" "tree:AgentWorkbench/Domain")
@@ -504,5 +607,6 @@ def run : IO Unit :=
     historicalReviewSurvivesWorkHandoff root
     historicalReviewSurvivesDesignAdoption root
     freshReviewUsesBoundedCompletionProjection root
+    evidenceComponentFindingCanBeVerified root
 
 end AgentWorkbenchTest.Review
