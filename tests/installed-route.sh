@@ -231,6 +231,7 @@ if setup_archive "$activation_failure_archive" "$activation_failure_checksum" \
 fi
 [[ "$(runtime_snapshot)" == "$runtime_before_context_activation_failure" ]]
 [[ ! -e "$project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$project/.agent-workbench/.bin.activation-committed" ]]
 [[ ! -e "$project/.agent-workbench/.bin.previous" ]]
 [[ ! -e "$project/.agent-workbench/.bin.next" ]]
 [[ "$("$awb" --project "$project" context)" == "$before" ]]
@@ -254,6 +255,7 @@ if setup_archive_for "$fresh_activation_project" \
 fi
 [[ ! -e "$fresh_activation_project/.agent-workbench/bin" ]]
 [[ ! -e "$fresh_activation_project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$fresh_activation_project/.agent-workbench/.bin.activation-committed" ]]
 [[ ! -e "$fresh_activation_project/.agent-workbench/.bin.previous" ]]
 [[ ! -e "$fresh_activation_project/.agent-workbench/.bin.next" ]]
 [[ "$(cat "$fresh_activation_project/product.txt")" == "$fresh_product_before" ]]
@@ -266,6 +268,103 @@ assert value["acceptedDesignId"] is None
 assert value["focusedWorkId"] is None
 '
 [[ "$(cat "$fresh_activation_project/product.txt")" == "$fresh_product_before" ]]
+
+# A migrated database and its compatible runtime commit together. Interrupt setup after native init
+# returns but before swap cleanup, then prove that the public runtime path still names the new
+# bundle and that retry only finishes cleanup. This fixture selects setup.sh on POSIX and setup.ps1
+# on Windows CI.
+migration_activation_project="$package_dir/migration-activation-project"
+mkdir -p "$migration_activation_project/.agent-workbench"
+printf '%s\n' 'migration product content independent of Workbench' > \
+  "$migration_activation_project/product.txt"
+migration_product_before=$(cat "$migration_activation_project/product.txt")
+python3 - "$migration_activation_project/.agent-workbench/state.db" <<'PY'
+import sqlite3
+import sys
+
+database = sqlite3.connect(sys.argv[1])
+database.executescript("""
+PRAGMA foreign_keys = ON;
+CREATE TABLE project_metadata(
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  schema_revision INTEGER NOT NULL,
+  state_revision INTEGER NOT NULL,
+  accepted_design_id TEXT,
+  focused_work_id TEXT
+) STRICT;
+CREATE TABLE design_revisions(id TEXT PRIMARY KEY, document TEXT NOT NULL) STRICT;
+CREATE TABLE works(
+  id TEXT PRIMARY KEY,
+  design_revision TEXT NOT NULL,
+  status TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  document TEXT NOT NULL
+) STRICT;
+CREATE INDEX works_by_design ON works(design_revision);
+CREATE INDEX works_by_scope_status ON works(scope, status);
+CREATE TABLE ledger_entries(
+  id TEXT PRIMARY KEY,
+  entry_order INTEGER NOT NULL UNIQUE,
+  scope TEXT NOT NULL,
+  work_id TEXT,
+  design_revision TEXT,
+  payload_kind TEXT NOT NULL,
+  document TEXT NOT NULL
+) STRICT;
+CREATE INDEX ledger_by_context
+  ON ledger_entries(scope, work_id, design_revision, entry_order);
+CREATE INDEX ledger_by_kind ON ledger_entries(payload_kind, entry_order);
+INSERT INTO project_metadata VALUES (1, 1, 7, NULL, NULL);
+""")
+database.close()
+PY
+cp -a "$project/.agent-workbench/bin" "$migration_activation_project/.agent-workbench/bin"
+migration_release="$migration_activation_project/.agent-workbench/bin/skill/agent-workbench/release-version"
+printf '%s\n' 'v0.2.8' > "$migration_release"
+printf '%s\n' 'old runtime must remain quarantined after migration' > \
+  "$migration_activation_project/.agent-workbench/bin/old-runtime-sentinel"
+if AGENT_WORKBENCH_SETUP_FAULT_POINT=after-native-activation \
+    setup_archive_for "$migration_activation_project" "$archive" "$checksum" \
+    >/dev/null 2>&1; then
+  echo "post-migration activation fault did not interrupt setup" >&2
+  exit 1
+fi
+[[ -e "$migration_activation_project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$migration_activation_project/.agent-workbench/.bin.activation-committed" ]]
+[[ -e "$migration_activation_project/.agent-workbench/.bin.previous" ]]
+[[ -e "$migration_activation_project/.agent-workbench/.bin.previous/old-runtime-sentinel" ]]
+[[ "$(sed -n '1p' "$migration_release")" == "$expected_release" ]]
+[[ ! -e "$migration_activation_project/.agent-workbench/bin/old-runtime-sentinel" ]]
+migration_awb="$migration_activation_project/.agent-workbench/bin/agent-workbench"
+if [[ -f "$staging/agent-workbench.exe" ]]; then
+  migration_awb="$migration_activation_project/.agent-workbench/bin/agent-workbench.exe"
+fi
+"$migration_awb" --project "$migration_activation_project" context | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["stateRevision"] == 8
+'
+[[ "$(python3 - "$migration_activation_project/.agent-workbench/state.db" <<'PY'
+import sqlite3
+import sys
+database = sqlite3.connect(sys.argv[1])
+print(database.execute(
+    "SELECT schema_revision FROM project_metadata WHERE singleton = 1").fetchone()[0])
+database.close()
+PY
+)" == "2" ]]
+migration_activation_retry=$(setup_archive_for \
+  "$migration_activation_project" "$archive" "$checksum")
+printf '%s\n' "$migration_activation_retry" | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["stateRevision"] == 8
+'
+[[ ! -e "$migration_activation_project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$migration_activation_project/.agent-workbench/.bin.activation-committed" ]]
+[[ ! -e "$migration_activation_project/.agent-workbench/.bin.previous" ]]
+[[ ! -e "$migration_activation_project/.agent-workbench/.bin.next" ]]
+[[ "$(cat "$migration_activation_project/product.txt")" == "$migration_product_before" ]]
 
 mkdir "$project/.agent-workbench/bin/obsolete-runtime-directory"
 printf '%s\n' 'must not survive a bundle replacement' > \
@@ -282,21 +381,21 @@ else
   cmp "$awb" "$staging/agent-workbench"
 fi
 
-# Model an interruption after the candidate was swapped into place but before native activation
-# committed it. Even though the candidate is structurally complete, the pending marker makes the
-# next setup restore the prior runtime and retry the full replacement. This route runs through
-# setup.sh on POSIX and setup.ps1 on Windows CI.
+# Model an interruption before native activation commits. The swapped candidate cannot load current
+# state, so the pending marker makes the next setup restore the prior runtime and retry the full
+# replacement. This route runs through setup.sh on POSIX and setup.ps1 on Windows CI.
 printf '%s\n' 'v0.2.8' > "$runtime_release"
 printf '%s\n' 'obsolete after interrupted replacement' > \
   "$project/.agent-workbench/bin/stale-after-interruption"
 mv "$project/.agent-workbench/bin" "$project/.agent-workbench/.bin.previous"
-cp -a "$staging/." "$project/.agent-workbench/bin/"
+cp -a "$activation_failure_stage/." "$project/.agent-workbench/bin/"
 touch "$project/.agent-workbench/.bin.activation-pending"
 retry_setup=$(setup)
 [[ "$retry_setup" == "$before" ]]
 [[ ! -e "$project/.agent-workbench/.bin.previous" ]]
 [[ ! -e "$project/.agent-workbench/.bin.next" ]]
 [[ ! -e "$project/.agent-workbench/.bin.activation-pending" ]]
+[[ ! -e "$project/.agent-workbench/.bin.activation-committed" ]]
 [[ ! -e "$project/.agent-workbench/bin/stale-after-interruption" ]]
 [[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
 if [[ "$awb" == *.exe ]]; then

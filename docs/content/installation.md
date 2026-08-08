@@ -35,13 +35,15 @@ marker with the marker embedded in the private runtime bundle. A missing or diff
 the exact pinned archive to replace the private runtime. Setup extracts into a fresh sibling,
 requires the complete release bundle and matching marker, and then performs a recoverable directory
 swap. The old bundle remains available while the replacement performs the required native
-`context` load or `init`. Successful activation removes the durable pending marker and commits the
-replacement; activation failure restores the exact old bundle, removes the failed candidate, and
-allows the pinned archive to be retried. A process interruption before that commit is rolled back
-on the next setup. Files that belonged only to a successfully replaced old bundle cannot survive
-the replacement. For a matching complete runtime, the acquisition and version-check phase performs
-no download, extraction, or runtime-bundle write. This prevents a newly installed Skill from
-silently continuing with an older, partially replaced, or non-activating runtime.
+`context` load or `init`. Failure before native activation restores the exact old bundle, removes
+the failed candidate, and allows the pinned archive to be retried. After `context` or `init`
+succeeds, setup persists a separate activation-commit marker before removing the old bundle. An
+interruption after that point retains the new runtime, including when `init` migrated the database;
+the next setup finishes cleanup instead of exposing the migrated state to the old runtime. Files
+that belonged only to a successfully replaced old bundle cannot survive the replacement. For a
+matching complete runtime, the acquisition and version-check phase performs no download,
+extraction, or runtime-bundle write. This prevents a newly installed Skill from silently continuing
+with an older, partially replaced, or non-activating runtime.
 
 When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
 schema-revision mismatch is handed to native `init` for migration; other read failures remain

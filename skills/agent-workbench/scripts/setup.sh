@@ -26,6 +26,7 @@ destination="$runtime_parent/bin"
 candidate="$runtime_parent/.bin.next"
 previous="$runtime_parent/.bin.previous"
 activation_pending="$runtime_parent/.bin.activation-pending"
+activation_committed="$runtime_parent/.bin.activation-committed"
 runtime="$destination/agent-workbench"
 temporary=
 context_error=
@@ -97,13 +98,42 @@ path_exists() {
   [ -e "$1" ] || [ -L "$1" ]
 }
 
+runtime_activation_usable() {
+  [ -f "$project_root/.agent-workbench/state.db" ] || return 1
+  runtime_complete "$destination" || return 1
+  "$runtime" --project "$project_root" context >/dev/null 2>&1
+}
+
+finish_committed_activation() {
+  rm -rf "$previous"
+  rm -f "$activation_pending"
+  rm -f "$activation_committed"
+}
+
+rollback_uncommitted_activation() {
+  rm -rf "$destination"
+  if path_exists "$previous"; then
+    mv "$previous" "$destination"
+  fi
+  rm -f "$activation_pending"
+}
+
 recover_runtime_swap() {
-  if path_exists "$activation_pending"; then
-    rm -rf "$destination"
-    if path_exists "$previous"; then
-      mv "$previous" "$destination"
+  if path_exists "$activation_committed"; then
+    if runtime_complete "$destination"; then
+      finish_committed_activation
+    else
+      # Native activation may already have migrated state. Never expose it to the old runtime.
+      rm -rf "$previous" "$destination"
+      rm -f "$activation_pending" "$activation_committed"
     fi
-    rm -rf "$activation_pending"
+  elif path_exists "$activation_pending"; then
+    if runtime_activation_usable; then
+      : > "$activation_committed"
+      finish_committed_activation
+    else
+      rollback_uncommitted_activation
+    fi
   elif path_exists "$previous"; then
     if path_exists "$destination" && runtime_complete "$destination"; then
       rm -rf "$previous"
@@ -120,12 +150,20 @@ recover_runtime_swap() {
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
-  if path_exists "$activation_pending"; then
-    rm -rf "$destination"
-    if path_exists "$previous"; then
-      mv "$previous" "$destination" || true
+  if path_exists "$activation_committed"; then
+    if runtime_complete "$destination"; then
+      finish_committed_activation || true
+    else
+      rm -rf "$previous" "$destination"
+      rm -f "$activation_pending" "$activation_committed"
     fi
-    rm -rf "$activation_pending"
+  elif path_exists "$activation_pending"; then
+    if runtime_activation_usable; then
+      : > "$activation_committed"
+      finish_committed_activation || true
+    else
+      rollback_uncommitted_activation || true
+    fi
   else
     if ! path_exists "$destination" && path_exists "$previous"; then
       mv "$previous" "$destination" || true
@@ -145,7 +183,8 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if path_exists "$previous" || path_exists "$candidate" || path_exists "$activation_pending"; then
+if path_exists "$previous" || path_exists "$candidate" || path_exists "$activation_pending" ||
+    path_exists "$activation_committed"; then
   mkdir -p "$runtime_parent"
   recover_runtime_swap
 fi
@@ -216,6 +255,10 @@ else
   "$runtime" --project "$project_root" init
 fi
 if [ "$needs_install" = true ]; then
-  rm -f "$activation_pending"
-  rm -rf "$previous"
+  if [ "${AGENT_WORKBENCH_SETUP_FAULT_POINT:-}" = "after-native-activation" ]; then
+    echo "injected interruption after native Agent Workbench activation" >&2
+    kill -KILL "$$"
+  fi
+  : > "$activation_committed"
+  finish_committed_activation
 fi

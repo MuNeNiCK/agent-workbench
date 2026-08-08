@@ -16,6 +16,7 @@ $destination = Join-Path $runtimeParent "bin"
 $candidate = Join-Path $runtimeParent ".bin.next"
 $previous = Join-Path $runtimeParent ".bin.previous"
 $activationPending = Join-Path $runtimeParent ".bin.activation-pending"
+$activationCommitted = Join-Path $runtimeParent ".bin.activation-committed"
 $runtime = Join-Path $destination "agent-workbench.exe"
 $temporary = ""
 $requiredFiles = @(
@@ -82,13 +83,50 @@ function Remove-PathIfPresent([string]$Path) {
   if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
 }
 
+function Test-RuntimeActivationUsable {
+  if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot ".agent-workbench/state.db") `
+      -PathType Leaf)) { return $false }
+  if (-not (Test-RuntimeBundle $destination)) { return $false }
+  try {
+    & $runtime --project $ProjectRoot context *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Complete-RuntimeActivation {
+  Remove-PathIfPresent $previous
+  Remove-PathIfPresent $activationPending
+  Remove-PathIfPresent $activationCommitted
+}
+
+function Undo-UncommittedRuntimeActivation {
+  Remove-PathIfPresent $destination
+  if (Test-Path -LiteralPath $previous) {
+    Move-Item -LiteralPath $previous -Destination $destination
+  }
+  Remove-PathIfPresent $activationPending
+}
+
 function Restore-RuntimeSwap {
-  if (Test-Path -LiteralPath $activationPending) {
-    Remove-PathIfPresent $destination
-    if (Test-Path -LiteralPath $previous) {
-      Move-Item -LiteralPath $previous -Destination $destination
+  if (Test-Path -LiteralPath $activationCommitted) {
+    if (Test-RuntimeBundle $destination) {
+      Complete-RuntimeActivation
+    } else {
+      # Native activation may already have migrated state. Never expose it to the old runtime.
+      Remove-PathIfPresent $previous
+      Remove-PathIfPresent $destination
+      Remove-PathIfPresent $activationPending
+      Remove-PathIfPresent $activationCommitted
     }
-    Remove-PathIfPresent $activationPending
+  } elseif (Test-Path -LiteralPath $activationPending) {
+    if (Test-RuntimeActivationUsable) {
+      New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+      Complete-RuntimeActivation
+    } else {
+      Undo-UncommittedRuntimeActivation
+    }
   } elseif (Test-Path -LiteralPath $previous) {
     if ((Test-Path -LiteralPath $destination) -and (Test-RuntimeBundle $destination)) {
       Remove-PathIfPresent $previous
@@ -101,7 +139,8 @@ function Restore-RuntimeSwap {
 }
 
 if ((Test-Path -LiteralPath $previous) -or (Test-Path -LiteralPath $candidate) -or
-    (Test-Path -LiteralPath $activationPending)) {
+    (Test-Path -LiteralPath $activationPending) -or
+    (Test-Path -LiteralPath $activationCommitted)) {
   New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
   Restore-RuntimeSwap
 }
@@ -167,16 +206,31 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Agent Workbench initialization failed" }
   }
   if ($needsInstall) {
-    Remove-PathIfPresent $activationPending
-    Remove-PathIfPresent $previous
+    if ($env:AGENT_WORKBENCH_SETUP_FAULT_POINT -eq "after-native-activation") {
+      [Console]::Error.WriteLine(
+        "injected interruption after native Agent Workbench activation")
+      Stop-Process -Id $PID -Force
+    }
+    New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+    Complete-RuntimeActivation
   }
 } finally {
-  if (Test-Path -LiteralPath $activationPending) {
-    Remove-PathIfPresent $destination
-    if (Test-Path -LiteralPath $previous) {
-      Move-Item -LiteralPath $previous -Destination $destination
+  if (Test-Path -LiteralPath $activationCommitted) {
+    if (Test-RuntimeBundle $destination) {
+      Complete-RuntimeActivation
+    } else {
+      Remove-PathIfPresent $previous
+      Remove-PathIfPresent $destination
+      Remove-PathIfPresent $activationPending
+      Remove-PathIfPresent $activationCommitted
     }
-    Remove-PathIfPresent $activationPending
+  } elseif (Test-Path -LiteralPath $activationPending) {
+    if (Test-RuntimeActivationUsable) {
+      New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+      Complete-RuntimeActivation
+    } else {
+      Undo-UncommittedRuntimeActivation
+    }
   } else {
     if ((-not (Test-Path -LiteralPath $destination)) -and
         (Test-Path -LiteralPath $previous)) {
