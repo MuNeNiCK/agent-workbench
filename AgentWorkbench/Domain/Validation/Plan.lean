@@ -38,9 +38,14 @@ def validatePlan
   for step in plan.steps do
     ensure (!step.id.isEmpty && !step.description.isEmpty &&
       !step.outputScopes.isEmpty && uniqueStrings step.outputScopes &&
-      !step.verificationCriterionIds.isEmpty &&
+      !(step.verificationCriterionIds.isEmpty && step.taskVerificationContracts.isEmpty) &&
       uniqueStrings step.dependsOnStepIds && uniqueStrings step.requiredClaimIds &&
       uniqueStrings step.verificationCriterionIds &&
+      uniqueStrings (step.taskVerificationContracts.map (·.id)) &&
+      step.taskVerificationContracts.all (fun contract =>
+        !contract.id.isEmpty && !contract.target.isEmpty &&
+        step.outputScopes.contains contract.target &&
+        !step.verificationCriterionIds.contains contract.id) &&
       uniqueStrings step.acceptedFindingEntryIds)
       s!"Plan step {step.id} is incomplete"
     ensure (plan.sourceUnitDispositions.any (·.stepId == some step.id))

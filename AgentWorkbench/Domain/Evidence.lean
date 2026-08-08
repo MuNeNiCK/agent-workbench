@@ -8,9 +8,22 @@ structure CommandProfileRecord where
   inputTargets : Option (List String) := none
   outputScope : Option String := none
   criterionIds : Option (List String) := none
+  taskVerificationIds : Option (List String) := none
   target : Option String := none
   command : CommandSpec
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+  deriving Repr, DecidableEq, Lean.FromJson
+
+instance : Lean.ToJson CommandProfileRecord where
+  toJson value := Lean.Json.mkObj <|
+    [("purpose", Lean.toJson value.purpose),
+     ("taskEntryId", Lean.toJson value.taskEntryId),
+     ("inputTargets", Lean.toJson value.inputTargets),
+     ("outputScope", Lean.toJson value.outputScope),
+     ("criterionIds", Lean.toJson value.criterionIds)] ++
+    (if value.taskVerificationIds.getD [] |>.isEmpty then [] else
+      [("taskVerificationIds", Lean.toJson value.taskVerificationIds)]) ++
+    [("target", Lean.toJson value.target),
+     ("command", Lean.toJson value.command)]
 
 structure InputSnapshot where
   target : String
@@ -22,6 +35,7 @@ structure CommandExecutionRecord where
   taskEntryId : Option String := none
   outputScope : Option String := none
   criterionId : Option String := none
+  taskVerificationId : Option String := none
   inputSnapshots : Option (List InputSnapshot) := none
   environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String := none
@@ -32,13 +46,33 @@ structure CommandExecutionRecord where
   stderrDigest : String
   successful : Bool
   producerAgentRun : String
-  deriving Repr, DecidableEq, Lean.ToJson
+  deriving Repr, DecidableEq
+
+instance : Lean.ToJson CommandExecutionRecord where
+  toJson value := Lean.Json.mkObj <|
+    [("profileEntryId", Lean.toJson value.profileEntryId),
+     ("taskEntryId", Lean.toJson value.taskEntryId),
+     ("outputScope", Lean.toJson value.outputScope),
+     ("criterionId", Lean.toJson value.criterionId)] ++
+    (value.taskVerificationId.toList.map fun id =>
+      ("taskVerificationId", Lean.toJson id)) ++
+    [("inputSnapshots", Lean.toJson value.inputSnapshots),
+     ("environmentSnapshots", Lean.toJson value.environmentSnapshots),
+     ("target", Lean.toJson value.target),
+     ("snapshot", Lean.toJson value.snapshot),
+     ("command", Lean.toJson value.command),
+     ("exitCode", Lean.toJson value.exitCode),
+     ("stdoutDigest", Lean.toJson value.stdoutDigest),
+     ("stderrDigest", Lean.toJson value.stderrDigest),
+     ("successful", Lean.toJson value.successful),
+     ("producerAgentRun", Lean.toJson value.producerAgentRun)]
 
 private structure PersistedCommandExecutionRecord where
   profileEntryId : String
   taskEntryId : Option String
   outputScope : Option String
   criterionId : Option String
+  taskVerificationId : Option String := none
   inputSnapshots : Option (List InputSnapshot)
   environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String
@@ -56,6 +90,7 @@ private structure LegacyCommandExecutionRecord where
   taskEntryId : Option String := none
   outputScope : Option String := none
   criterionId : Option String := none
+  taskVerificationId : Option String := none
   inputSnapshots : Option (List InputSnapshot) := none
   environmentSnapshots : Option (List InputSnapshot) := none
   target : Option String := none
@@ -78,6 +113,7 @@ instance : Lean.FromJson CommandExecutionRecord where
       pure {
         profileEntryId := value.profileEntryId, taskEntryId := value.taskEntryId
         outputScope := value.outputScope, criterionId := value.criterionId
+        taskVerificationId := value.taskVerificationId
         inputSnapshots := value.inputSnapshots, environmentSnapshots
         target := value.target, snapshot := value.snapshot
         command := value.command, exitCode := value.exitCode
@@ -92,6 +128,7 @@ instance : Lean.FromJson CommandExecutionRecord where
           pure {
             profileEntryId := value.profileEntryId, taskEntryId := value.taskEntryId
             outputScope := value.outputScope, criterionId := value.criterionId
+            taskVerificationId := value.taskVerificationId
             inputSnapshots := value.inputSnapshots
             environmentSnapshots
             target := value.target, snapshot := value.snapshot
@@ -104,14 +141,29 @@ instance : Lean.FromJson CommandExecutionRecord where
 structure ArtifactObservationRecord where
   taskEntryId : Option String := none
   outputScope : Option String := none
-  criterionId : String
+  criterionId : Option String := none
+  taskVerificationId : Option String := none
   target : String
   snapshot : String
   operation : String
   result : String
   successful : Bool
   producerAgentRun : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+  deriving Repr, DecidableEq, Lean.FromJson
+
+instance : Lean.ToJson ArtifactObservationRecord where
+  toJson value := Lean.Json.mkObj <|
+    [("taskEntryId", Lean.toJson value.taskEntryId),
+     ("outputScope", Lean.toJson value.outputScope),
+     ("criterionId", Lean.toJson value.criterionId)] ++
+    (value.taskVerificationId.toList.map fun id =>
+      ("taskVerificationId", Lean.toJson id)) ++
+    [("target", Lean.toJson value.target),
+     ("snapshot", Lean.toJson value.snapshot),
+     ("operation", Lean.toJson value.operation),
+     ("result", Lean.toJson value.result),
+     ("successful", Lean.toJson value.successful),
+     ("producerAgentRun", Lean.toJson value.producerAgentRun)]
 
 structure ProofSourceDigest where
   path : String

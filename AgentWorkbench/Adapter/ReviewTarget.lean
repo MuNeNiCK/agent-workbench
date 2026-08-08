@@ -28,8 +28,9 @@ private def component
 
 private def implementationLedgerComponents
     (state : ProjectState) (projection : CurrentProjection)
-    (plan : ImplementationPlan) : List ReviewTargetComponent :=
-  implementationReviewLedgerEntries projection.entries projection.design plan projection.work.id
+    (plan : ImplementationPlan) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : List ReviewTargetComponent :=
+  currentImplementationReviewLedgerEntries projection observations digests plan
     |>.map fun entry => reviewLedgerComponent state projection.work entry
 
 private def plannedTargetComponents
@@ -59,7 +60,9 @@ private def freezeDesign (state : ProjectState) (designId : String) : Except Str
     producerAgentRuns := [design.producerAgentRun] }
 
 private def freezeImplementation
-    (projectRoot : System.FilePath) (state : ProjectState) : IO (Except String Fixed) := do
+    (projectRoot : System.FilePath) (state : ProjectState)
+    (observations : List TargetObservation) (digests : List CurrentClaimDigest) :
+    IO (Except String Fixed) := do
   let some projection := currentProjection? state
     | pure (.error "Implementation Review requires a current Work and accepted Design")
   let some plan := state.currentPlanFor? projection.work.id
@@ -74,19 +77,21 @@ private def freezeImplementation
     , component "work" projection.work.id
         (reviewWorkIdentitySnapshot projection.work)
         (reviewWorkProducerRunsAt state projection.work coverageOrder)
-    ] ++ implementationLedgerComponents state projection plan ++ plannedComponents)
+    ] ++ implementationLedgerComponents state projection plan observations digests ++
+      plannedComponents)
   let producers := distinctStrings (manifest.flatMap (·.producerAgentRuns))
   pure (.ok {
     sourceId := projection.work.id
     target := s!"work:{projection.work.id}"
     snapshot := ContentDigest.string (Lean.toJson manifest).compress
-    manifestVersion := 2
+    manifestVersion := 3
     manifest
     producerAgentRuns := producers })
 
 def freeze
     (projectRoot : System.FilePath) (state : ProjectState) (purpose : ReviewPurpose)
-    (targetDesignRevision : Option String) : IO (Except String Fixed) := do
+    (targetDesignRevision : Option String) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : IO (Except String Fixed) := do
   match purpose with
   | .design =>
       match targetDesignRevision with
@@ -95,7 +100,7 @@ def freeze
   | .implementation =>
       if targetDesignRevision.isSome then
         pure (.error "Implementation Review target is derived from the current Work")
-      else freezeImplementation projectRoot state
+      else freezeImplementation projectRoot state observations digests
 
 def refreeze
     (projectRoot : System.FilePath) (state : ProjectState) (prior : ReviewRecord) : IO (Except String Fixed) := do
@@ -113,7 +118,8 @@ def refreeze
 
 def currentSnapshot
     (projectRoot : System.FilePath) (state : ProjectState)
-    (purpose : ReviewPurpose) (target : String) : IO String := do
+    (purpose : ReviewPurpose) (target : String) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) : IO String := do
   match purpose with
   | .design =>
       if !target.startsWith "design:" then
@@ -128,7 +134,7 @@ def currentSnapshot
         [design.producerAgentRun]]
       pure (ContentDigest.string (Lean.toJson manifest).compress)
   | .implementation =>
-      let fixed ← match ← freezeImplementation projectRoot state with
+      let fixed ← match ← freezeImplementation projectRoot state observations digests with
         | .ok value => pure value
         | .error message => throw (IO.userError message)
       if fixed.target != target then

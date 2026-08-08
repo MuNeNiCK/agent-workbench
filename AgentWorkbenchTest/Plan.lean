@@ -4,6 +4,9 @@ namespace AgentWorkbenchTest.Plan
 
 open AgentWorkbench AgentWorkbenchTest
 
+private def containsText (text fragment : String) : Bool :=
+  (text.splitOn fragment).length > 1
+
 private def dependencyPlanState : ProjectState :=
   let stepA : PlanStep := {
     id := "a", description := "build A", outputScopes := [criterion.target]
@@ -67,6 +70,23 @@ private def dependencyPlanState : ProjectState :=
     ledgerEntries := [taskAOpen, taskBOpen, evidenceA, taskA, evidenceB, taskB] }
 
 def run : IO Unit := do
+  expect (!containsText (Lean.toJson step).compress "taskVerificationContracts")
+    "an empty Task-local Plan contract changed the immutable legacy Plan encoding"
+  expect (!containsText (Lean.toJson taskEntry).compress "taskVerificationContracts")
+    "an empty Task-local contract changed the immutable legacy Task encoding"
+  expect (!containsText (Lean.toJson evidenceEntry).compress "taskVerificationId")
+    "an absent Task-local binding changed the immutable legacy evidence encoding"
+  let legacyProfile : CommandProfileRecord := {
+    purpose := "legacy profile", command := { executable := "true" } }
+  expect (!containsText (Lean.toJson legacyProfile).compress "taskVerificationIds")
+    "an absent Task-local binding changed the immutable legacy profile encoding"
+  let legacyCommand : CommandExecutionRecord := {
+    profileEntryId := "legacy-profile", criterionId := some criterion.id
+    command := { executable := "true" }, exitCode := 0
+    stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
+    successful := true, producerAgentRun := work.responsibleAgentRun }
+  expect (!containsText (Lean.toJson legacyCommand).compress "taskVerificationId")
+    "an absent Task-local binding changed the immutable legacy command encoding"
   let baseline : DesignRevision := { design with id := "design-baseline", status := .superseded }
   let successor : DesignRevision := { design with
     id := "design-successor"
@@ -134,6 +154,115 @@ def run : IO Unit := do
     plan with steps := [unreachableStep] }
   expectError (validateState { baseState with implementationPlans := [unreachablePlan] })
     "Plan accepted a Criterion whose target has no Task output route"
+
+  -- An implementation-required Statement may intentionally have no Design Criterion. Its Plan
+  -- must then state the concrete, Task-local command/artifact verification contract instead of
+  -- inventing a Criterion or allowing an unverifiable Task.
+  let localDesign : DesignRevision := { design with
+    id := "design-task-local"
+    acceptanceCriteria := []
+    statementCoverage := [{
+      statementId := statement.id, sourceUnitIds := [sourceUnit.id]
+      leanClaims := { noSelectionReason := some "no logical Claim is selected" }
+      acceptanceCriteria := {
+        noSelectionReason := some "verification is local to the implementation Task" }
+      implementationRequired := true }] }
+  let commandTarget := "file:task-local-command.txt"
+  let artifactTarget := "file:task-local-artifact.txt"
+  let localStep : PlanStep := {
+    id := "task-local-step", description := "implement and verify the local behavior"
+    outputScopes := [commandTarget, artifactTarget]
+    taskVerificationContracts := [
+      { id := "task-local-command", kind := .command, target := commandTarget },
+      { id := "task-local-artifact", kind := .artifact, target := artifactTarget }] }
+  let localPlan : ImplementationPlan := { plan with
+    id := "plan-task-local", designRevision := localDesign.id
+    steps := [localStep]
+    sourceUnitDispositions := [{ unitId := planUnit.id, stepId := some localStep.id }]
+    statementDispositions := [{
+      statementId := statement.id, statementText := statement.text
+      deltaKind := .added, stepIds := [localStep.id] }] }
+  let localWork : Work := { work with designRevision := some localDesign.id }
+  let localTask : LedgerEntry := {
+    id := "task-local-open", order := 1, scope := localWork.scope
+    workId := some localWork.id, designRevision := some localDesign.id
+    payload := .task {
+      planId := some localPlan.id, planStepId := some localStep.id
+      lineageId := some s!"{localWork.id}:{localStep.id}"
+      outputScopes := localStep.outputScopes
+      verificationCriterionIds := []
+      taskVerificationContracts := localStep.taskVerificationContracts
+      materializedAtOrder := 0, description := localStep.description
+      required := true, closed := false } }
+  let localCommand : CommandSpec := {
+    executable := "true", workingDirectory := some "." }
+  let localProfile : LedgerEntry := {
+    id := "profile-task-local", order := 2, scope := localWork.scope
+    workId := some localWork.id, designRevision := some localDesign.id
+    payload := .commandProfile {
+      purpose := "verify the Task-local command contract"
+      taskEntryId := some localTask.id, inputTargets := some []
+      outputScope := some commandTarget, criterionIds := some []
+      taskVerificationIds := some ["task-local-command"]
+      target := some commandTarget, command := localCommand } }
+  let commandSnapshot := "blake3:task-local-command"
+  let localCommandEvidence : LedgerEntry := {
+    id := "evidence-task-local-command", order := 3, scope := localWork.scope
+    workId := some localWork.id, designRevision := some localDesign.id
+    payload := .commandExecution {
+      profileEntryId := localProfile.id, taskEntryId := some localTask.id
+      outputScope := some commandTarget, criterionId := none
+      taskVerificationId := some "task-local-command"
+      inputSnapshots := some [], environmentSnapshots := some []
+      target := some commandTarget, snapshot := some commandSnapshot
+      command := localCommand, exitCode := 0
+      stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
+      successful := true, producerAgentRun := localWork.responsibleAgentRun } }
+  let artifactSnapshot := "blake3:task-local-artifact"
+  let localArtifactEvidence : LedgerEntry := {
+    id := "evidence-task-local-artifact", order := 4, scope := localWork.scope
+    workId := some localWork.id, designRevision := some localDesign.id
+    payload := .artifactObservation {
+      taskEntryId := some localTask.id, outputScope := some artifactTarget
+      criterionId := none, taskVerificationId := some "task-local-artifact"
+      target := artifactTarget, snapshot := artifactSnapshot
+      operation := "inspect Task-local artifact", result := "verified"
+      successful := true, producerAgentRun := localWork.responsibleAgentRun } }
+  let localState : ProjectState := {
+    revision := 4, acceptedDesignId := some localDesign.id
+    focusedWorkId := some localWork.id, designRevisions := [localDesign]
+    works := [localWork], implementationPlans := [localPlan]
+    ledgerEntries := [localTask, localProfile, localCommandEvidence, localArtifactEvidence] }
+  fromExcept (validateState localState)
+  let localClosed ← fromExcept <| closeTask localState [
+    TargetObservation.mk commandTarget commandSnapshot,
+    TargetObservation.mk artifactTarget artifactSnapshot] {
+      entryId := "task-local-closed", taskEntryId := localTask.id }
+  fromExcept (validateState localClosed)
+  let closedLocalTask ← match localClosed.entry? "task-local-closed" with
+    | some { payload := .task value, .. } => pure value
+    | _ => throw (IO.userError "Task-local verification did not produce a closed Task")
+  expect (closedLocalTask.verificationEvidenceEntryIds ==
+      [localCommandEvidence.id, localArtifactEvidence.id])
+    "Task-local command and artifact contracts did not bind one exact evidence entry each"
+  let noVerificationPlan : ImplementationPlan := { localPlan with
+    id := "plan-task-local-missing", steps := [{ localStep with
+      verificationCriterionIds := [], taskVerificationContracts := [] }] }
+  expectError (validateState { localState with
+    implementationPlans := [noVerificationPlan], ledgerEntries := [] })
+    "Plan accepted an implementation Task with no Criterion or Task-local verification contract"
+  let wrongKindEvidence : LedgerEntry := { localArtifactEvidence with
+    id := "evidence-task-local-wrong-kind"
+    payload := .artifactObservation {
+      taskEntryId := some localTask.id, outputScope := some commandTarget
+      criterionId := none, taskVerificationId := some "task-local-command"
+      target := commandTarget, snapshot := artifactSnapshot
+      operation := "misclassify command verification as an artifact"
+      result := "invalid", successful := true
+      producerAgentRun := localWork.responsibleAgentRun } }
+  expectError (validateState { localState with
+    ledgerEntries := [localTask, localProfile, wrongKindEvidence] })
+    "command evidence satisfied an artifact-only Task-local verification contract"
   expectError (closeTask baseState [] { entryId := "task-closed", taskEntryId := "task-open" })
     "Task closed without successful post-materialization evidence"
   let closed ← fromExcept <| closeTask evidencedState

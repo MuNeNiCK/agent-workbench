@@ -228,7 +228,17 @@ def commitOperation
         fail "managed operation commit marker was not advanced atomically"
   postCommitVerification
   let committed ← loadState store
-  if committed != next then fail "committed state differs from the validated transition result"
+  if committed != next then
+    let fields := [
+      ("revision", committed.revision == next.revision),
+      ("acceptedDesignId", committed.acceptedDesignId == next.acceptedDesignId),
+      ("focusedWorkId", committed.focusedWorkId == next.focusedWorkId),
+      ("designRevisions", committed.designRevisions == next.designRevisions),
+      ("works", committed.works == next.works),
+      ("implementationPlans", committed.implementationPlans == next.implementationPlans),
+      ("ledgerEntries", committed.ledgerEntries == next.ledgerEntries)]
+    let differing := fields.filterMap fun (name, equal) => if equal then none else some name
+    fail s!"committed state differs from the validated transition result: {differing}"
 
 /-- Returns true only when the durable managed-operation row proves that its authority transaction
 has not committed. Errors and missing rows are deliberately not interpreted as an uncommitted

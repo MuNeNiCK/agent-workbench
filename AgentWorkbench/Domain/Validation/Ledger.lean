@@ -51,6 +51,7 @@ private def validateTask
         task.dependencyLineageIds == step.dependsOnStepIds.map (fun id => s!"{plan.workId}:{id}") &&
         task.outputScopes == step.outputScopes &&
         task.verificationCriterionIds == step.verificationCriterionIds &&
+        task.taskVerificationContracts == step.taskVerificationContracts &&
         task.criterionId.isNone && (task.retired || task.required))
         s!"task {entry.id} differs from its materialized Plan step"
   | none, none, none =>
@@ -64,7 +65,8 @@ private def validateTask
     if task.closed then
       let sourceTaskId ← requireSome task.verificationTaskEntryId
         s!"closed task {entry.id} has no verification source Task"
-      ensure (task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
+      ensure (task.verificationEvidenceEntryIds.length ==
+          task.verificationCriterionIds.length + task.taskVerificationContracts.length &&
         uniqueStrings task.verificationEvidenceEntryIds)
         s!"closed task {entry.id} does not bind one exact evidence entry per criterion"
       for evidenceId in task.verificationEvidenceEntryIds do
@@ -94,7 +96,7 @@ private def validateEvidenceBinding
 
 private def validateTaskEvidenceBinding
     (state : ProjectState) (entry : LedgerEntry) (taskEntryId outputScope : Option String)
-    (criterionIds : List String) : Except String Unit := do
+    (criterionIds taskVerificationIds : List String) (evidenceKind : Option TaskVerificationKind := none) : Except String Unit := do
   let workId ← requireSome entry.workId s!"evidence {entry.id} is not Work-bound"
   if (state.currentPlanFor? workId).any fun plan =>
       entry.designRevision == some plan.designRevision then
@@ -110,7 +112,10 @@ private def validateTaskEvidenceBinding
       | _ => throw s!"evidence {entry.id} references a non-Task entry"
     ensure (task.planId.isSome && !task.retired && taskEntry.order <= entry.order &&
       entry.order > task.materializedAtOrder && task.outputScopes.contains scope &&
-      !criterionIds.isEmpty && criterionIds.all task.verificationCriterionIds.contains)
+      !(criterionIds.isEmpty && taskVerificationIds.isEmpty) &&
+      criterionIds.all task.verificationCriterionIds.contains &&
+      taskVerificationIds.all (fun id => task.taskVerificationContracts.any fun contract =>
+        contract.id == id && contract.target == scope && evidenceKind.all (contract.kind == ·)))
       s!"evidence {entry.id} differs from its current materialized Task"
 
 private def priorReview? (state : ProjectState) (entryId : String) : Option (LedgerEntry × ReviewRecord) := do
@@ -132,7 +137,7 @@ private def activeReviewerBefore
 private def validateReview
     (state : ProjectState) (entry : LedgerEntry) (review : ReviewRecord) : Except String Unit := do
   let producers := review.producerAgentRuns
-  ensure (review.targetManifestVersion <= 2)
+  ensure (review.targetManifestVersion <= 3)
     s!"review {entry.id} has an unsupported target manifest version"
   ensure entry.designRevision.isSome s!"review {entry.id} is not design-bound"
   ensure (!review.reviewId.isEmpty && !review.targetSourceId.isEmpty &&
@@ -203,6 +208,45 @@ private def validateReview
           entryAppliesTo state design work candidate && !supersededBeforeReview candidate
         let expectedLedgerComponents := normalizeReviewTargetComponents <| match
             review.targetManifestVersion with
+          | 3 =>
+              let structuralKinds := ["design", "plan", "work", "implementation_target"]
+              let recordedLedgerIds := review.targetManifest.filterMap fun component =>
+                if structuralKinds.contains component.kind then none else some component.id
+              let acceptedFindings := acceptedImplementationFindingIdsIn currentEntries work.id
+              let tasks := currentEntries.filter fun candidate => match candidate.payload with
+                | .task task => task.planId == some plan.id && !task.retired
+                | _ => false
+              let eligibleEvidenceIds := tasks.flatMap fun candidate => match candidate.payload with
+                | .task task => task.verificationEvidenceEntryIds
+                | _ => []
+              let selectedEvidenceIds := eligibleEvidenceIds.filter recordedLedgerIds.contains
+              let selectedReceiptIds := design.leanClaims.filterMap fun claim =>
+                (currentEntries.find? fun candidate =>
+                  recordedLedgerIds.contains candidate.id && match candidate.payload with
+                  | .leanProofReceipt receipt =>
+                      receipt.claimId == claim.id && receipt.kernelAccepted
+                  | _ => false) |>.map (·.id)
+              let selectedDispositionIds := acceptedFindings.filterMap fun findingId =>
+                (findingDispositionIn? currentEntries findingId work.id).map (·.id)
+              let selectedVerificationIds := acceptedFindings.filterMap fun findingId =>
+                currentEntries.foldl (fun latest candidate =>
+                  let isMatching := match candidate.payload with
+                    | .reviewVerification value =>
+                        value.findingEntryId == findingId && value.resolved
+                    | _ => false
+                  if !isMatching then latest else match latest with
+                  | some prior => if prior.order < candidate.order then some candidate else latest
+                  | none => some candidate) none |>.map (·.id)
+              currentEntries.filter (fun candidate =>
+                tasks.any (·.id == candidate.id) || selectedEvidenceIds.contains candidate.id ||
+                selectedReceiptIds.contains candidate.id ||
+                selectedDispositionIds.contains candidate.id ||
+                selectedVerificationIds.contains candidate.id ||
+                acceptedFindings.contains candidate.id ||
+                match candidate.payload with
+                | .userCorrection value =>
+                    value.resolvedByEntryId.isNone && value.incorporatedIn.isNone
+                | _ => false) |>.map (reviewLedgerComponent state work)
           | 2 =>
               (implementationReviewLedgerEntries currentEntries design plan work.id).map
                 (reviewLedgerComponent state work)
@@ -260,6 +304,15 @@ private def validateReview
         ensure (actualLedgerComponents == expectedLedgerComponents)
           (s!"review {entry.id} changes the exact current implementation component projection: " ++
             s!"recorded={actualLedgerComponents.map (·.id)}, expected={expectedLedgerComponents.map (·.id)}")
+        if review.targetManifestVersion >= 3 then
+          ensure (design.leanClaims.all fun claim =>
+            (actualLedgerComponents.filter fun component =>
+              component.kind == "lean_proof_receipt" &&
+                currentEntries.any fun candidate =>
+                  candidate.id == component.id && match candidate.payload with
+                  | .leanProofReceipt receipt => receipt.claimId == claim.id
+                  | _ => false).length <= 1)
+            s!"review {entry.id} selects more than one current receipt for a Claim"
         ensure (review.targetManifest.all fun value =>
           value.producerAgentRuns.all producers.contains)
           s!"review {entry.id} manifest producer closure is incomplete"
@@ -484,7 +537,7 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
       ensure (value.inputTargets.getD [] |> uniqueStrings)
         s!"Command Profile {entry.id} has duplicate input targets"
       validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope
-        (value.criterionIds.getD [])
+        (value.criterionIds.getD []) (value.taskVerificationIds.getD []) (some .command)
   | .commandExecution value =>
       ensure (!value.producerAgentRun.isEmpty)
         s!"command execution {entry.id} has no producer"
@@ -506,19 +559,27 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
               uniqueStrings (snapshots.map (·.target)) &&
               snapshots.all fun snapshot => !snapshot.snapshot.isEmpty) &&
             (profile.taskEntryId.isNone ||
-              value.criterionId.all fun id => (profile.criterionIds.getD []).contains id))
+              (value.criterionId.all fun id => (profile.criterionIds.getD []).contains id) &&
+              (value.taskVerificationId.all fun id =>
+                (profile.taskVerificationIds.getD []).contains id)))
             s!"command execution {entry.id} differs from the resolved profile"
       | _ => throw s!"command execution {entry.id} references a non-profile entry"
       if let some criterionId := value.criterionId then
         let target ← requireSome value.target s!"command evidence {entry.id} has no target"
         validateEvidenceBinding state entry criterionId target "command"
+      ensure (value.criterionId.isSome != value.taskVerificationId.isSome)
+        s!"command evidence {entry.id} has an ambiguous verification binding"
       validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope
-        value.criterionId.toList
+        value.criterionId.toList value.taskVerificationId.toList (some .command)
   | .artifactObservation value =>
       ensure (!value.producerAgentRun.isEmpty)
         s!"artifact observation {entry.id} has no producer"
-      validateEvidenceBinding state entry value.criterionId value.target "artifact"
-      validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope [value.criterionId]
+      if let some criterionId := value.criterionId then
+        validateEvidenceBinding state entry criterionId value.target "artifact"
+      ensure (value.criterionId.isSome != value.taskVerificationId.isSome)
+        s!"artifact evidence {entry.id} has an ambiguous verification binding"
+      validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope
+        value.criterionId.toList value.taskVerificationId.toList (some .artifact)
   | .review value => validateReview state entry value
   | .finding value => validateFinding state entry value
   | .reviewDisposition value => validateDisposition state entry value

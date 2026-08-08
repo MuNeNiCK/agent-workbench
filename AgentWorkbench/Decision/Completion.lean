@@ -64,20 +64,35 @@ def evidenceEntryCurrent
 def taskClosedWithCurrentEvidence
     (projection : CurrentProjection) (observations : List TargetObservation)
     (task : TaskRecord) : Bool :=
-  task.closed &&
-        task.verificationTaskEntryId.isSome &&
-        !task.verificationEvidenceEntryIds.isEmpty &&
-        task.verificationEvidenceEntryIds.length == task.verificationCriterionIds.length &&
-        task.verificationEvidenceEntryIds.all fun evidenceId =>
-          projection.entries.any fun evidenceEntry =>
-            evidenceEntry.id == evidenceId &&
-            evidenceEntryCurrent projection observations evidenceEntry &&
-            match evidenceEntry.payload with
-            | .artifactObservation evidence =>
-                evidence.taskEntryId == task.verificationTaskEntryId
-            | .commandExecution evidence =>
-                evidence.taskEntryId == task.verificationTaskEntryId
-            | _ => false
+  let evidenceFor (predicate : LedgerEntry → Bool) :=
+    task.verificationEvidenceEntryIds.any fun evidenceId =>
+      projection.entries.any fun evidenceEntry =>
+        evidenceEntry.id == evidenceId &&
+        evidenceEntryCurrent projection observations evidenceEntry && predicate evidenceEntry
+  task.closed && task.verificationTaskEntryId.isSome &&
+    !task.verificationEvidenceEntryIds.isEmpty &&
+    task.verificationEvidenceEntryIds.length ==
+      task.verificationCriterionIds.length + task.taskVerificationContracts.length &&
+    task.verificationCriterionIds.all (fun criterionId => evidenceFor fun entry =>
+      match entry.payload with
+      | .artifactObservation evidence =>
+          evidence.taskEntryId == task.verificationTaskEntryId &&
+          evidence.criterionId == some criterionId && evidence.taskVerificationId.isNone
+      | .commandExecution evidence =>
+          evidence.taskEntryId == task.verificationTaskEntryId &&
+          evidence.criterionId == some criterionId && evidence.taskVerificationId.isNone
+      | _ => false) &&
+    task.taskVerificationContracts.all (fun contract => evidenceFor fun entry =>
+      match entry.payload with
+      | .artifactObservation evidence =>
+          contract.kind == .artifact && evidence.taskEntryId == task.verificationTaskEntryId &&
+          evidence.taskVerificationId == some contract.id && evidence.criterionId.isNone &&
+          evidence.target == contract.target
+      | .commandExecution evidence =>
+          contract.kind == .command && evidence.taskEntryId == task.verificationTaskEntryId &&
+          evidence.taskVerificationId == some contract.id && evidence.criterionId.isNone &&
+          evidence.target == some contract.target
+      | _ => false)
 
 def requiredTasksClosed
     (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
@@ -94,7 +109,7 @@ def criterionEvidenceRecorded
         criterion.evidenceKind == "artifact" &&
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
-        evidence.criterionId == criterion.id && evidence.target == criterion.target &&
+        evidence.criterionId == some criterion.id && evidence.target == criterion.target &&
         evidence.successful
     | .commandExecution evidence =>
         criterion.evidenceKind == "command" &&
@@ -121,7 +136,7 @@ def criterionHasEvidence
     | .artifactObservation evidence =>
         criterion.evidenceKind == "artifact" &&
         evidenceEntryCurrent projection observations entry &&
-        evidence.criterionId == criterion.id &&
+        evidence.criterionId == some criterion.id &&
         evidence.target == criterion.target &&
         !evidence.operation.isEmpty && !evidence.result.isEmpty
     | .commandExecution evidence =>

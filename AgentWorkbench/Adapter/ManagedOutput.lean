@@ -1,5 +1,6 @@
 import Lean.Data.Json
 import AgentWorkbench.Adapter.ContentDigest
+import AgentWorkbench.Domain.Validation.OutputScope
 
 namespace AgentWorkbench.ManagedOutput
 
@@ -24,6 +25,9 @@ structure Baseline where
 private def fail (message : String) : IO α := throw (IO.userError message)
 
 private def configuredPath (projectRoot : System.FilePath) (identity : String) : IO (Kind × System.FilePath) := do
+  match AgentWorkbench.Validation.validateManagedOutputScope identity with
+  | .error message => fail message
+  | .ok _ => pure ()
   let (kind, source) ← if identity.startsWith "file:" then
       pure (.file, (identity.drop 5).toString)
     else if identity.startsWith "tree:" then
@@ -32,6 +36,13 @@ private def configuredPath (projectRoot : System.FilePath) (identity : String) :
   let configured : System.FilePath := source
   if configured.isAbsolute || configured.components.any (· == "..") || source.isEmpty then
     fail s!"managed output must be a project-relative path: {identity}"
+  let mut current := projectRoot
+  for component in configured.components do
+    current := current / component
+    if ← current.pathExists then
+      let metadata ← current.symlinkMetadata
+      if metadata.type == .symlink then
+        fail s!"managed output path traverses a symlink: {identity}"
   pure (kind, projectRoot / configured)
 
 private def bytes (values : List Nat) : ByteArray :=

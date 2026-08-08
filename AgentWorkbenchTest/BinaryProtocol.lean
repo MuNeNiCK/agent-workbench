@@ -97,6 +97,8 @@ private def nestedPlanInput : PlanProposalRequest := {
     id := "step-1", description := "implement the Statement"
     dependsOnStepIds := ["step-0"], outputScopes := ["file:artifact.txt"]
     requiredClaimIds := ["claim-1"], verificationCriterionIds := ["criterion-1"]
+    taskVerificationContracts := [{
+      id := "verify-local-output", kind := .artifact, target := "file:artifact.txt" }]
     acceptedFindingEntryIds := ["finding-1"] }] }
 
 private structure NestedArrayCase where
@@ -118,7 +120,9 @@ private def designArrayCases : List NestedArrayCase := [
 private def planArrayCases : List NestedArrayCase := [
   { path := ["sourceUnitDispositions"], renderedPath := "sourceUnitDispositions[0]" },
   { path := ["statementDispositions"], renderedPath := "statementDispositions[0]" },
-  { path := ["steps"], renderedPath := "steps[0]" }
+  { path := ["steps"], renderedPath := "steps[0]" },
+  { path := ["steps", "taskVerificationContracts"],
+    renderedPath := "steps[0].taskVerificationContracts[0]" }
 ]
 
 private def expectNestedUnknownRejected

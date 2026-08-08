@@ -49,6 +49,34 @@ assert_product_invariant() {
   [[ "$(sh "$project/product-command.sh")" == "$product_behavior_before" ]]
   [[ "$(git -C "$project" config --local --list)" == "$git_config_before" ]]
 }
+
+runtime_snapshot() {
+  python3 - "$project/.agent-workbench/bin" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+snapshot = []
+for path in sorted([root, *root.rglob("*")], key=lambda value: value.as_posix()):
+    metadata = path.lstat()
+    relative = "." if path == root else path.relative_to(root).as_posix()
+    entry = {
+        "path": relative,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "mtime_ns": metadata.st_mtime_ns,
+        "type": "directory" if path.is_dir() else "file",
+    }
+    if path.is_file():
+        entry["digest"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    snapshot.append(entry)
+print(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
+PY
+}
 if [[ -n "${AGENT_WORKBENCH_SKILL_REPOSITORY:-}" ]]; then
   [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]
   (cd "$project" && gh skill install "$AGENT_WORKBENCH_SKILL_REPOSITORY" agent-workbench \
@@ -91,17 +119,20 @@ PY
 fi
 
 if [[ -f "$staging/agent-workbench.exe" ]]; then
-  setup() {
+  setup_archive() {
     powershell -NoProfile -ExecutionPolicy Bypass -File "$installed_skill/scripts/setup.ps1" \
-      -ProjectRoot "$project" -LocalArchive "$archive" -LocalChecksum "$checksum"
+      -ProjectRoot "$project" -LocalArchive "$1" -LocalChecksum "$2"
   }
   awb="$project/.agent-workbench/bin/agent-workbench.exe"
 else
-  setup() {
-    sh "$installed_skill/scripts/setup.sh" "$project" "$archive" "$checksum"
+  setup_archive() {
+    sh "$installed_skill/scripts/setup.sh" "$project" "$1" "$2"
   }
   awb="$project/.agent-workbench/bin/agent-workbench"
 fi
+setup() {
+  setup_archive "$archive" "$checksum"
+}
 
 first_setup=$(setup)
 for license in LICENSE-agent-workbench LICENSE-leansqlite LICENSE-Blake3-lean \
@@ -128,24 +159,82 @@ for directory in product implementation plans proofs; do
 done
 
 before=$("$awb" --project "$project" context)
+runtime_before_same_version=$(runtime_snapshot)
 second_setup=$(setup)
 [[ "$second_setup" == "$before" ]]
 after=$("$awb" --project "$project" context)
 [[ "$after" == "$before" ]]
+[[ "$(runtime_snapshot)" == "$runtime_before_same_version" ]]
 runtime_release="$project/.agent-workbench/bin/skill/agent-workbench/release-version"
 expected_release=$(sed -n '1p' "$installed_skill/release-version")
+
+incomplete_stage="$package_dir/incomplete-stage"
+mkdir "$incomplete_stage"
+cp -a "$staging/." "$incomplete_stage/"
+rm "$incomplete_stage/README.md"
+if [[ -f "$staging/agent-workbench.exe" ]]; then
+  incomplete_archive="$package_dir/incomplete-agent-workbench.zip"
+  (cd "$incomplete_stage" && 7z a -tzip "$incomplete_archive" . >/dev/null)
+else
+  incomplete_archive="$package_dir/incomplete-agent-workbench.tar.gz"
+  tar -czf "$incomplete_archive" -C "$incomplete_stage" .
+fi
+incomplete_checksum="$incomplete_archive.sha256"
+python3 - "$incomplete_archive" <<'PY'
+import hashlib, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.with_name(path.name + ".sha256").write_text(
+    f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n",
+    encoding="utf-8", newline="\n")
+PY
+printf '%s\n' 'v0.2.8' > "$runtime_release"
+runtime_before_incomplete=$(runtime_snapshot)
+if setup_archive "$incomplete_archive" "$incomplete_checksum" >/dev/null 2>&1; then
+  echo "an incomplete runtime bundle unexpectedly replaced the installed runtime" >&2
+  exit 1
+fi
+[[ "$(runtime_snapshot)" == "$runtime_before_incomplete" ]]
+
+mkdir "$project/.agent-workbench/bin/obsolete-runtime-directory"
+printf '%s\n' 'must not survive a bundle replacement' > \
+  "$project/.agent-workbench/bin/obsolete-runtime-directory/stale-file"
 printf '%s\n' 'v0.2.8' > "$runtime_release"
 printf '%s\n' 'stale runtime fixture' > "$awb"
 upgrade_setup=$(setup)
 [[ "$upgrade_setup" == "$before" ]]
+[[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
+[[ ! -e "$project/.agent-workbench/bin/obsolete-runtime-directory" ]]
+if [[ "$awb" == *.exe ]]; then
+  cmp "$awb" "$staging/agent-workbench.exe"
+else
+  cmp "$awb" "$staging/agent-workbench"
+fi
+
+# Model an interruption after the prior runtime was renamed but before the candidate was
+# installed. The next setup must recover, discard the partial candidate, and retry the full
+# replacement. This route runs through setup.sh on POSIX and setup.ps1 on Windows CI.
+printf '%s\n' 'v0.2.8' > "$runtime_release"
+printf '%s\n' 'obsolete after interrupted replacement' > \
+  "$project/.agent-workbench/bin/stale-after-interruption"
+mv "$project/.agent-workbench/bin" "$project/.agent-workbench/.bin.previous"
+mkdir "$project/.agent-workbench/.bin.next"
+printf '%s\n' 'partial candidate' > "$project/.agent-workbench/.bin.next/incomplete"
+retry_setup=$(setup)
+[[ "$retry_setup" == "$before" ]]
+[[ ! -e "$project/.agent-workbench/.bin.previous" ]]
+[[ ! -e "$project/.agent-workbench/.bin.next" ]]
+[[ ! -e "$project/.agent-workbench/bin/stale-after-interruption" ]]
 [[ "$(sed -n '1p' "$runtime_release")" == "$expected_release" ]]
 if [[ "$awb" == *.exe ]]; then
   cmp "$awb" "$staging/agent-workbench.exe"
 else
   cmp "$awb" "$staging/agent-workbench"
 fi
+
+runtime_before_final_same_version=$(runtime_snapshot)
 same_version_setup=$(setup)
 [[ "$same_version_setup" == "$before" ]]
+[[ "$(runtime_snapshot)" == "$runtime_before_final_same_version" ]]
 outside_workbench_status=$(git -C "$project" status --porcelain --untracked-files=all -- . \
   ':(exclude).agents/**' ':(exclude).agent-workbench/**')
 [[ -z "$outside_workbench_status" ]]

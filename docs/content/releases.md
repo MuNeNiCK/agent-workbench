@@ -23,10 +23,12 @@ assume a global installation.
 
 The installed Skill carries its release version. Its setup helper selects the platform archive,
 downloads that exact version's archive and checksum, verifies the archive's GitHub build-provenance
-attestation and SHA-256 checksum, extracts it below `.agent-workbench/bin`, and invokes native
-`init`. It never resolves `latest`; a Skill installed from one release cannot silently acquire a
-runtime from another release. POSIX and PowerShell helpers own acquisition only; after initialization
-the Skill uses the native executable directly.
+attestation and SHA-256 checksum, validates a complete bundle in a fresh sibling of
+`.agent-workbench/bin`, replaces the old bundle through a recoverable directory swap, and invokes
+native `init`. A retry recovers an interrupted swap, and an upgrade cannot retain obsolete files
+from the prior bundle. It never resolves `latest`; a Skill installed from one release cannot
+silently acquire a runtime from another release. POSIX and PowerShell helpers own acquisition only;
+after initialization the Skill uses the native executable directly.
 
 ## Release validation
 

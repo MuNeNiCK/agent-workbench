@@ -284,6 +284,8 @@ def operationInputSchema? (operation : String) : Option InputSchema :=
       outputScopes := [criterion.target]
       requiredClaimIds := [claim.id]
       verificationCriterionIds := [criterion.id]
+      taskVerificationContracts := [{
+        id := "verify-step-output", kind := .command, target := criterion.target }]
       acceptedFindingEntryIds := ["finding-1"] }] }
   match operation with
   | "design propose" | "design amend" => some (typedSchema designSchema)

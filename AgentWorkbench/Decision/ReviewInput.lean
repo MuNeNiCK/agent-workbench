@@ -109,8 +109,9 @@ private def latestEntryFor? (entries : List LedgerEntry) (predicate : LedgerEntr
     | some prior => if prior.order < entry.order then some entry else latest
     | none => some entry) none
 
-/-- The fixed implementation projection contains only identities selected by current completion
-authority. Reruns and superseded workflow history do not grow a fresh Review target. -/
+/-- Version-2 manifests selected Task-declared evidence and the latest accepted receipt without
+external currency inputs. Keep this definition only for validation of already-immutable v2 Review
+records. -/
 def implementationReviewLedgerEntries
     (entries : List LedgerEntry) (design : DesignRevision)
     (plan : ImplementationPlan) (workId : String) : List LedgerEntry :=
@@ -127,6 +128,43 @@ def implementationReviewLedgerEntries
       | _ => false) |>.map (·.id)
   let selectedDispositionIds := acceptedFindings.filterMap fun findingId =>
     (findingDispositionIn? entries findingId workId).map (·.id)
+  let selectedVerificationIds := acceptedFindings.filterMap fun findingId =>
+    latestEntryFor? entries (fun entry => match entry.payload with
+      | .reviewVerification value => value.findingEntryId == findingId && value.resolved
+      | _ => false) |>.map (·.id)
+  entries.filter fun entry =>
+    tasks.any (·.id == entry.id) || selectedEvidenceIds.contains entry.id ||
+    selectedReceiptIds.contains entry.id || selectedDispositionIds.contains entry.id ||
+    selectedVerificationIds.contains entry.id || acceptedFindings.contains entry.id ||
+    match entry.payload with
+    | .userCorrection value => value.resolvedByEntryId.isNone && value.incorporatedIn.isNone
+    | _ => false
+
+/-- The current implementation projection contains only identities selected by the same artifact,
+environment, private-input, and Claim-digest observations used by completion. Stale Task closing
+evidence and stale Lean receipts remain history but are not frozen into a new Review target. -/
+def currentImplementationReviewLedgerEntries
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) (plan : ImplementationPlan) : List LedgerEntry :=
+  let entries := projection.entries
+  let acceptedFindings := acceptedImplementationFindingIdsIn entries projection.work.id
+  let tasks := entries.filter fun entry => match entry.payload with
+    | .task value => value.planId == some plan.id && !value.retired
+    | _ => false
+  let selectedEvidenceIds := tasks.flatMap fun entry => match entry.payload with
+    | .task task =>
+        task.verificationEvidenceEntryIds.filter fun evidenceId =>
+          entries.any fun evidenceEntry =>
+            evidenceEntry.id == evidenceId &&
+              evidenceEntryCurrent projection observations evidenceEntry
+    | _ => []
+  let selectedReceiptIds := projection.design.leanClaims.filterMap fun claim => do
+    let current ← uniqueBy? digests (·.claimId) claim.id
+    latestEntryFor? entries (fun entry => match entry.payload with
+      | .leanProofReceipt receipt => canReuseReceipt claim current receipt
+      | _ => false) |>.map (·.id)
+  let selectedDispositionIds := acceptedFindings.filterMap fun findingId =>
+    (findingDispositionIn? entries findingId projection.work.id).map (·.id)
   let selectedVerificationIds := acceptedFindings.filterMap fun findingId =>
     latestEntryFor? entries (fun entry => match entry.payload with
       | .reviewVerification value => value.findingEntryId == findingId && value.resolved

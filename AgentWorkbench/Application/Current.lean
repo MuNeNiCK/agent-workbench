@@ -39,12 +39,6 @@ def evaluateCurrentInputs
                 let name := environment.target.drop 4 |>.toString
                 let identity := Process.environmentIdentity name (← IO.getEnv name)
                 observations := observations ++ [TargetObservation.mk identity.1 identity.2]
-        | .review review =>
-            try
-              let snapshot ← ReviewTarget.currentSnapshot projectRoot state review.purpose review.target
-              if !observations.any (fun prior => prior.target == review.target) then
-                observations := observations ++ [TargetObservation.mk review.target snapshot]
-            catch _ => pure ()
         | _ => pure ()
       let mut claimDigests := []
       let runtime := Runtime.layout projectRoot
@@ -53,6 +47,16 @@ def evaluateCurrentInputs
           try
             claimDigests := claimDigests ++ [(← ProofInput.evaluate projectRoot runtime claim).1]
           catch _ => pure ()
+      for entry in projection.entries do
+        match entry.payload with
+        | .review review =>
+            try
+              let snapshot ← ReviewTarget.currentSnapshot projectRoot state review.purpose
+                review.target observations claimDigests
+              if !observations.any (fun prior => prior.target == review.target) then
+                observations := observations ++ [TargetObservation.mk review.target snapshot]
+            catch _ => pure ()
+        | _ => pure ()
       pure { observations, claimDigests }
 
 end AgentWorkbench

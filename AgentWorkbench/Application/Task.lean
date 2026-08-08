@@ -45,7 +45,7 @@ def closeTask
         | .artifactObservation evidence =>
             evidence.taskEntryId == some prior.id && evidence.outputScope.isSome &&
             task.outputScopes.contains evidence.outputScope.get! &&
-            evidence.criterionId == criterionId && evidence.successful
+            evidence.criterionId == some criterionId && evidence.successful
         | .commandExecution evidence =>
             evidence.taskEntryId == some prior.id && evidence.outputScope.isSome &&
             task.outputScopes.contains evidence.outputScope.get! &&
@@ -55,6 +55,24 @@ def closeTask
         | some value => pure value
         | none =>
           throw s!"Task {request.taskEntryId} has no post-materialization evidence for {criterionId}"
+      verificationEvidenceEntryIds := verificationEvidenceEntryIds ++ [witness.id]
+    for contract in task.taskVerificationContracts do
+      let witness := projection.entries.find? fun entry =>
+        entry.order > task.materializedAtOrder && entry.workId == some work.id &&
+        entry.designRevision == some design.id && evidenceEntryCurrent projection observations entry &&
+        match entry.payload with
+        | .artifactObservation evidence =>
+            contract.kind == .artifact && evidence.taskEntryId == some prior.id &&
+            evidence.outputScope == some contract.target && evidence.criterionId.isNone &&
+            evidence.taskVerificationId == some contract.id && evidence.successful
+        | .commandExecution evidence =>
+            contract.kind == .command && evidence.taskEntryId == some prior.id &&
+            evidence.outputScope == some contract.target && evidence.criterionId.isNone &&
+            evidence.taskVerificationId == some contract.id && evidence.successful
+        | _ => false
+      let witness ← match witness with
+        | some value => pure value
+        | none => throw s!"Task {request.taskEntryId} has no post-materialization evidence for Task verification {contract.id}"
       verificationEvidenceEntryIds := verificationEvidenceEntryIds ++ [witness.id]
   let closedTask : TaskRecord := { task with
     closed := true

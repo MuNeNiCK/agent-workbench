@@ -82,9 +82,13 @@ def planStatementDisposition : PlanStatementDisposition → List FieldCoverage
   | .mk _ _ _ _ _ =>
       cover .planTask ["statementId", "statementText", "deltaKind", "stepIds", "noActionReason"]
 
+def taskVerificationContract : TaskVerificationContract → List FieldCoverage
+  | .mk _ _ _ => cover .planTask ["id", "kind", "target"]
+
 def planStep : PlanStep → List FieldCoverage
-  | .mk _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
-      "requiredClaimIds", "verificationCriterionIds", "acceptedFindingEntryIds"]
+  | .mk _ _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
+      "requiredClaimIds", "verificationCriterionIds", "taskVerificationContracts",
+      "acceptedFindingEntryIds"]
 
 def implementationPlan : ImplementationPlan → List FieldCoverage
   | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ => cover .planTask ["id", "workId", "designRevision",

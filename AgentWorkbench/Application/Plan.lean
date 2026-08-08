@@ -1,5 +1,6 @@
 import AgentWorkbench.Application.Common
 import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Domain.Validation.OutputScope
 
 namespace AgentWorkbench
 
@@ -29,9 +30,15 @@ def PlanProposalRequest.plan
     sourceUnitDispositions := request.sourceUnitDispositions
     statementDispositions := request.statementDispositions, steps := request.steps }
 
+private def validateManagedOutputScopes (plan : ImplementationPlan) : Except String Unit := do
+  for step in plan.steps do
+    for outputScope in step.outputScopes do
+      Validation.validateManagedOutputScope outputScope
+
 def proposePlan
     (state : ProjectState) (candidate : ImplementationPlan) : Except String ProjectState := do
   let (_, work) ← currentBinding state
+  validateManagedOutputScopes candidate
   if (state.plan? candidate.id).isSome then throw s!"Plan id {candidate.id} already exists"
   if candidate.status != .candidate || candidate.workId != work.id ||
       candidate.designRevision != work.designRevision.getD "" then
@@ -127,6 +134,7 @@ def materializePlan
   let candidate ← match state.plan? planId with
     | some value => pure value
     | none => throw s!"no Plan {planId}"
+  validateManagedOutputScopes candidate
   if candidate.status != .candidate || candidate.workId != work.id ||
       candidate.designRevision != design.id then
     throw "only a current-bound Plan candidate can be materialized"
@@ -197,6 +205,7 @@ def materializePlan
         dependencyLineageIds := step.dependsOnStepIds.map (taskLineage work.id)
         outputScopes := step.outputScopes
         verificationCriterionIds := step.verificationCriterionIds
+        taskVerificationContracts := step.taskVerificationContracts
         verificationEvidenceEntryIds := preservedEvidence
         verificationTaskEntryId := preservedTaskEntryId
         materializedAtOrder := firstOrder, description := step.description

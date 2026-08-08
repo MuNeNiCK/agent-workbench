@@ -8,6 +8,7 @@ structure ResolvedCommand where
   inputTargets : List String
   outputScope : Option String
   criterionIds : List String
+  taskVerificationIds : List String
   target : Option String
   command : CommandSpec
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
@@ -35,6 +36,7 @@ def resolveCommandProfile?
         inputTargets := profile.inputTargets.getD []
         outputScope := profile.outputScope
         criterionIds := profile.criterionIds.getD []
+        taskVerificationIds := profile.taskVerificationIds.getD []
         target := profile.target
         command }
   | _ => none

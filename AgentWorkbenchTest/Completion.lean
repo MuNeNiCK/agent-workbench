@@ -97,7 +97,8 @@ def run : IO Unit := do
 
   IO.FS.withTempDir fun root => do
     IO.FS.writeFile (root / "artifact.txt") "observed"
-    let reviewed ← startReview root closed {
+    let inputs ← evaluateCurrentInputs root closed
+    let reviewed ← startReview root closed inputs.observations inputs.claimDigests {
       entryId := "review-completion-gap", reviewId := "review-completion-gap"
       purpose := .implementation, reviewerAgentRun := "reviewer-completion-gap" }
     let found ← fromExcept <| recordFinding reviewed {

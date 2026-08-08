@@ -157,7 +157,9 @@ private def startReview
     (projectRoot : System.FilePath) (store : WriteStore)
     (request : AgentWorkbench.ReviewStartRequest) : IO ProjectState := do
   let prior ← loadState store
-  let observed ← AgentWorkbench.startReview projectRoot prior request
+  let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
+  let observed ← AgentWorkbench.startReview projectRoot prior
+    inputs.observations inputs.claimDigests request
   let entry ← match observed.ledgerEntries.getLast? with
     | some value => pure value
     | none => fail "fresh Review produced no Ledger entry"

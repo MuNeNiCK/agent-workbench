@@ -11,18 +11,98 @@ if ($releaseVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
   throw "Invalid Agent Workbench release version"
 }
 $archive = "agent-workbench-windows-x86_64.zip"
-$temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-workbench-setup-" + [guid]::NewGuid())
-$destination = Join-Path $ProjectRoot ".agent-workbench/bin"
+$runtimeParent = Join-Path $ProjectRoot ".agent-workbench"
+$destination = Join-Path $runtimeParent "bin"
+$candidate = Join-Path $runtimeParent ".bin.next"
+$previous = Join-Path $runtimeParent ".bin.previous"
 $runtime = Join-Path $destination "agent-workbench.exe"
-$runtimeRelease = Join-Path $destination "skill/agent-workbench/release-version"
-$needsInstall = -not (Test-Path $runtime) -or -not (Test-Path $runtimeRelease)
-if (-not $needsInstall) {
-  $needsInstall = ((Get-Content $runtimeRelease -Raw).Trim() -ne $releaseVersion)
+$temporary = ""
+$requiredFiles = @(
+  "LICENSE-BLAKE3-APACHE-2.0",
+  "LICENSE-BLAKE3-APACHE-2.0-LLVM",
+  "LICENSE-BLAKE3-CC0-1.0",
+  "LICENSE-Blake3-lean",
+  "LICENSE-agent-workbench",
+  "LICENSE-elan-APACHE",
+  "LICENSE-elan-MIT",
+  "LICENSE-lean4",
+  "LICENSE-leansqlite",
+  "LICENSES-lean4",
+  "README.md",
+  "agent-workbench.exe",
+  "docs/assurance.md",
+  "docs/concepts.md",
+  "docs/getting-started.md",
+  "docs/index.md",
+  "docs/installation.md",
+  "docs/operation-reference.md",
+  "docs/recovery.md",
+  "docs/releases.md",
+  "docs/reviews.md",
+  "docs/state-reference.md",
+  "docs/workflow.md",
+  "elan.exe",
+  "skill/agent-workbench/SKILL.md",
+  "skill/agent-workbench/agents/openai.yaml",
+  "skill/agent-workbench/release-version",
+  "skill/agent-workbench/scripts/setup.ps1",
+  "skill/agent-workbench/scripts/setup.sh"
+)
+$requiredDirectories = @(
+  ".",
+  "docs",
+  "skill",
+  "skill/agent-workbench",
+  "skill/agent-workbench/agents",
+  "skill/agent-workbench/scripts"
+)
+
+function Test-RuntimeBundle([string]$BundleRoot) {
+  if (-not (Test-Path -LiteralPath $BundleRoot -PathType Container)) { return $false }
+  $marker = Join-Path $BundleRoot "skill/agent-workbench/release-version"
+  if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+  if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $releaseVersion) { return $false }
+  $entries = @(Get-ChildItem -LiteralPath $BundleRoot -Force -Recurse)
+  if ($entries | Where-Object {
+      ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    }) { return $false }
+  $actualFiles = @($entries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+    [System.IO.Path]::GetRelativePath($BundleRoot, $_.FullName).Replace('\', '/')
+  } | Sort-Object)
+  $actualDirectories = @(".") + @($entries | Where-Object { $_.PSIsContainer } | ForEach-Object {
+    [System.IO.Path]::GetRelativePath($BundleRoot, $_.FullName).Replace('\', '/')
+  } | Sort-Object)
+  if ((Compare-Object $requiredFiles $actualFiles).Count -ne 0) { return $false }
+  if ((Compare-Object $requiredDirectories $actualDirectories).Count -ne 0) { return $false }
+  return $true
 }
 
+function Remove-PathIfPresent([string]$Path) {
+  if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
+}
+
+function Restore-RuntimeSwap {
+  if (Test-Path -LiteralPath $previous) {
+    if ((Test-Path -LiteralPath $destination) -and (Test-RuntimeBundle $destination)) {
+      Remove-PathIfPresent $previous
+    } else {
+      Remove-PathIfPresent $destination
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+  }
+  Remove-PathIfPresent $candidate
+}
+
+if ((Test-Path -LiteralPath $previous) -or (Test-Path -LiteralPath $candidate)) {
+  New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
+  Restore-RuntimeSwap
+}
+$needsInstall = -not (Test-RuntimeBundle $destination)
+
 try {
-  New-Item -ItemType Directory -Path $temporary | Out-Null
   if ($needsInstall) {
+    $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-workbench-setup-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $temporary | Out-Null
     $archivePath = Join-Path $temporary $archive
     $checksumPath = "$archivePath.sha256"
     if ($LocalArchive -or $LocalChecksum) {
@@ -44,11 +124,29 @@ try {
     $expected = ((Get-Content $checksumPath -Raw) -split '\s+')[0].ToLowerInvariant()
     $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { throw "Agent Workbench archive checksum mismatch" }
-    New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    Expand-Archive -Force $archivePath $destination
-    if ((Get-Content $runtimeRelease -Raw).Trim() -ne $releaseVersion) {
-      throw "Installed Agent Workbench runtime identity differs from the Skill release"
+
+    New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
+    Remove-PathIfPresent $candidate
+    New-Item -ItemType Directory -Path $candidate | Out-Null
+    Expand-Archive $archivePath $candidate
+    if (-not (Test-RuntimeBundle $candidate)) {
+      throw "Downloaded Agent Workbench archive is not a complete release bundle"
     }
+
+    Remove-PathIfPresent $previous
+    if (Test-Path -LiteralPath $destination) {
+      Move-Item -LiteralPath $destination -Destination $previous
+    }
+    try {
+      Move-Item -LiteralPath $candidate -Destination $destination
+    } catch {
+      if ((-not (Test-Path -LiteralPath $destination)) -and
+          (Test-Path -LiteralPath $previous)) {
+        Move-Item -LiteralPath $previous -Destination $destination
+      }
+      throw "Failed to replace the Agent Workbench runtime bundle: $_"
+    }
+    Remove-PathIfPresent $previous
   }
   if (Test-Path (Join-Path $ProjectRoot ".agent-workbench/state.db")) {
     $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
@@ -65,5 +163,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Agent Workbench initialization failed" }
   }
 } finally {
-  if (Test-Path $temporary) { Remove-Item -Recurse -Force $temporary }
+  if ((-not (Test-Path -LiteralPath $destination)) -and
+      (Test-Path -LiteralPath $previous)) {
+    Move-Item -LiteralPath $previous -Destination $destination
+  }
+  Remove-PathIfPresent $candidate
+  if ((Test-Path -LiteralPath $destination) -and
+      (Test-Path -LiteralPath $previous)) {
+    Remove-PathIfPresent $previous
+  }
+  if ($temporary -and (Test-Path $temporary)) {
+    Remove-Item -Recurse -Force $temporary
+  }
 }

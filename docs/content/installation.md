@@ -32,8 +32,12 @@ below `.agent-workbench/toolchains`.
 
 Every project entry runs setup as a cheap version check. It compares the installed Skill's release
 marker with the marker embedded in the private runtime bundle. A missing or different marker causes
-the exact pinned archive to replace the private runtime; a matching runtime performs no download or
-extraction. This prevents a newly installed Skill from silently continuing with an older runtime.
+the exact pinned archive to replace the private runtime. Setup extracts into a fresh sibling,
+requires the complete release bundle and matching marker, and then performs a recoverable directory
+swap; files that belonged only to the old bundle cannot survive the replacement. An interrupted
+swap is restored or finished by the next setup. For a matching complete runtime, the acquisition
+and version-check phase performs no download, extraction, or runtime-bundle write. This prevents a
+newly installed Skill from silently continuing with an older or partially replaced runtime.
 
 When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
 schema-revision mismatch is handed to native `init` for migration; other read failures remain

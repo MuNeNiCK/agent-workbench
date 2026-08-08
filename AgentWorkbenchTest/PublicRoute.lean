@@ -163,6 +163,9 @@ def run : IO Unit := do
     let capturedDesign ← DesignSource.captureAll root [designTarget]
     let designUnits := capturedDesign.flatMap (·.units)
     expect (!designUnits.isEmpty) "public route produced no Design source unit"
+    let productSentinel := root / "protected-output-product.txt"
+    IO.FS.writeFile productSentinel "product content before rejected output scopes\n"
+    let productSentinelBefore ← IO.FS.readBinFile productSentinel
     let designResult ← invokeJson root ["design", "propose"] ({
       producerAgentRun := "agent-route"
       changeRationale := "initial public-route Design"
@@ -207,6 +210,27 @@ def run : IO Unit := do
     let capturedPlan ← PlanSource.captureAll root "work-route" [planTarget]
     let planUnits := capturedPlan.flatMap (·.units)
     expect (!planUnits.isEmpty) "public route produced no Plan source unit"
+    let beforeProtectedScopes ← Store.loadState (← Store.openReadOnly database)
+    for outputScope in
+        ["tree:.", "tree:.agent-workbench", "file:.agent-workbench/state.db"] do
+      let protectedStep : PlanStep := {
+        routeStep with outputScopes := [criterion.target, outputScope] }
+      let rejected ← invoke root ["plan", "propose"] (some (Lean.toJson ({
+        producerAgentRun := "agent-route"
+        reason := "protected managed-output regression"
+        sourceDocumentTargets := [planTarget]
+        sourceUnitDispositions := planUnits.map fun unit =>
+          { unitId := unit.id, stepId := some protectedStep.id }
+        statementDispositions := [{
+          statementId := statement.id, statementText := statement.text
+          deltaKind := .added, stepIds := [protectedStep.id] }]
+        steps := [protectedStep] } : PlanProposalRequest)).compress)
+      expect (rejected.exitCode != 0 && rejected.stderr.contains "managed output")
+        s!"public Plan route accepted protected output scope {outputScope}"
+      expect ((← Store.loadState (← Store.openReadOnly database)) == beforeProtectedScopes)
+        s!"protected output scope changed authoritative state: {outputScope}"
+      expect ((← IO.FS.readBinFile productSentinel) == productSentinelBefore)
+        s!"protected output scope changed product content: {outputScope}"
     let planResult ← invokeJson root ["plan", "propose"] ({
       producerAgentRun := "agent-route"
       reason := "implement the complete initial Design delta"
@@ -237,6 +261,21 @@ def run : IO Unit := do
     unless helperCheck.exitCode == 0 do
       throw (IO.userError s!"native command helper failed: {helperCheck.stderr}")
     IO.FS.writeFile artifactPath "baseline artifact\n"
+    let beforeProtectedProfiles ← Store.loadState (← Store.openReadOnly database)
+    for outputScope in
+        ["tree:.", "tree:.agent-workbench", "file:.agent-workbench/state.db"] do
+      let rejected ← invoke root ["profile", "define"] (some (Lean.toJson ({
+        entryId := "profile-protected-output"
+        purpose := "protected managed-output regression"
+        taskEntryId := taskId, outputScope
+        criterionIds := [commandCriterion.id], command := successfulCommand
+        } : ProfileDefineRequest)).compress)
+      expect (rejected.exitCode != 0 && rejected.stderr.contains "managed output")
+        s!"public Profile route accepted protected output scope {outputScope}"
+      expect ((← Store.loadState (← Store.openReadOnly database)) == beforeProtectedProfiles)
+        s!"protected Profile output changed authoritative state: {outputScope}"
+      expect ((← IO.FS.readBinFile productSentinel) == productSentinelBefore)
+        s!"protected Profile output changed product content: {outputScope}"
     let _ ← invokeJson root ["profile", "define"] ({
       entryId := "profile-route", purpose := "produce the Task output"
       taskEntryId := taskId, inputTargets := ["file:command-input.txt"]

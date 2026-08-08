@@ -98,8 +98,10 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
           let review ← match value.review.payload with
             | .review review => pure review
             | _ => fail s!"entry {reviewEntryId} is not a Review"
+          let inputs ← evaluateCurrentInputs projectRoot state
           let currentTargetSnapshot ← try
               some <$> ReviewTarget.currentSnapshot projectRoot state review.purpose review.target
+                inputs.observations inputs.claimDigests
             catch _ => pure none
           writeJson { value with
             currentTargetSnapshot

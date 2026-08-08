@@ -4,10 +4,16 @@ namespace AgentWorkbenchTest.Review
 
 open AgentWorkbench AgentWorkbenchTest
 
+private def startCurrentReview
+    (root : System.FilePath) (state : ProjectState) (request : ReviewStartRequest) :
+    IO ProjectState := do
+  let inputs ← evaluateCurrentInputs root state
+  startReview root state inputs.observations inputs.claimDigests request
+
 private def startedReview (root : System.FilePath) : IO ProjectState :=
   let predecessor := { plan with
     id := "plan-0", status := .superseded, contentDigest := "blake3:superseded-plan" }
-  startReview root { baseState with implementationPlans := [predecessor, plan] } {
+  startCurrentReview root { baseState with implementationPlans := [predecessor, plan] } {
     entryId := "review-1", reviewId := "review-lineage-1", purpose := .implementation
     reviewerAgentRun := "reviewer-1" }
 
@@ -73,7 +79,7 @@ private def freshReviewUsesBoundedCompletionProjection (root : System.FilePath) 
   let snapshot ← Snapshot.target root criterion.target
   let closed ← fromExcept <| closeTask state [{ target := criterion.target, snapshot }]
     { entryId := "task-bounded-closed", taskEntryId := "task-open" }
-  let reviewed ← startReview root closed {
+  let reviewed ← startCurrentReview root closed {
     entryId := "review-bounded", reviewId := "review-bounded", purpose := .implementation
     reviewerAgentRun := "reviewer-bounded" }
   let reviewEntry ← match reviewed.entry? "review-bounded" with
@@ -115,9 +121,187 @@ private def freshReviewUsesBoundedCompletionProjection (root : System.FilePath) 
     "v1 regression fixture did not retain its historical unbounded projection"
   fromExcept (validateState { reviewed with ledgerEntries := v1Entries })
 
+private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath) : IO Unit := do
+  let privateTarget := "file:.agent-workbench/private-review-input"
+  IO.FS.createDirAll (root / ".agent-workbench")
+  IO.FS.writeFile (root / "artifact.txt") "candidate"
+  IO.FS.writeFile (root / ".agent-workbench" / "private-review-input") "current input"
+  let artifactSnapshot ← Snapshot.target root criterion.target
+  let privateSnapshot ← Snapshot.target root privateTarget
+  let environmentName := "AGENT_WORKBENCH_REVIEW_CURRENCY_UNSET_FIXTURE"
+  let environmentIdentity := Process.environmentIdentity environmentName
+    (← IO.getEnv environmentName)
+  let commandCriterion : AcceptanceCriterion := {
+    criterion with evidenceKind := "command" }
+  let commandDesign : DesignRevision := {
+    design with acceptanceCriteria := [commandCriterion] }
+  let commandStep : PlanStep := {
+    step with verificationCriterionIds := [commandCriterion.id] }
+  let commandPlan : ImplementationPlan := {
+    plan with steps := [commandStep] }
+  let openTask := taskEntry
+  let profileCommand : CommandSpec := {
+    executable := "true", environment := #[environmentName] }
+  let profileEntry : LedgerEntry := {
+    id := "profile-review-currency", order := 2, scope := work.scope
+    workId := some work.id, designRevision := some commandDesign.id
+    payload := .commandProfile {
+      purpose := "verify review currency", taskEntryId := some openTask.id
+      inputTargets := some [privateTarget], outputScope := some commandCriterion.target
+      criterionIds := some [commandCriterion.id], taskVerificationIds := some []
+      target := some commandCriterion.target, command := profileCommand } }
+  let commandEntry : LedgerEntry := {
+    id := "evidence-review-currency", order := 3, scope := work.scope
+    workId := some work.id, designRevision := some commandDesign.id
+    payload := .commandExecution {
+      profileEntryId := profileEntry.id, taskEntryId := some openTask.id
+      outputScope := some commandCriterion.target, criterionId := some commandCriterion.id
+      inputSnapshots := some [{ target := privateTarget, snapshot := privateSnapshot }]
+      environmentSnapshots := some [{
+        target := environmentIdentity.1, snapshot := environmentIdentity.2 }]
+      target := some commandCriterion.target, snapshot := some artifactSnapshot
+      command := { profileCommand with workingDirectory := some root.toString }
+      exitCode := 0, stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
+      successful := true, producerAgentRun := work.responsibleAgentRun } }
+  let closedTask : LedgerEntry := {
+    id := "task-review-currency-closed", order := 4, scope := work.scope
+    workId := some work.id, designRevision := some commandDesign.id
+    supersedes := [openTask.id]
+    payload := .task {
+      planId := some commandPlan.id, planStepId := some commandStep.id
+      lineageId := some s!"{work.id}:{commandStep.id}"
+      outputScopes := commandStep.outputScopes
+      verificationCriterionIds := commandStep.verificationCriterionIds
+      verificationEvidenceEntryIds := [commandEntry.id]
+      verificationTaskEntryId := some openTask.id
+      materializedAtOrder := 1, description := commandStep.description
+      required := true, closed := true } }
+  let commandState : ProjectState := {
+    revision := 5, acceptedDesignId := some commandDesign.id, focusedWorkId := some work.id
+    designRevisions := [commandDesign], works := [work], implementationPlans := [commandPlan]
+    ledgerEntries := [openTask, profileEntry, commandEntry, closedTask] }
+  fromExcept (validateState commandState)
+  let currentInputs ← evaluateCurrentInputs root commandState
+  let currentReview ← startReview root commandState currentInputs.observations
+    currentInputs.claimDigests {
+      entryId := "review-current-inputs", reviewId := "review-current-inputs"
+      purpose := .implementation, reviewerAgentRun := "reviewer-current-inputs" }
+  let currentRecord ← match currentReview.entry? "review-current-inputs" with
+    | some { payload := .review value, .. } => pure value
+    | _ => throw (IO.userError "current-input Review was not recorded")
+  expect (currentRecord.targetManifest.any (·.id == commandEntry.id))
+    "fresh Review omitted current Task closing evidence"
+
+  IO.FS.writeFile (root / ".agent-workbench" / "private-review-input") "changed input"
+  let stalePrivateInputs ← evaluateCurrentInputs root commandState
+  let stalePrivateSnapshot ← ReviewTarget.currentSnapshot root commandState
+    .implementation currentRecord.target stalePrivateInputs.observations stalePrivateInputs.claimDigests
+  expect (stalePrivateSnapshot != currentRecord.targetSnapshot)
+    "private input drift left the fixed Review target current"
+  let stalePrivateReview ← startReview root commandState stalePrivateInputs.observations
+    stalePrivateInputs.claimDigests {
+      entryId := "review-stale-private", reviewId := "review-stale-private"
+      purpose := .implementation, reviewerAgentRun := "reviewer-stale-private" }
+  let stalePrivateRecord ← match stalePrivateReview.entry? "review-stale-private" with
+    | some { payload := .review value, .. } => pure value
+    | _ => throw (IO.userError "stale-private Review was not recorded")
+  expect (!stalePrivateRecord.targetManifest.any (·.id == commandEntry.id) &&
+      stalePrivateRecord.targetSnapshot == stalePrivateSnapshot)
+    "fresh Review retained stale private-input evidence or used a different current projection"
+
+  let staleEnvironmentObservations := currentInputs.observations.map fun observation =>
+    if observation.target == environmentIdentity.1 then
+      { observation with snapshot := "blake3:changed-environment" }
+    else observation
+  let staleEnvironment ← match ← ReviewTarget.freeze root commandState .implementation none
+      staleEnvironmentObservations currentInputs.claimDigests with
+    | .ok value => pure value
+    | .error message => throw (IO.userError message)
+  expect (!staleEnvironment.manifest.any (·.id == commandEntry.id))
+    "fresh Review retained evidence from a stale environment identity"
+
+  let proofDirectory := root / ".agent-workbench" / "design" / "proofs" / "review-currency"
+  IO.FS.createDirAll proofDirectory
+  let proofSource := proofDirectory / "ReviewCurrency.lean"
+  IO.FS.writeFile proofSource "def ReviewCurrency.property : True := True.intro\n"
+  let proofSourceDigest ← ContentDigest.file proofSource
+  let claim : LeanClaim := {
+    id := "claim-review-currency"
+    elaboratedPropositionDigest := "blake3:elaborated-review-currency"
+    propositionDependencies := ["True"]
+    input := {
+      statementId := statement.id, statementText := statement.text
+      mapping := "the accepted statement maps to the selected property"
+      proposition := "ReviewCurrency.Property", witness := "ReviewCurrency.property"
+      proofRoot := ".agent-workbench/design/proofs/review-currency"
+      declaredSources := [{
+        path := "ReviewCurrency.lean", expectedDigest := some proofSourceDigest }]
+      check := { executable := "lake", arguments := #["build"] }
+      toolchain := ProofToolchain.identifier } }
+  let proofCoverage := design.statementCoverage.map fun coverage =>
+    { coverage with leanClaims := {
+        selectedIds := [claim.id], noSelectionReason := none } }
+  let proofDesign : DesignRevision := {
+    design with
+    sourceDocuments := design.sourceDocuments ++ [{
+      target := "file:.agent-workbench/design/proofs/review-currency/ReviewCurrency.lean"
+      mediaKind := "lean", snapshot := proofSourceDigest }]
+    statementCoverage := proofCoverage, leanClaims := [claim] }
+  let receipt (id : String) (order : Nat) (sourceDigest inputDigest : String) : LedgerEntry := {
+    id, order, scope := work.scope, workId := some work.id, designRevision := some proofDesign.id
+    payload := .leanProofReceipt {
+      claimId := claim.id, claimInput := claim.input
+      elaboratedPropositionDigest := claim.elaboratedPropositionDigest
+      propositionDependencies := claim.propositionDependencies
+      assumptionDependencies := []
+      inputDigest, sourceDigests := [{ path := "ReviewCurrency.lean", digest := sourceDigest }]
+      toolchain := ProofToolchain.identifier, exitCode := 0
+      outputDigest := s!"blake3:output-{id}", kernelAccepted := true } }
+  let staleReceipt := receipt "proof-review-stale" 2 "blake3:stale-source" "blake3:stale-input"
+  let currentReceipt := receipt "proof-review-current" 3 proofSourceDigest "blake3:current-input"
+  let proofState : ProjectState := {
+    baseState with
+    revision := 5, designRevisions := [proofDesign],
+    ledgerEntries := [taskEntry, staleReceipt, currentReceipt] }
+  fromExcept (validateState proofState)
+  let currentDigest : CurrentClaimDigest := {
+    claimId := claim.id, claimInput := claim.input
+    elaboratedPropositionDigest := claim.elaboratedPropositionDigest
+    propositionDependencies := claim.propositionDependencies
+    sourceDigests := [{ path := "ReviewCurrency.lean", digest := proofSourceDigest }]
+    inputDigest := "blake3:current-input" }
+  let proofReview ← startReview root proofState [] [currentDigest] {
+    entryId := "review-current-proof", reviewId := "review-current-proof"
+    purpose := .implementation, reviewerAgentRun := "reviewer-current-proof" }
+  let proofRecord ← match proofReview.entry? "review-current-proof" with
+    | some { payload := .review value, .. } => pure value
+    | _ => throw (IO.userError "current-proof Review was not recorded")
+  expect (proofRecord.targetManifest.any (·.id == currentReceipt.id) &&
+      !proofRecord.targetManifest.any (·.id == staleReceipt.id))
+    "fresh Review selected a stale Lean receipt instead of the current receipt"
+  IO.FS.writeFile proofSource "def ReviewCurrency.property : True := by trivial\n"
+  let changedSourceDigest ← ContentDigest.file proofSource
+  let changedDigest := { currentDigest with
+    sourceDigests := [{ path := "ReviewCurrency.lean", digest := changedSourceDigest }]
+    inputDigest := "blake3:changed-input" }
+  let staleProofReview ← startReview root proofState [] [changedDigest] {
+    entryId := "review-stale-proof", reviewId := "review-stale-proof"
+    purpose := .implementation, reviewerAgentRun := "reviewer-stale-proof" }
+  let staleProofRecord ← match staleProofReview.entry? "review-stale-proof" with
+    | some { payload := .review value, .. } => pure value
+    | _ => throw (IO.userError "stale-proof Review was not recorded")
+  expect (!staleProofRecord.targetManifest.any (·.kind == "lean_proof_receipt") &&
+      staleProofRecord.targetSnapshot != proofRecord.targetSnapshot)
+    "proof-source drift left a stale Lean receipt in the fresh Review target"
+
 private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO Unit := do
   IO.FS.writeFile (root / "artifact.txt") "candidate"
   let snapshot ← Snapshot.target root criterion.target
+  let currentEvidence := { evidenceEntry with payload := .artifactObservation {
+    taskEntryId := some "task-open", outputScope := some criterion.target
+    criterionId := criterion.id, target := criterion.target, snapshot
+    operation := "inspect artifact", result := "artifact exists", successful := true
+    producerAgentRun := work.responsibleAgentRun } }
   let closedTask : LedgerEntry := {
     id := "task-evidence-component-closed", order := 3, scope := work.scope
     workId := some work.id, designRevision := some design.id, supersedes := ["task-open"]
@@ -126,7 +310,7 @@ private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO 
       lineageId := some s!"{work.id}:{step.id}"
       outputScopes := step.outputScopes
       verificationCriterionIds := step.verificationCriterionIds
-      verificationEvidenceEntryIds := [evidenceEntry.id]
+      verificationEvidenceEntryIds := [currentEvidence.id]
       verificationTaskEntryId := some "task-open"
       materializedAtOrder := 1, description := step.description
       required := true, closed := true } }
@@ -137,9 +321,9 @@ private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO 
     baseState with
     revision := 5
     implementationPlans := [predecessor, plan]
-    ledgerEntries := [taskEntry, evidenceEntry, closedTask] }
+    ledgerEntries := [taskEntry, currentEvidence, closedTask] }
   fromExcept (validateState initial)
-  let reviewed ← startReview root initial {
+  let reviewed ← startCurrentReview root initial {
     entryId := "review-command-component", reviewId := "review-command-component"
     purpose := .implementation, reviewerAgentRun := "reviewer-command-component" }
   let reviewRecord ← match reviewed.entry? "review-command-component" with
@@ -236,7 +420,7 @@ def run : IO Unit :=
       "project snapshot included private Agent Workbench state"
     let reviewed ← startedReview root
     let emptyReviewerRejected ← try
-      let _ ← startReview root baseState {
+      let _ ← startCurrentReview root baseState {
         entryId := "review-empty-reviewer", reviewId := "review-empty-reviewer"
         purpose := .implementation, reviewerAgentRun := "" }
       pure false
@@ -249,7 +433,7 @@ def run : IO Unit :=
       | .review value => pure value
       | _ => throw (IO.userError "Review entry has wrong payload")
     let encodedReview := (Lean.toJson review).compress
-    let persistedWithoutVersion := encodedReview.replace "\"targetManifestVersion\":2," ""
+    let persistedWithoutVersion := encodedReview.replace "\"targetManifestVersion\":3," ""
     expect (persistedWithoutVersion != encodedReview)
       "Review fixture did not contain the current manifest version"
     let decodedV0 ← match Lean.Json.parse persistedWithoutVersion with
@@ -260,7 +444,7 @@ def run : IO Unit :=
     expect (decodedV0.targetManifestVersion == 0)
       "Review decoder did not retain a pre-version manifest as historical format"
     expect (review.targetSourceId == work.id && review.target == s!"work:{work.id}" &&
-      review.targetManifestVersion == 2 &&
+      review.targetManifestVersion == 3 &&
       review.targetManifest.any (fun value => value.kind == "design" && value.id == design.id) &&
       review.targetManifest.any (fun value => value.kind == "plan" && value.id == plan.id) &&
       review.targetManifest.any (fun value => value.kind == "task" && value.id == "task-open"))
@@ -446,7 +630,7 @@ def run : IO Unit :=
     fromExcept (validateState implementationFound)
     let mut selfReviewRejected := false
     try
-      let _ ← startReview root baseState {
+      let _ ← startCurrentReview root baseState {
         entryId := "review-self", reviewId := "review-self", purpose := .implementation
         reviewerAgentRun := design.producerAgentRun }
     catch _ => selfReviewRejected := true
@@ -607,6 +791,7 @@ def run : IO Unit :=
     historicalReviewSurvivesWorkHandoff root
     historicalReviewSurvivesDesignAdoption root
     freshReviewUsesBoundedCompletionProjection root
+    freshReviewUsesCurrentEvidenceAndClaimInputs root
     evidenceComponentFindingCanBeVerified root
 
 end AgentWorkbenchTest.Review
