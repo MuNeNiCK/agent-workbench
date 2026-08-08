@@ -226,6 +226,54 @@ def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIn
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
 
+/-- A typed recursive shape for strict JSON field validation. Input examples stay concise for
+humans, while structured arrays are populated here so their object fields are never inferred from
+an empty example. -/
+def operationInputSchema? (operation : String) : Option Lean.Json :=
+  let designSchema : DesignProposalRequest := {
+    producerAgentRun := "agent-run-1"
+    changeRationale := "record the Design"
+    changeBasisEntryIds := ["correction-1"]
+    amendsCandidate := some "design-1"
+    sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
+    sourceUnitDispositions := [{
+      unitId := "source-unit-1", role := .requirement, reason := some "authoritative requirement" }]
+    assumptions := [{
+      id := "assumption-1", text := "the service is available"
+      sourceUnitIds := ["source-unit-1"] }]
+    statements := [{ statement with assumptions := ["assumption-1"] }]
+    statementCoverage := [{
+      statementId := statement.id, sourceUnitIds := ["source-unit-1"]
+      leanClaims := { selectedIds := [claim.id] }
+      acceptanceCriteria := { selectedIds := [criterion.id] }
+      implementationRequired := true }]
+    removedStatements := [{
+      statementId := "removed-statement", statementText := "superseded requirement"
+      implementationRequired := false, noImplementationReason := some "removed by the successor" }]
+    acceptanceCriteria := [criterion, artifactCriterion]
+    leanClaims := [claim] }
+  let planSchema : PlanProposalRequest := {
+    predecessorPlanId := some "plan-1"
+    producerAgentRun := "agent-run-1"
+    reason := "implement the complete Design delta"
+    changeBasisEntryIds := ["finding-1"]
+    sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"]
+    sourceUnitDispositions := [{
+      unitId := "plan-source-unit-1", stepId := some "step-1" }]
+    statementDispositions := [{
+      statementId := statement.id, statementText := statement.text
+      deltaKind := .added, stepIds := ["step-1"] }]
+    steps := [{
+      id := "step-1", description := "implement the Statement"
+      outputScopes := [criterion.target]
+      requiredClaimIds := [claim.id]
+      verificationCriterionIds := [criterion.id]
+      acceptedFindingEntryIds := ["finding-1"] }] }
+  match operation with
+  | "design propose" | "design amend" => some (Lean.toJson designSchema)
+  | "plan propose" | "plan replace" => some (Lean.toJson planSchema)
+  | _ => (operationContract? operation).bind (·.inputExample)
+
 def describedOperation?
     (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=
   (operationContract? operation).map fun contract =>

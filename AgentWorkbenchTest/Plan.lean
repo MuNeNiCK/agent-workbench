@@ -180,4 +180,64 @@ def run : IO Unit := do
     expect (match entry.payload with | .task value => !value.closed | _ => false)
       s!"Plan replacement preserved dependent Task {taskId} after its dependency became stale"
 
+  let obligationBase := dependencyPlanState
+  let obligationOld ← match obligationBase.plan? "plan-old" with
+    | some value => pure value
+    | none => throw (IO.userError "obligation fixture omitted its current Plan")
+  let stepA ← match uniqueBy? obligationOld.steps (·.id) "a" with
+    | some value => pure value
+    | none => throw (IO.userError "obligation fixture omitted step A")
+  let secondStatement : Statement := {
+    id := "statement-2", text := "the second obligation is implemented" }
+  let secondSource : DesignSourceUnit := { sourceUnit with
+    id := "unit-2"
+    path := "requirement/2"
+    text := secondStatement.text
+    digest := "blake3:unit-2" }
+  let primaryCoverage ← match design.statementCoverage.head? with
+    | some value => pure value
+    | none => throw (IO.userError "obligation fixture omitted primary Statement coverage")
+  let expandedDesign : DesignRevision := { design with
+    sourceUnits := [sourceUnit, secondSource]
+    sourceUnitDispositions := [
+      { unitId := sourceUnit.id, role := .requirement },
+      { unitId := secondSource.id, role := .requirement }]
+    statements := [statement, secondStatement]
+    statementCoverage := [primaryCoverage, {
+      statementId := secondStatement.id, sourceUnitIds := [secondSource.id]
+      leanClaims := { noSelectionReason := some "no logical Claim is selected" }
+      acceptanceCriteria := { noSelectionReason := some "verified through the shared implementation output" }
+      implementationRequired := true }] }
+  let oldWithTwoObligations : ImplementationPlan := { obligationOld with
+    statementDispositions := [
+      { statementId := statement.id, statementText := statement.text
+        deltaKind := .added, stepIds := ["a"] },
+      { statementId := secondStatement.id, statementText := secondStatement.text
+        deltaKind := .added, stepIds := ["b"] }] }
+  let reassignedCandidate : ImplementationPlan := { oldWithTwoObligations with
+    id := "plan-reassigned", predecessorPlanId := some oldWithTwoObligations.id
+    status := .candidate, contentDigest := "blake3:reassigned"
+    sourceUnitDispositions := obligationOld.sourceUnitDispositions.map fun disposition =>
+      { disposition with stepId := some stepA.id }
+    statementDispositions := [
+      { statementId := statement.id, statementText := statement.text
+        deltaKind := .added, stepIds := [stepA.id] },
+      { statementId := secondStatement.id, statementText := secondStatement.text
+        deltaKind := .added, stepIds := [stepA.id] }]
+    steps := [stepA] }
+  let obligationState : ProjectState := { obligationBase with
+    designRevisions := [expandedDesign]
+    implementationPlans := [oldWithTwoObligations, reassignedCandidate] }
+  fromExcept (validateState obligationState)
+  let obligationReplaced ← fromExcept <| materializePlan obligationState
+    reassignedCandidate.id
+    [TargetObservation.mk criterion.target "blake3:old-evidence-a"] []
+  let reassignedTask ← match obligationReplaced.entry? "task-plan-reassigned-a" with
+    | some value => pure value
+    | none => throw (IO.userError "reassigned Plan omitted retained Task A")
+  expect (match reassignedTask.payload with
+    | .task value => !value.closed && value.verificationEvidenceEntryIds.isEmpty
+    | _ => false)
+    "Plan replacement preserved closing evidence after assigning a new obligation to retained step A"
+
 end AgentWorkbenchTest.Plan

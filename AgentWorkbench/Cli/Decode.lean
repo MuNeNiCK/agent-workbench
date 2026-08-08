@@ -26,9 +26,9 @@ private partial def unknownJsonFields
   | _, _ => []
 
 private def rejectUnknownFields (operation : String) (json : Lean.Json) : IO Unit := do
-  let some contract := operationContract? operation
-    | fail s!"missing native contract for {operation}"
-  let some sample := contract.inputExample
+  if (operationContract? operation).isNone then
+    fail s!"missing native contract for {operation}"
+  let some sample := operationInputSchema? operation
     | pure ()
   let unknown := unknownJsonFields "" json sample
   unless unknown.isEmpty do

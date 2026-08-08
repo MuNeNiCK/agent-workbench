@@ -76,11 +76,28 @@ private def closeAffectedStepIds
         if expanded.length == affected.length then affected else close remaining expanded
   close candidate.steps.length seeds
 
+private def sourceBindingsFor
+    (plan : ImplementationPlan) (stepId : String) : List PlanSourceUnitDisposition :=
+  plan.sourceUnitDispositions.filter (·.stepId == some stepId)
+    |>.mergeSort (fun left right => left.unitId < right.unitId)
+
+private def statementBindingsFor
+    (plan : ImplementationPlan) (stepId : String) : List PlanStatementDisposition :=
+  plan.statementDispositions.filter (·.stepIds.contains stepId)
+    |>.mergeSort (fun left right => left.statementId < right.statementId)
+
 private def affectedStepIds
     (prior : Option ImplementationPlan) (candidate : ImplementationPlan) : List String :=
   let direct := candidate.steps.filterMap fun step =>
-    match prior.bind fun plan => uniqueBy? plan.steps (·.id) step.id with
-    | some old => if old == step then none else some step.id
+    match prior with
+    | some oldPlan => match uniqueBy? oldPlan.steps (·.id) step.id with
+      | some old =>
+          if old == step &&
+              sourceBindingsFor oldPlan old.id == sourceBindingsFor candidate step.id &&
+              statementBindingsFor oldPlan old.id == statementBindingsFor candidate step.id then
+            none
+          else some step.id
+      | none => some step.id
     | none => some step.id
   closeAffectedStepIds candidate direct
 
