@@ -3,6 +3,7 @@ import AgentWorkbench.Adapter.DesignSource
 import AgentWorkbench.Adapter.PlanSource
 import AgentWorkbench.Adapter.PlanArchive
 import AgentWorkbench.Adapter.Store
+import AgentWorkbenchTest.RouteReceipt
 
 namespace AgentWorkbenchTest.PublicRoute
 
@@ -28,6 +29,9 @@ private def invokeOk
   let output ← invoke root command input
   unless output.exitCode == 0 do
     throw (IO.userError s!"public binary route failed for {command}: {output.stderr}")
+  match Operation.parseCommand? command with
+  | some operation => RouteReceipt.recordSuccessful .publicRoute operation
+  | none => pure ()
   pure output.stdout
 
 private def invokeJson [Lean.ToJson α]
@@ -48,21 +52,60 @@ def run : IO Unit :=
       id := "criterion-command-route", statementId := some statement.id
       statement := "the artifact command succeeds", target := criterion.target
       evidenceKind := "command" }
-    let routeStep : PlanStep := { step with
-      verificationCriterionIds := [criterion.id, commandCriterion.id] }
     let workbenchRoot := root / ".agent-workbench"
     let database := workbenchRoot / "state.db"
     let designDirectory := workbenchRoot / "design" / "product"
     let implementationDirectory := workbenchRoot / "design" / "implementation"
     let planDirectory := workbenchRoot / "design" / "plans" / "work-route"
+    let proofDirectory := workbenchRoot / "design" / "proofs" / "route"
+    let proofModuleDirectory := proofDirectory / "RouteDesign"
+    let bundledDirectory := workbenchRoot / "bin"
+    IO.FS.createDirAll bundledDirectory
+    let locator ← IO.Process.output {
+      cmd := if System.Platform.isWindows then "where" else "which"
+      args := #["elan"] }
+    unless locator.exitCode == 0 do
+      throw (IO.userError s!"public init route cannot locate Elan: {locator.stderr}")
+    let some elanSource := locator.stdout.splitOn "\n" |>.find? (fun line => !line.trimAscii.isEmpty)
+      | throw (IO.userError "public init route received an empty Elan location")
+    let bundledElan := bundledDirectory /
+      (if System.Platform.isWindows then "elan.exe" else "elan")
+    IO.FS.writeBinFile bundledElan (← IO.FS.readBinFile elanSource.trimAscii.toString)
+    if !System.Platform.isWindows then
+      let chmod ← IO.Process.output { cmd := "chmod", args := #["+x", bundledElan.toString] }
+      unless chmod.exitCode == 0 do
+        throw (IO.userError s!"public init route could not mark Elan executable: {chmod.stderr}")
+    let _ ← invokeOk root ["init"]
     IO.FS.createDirAll designDirectory
     IO.FS.createDirAll implementationDirectory
     IO.FS.createDirAll planDirectory
+    IO.FS.createDirAll proofModuleDirectory
     let _ ← invokeJson root ["work", "start"] ({
       id := "work-route", outcome := "produce a public-route artifact"
       scope := "project", responsibleAgentRun := "agent-route" } : WorkStartRequest)
     let designPath := designDirectory / "design.md"
     IO.FS.writeFile designPath "The artifact exists.\n"
+    IO.FS.writeFile (proofDirectory / "lean-toolchain") "leanprover/lean4:v4.32.2\n"
+    IO.FS.writeFile (proofDirectory / "lakefile.lean")
+      "import Lake\nopen Lake DSL\npackage «public-route-proof»\n@[default_target] lean_lib RouteDesign\n"
+    IO.FS.writeFile (proofDirectory / "RouteDesign.lean")
+      "import RouteDesign.Base\nnamespace RouteDesign\ndef Property : Prop := Base\ntheorem property : Property := by trivial\nend RouteDesign\n"
+    IO.FS.writeFile (proofModuleDirectory / "Base.lean")
+      "namespace RouteDesign\ndef Base : Prop := True\nend RouteDesign\n"
+    let routeClaim : LeanClaim := {
+      id := "claim-public-route"
+      input := {
+        statementId := statement.id, statementText := statement.text
+        mapping := "RouteDesign.Property represents the selected public-route Statement"
+        proposition := "RouteDesign.Property", witness := "RouteDesign.property"
+        proofRoot := ".agent-workbench/design/proofs/route"
+        declaredSources := [
+          { path := "RouteDesign.lean" }, { path := "RouteDesign/Base.lean" }]
+        check := { executable := "lake", arguments := #["build"] }
+        toolchain := ProofToolchain.identifier } }
+    let routeStep : PlanStep := { step with
+      requiredClaimIds := [routeClaim.id]
+      verificationCriterionIds := [criterion.id, commandCriterion.id] }
     let designTarget := "file:.agent-workbench/design/product/design.md"
     let capturedDesign ← DesignSource.captureAll root [designTarget]
     let designUnits := capturedDesign.flatMap (·.units)
@@ -76,14 +119,17 @@ def run : IO Unit :=
       statements := [statement]
       statementCoverage := [{
         statementId := statement.id, sourceUnitIds := designUnits.map (·.id)
-        leanClaims := { noSelectionReason := some "the route has no Design-time logical Claim" }
+        leanClaims := { selectedIds := [routeClaim.id] }
         acceptanceCriteria := { selectedIds := [criterion.id, commandCriterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [criterion, commandCriterion] } : DesignProposalRequest)
+      acceptanceCriteria := [criterion, commandCriterion]
+      leanClaims := [routeClaim] } : DesignProposalRequest)
     let candidate : DesignRevision ← decodeOutput designResult
     let candidateId := candidate.id
     let _ ← invokeJson root ["design", "accept"]
       ({ id := candidateId } : AgentWorkbench.Cli.IdInput)
+    let _ ← invokeJson root ["proof", "run"] ({
+      entryId := "proof-public-route", claimId := routeClaim.id } : ProofRunRequest)
 
     let _ ← invokeJson root ["correction", "record"] ({
       entryId := "correction-route-initial"

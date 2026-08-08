@@ -1,6 +1,7 @@
 import AgentWorkbenchTest.Fixture
 import AgentWorkbench.Adapter.DesignSource
 import AgentWorkbench.Adapter.Store
+import AgentWorkbenchTest.RouteReceipt
 
 namespace AgentWorkbenchTest.PublicDesignWorkRoute
 
@@ -18,6 +19,7 @@ private def invoke
     args := #["--project", root.toString] ++ (operation.name.splitOn " ").toArray } input
   unless output.exitCode == 0 do
     throw (IO.userError s!"public {operation.name} route failed: {output.stderr}")
+  RouteReceipt.recordSuccessful .publicDesignWorkRoute operation
   pure output.stdout
 
 private def invokeJson [Lean.ToJson α]

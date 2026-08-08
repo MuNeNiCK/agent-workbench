@@ -86,6 +86,11 @@ def Operation.all : List Operation :=
       .reviewVerify, .reviewContext, .reviewInspect,
       .entryGet, .history, .context, .ready, .commandShow, .commandRun, .proofDigest, .proofRun]
 
+/-- Independent exhaustive witness for the public constructor catalog. Adding an Operation without
+placing it in `all` leaves the new constructor case unprovable and stops the production build. -/
+theorem Operation.mem_all (operation : Operation) : operation ∈ Operation.all := by
+  cases operation <;> decide
+
 def Operation.parse? (name : String) : Option Operation :=
   Operation.all.find? (·.name == name)
 

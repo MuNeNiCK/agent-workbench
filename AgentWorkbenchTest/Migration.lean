@@ -3,6 +3,7 @@ import AgentWorkbench.Adapter.Store
 import AgentWorkbench.Adapter.SQLite
 import AgentWorkbench.Adapter.DesignSource
 import AgentWorkbench.Adapter.PlanSource
+import AgentWorkbenchTest.RouteReceipt
 
 namespace AgentWorkbenchTest.Migration
 
@@ -350,6 +351,7 @@ def run : IO Unit := do
       (some "{\"id\":\"work-v1\"}")
     expect (output.exitCode == 0)
       s!"public work focus route did not migrate and focus active Work: {output.stderr}"
+    RouteReceipt.recordSuccessful .migratedPublicRoute .workFocus
     let focused ← Store.loadState (← Store.openReadOnly database)
     expect (focused.focusedWorkId == some "work-v1" &&
       (focused.work? "work-v1").any (·.status == .active))
