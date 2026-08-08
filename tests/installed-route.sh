@@ -25,6 +25,13 @@ for document in assurance concepts getting-started index installation operation-
 done
 
 git -C "$project" init -q
+git -C "$project" config user.email fixture@example.invalid
+git -C "$project" config user.name fixture
+mkdir -p "$project/src"
+printf '%s\n' 'product source independent of Workbench' > "$project/src/Product.txt"
+printf '%s\n' 'product build input independent of Workbench' > "$project/product.build"
+git -C "$project" add src/Product.txt product.build
+git -C "$project" commit -qm 'product fixture before Workbench'
 if [[ -n "${AGENT_WORKBENCH_SKILL_REPOSITORY:-}" ]]; then
   [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]
   (cd "$project" && gh skill install "$AGENT_WORKBENCH_SKILL_REPOSITORY" agent-workbench \
@@ -108,6 +115,10 @@ second_setup=$(setup)
 [[ "$second_setup" == "$before" ]]
 after=$("$awb" --project "$project" context)
 [[ "$after" == "$before" ]]
+outside_workbench_status=$(git -C "$project" status --porcelain --untracked-files=all -- . \
+  ':(exclude).agents/**' ':(exclude).agent-workbench/**')
+[[ -z "$outside_workbench_status" ]]
+git -C "$project" diff --quiet HEAD -- src/Product.txt product.build
 
 "$awb" --project "$project" describe | python3 -c '
 import json,sys

@@ -64,6 +64,13 @@ private def elanExecutable : IO System.FilePath := do
 
 private def exerciseInitAndProofRoute : IO Unit :=
   IO.FS.withTempDir fun root => do
+    let productSource := root / "src" / "Product.txt"
+    let productBuildInput := root / "product.build"
+    IO.FS.createDirAll (root / "src")
+    IO.FS.writeFile productSource "product source independent of Workbench\n"
+    IO.FS.writeFile productBuildInput "product build input independent of Workbench\n"
+    let sourceBefore ← IO.FS.readBinFile productSource
+    let buildInputBefore ← IO.FS.readBinFile productBuildInput
     let workbenchRoot := root / ".agent-workbench"
     let bundledDirectory := workbenchRoot / "bin"
     IO.FS.createDirAll bundledDirectory
@@ -75,6 +82,12 @@ private def exerciseInitAndProofRoute : IO Unit :=
       unless chmod.exitCode == 0 do
         throw (IO.userError s!"public init route could not mark Elan executable: {chmod.stderr}")
     let _ ← invokeOk root ["init"]
+    expect ((← IO.FS.readBinFile productSource) == sourceBefore)
+      "init changed pre-existing product source"
+    expect ((← IO.FS.readBinFile productBuildInput) == buildInputBefore)
+      "init changed a pre-existing product build input"
+    expect (!(← (root / ".github").pathExists))
+      "init exposed Workbench-only verification in ordinary project infrastructure"
     let productDirectory := workbenchRoot / "design" / "product"
     let proofDirectory := workbenchRoot / "design" / "proofs" / "route"
     let proofModuleDirectory := proofDirectory / "RouteDesign"
@@ -357,6 +370,20 @@ def run : IO Unit := do
     let _ ← invokeJson root ["review", "start"] ({
       entryId := "review-route", reviewId := "review-lineage-route"
       purpose := ReviewPurpose.implementation, reviewerAgentRun := "reviewer-route-1" } : ReviewStartRequest)
+    let currentInspection : ReviewInspection ← decodeOutput (← invokeJson root
+      ["review", "inspect"] ({ id := "review-route" } : AgentWorkbench.Cli.IdInput))
+    expect (currentInspection.targetCurrent &&
+      currentInspection.currentTargetSnapshot == (match currentInspection.review.payload with
+        | .review review => some review.targetSnapshot
+        | _ => none))
+      "Review inspection did not expose the current immutable target"
+    let reviewedArtifact ← IO.FS.readFile (root / "artifact.txt")
+    IO.FS.writeFile (root / "artifact.txt") "changed after the fixed Review\n"
+    let staleInspection : ReviewInspection ← decodeOutput (← invokeJson root
+      ["review", "inspect"] ({ id := "review-route" } : AgentWorkbench.Cli.IdInput))
+    expect (!staleInspection.targetCurrent && staleInspection.currentTargetSnapshot.isSome)
+      "Review inspection treated a changed implementation target as current"
+    IO.FS.writeFile (root / "artifact.txt") reviewedArtifact
     let _ ← invokeJson root ["review", "handoff"] ({
       entryId := "review-handoff-route", reviewEntryId := "review-route"
       successorReviewerRun := "reviewer-route-2", reason := "continue the same fixed Review" } : ReviewHandoffRequest)

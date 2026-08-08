@@ -42,12 +42,13 @@ Release CI uses GitHub-hosted native runners without Docker or QEMU. For each pl
 6. packages the archive and checksum; and
 7. uploads its assets.
 
-The publish job runs only after all platform jobs succeed. The signed annotated Git tag is both the
-release identity and the immutable release authorization. Its message has this exact form:
+The publish job runs only after all platform jobs succeed. Publication uses two representations of
+one authorization: a record generated directly from the ready Workbench state and a signed
+annotated Git tag whose message must be byte-for-byte identical to that record. Its form is:
 
 ```text
 agent-workbench release authorization v1
-work-id: <completed Work ID>
+work-id: <ready Work ID>
 target-commit: <tagged commit SHA>
 ready-state-revision: <revision used for ready>
 ready-digest: blake3:<digest of the canonical ready result>
@@ -61,13 +62,37 @@ implementation-review-target-snapshot: blake3:<exact release candidate target di
 implementation-review-clean: true
 ```
 
+After the candidate commit is fixed, the maintainer generates the record with the native runtime:
+
+```sh
+commit=$(git rev-parse HEAD)
+authorization_file=$(mktemp)
+python3 .github/verify-release-authorization.py prepare \
+  --workbench .agent-workbench/bin/agent-workbench \
+  --project . \
+  --target-commit "$commit" \
+  --design-review-entry-id <fresh-clean-design-review> \
+  --implementation-review-entry-id <fresh-clean-implementation-review> \
+  > "$authorization_file"
+git notes --ref=refs/notes/agent-workbench-release add \
+  -F "$authorization_file" "$commit"
+git push origin refs/notes/agent-workbench-release
+git tag -s -F "$authorization_file" <version>
+git push origin <version>
+```
+
+`prepare` reads `ready` and both exact Review records itself. It rejects a non-ready Work, any
+remaining gap, the wrong Work or Design target, a non-fresh or non-independent Review, a Review with
+a Finding, or a non-clean/missing conclusion. The Git note transports that checked record without
+changing the already reviewed commit; it is not an alternative source of release facts.
+
 Release CI imports the repository-pinned public key and requires exactly one GnuPG `VALIDSIG`
 record whose signing-key fingerprint is that pinned primary key. Signing subkeys are intentionally
 rejected; when GnuPG also emits a primary-key fingerprint, it must name the same key. CI then
-requires the tag object and authorization to name the workflow commit, and rejects
+loads the separately transported record from `refs/notes/agent-workbench-release`, requires the
+signed tag message to match it exactly, requires both to name the workflow commit, and rejects
 missing, duplicate, extra, or malformed authorization fields. Thus a passing build from an arbitrary
-`v*` tag cannot publish a release. The signer creates this tag only from the current `ready` result
-and fresh zero-Finding Design and Implementation Reviews. A Finding disposition can resolve Work
+`v*` tag cannot publish a release. A Finding disposition can resolve Work
 authority but cannot make a finding-bearing Review clean. The signed digests bind both immutable
 targets without publishing `.agent-workbench` state.
 

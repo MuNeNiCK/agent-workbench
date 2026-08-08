@@ -27,9 +27,14 @@ jobs:
           gpg --batch --import .github/release-signers/munenick.asc
           git verify-tag --raw "$TAG_NAME" > "$RUNNER_TEMP/release-signature.txt" 2>&1
           git cat-file tag "$TAG_NAME" > "$RUNNER_TEMP/release-tag.txt"
+          git fetch origin \
+            refs/notes/agent-workbench-release:refs/notes/agent-workbench-release
+          git notes --ref=refs/notes/agent-workbench-release show "$TARGET_COMMIT" \
+            > "$RUNNER_TEMP/release-authorization.txt"
           python3 .github/verify-release-authorization.py verify \
             --tag-file "$RUNNER_TEMP/release-tag.txt" \
             --verification-file "$RUNNER_TEMP/release-signature.txt" \
+            --authorization-record-file "$RUNNER_TEMP/release-authorization.txt" \
             --target-commit "$TARGET_COMMIT" \
             --allowed-signer "$ALLOWED_SIGNER"
 

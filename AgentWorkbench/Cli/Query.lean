@@ -94,7 +94,16 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .reviewInspect reviewEntryId => do
       let state ← Store.loadState (← openQueryStore projectRoot)
       match reviewInspection? state reviewEntryId with
-      | some value => writeJson value
+      | some value => do
+          let review ← match value.review.payload with
+            | .review review => pure review
+            | _ => fail s!"entry {reviewEntryId} is not a Review"
+          let currentTargetSnapshot ← try
+              some <$> ReviewTarget.currentSnapshot projectRoot state review.purpose review.target
+            catch _ => pure none
+          writeJson { value with
+            currentTargetSnapshot
+            targetCurrent := currentTargetSnapshot == some review.targetSnapshot }
       | none => fail s!"no Review entry {reviewEntryId}"
   | .commandShow profileEntryId => do
       let state ← Store.loadState (← openQueryStore projectRoot)
@@ -112,8 +121,13 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .ready => do
       let state ← Store.loadState (← openQueryStore projectRoot)
       let inputs ← evaluateCurrentInputs projectRoot state
-      writeJson (ReadinessResult.mk state.revision
-        (completionReady state inputs.observations inputs.claimDigests)
-        (projectContext? state inputs.observations inputs.claimDigests))
+      let ready := completionReady state inputs.observations inputs.claimDigests
+      let context := projectContext? state inputs.observations inputs.claimDigests
+      let canonical := Lean.Json.mkObj [
+        ("stateRevision", Lean.toJson state.revision),
+        ("ready", Lean.toJson ready),
+        ("context", Lean.toJson context)]
+      writeJson (ReadinessResult.mk state.revision ready context
+        (ContentDigest.string canonical.compress))
 
 end AgentWorkbench.Cli

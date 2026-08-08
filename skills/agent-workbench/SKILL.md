@@ -57,6 +57,13 @@ proof digest | run
 There is no generic mutation or `entry append`. System-owned order, scope, Work/Design binding,
 supersession, status, and Design ancestry are derived by the native semantic operation.
 
+Keep product implementation invariant under Workbench use. Never add, rename, restructure, import,
+persist, or branch product source, build inputs, runtime state, or shipped artifacts solely to make
+Workbench evidence, Review, proof, or self-application convenient. A helper used only by a Command
+Profile remains private below `.agent-workbench` and is declared as a snapshotted Profile input. Put
+a verifier in the ordinary tracked project structure only when it has an independent project
+verification or release purpose beyond recording Workbench evidence.
+
 For an initial outcome, keep one Work from empty baseline through private Design-source capture,
 candidate acceptance, selected Claim receipts, Work-specific Plan proposal/materialization, derived
 Tasks, evidence, and completion. Never create Tasks manually or split Design/proof/planning into

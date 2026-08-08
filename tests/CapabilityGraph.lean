@@ -15,12 +15,6 @@ private structure RootManifest where
   allowedCapabilities : List String
   deriving Lean.FromJson
 
-private def relevant (name : Name) : Bool :=
-  let value := name.toString
-  ["AgentWorkbench", "AgentWorkbenchTest", "AgentWorkbenchProof", "SQLite", "Blake3", "MD4Lean",
-    "IO.FS", "IO.Process"].any (fun (p : String) =>
-      value.startsWith p || (value.splitOn p).length > 1)
-
 private partial def reachableFrom
     (environment : Environment) (pending visited : List Name) : List Name :=
   match pending with
@@ -30,10 +24,32 @@ private partial def reachableFrom
       else
         let direct := match environment.find? name with
           | some info => match info.value? true with
-            | some value => value.getUsedConstants.toList.filter relevant
+            | some value => value.getUsedConstants.toList
             | none => []
           | none => []
         reachableFrom environment (direct ++ rest) (name :: visited)
+
+private def allowedModulePrefixes : List String :=
+  ["AgentWorkbench", "AgentWorkbenchTest", "AgentWorkbenchProof", "SQLite", "Blake3", "MD4Lean",
+    "Init", "Std", "Lean"]
+
+private def declarationModule? (environment : Environment) (name : Name) : Option Name := do
+  let index ← environment.getModuleIdxFor? name
+  environment.header.moduleNames[index.toNat]?
+
+private def declarationClassified (environment : Environment) (name : Name) : Bool :=
+  match declarationModule? environment name with
+  | none => false
+  | some moduleName =>
+      let value := moduleName.toString
+      allowedModulePrefixes.any fun allowed =>
+        value == allowed || value.startsWith (allowed ++ ".")
+
+private def rejectUnclassified
+    (environment : Environment) (root : String) (graph : List Name) : CoreM Unit := do
+  let unknown := graph.filter (!declarationClassified environment ·)
+  unless unknown.isEmpty do
+    throwError "{root} reaches declarations outside the reviewed module namespaces: {unknown.take 20}"
 
 private def requireReachable (root : Name) (reachable : List Name) (capability : Name) : CoreM Unit :=
   unless reachable.contains capability do
@@ -74,6 +90,12 @@ private def rootRunDeclarations (path : String) : CoreM (List String) := do
     let value := line.trimAscii.toString
     if value.startsWith "AgentWorkbenchTest." && value.endsWith ".run" then some value else none
 
+namespace UnreviewedBridge
+
+def delegate := AgentWorkbench.Store.executeMutation
+
+end UnreviewedBridge
+
 run_meta do
   let environment ← getEnv
   let manifest ← readManifest
@@ -106,6 +128,7 @@ run_meta do
         throwError "{root.executable} names missing entry declaration {entry}"
       else pure ()
     let graph := reachableFrom environment entries []
+    rejectUnclassified environment root.executable graph
     let actual := capabilities graph
     let allowed := root.allowedCapabilities.mergeSort (· < ·)
     if actual != allowed || root.allowedCapabilities.eraseDups.length != root.allowedCapabilities.length then
@@ -121,10 +144,15 @@ run_meta do
       (·.entryDeclarations.map String.toName) |>.getD []) []
   let proofRoot := ``AgentWorkbenchTest.ProofBuild.run
   let proofGraph := reachableFrom environment [proofRoot] []
+  let bridgeGraph := reachableFrom environment [``UnreviewedBridge.delegate] []
   let mutationExecutor := ``AgentWorkbench.Store.executeMutation
   requireReachable productRoot productGraph mutationExecutor
   requireReachable ``AgentWorkbenchTest.Atomicity.run testGraph mutationExecutor
   forbidReachable proofRoot proofGraph mutationExecutor
+  if declarationClassified environment ``UnreviewedBridge.delegate ||
+      !bridgeGraph.contains mutationExecutor then
+    throwError "unknown-namespace bridge counterexample does not cross the reviewed capability boundary"
+  else pure ()
   if productGraph.any (fun name => name.toString.startsWith "AgentWorkbenchProof") then
     throwError "product declaration graph reaches the private proof library"
   else pure ()

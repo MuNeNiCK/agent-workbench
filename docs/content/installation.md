@@ -74,6 +74,11 @@ Workbench does not modify `.gitignore`, Git configuration, or the index. The pro
 `.agents` and `.agent-workbench` are tracked, ignored, or provisioned another way. In this repository
 both are intentionally ignored.
 
+Workbench does not add or alter the project's product source, build inputs, runtime state, or
+shipped artifacts. It may operate as a separate development or release gate without becoming a
+product dependency. A verification helper used only to record Workbench evidence belongs below
+`.agent-workbench`. Removing Workbench leaves the project's product implementation unchanged.
+
 ## Source verification for maintainers
 
 The repository pins its compiler with `lean-toolchain`. A maintainer can build and run the native

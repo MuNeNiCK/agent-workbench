@@ -65,15 +65,16 @@ private def verifyProductionSourceBoundary : IO Unit := do
 
 private structure RootManifest where
   executable : String
+  allowedGeneratedLeanObjects : List String := []
   deriving Lean.FromJson
 
-private def reviewedExecutableNames : IO (List String) := do
+private def reviewedRootManifest : IO (List RootManifest) := do
   let source ← readRequired "tests/executable-capabilities.json"
   let json ← match Lean.Json.parse source with
     | .ok value => pure value
     | .error message => throw (IO.userError s!"invalid executable capability manifest: {message}")
   match (Lean.fromJson? json : Except String (List RootManifest)) with
-  | .ok value => pure (value.map (·.executable))
+  | .ok value => pure value
   | .error message => throw (IO.userError s!"invalid executable capability manifest: {message}")
 
 private def verifyExecutableRoots : IO Unit := do
@@ -85,7 +86,7 @@ private def verifyExecutableRoots : IO Unit := do
       some <| (rest.splitOn " ").head?.getD ""
         |>.replace "«" "" |>.replace "»" ""
     else none
-  let reviewed ← reviewedExecutableNames
+  let reviewed := (← reviewedRootManifest).map (·.executable)
   expect (declared == reviewed)
     s!"unreviewed executable root(s): declared={declared}, reviewed={reviewed}"
 
@@ -114,7 +115,10 @@ private def verifyReleaseAuthorizationBoundary : IO Unit := do
       "design-review-clean",
       "implementation-review-conclusion-entry-id",
       "implementation-review-target-snapshot",
-      "implementation-review-clean"] do
+      "implementation-review-clean",
+      "refs/notes/agent-workbench-release",
+      "--authorization-record-file",
+      "prepare"] do
     expect (containsText (workflow ++ verifier) required)
       s!"release workflow omits authorization binding {required}"
   expect (containsText signer "BEGIN PGP PUBLIC KEY BLOCK")
@@ -124,9 +128,15 @@ private def verifyReleaseAuthorizationBoundary : IO Unit := do
   unless result.exitCode == 0 do
     throw (IO.userError s!"release authorization fixture matrix failed: {result.stdout}{result.stderr}")
 
-private def isGeneratedLeanObject (path : String) : Bool :=
-  containsText path "/.lake/build/ir/" &&
-    (path.endsWith ".c.o.export" || path.endsWith ".c.o.noexport")
+private def generatedLeanObject? (path : String) : Option String := do
+  let [_, packageInput] := normalized path |>.splitOn "/.lake/packages/" | none
+  let [package, object] := packageInput.splitOn "/.lake/build/ir/" | none
+  let module ← if object.endsWith ".c.o.export" then
+      some (object.dropEnd ".c.o.export".length).toString
+    else if object.endsWith ".c.o.noexport" then
+      some (object.dropEnd ".c.o.noexport".length).toString
+    else none
+  some s!"{package}/{module}"
 
 private def isReviewedNativeDependency (path : String) : Bool :=
   (containsText path "/.lake/packages/Blake3/.lake/build/lib/" &&
@@ -196,9 +206,18 @@ private def verifyProductLinkResponse : IO Unit := do
         s!"product link response is missing reviewed dependency {required}; inputs={candidates}")
   let packageInputs := response.splitOn "\n" |>.map normalized |>.filter fun line =>
     containsText line "/.lake/packages/"
+  let generated := packageInputs.filterMap fun input =>
+    generatedLeanObject? (input.trimAscii.toString.replace "\"" "")
+  let manifests ← reviewedRootManifest
+  let expectedGenerated := (manifests.find? (·.executable == "agent-workbench")).map
+    (·.allowedGeneratedLeanObjects) |>.getD []
+  expect (generated.mergeSort (· < ·) == expectedGenerated.mergeSort (· < ·) &&
+    generated.eraseDups.length == generated.length &&
+    expectedGenerated.eraseDups.length == expectedGenerated.length)
+    s!"generated Lean package objects changed: actual={generated}, reviewed={expectedGenerated}"
   for input in packageInputs do
     let path := input.trimAscii.toString.replace "\"" ""
-    expect (isGeneratedLeanObject path || isReviewedNativeDependency path)
+    expect ((generatedLeanObject? path).isSome || isReviewedNativeDependency path)
       s!"unreviewed package-native link input: {path}"
   verifyArchiveMembers response "blake3_c.a" ["blake3", "blake3_dispatch", "blake3_portable", "ffi_c"]
   verifyArchiveMembers response "leansqlite.a" ["sqlite3", "leansqlite", "shathree"]

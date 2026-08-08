@@ -18,6 +18,8 @@ structure ReviewInspection where
   workId : Option String
   review : LedgerEntry
   lineage : List LedgerEntry
+  currentTargetSnapshot : Option String := none
+  targetCurrent : Bool := false
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 private structure ReviewWorkIdentity where
