@@ -15,8 +15,17 @@ private def rejects (action : IO α) : IO Bool :=
     pure false
   catch _ => pure true
 
+private def createDanglingSymlink
+    (target link : System.FilePath) : IO Unit := do
+  let result ← IO.Process.output { cmd := "ln", args := #["-s", target.toString, link.toString] }
+  unless result.exitCode == 0 do
+    throw (IO.userError s!"could not create dangling symlink: {result.stderr}")
+
 def run : IO Unit :=
-  IO.FS.withTempDir fun root => do
+  IO.FS.withTempDir fun sandbox => do
+    let root := sandbox / "project"
+    let outsideDirectory := sandbox / "outside"
+    IO.FS.createDirAll root
     let database := root / "state.db"
     let store ← Store.open database
     let product := root / "product.txt"
@@ -48,6 +57,70 @@ def run : IO Unit :=
     let legitimateFileBaseline ← ManagedOutput.capture root "file:.gitignore"
     expect (legitimateFileBaseline.existed && legitimateFileBaseline.kind == .file)
       "ManagedOutput rejected an ordinary dotfile"
+    if !System.Platform.isWindows then
+      IO.FS.createDirAll outsideDirectory
+      let outsideSentinel := outsideDirectory / "sentinel.txt"
+      IO.FS.writeFile outsideSentinel "outside remains intact"
+      let outsideBefore ← IO.FS.readBinFile outsideSentinel
+      let leafLink := root / "dangling-leaf"
+      let leafReferent := outsideDirectory / "missing-leaf"
+      createDanglingSymlink leafReferent leafLink
+      expect (← rejects (ManagedOutput.capture root "file:dangling-leaf"))
+        "ManagedOutput accepted a dangling leaf symlink"
+      expect (!(← leafReferent.pathExists) &&
+          (← IO.FS.readBinFile outsideSentinel) == outsideBefore)
+        "dangling leaf rejection changed content outside the project"
+      let intermediateLink := root / "dangling-intermediate"
+      let intermediateReferent := outsideDirectory / "missing-directory"
+      createDanglingSymlink intermediateReferent intermediateLink
+      expect (← rejects (ManagedOutput.capture root "file:dangling-intermediate/output.txt"))
+        "ManagedOutput accepted a dangling intermediate symlink"
+      expect (!(← intermediateReferent.pathExists) &&
+          (← IO.FS.readBinFile outsideSentinel) == outsideBefore)
+        "dangling intermediate rejection changed content outside the project"
+      let afterDanglingCaptureRevision ← AgentWorkbench.SQLite.queryScalar connection
+        "SELECT CAST(state_revision AS TEXT) FROM project_metadata WHERE singleton = 1" #[]
+      expect (afterDanglingCaptureRevision == stateRevision)
+        "dangling managed-output rejection changed state revision"
+
+      -- Recovery must retain its journal when the managed leaf has been replaced by a dangling
+      -- link. Retrying after the unsafe entry is removed must restore the durable baseline.
+      let recoveryOutput := root / "recovery-output.txt"
+      IO.FS.writeFile recoveryOutput "recovery baseline"
+      let recoveryBaseline ← ManagedOutput.capture root "file:recovery-output.txt"
+      IO.FS.removeFile recoveryOutput
+      let recoveryReferent := outsideDirectory / "missing-recovery-output.txt"
+      createDanglingSymlink recoveryReferent recoveryOutput
+      AgentWorkbench.SQLite.execute connection
+        "INSERT INTO managed_operations(
+           operation_id, expected_state_revision, recovery_policy, manifest, committed_state_revision
+         ) VALUES (?1, ?2, ?3, ?4, NULL)"
+        #["dangling-command-crash", stateRevision, "retain-command-output",
+          (Lean.toJson recoveryBaseline).compress]
+      expect (← rejects (Store.recoverManagedOperations root store))
+        "interrupted recovery followed a dangling managed-output symlink"
+      expect (!(← recoveryReferent.pathExists) &&
+          (← IO.FS.readBinFile outsideSentinel) == outsideBefore)
+        "refused dangling recovery changed content outside the project"
+      let danglingRows ← AgentWorkbench.SQLite.queryScalar connection
+        "SELECT CAST(COUNT(*) AS TEXT) FROM managed_operations
+         WHERE operation_id = 'dangling-command-crash'" #[]
+      expect (danglingRows == "1")
+        "refused dangling recovery discarded its durable recovery marker"
+      let afterDanglingRecoveryRevision ← AgentWorkbench.SQLite.queryScalar connection
+        "SELECT CAST(state_revision AS TEXT) FROM project_metadata WHERE singleton = 1" #[]
+      expect (afterDanglingRecoveryRevision == stateRevision)
+        "refused dangling recovery changed state revision"
+      IO.FS.removeFile recoveryOutput
+      IO.FS.writeFile recoveryOutput "partial local output"
+      Store.recoverManagedOperations root store
+      expect ((← IO.FS.readFile recoveryOutput) == "recovery baseline")
+        "safe retry did not restore the durable managed-output baseline"
+      let danglingRowsAfterRetry ← AgentWorkbench.SQLite.queryScalar connection
+        "SELECT CAST(COUNT(*) AS TEXT) FROM managed_operations
+         WHERE operation_id = 'dangling-command-crash'" #[]
+      expect (danglingRowsAfterRetry == "0")
+        "safe recovery retry did not clear its durable recovery marker"
     let protectedBaseline : ManagedOutput.Baseline := {
       identity := "tree:.", kind := .tree, existed := false, digest := "untrusted" }
     AgentWorkbench.SQLite.execute connection

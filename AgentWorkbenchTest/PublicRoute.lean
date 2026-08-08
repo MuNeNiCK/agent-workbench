@@ -46,6 +46,12 @@ private def decodeOutput [Lean.FromJson α] (source : String) : IO α := do
   | .ok value => pure value
   | .error message => throw (IO.userError s!"public binary returned the wrong JSON shape: {message}")
 
+private def createDanglingSymlink
+    (target link : System.FilePath) : IO Unit := do
+  let result ← IO.Process.output { cmd := "ln", args := #["-s", target.toString, link.toString] }
+  unless result.exitCode == 0 do
+    throw (IO.userError s!"could not create dangling symlink: {result.stderr}")
+
 private def firstExisting : List System.FilePath → IO (Option System.FilePath)
   | [] => pure none
   | path :: rest => do
@@ -137,9 +143,131 @@ private def exerciseInitAndProofRoute : IO Unit :=
     let _ ← invokeJson root ["proof", "run"] ({
       entryId := "proof-public-route", claimId := routeClaim.id } : ProofRunRequest)
 
+private def exerciseTaskLocalContractRoute : IO Unit :=
+  IO.FS.withTempDir fun root => do
+    let designDirectory := root / ".agent-workbench" / "design" / "product"
+    let implementationDirectory := root / ".agent-workbench" / "design" / "implementation"
+    let planDirectory := root / ".agent-workbench" / "design" / "plans" / "work-contract-route"
+    IO.FS.createDirAll designDirectory
+    IO.FS.createDirAll implementationDirectory
+    IO.FS.createDirAll planDirectory
+    let designPath := designDirectory / "design.md"
+    IO.FS.writeFile designPath "The implementation provides the local behavior.\n"
+    let contractStatement : Statement := {
+      id := "statement-contract-route"
+      text := "the implementation provides the local behavior" }
+    let designTarget := "file:.agent-workbench/design/product/design.md"
+    let designUnits := (← DesignSource.captureAll root [designTarget]).flatMap (·.units)
+    let _ ← invokeJson root ["work", "start"] ({
+      id := "work-contract-route", outcome := "provide the local behavior"
+      scope := "project", responsibleAgentRun := "agent-contract-route" } : WorkStartRequest)
+    let proposed ← invokeJson root ["design", "propose"] ({
+      producerAgentRun := "agent-contract-route", changeRationale := "contract-only route"
+      sourceDocumentTargets := [designTarget]
+      sourceUnitDispositions := designUnits.map fun unit =>
+        { unitId := unit.id, role := DesignSourceRole.requirement }
+      statements := [contractStatement]
+      statementCoverage := [{
+        statementId := contractStatement.id, sourceUnitIds := designUnits.map (·.id)
+        leanClaims := { noSelectionReason := some "no Design-time logical Claim is selected" }
+        acceptanceCriteria := {
+          noSelectionReason := some "verification is local to the implementation Task" }
+        implementationRequired := true }]
+      acceptanceCriteria := [] } : DesignProposalRequest)
+    let contractDesign : DesignRevision ← decodeOutput proposed
+    let _ ← invokeJson root ["design", "accept"]
+      ({ id := contractDesign.id } : AgentWorkbench.Cli.IdInput)
+
+    let artifactTarget := "file:contract-artifact.txt"
+    let commandTarget := "file:contract-command.txt"
+    let contractStep : PlanStep := {
+      id := "contract-step", description := "implement and verify the local behavior"
+      outputScopes := [artifactTarget, commandTarget]
+      taskVerificationContracts := [
+        { id := "contract-artifact", kind := .artifact, target := artifactTarget },
+        { id := "contract-command", kind := .command, target := commandTarget }] }
+    let planPath := planDirectory / "plan.md"
+    IO.FS.writeFile planPath "Implement and verify the local behavior.\n"
+    let planTarget := "file:.agent-workbench/design/plans/work-contract-route/plan.md"
+    let planUnits := (← PlanSource.captureAll root "work-contract-route" [planTarget]).flatMap (·.units)
+    let proposedPlan ← invokeJson root ["plan", "propose"] ({
+      producerAgentRun := "agent-contract-route", reason := "implement the accepted behavior"
+      sourceDocumentTargets := [planTarget]
+      sourceUnitDispositions := planUnits.map fun unit =>
+        { unitId := unit.id, stepId := some contractStep.id }
+      statementDispositions := [{
+        statementId := contractStatement.id, statementText := contractStatement.text
+        deltaKind := .added, stepIds := [contractStep.id] }]
+      steps := [contractStep] } : PlanProposalRequest)
+    let contractPlan : ImplementationPlan ← decodeOutput proposedPlan
+    let _ ← invokeJson root ["plan", "materialize"]
+      ({ id := contractPlan.id } : AgentWorkbench.Cli.IdInput)
+    let taskId := s!"task-{contractPlan.id}-{contractStep.id}"
+    let artifactPath := root / "contract-artifact.txt"
+    let commandPath := root / "contract-command.txt"
+    IO.FS.writeFile artifactPath "artifact-v1\n"
+    let testHelper ← IO.FS.realPath testExecutablePath
+    let command : CommandSpec := {
+      executable := testHelper.toString
+      arguments := #["write-artifact", commandPath.toString, "command-v1\n"] }
+    let _ ← invokeJson root ["profile", "define"] ({
+      entryId := "profile-contract-route", purpose := "verify the Task-local command behavior"
+      taskEntryId := taskId, outputScope := commandTarget
+      taskVerificationIds := ["contract-command"], command } : ProfileDefineRequest)
+    let _ ← invokeJson root ["command", "run"] ({
+      profileEntryId := "profile-contract-route", entryId := "command-contract-route"
+      taskVerificationId := some "contract-command" } : CommandRunRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "artifact-contract-route", taskEntryId := taskId
+      taskVerificationId := some "contract-artifact"
+      operation := "inspect Task-local artifact", result := "artifact exists"
+      successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["task", "close"] ({
+      entryId := "task-contract-closed", taskEntryId := taskId } : TaskCloseRequest)
+    let ready ← invokeOk root ["ready"]
+    expect (ready.contains "\"ready\":true")
+      s!"contract-only public route was not ready after exact evidence closure: {ready}"
+
+    IO.FS.writeFile artifactPath "artifact-v2\n"
+    let stale ← invokeOk root ["context"]
+    expect (stale.contains "task reopen-stale")
+      s!"contract-only output drift did not expose Task recovery: {stale}"
+    let _ ← invokeOk root ["task", "reopen-stale"]
+    let reopenedState ← Store.loadState
+      (← Store.openReadOnly (root / ".agent-workbench" / "state.db"))
+    let reopenedTask ← match reopenedState.ledgerEntries.find? fun entry =>
+        !entryIsSuperseded reopenedState entry && match entry.payload with
+        | .task task => task.lineageId == some "work-contract-route:contract-step" && !task.closed
+        | _ => false with
+      | some value => pure value
+      | none => throw (IO.userError "contract-only recovery omitted its current Task")
+    let _ ← invokeJson root ["profile", "replace"] ({
+      entryId := "profile-contract-route-reopened", profileEntryId := "profile-contract-route"
+      purpose := "reverify the Task-local command behavior", taskEntryId := reopenedTask.id
+      outputScope := commandTarget, taskVerificationIds := ["contract-command"]
+      command } : ProfileReplaceRequest)
+    let _ ← invokeJson root ["command", "run"] ({
+      profileEntryId := "profile-contract-route-reopened"
+      entryId := "command-contract-route-reopened"
+      taskVerificationId := some "contract-command" } : CommandRunRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "artifact-contract-route-reopened", taskEntryId := reopenedTask.id
+      taskVerificationId := some "contract-artifact"
+      operation := "reinspect Task-local artifact", result := "artifact exists"
+      successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["task", "close"] ({
+      entryId := "task-contract-reclosed", taskEntryId := reopenedTask.id } : TaskCloseRequest)
+    let reready ← invokeOk root ["ready"]
+    expect (reready.contains "\"ready\":true")
+      s!"contract-only public route was not ready after re-verification: {reready}"
+
 def run : IO Unit := do
   exerciseInitAndProofRoute
-  IO.FS.withTempDir fun root => do
+  exerciseTaskLocalContractRoute
+  IO.FS.withTempDir fun sandbox => do
+    let root := sandbox / "project"
+    let outsideDirectory := sandbox / "outside"
+    IO.FS.createDirAll root
     let commandCriterion : AcceptanceCriterion := {
       id := "criterion-command-route", statementId := some statement.id
       statement := "the artifact command succeeds", target := criterion.target
@@ -159,6 +287,20 @@ def run : IO Unit := do
     IO.FS.writeFile designPath "The artifact exists.\n"
     let routeStep : PlanStep := { step with
       verificationCriterionIds := [criterion.id, commandCriterion.id] }
+    let danglingLeafStep : PlanStep := {
+      id := "dangling-leaf-step", description := "verify dangling leaf rejection"
+      outputScopes := ["file:dangling-command-leaf"]
+      taskVerificationContracts := [
+        { id := "dangling-leaf-command", kind := .command,
+          target := "file:dangling-command-leaf" }] }
+    let danglingIntermediateStep : PlanStep := {
+      id := "dangling-intermediate-step", description := "verify dangling intermediate rejection"
+      outputScopes := ["file:dangling-command-intermediate/output.txt"]
+      taskVerificationContracts := [
+        { id := "dangling-intermediate-command", kind := .command,
+          target := "file:dangling-command-intermediate/output.txt" }] }
+    let routeSteps := if System.Platform.isWindows then [routeStep]
+      else [routeStep, danglingLeafStep, danglingIntermediateStep]
     let designTarget := "file:.agent-workbench/design/product/design.md"
     let capturedDesign ← DesignSource.captureAll root [designTarget]
     let designUnits := capturedDesign.flatMap (·.units)
@@ -204,12 +346,27 @@ def run : IO Unit := do
       entryId := "kpt-route", tryNext := some "run the current Task-bound Command Profile" } : KptRecordRequest)
 
     let planPath := planDirectory / "plan.md"
-    let planBytes := "Create and verify the artifact.\r\n".toUTF8
+    let planBytes :=
+      "Create and verify the artifact.\r\n\r\nVerify dangling leaf rejection.\r\n\r\nVerify dangling intermediate rejection.\r\n".toUTF8
     IO.FS.writeBinFile planPath planBytes
     let planTarget := "file:.agent-workbench/design/plans/work-route/plan.md"
     let capturedPlan ← PlanSource.captureAll root "work-route" [planTarget]
     let planUnits := capturedPlan.flatMap (·.units)
-    expect (!planUnits.isEmpty) "public route produced no Plan source unit"
+    expect (planUnits.length == 3) "public route did not produce the three expected Plan units"
+    let (planUnit0, planUnit1, planUnit2) ← match planUnits with
+      | [first, second, third] => pure (first, second, third)
+      | _ => throw (IO.userError "public route could not bind the expected Plan source units")
+    let planSourceDispositions : List PlanSourceUnitDisposition :=
+      if System.Platform.isWindows then [
+        { unitId := planUnit0.id, stepId := some routeStep.id },
+        { unitId := planUnit1.id,
+          noStepReason := some "dangling symlink regression is unavailable on Windows" },
+        { unitId := planUnit2.id,
+          noStepReason := some "dangling symlink regression is unavailable on Windows" }]
+      else [
+        { unitId := planUnit0.id, stepId := some routeStep.id },
+        { unitId := planUnit1.id, stepId := some danglingLeafStep.id },
+        { unitId := planUnit2.id, stepId := some danglingIntermediateStep.id }]
     let beforeProtectedScopes ← Store.loadState (← Store.openReadOnly database)
     for outputScope in
         ["tree:.", "tree:.agent-workbench", "file:.agent-workbench/state.db"] do
@@ -235,12 +392,11 @@ def run : IO Unit := do
       producerAgentRun := "agent-route"
       reason := "implement the complete initial Design delta"
       sourceDocumentTargets := [planTarget]
-      sourceUnitDispositions := planUnits.map fun unit =>
-        { unitId := unit.id, stepId := some routeStep.id }
+      sourceUnitDispositions := planSourceDispositions
       statementDispositions := [{
         statementId := statement.id, statementText := statement.text
-        deltaKind := .added, stepIds := [routeStep.id] }]
-      steps := [routeStep] } : PlanProposalRequest)
+        deltaKind := .added, stepIds := routeSteps.map (·.id) }]
+      steps := routeSteps } : PlanProposalRequest)
     let planCandidate : ImplementationPlan ← decodeOutput planResult
     let planId := planCandidate.id
     let archivedPlan ← AgentWorkbench.PlanArchive.source root planId planTarget
@@ -318,6 +474,104 @@ def run : IO Unit := do
       inputTargets := ["file:command-input.txt"]
       outputScope := criterion.target, criterionIds := [commandCriterion.id]
       command := successfulCommand } : ProfileReplaceRequest)
+    if !System.Platform.isWindows then
+      let leafTaskId := s!"task-{planId}-{danglingLeafStep.id}"
+      let intermediateTaskId := s!"task-{planId}-{danglingIntermediateStep.id}"
+      IO.FS.createDirAll outsideDirectory
+      let outsideSentinel := outsideDirectory / "sentinel.txt"
+      IO.FS.writeFile outsideSentinel "outside content before rejected command\n"
+      let outsideBefore ← IO.FS.readBinFile outsideSentinel
+      let leafLink := root / "dangling-command-leaf"
+      let leafReferent := outsideDirectory / "missing-command-leaf"
+      createDanglingSymlink leafReferent leafLink
+      let leafCommand : CommandSpec := {
+        executable := testHelper.toString
+        arguments := #["write-artifact", leafLink.toString, "command executed\n"] }
+      let _ ← invokeJson root ["profile", "define"] ({
+        entryId := "profile-dangling-leaf", purpose := "reject a dangling leaf output"
+        taskEntryId := leafTaskId, outputScope := "file:dangling-command-leaf"
+        taskVerificationIds := ["dangling-leaf-command"]
+        command := leafCommand } : ProfileDefineRequest)
+      let beforeDanglingLeaf ← Store.loadState (← Store.openReadOnly database)
+      let danglingLeaf ← invoke root ["command", "run"] (some (Lean.toJson ({
+        profileEntryId := "profile-dangling-leaf", entryId := "command-dangling-leaf"
+        taskVerificationId := some "dangling-leaf-command" } : CommandRunRequest)).compress)
+      expect (danglingLeaf.exitCode != 0 && danglingLeaf.stderr.contains "symlink")
+        "public command route accepted a dangling leaf managed output"
+      expect ((← Store.loadState (← Store.openReadOnly database)) == beforeDanglingLeaf)
+        "dangling leaf command rejection changed authoritative state"
+      expect ((← IO.FS.readBinFile productSentinel) == productSentinelBefore &&
+          (← IO.FS.readBinFile outsideSentinel) == outsideBefore &&
+          !(← leafReferent.pathExists))
+        "dangling leaf command executed or changed content outside the project"
+
+      let intermediateLink := root / "dangling-command-intermediate"
+      let intermediateReferent := outsideDirectory / "missing-command-directory"
+      createDanglingSymlink intermediateReferent intermediateLink
+      let intermediateUnsafeCommand : CommandSpec := {
+        executable := testHelper.toString
+        arguments := #["write-artifact", productSentinel.toString, "command executed\n"] }
+      let _ ← invokeJson root ["profile", "define"] ({
+        entryId := "profile-dangling-intermediate"
+        purpose := "reject a dangling intermediate output"
+        taskEntryId := intermediateTaskId
+        outputScope := "file:dangling-command-intermediate/output.txt"
+        taskVerificationIds := ["dangling-intermediate-command"]
+        command := intermediateUnsafeCommand } : ProfileDefineRequest)
+      let beforeDanglingIntermediate ← Store.loadState (← Store.openReadOnly database)
+      let danglingIntermediate ← invoke root ["command", "run"] (some (Lean.toJson ({
+        profileEntryId := "profile-dangling-intermediate"
+        entryId := "command-dangling-intermediate"
+        taskVerificationId := some "dangling-intermediate-command" } : CommandRunRequest)).compress)
+      expect (danglingIntermediate.exitCode != 0 && danglingIntermediate.stderr.contains "symlink")
+        "public command route accepted a dangling intermediate managed output"
+      expect ((← Store.loadState (← Store.openReadOnly database)) == beforeDanglingIntermediate)
+        "dangling intermediate command rejection changed authoritative state"
+      expect ((← IO.FS.readBinFile productSentinel) == productSentinelBefore &&
+          (← IO.FS.readBinFile outsideSentinel) == outsideBefore &&
+          !(← intermediateReferent.pathExists))
+        "dangling intermediate command executed or changed content outside the project"
+      let danglingJournalRows ← AgentWorkbench.SQLite.queryScalar
+        (AgentWorkbench.Store.readConnection (← Store.openReadOnly database))
+        "SELECT CAST(COUNT(*) AS TEXT) FROM managed_operations" #[]
+      expect (danglingJournalRows == "0")
+        "pre-execution dangling output rejection created a recovery journal"
+      IO.FS.removeFile leafLink
+      let _ ← invokeJson root ["profile", "replace"] ({
+        entryId := "profile-dangling-leaf-current"
+        profileEntryId := "profile-dangling-leaf"
+        purpose := "verify the safe leaf output"
+        taskEntryId := leafTaskId, outputScope := "file:dangling-command-leaf"
+        taskVerificationIds := ["dangling-leaf-command"]
+        command := leafCommand } : ProfileReplaceRequest)
+      let _ ← invokeJson root ["command", "run"] ({
+        profileEntryId := "profile-dangling-leaf-current"
+        entryId := "command-dangling-leaf-current"
+        taskVerificationId := some "dangling-leaf-command" } : CommandRunRequest)
+      IO.FS.removeFile intermediateLink
+      IO.FS.createDirAll (root / "dangling-command-intermediate")
+      let intermediateSafeCommand : CommandSpec := {
+        executable := testHelper.toString
+        arguments := #["write-artifact",
+          (root / "dangling-command-intermediate" / "output.txt").toString,
+          "safe command output\n"] }
+      let _ ← invokeJson root ["profile", "replace"] ({
+        entryId := "profile-dangling-intermediate-current"
+        profileEntryId := "profile-dangling-intermediate"
+        purpose := "verify the safe intermediate output"
+        taskEntryId := intermediateTaskId
+        outputScope := "file:dangling-command-intermediate/output.txt"
+        taskVerificationIds := ["dangling-intermediate-command"]
+        command := intermediateSafeCommand } : ProfileReplaceRequest)
+      let _ ← invokeJson root ["command", "run"] ({
+        profileEntryId := "profile-dangling-intermediate-current"
+        entryId := "command-dangling-intermediate-current"
+        taskVerificationId := some "dangling-intermediate-command" } : CommandRunRequest)
+      let _ ← invokeJson root ["task", "close"] ({
+        entryId := "task-dangling-leaf-closed", taskEntryId := leafTaskId } : TaskCloseRequest)
+      let _ ← invokeJson root ["task", "close"] ({
+        entryId := "task-dangling-intermediate-closed"
+        taskEntryId := intermediateTaskId } : TaskCloseRequest)
     let beforePostCommitFault ← Store.loadState (← Store.openReadOnly database)
     let postCommitRejected ← try
         let _ ← Store.executeMutationWithPostCommitVerification root database

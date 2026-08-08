@@ -90,6 +90,42 @@ def run : IO Unit := do
     [{ target := criterion.target, snapshot := "blake3:current-output" }] [])
     "current evidence from a sibling Task substituted for stale evidence bound to another Task"
 
+  -- A Criterion observation from a Task removed by Plan replacement is historical only. Closing
+  -- the replacement Task through a local contract must not promote that old observation back into
+  -- Design-level completion authority.
+  IO.FS.withTempDir fun root => do
+    IO.FS.writeFile (root / "artifact.txt") "replacement output\n"
+    let priorClosed ← currentClosedState
+    let contractStep : PlanStep := { step with
+      verificationCriterionIds := []
+      taskVerificationContracts := [{
+        id := "replacement-contract", kind := .artifact, target := criterion.target }] }
+    let replacementPlan : ImplementationPlan := { plan with
+      id := "plan-contract-replacement", predecessorPlanId := some plan.id
+      status := .candidate, contentDigest := "blake3:contract-replacement"
+      steps := [contractStep] }
+    let candidateState : ProjectState := { priorClosed with
+      implementationPlans := [plan, replacementPlan] }
+    let materialized ← fromExcept <| materializePlan candidateState replacementPlan.id observations []
+    let replacementTaskId := s!"task-{replacementPlan.id}-{contractStep.id}"
+    let observed ← observeArtifact root materialized {
+      entryId := "replacement-contract-evidence", taskEntryId := replacementTaskId
+      taskVerificationId := some "replacement-contract"
+      operation := "inspect replacement output", result := "replacement output exists"
+      successful := true }
+    let currentInputs ← evaluateCurrentInputs root observed
+    let replacementClosed ← fromExcept <| closeTask observed currentInputs.observations {
+      entryId := "replacement-contract-closed", taskEntryId := replacementTaskId }
+    fromExcept (validateState replacementClosed)
+    let replacementProjection ← match currentProjection? replacementClosed with
+      | some value => pure value
+      | none => throw (IO.userError "replacement counterexample lost current projection")
+    let completionInputs ← evaluateCurrentInputs root replacementClosed
+    expect (!criterionEvidenceRecorded replacementProjection criterion)
+      "superseded-Task Criterion evidence remained recorded for the replacement Plan"
+    expect (!completionReady replacementClosed completionInputs.observations [])
+      "superseded-Task Criterion evidence authorized replacement-Plan completion"
+
   let corrected ← fromExcept <| recordCorrection closed {
     entryId := "correction-completion-gap", content := "change the current expected result" }
   fromExcept (validateState corrected)

@@ -26,6 +26,15 @@ private def hasDependencyReadyTask (state : ProjectState) : Bool :=
               | _ => false
         | _ => false
 
+private def hasArtifactVerificationRoute (state : ProjectState) : Bool :=
+  state.currentDesign?.any (fun design =>
+    design.acceptanceCriteria.any (·.evidenceKind == "artifact")) ||
+  (currentProjection? state).any fun projection => projection.entries.any fun entry =>
+    match entry.payload with
+    | .task task => task.planId.isSome && task.required && !task.closed && !task.retired &&
+        task.taskVerificationContracts.any (·.kind == .artifact)
+    | _ => false
+
 def planMaterializationStructurallyReady (state : ProjectState) : Bool :=
   match currentProjection? state with
   | none => false
@@ -118,8 +127,7 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .profileReplace | .commandShow | .commandRun =>
       current && hasDependencyReadyTask state &&
         currentHasEntry state (fun | .commandProfile _ => true | _ => false)
-  | .artifactObserve => hasDependencyReadyTask state && state.currentDesign?.any (fun design =>
-      design.acceptanceCriteria.any (·.evidenceKind == "artifact"))
+  | .artifactObserve => hasDependencyReadyTask state && hasArtifactVerificationRoute state
   | .correctionSupersede | .correctionResolve | .correctionIncorporate =>
       current && currentHasEntry state (fun
       | .userCorrection correction => correction.resolvedByEntryId.isNone &&

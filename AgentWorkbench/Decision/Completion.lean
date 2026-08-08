@@ -61,6 +61,62 @@ def evidenceEntryCurrent
       | _, _ => false
   | _ => false
 
+private def evidenceTaskBinding?
+    (entry : LedgerEntry) : Option (String × String) :=
+  match entry.payload with
+  | .artifactObservation evidence => do
+      let taskEntryId ← evidence.taskEntryId
+      let outputScope ← evidence.outputScope
+      pure (taskEntryId, outputScope)
+  | .commandExecution evidence => do
+      let taskEntryId ← evidence.taskEntryId
+      let outputScope ← evidence.outputScope
+      pure (taskEntryId, outputScope)
+  | _ => none
+
+/-- Evidence applies to a current Plan Task either while it is directly bound to that open Task,
+or after closure/replacement only when the current Task explicitly retains the exact evidence and
+its original source Task. The latter preserves intentional closed-Task inheritance without making
+all evidence from a superseded Task current. -/
+def evidenceBoundToCurrentTask
+    (projection : CurrentProjection) (entry : LedgerEntry)
+    (accepts : TaskRecord → String → Bool) : Bool :=
+  match evidenceTaskBinding? entry with
+  | none => false
+  | some (sourceTaskId, outputScope) =>
+      projection.entries.any fun taskEntry => match taskEntry.payload with
+      | .task task =>
+          task.planId.isSome && task.required && !task.retired &&
+          task.outputScopes.contains outputScope && accepts task outputScope &&
+          if task.closed then
+            task.verificationTaskEntryId == some sourceTaskId &&
+              task.verificationEvidenceEntryIds.contains entry.id
+          else taskEntry.id == sourceTaskId
+      | _ => false
+
+def evidenceBoundToCurrentTaskCriterion
+    (projection : CurrentProjection) (entry : LedgerEntry)
+    (criterion : AcceptanceCriterion) : Bool :=
+  evidenceBoundToCurrentTask projection entry fun task outputScope =>
+    task.verificationCriterionIds.contains criterion.id && outputScope == criterion.target
+
+def evidenceBoundToCurrentTaskVerification
+    (projection : CurrentProjection) (entry : LedgerEntry) : Bool :=
+  match entry.payload with
+  | .artifactObservation evidence =>
+      evidence.taskVerificationId.any fun verificationId =>
+        evidenceBoundToCurrentTask projection entry fun task outputScope =>
+          task.taskVerificationContracts.any fun contract =>
+            contract.id == verificationId && contract.kind == .artifact &&
+              contract.target == outputScope
+  | .commandExecution evidence =>
+      evidence.taskVerificationId.any fun verificationId =>
+        evidenceBoundToCurrentTask projection entry fun task outputScope =>
+          task.taskVerificationContracts.any fun contract =>
+            contract.id == verificationId && contract.kind == .command &&
+              contract.target == outputScope
+  | _ => false
+
 def taskClosedWithCurrentEvidence
     (projection : CurrentProjection) (observations : List TargetObservation)
     (task : TaskRecord) : Bool :=
@@ -134,13 +190,13 @@ def criterionEvidenceRecorded
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
         evidence.criterionId == some criterion.id && evidence.target == criterion.target &&
-        evidence.successful
+        evidence.successful && evidenceBoundToCurrentTaskCriterion projection entry criterion
     | .commandExecution evidence =>
         criterion.evidenceKind == "command" &&
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
         evidence.criterionId == some criterion.id && evidence.target == some criterion.target &&
-        evidence.successful
+        evidence.successful && evidenceBoundToCurrentTaskCriterion projection entry criterion
     | _ => false)
 
 def claimReceiptRecorded (projection : CurrentProjection) (claim : LeanClaim) : Bool :=
@@ -162,12 +218,14 @@ def criterionHasEvidence
         evidenceEntryCurrent projection observations entry &&
         evidence.criterionId == some criterion.id &&
         evidence.target == criterion.target &&
+        evidenceBoundToCurrentTaskCriterion projection entry criterion &&
         !evidence.operation.isEmpty && !evidence.result.isEmpty
     | .commandExecution evidence =>
         criterion.evidenceKind == "command" &&
         evidenceEntryCurrent projection observations entry &&
         evidence.criterionId == some criterion.id &&
         evidence.target == some criterion.target &&
+        evidenceBoundToCurrentTaskCriterion projection entry criterion &&
         currentSnapshot? observations criterion.target == evidence.snapshot
     | _ => false)
 

@@ -26,7 +26,21 @@ def evaluateCurrentInputs
           catch _ => pure ()
       for entry in projection.entries do
         match entry.payload with
+        | .artifactObservation evidence =>
+            if evidenceBoundToCurrentTaskVerification projection entry then
+              try
+                if !observations.any (fun prior => prior.target == evidence.target) then
+                  let snapshot ← Snapshot.target projectRoot evidence.target
+                  observations := observations ++ [TargetObservation.mk evidence.target snapshot]
+              catch _ => pure ()
         | .commandExecution execution =>
+            if evidenceBoundToCurrentTaskVerification projection entry then
+              if let some target := execution.target then
+                try
+                  if !observations.any (fun prior => prior.target == target) then
+                    let snapshot ← Snapshot.target projectRoot target
+                    observations := observations ++ [TargetObservation.mk target snapshot]
+                catch _ => pure ()
             for input in execution.inputSnapshots.getD [] do
               try
                 if !observations.any (fun prior => prior.target == input.target) then

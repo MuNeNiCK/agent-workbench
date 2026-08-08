@@ -48,7 +48,7 @@ describe [operation]
 design inspect-sources | propose | amend | accept | reject | get | source | diff | export
 work start | focus | resume | suspend | handoff | adoption-impact | adopt-design | withdraw | complete | get
 plan inspect-sources | propose | replace | materialize | get | source | diff | export
-task close
+task close | reopen-stale
 profile define | replace
 artifact observe
 correction record | supersede | resolve | incorporate
@@ -75,6 +75,14 @@ For an initial outcome, keep one Work from empty baseline through private Design
 candidate acceptance, selected Claim receipts, Work-specific Plan proposal/materialization, derived
 Tasks, evidence, and completion. Never create Tasks manually or split Design/proof/planning into
 replacement Works. A Plan candidate has no productive authority until materialization.
+
+When `context` exposes `task reopen-stale`, invoke that no-input semantic operation before trying to
+replace a Profile or record new evidence. It is available only when closing evidence for a current,
+required, closed Task has become stale. Workbench atomically reopens those Task lineages and every
+closed transitive dependent, clears inherited closing evidence, and preserves the current Plan and
+Task contracts. Then use the existing Profile/artifact route to produce current evidence and close
+the reopened Tasks in dependency order. Do not create a replacement Plan merely to make stale-Task
+re-verification reachable, and do not treat this as a generic manual reopen.
 
 When selecting a Lean Claim, place its proposition, witness, and complete local Lean source closure
 below `.agent-workbench/design/proofs/` before `design propose`. Declare every local source; do not

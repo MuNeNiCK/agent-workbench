@@ -24,6 +24,16 @@ structure Baseline where
 
 private def fail (message : String) : IO α := throw (IO.userError message)
 
+/-- Read the directory entry itself rather than following its referent. Only a genuine missing
+entry is represented by `none`; permission, malformed-path, and other filesystem errors remain
+failures. In particular, a dangling symbolic link is present metadata of type `.symlink`. -/
+private def symlinkMetadata? (path : System.FilePath) : IO (Option IO.FS.Metadata) := do
+  try
+    pure (some (← path.symlinkMetadata))
+  catch
+    | .noFileOrDirectory .. => pure none
+    | error => throw error
+
 private def configuredPath (projectRoot : System.FilePath) (identity : String) : IO (Kind × System.FilePath) := do
   match AgentWorkbench.Validation.validateManagedOutputScope identity with
   | .error message => fail message
@@ -39,8 +49,7 @@ private def configuredPath (projectRoot : System.FilePath) (identity : String) :
   let mut current := projectRoot
   for component in configured.components do
     current := current / component
-    if ← current.pathExists then
-      let metadata ← current.symlinkMetadata
+    if let some metadata ← symlinkMetadata? current then
       if metadata.type == .symlink then
         fail s!"managed output path traverses a symlink: {identity}"
   pure (kind, projectRoot / configured)
@@ -49,8 +58,7 @@ private def bytes (values : List Nat) : ByteArray :=
   ByteArray.mk (values.toArray.map UInt8.ofNat)
 
 private def removeCurrent (path : System.FilePath) : IO Unit := do
-  if ← path.pathExists then
-    let metadata ← path.symlinkMetadata
+  if let some metadata ← symlinkMetadata? path then
     match metadata.type with
     | .file => IO.FS.removeFile path
     | .dir => IO.FS.removeDirAll path
@@ -58,10 +66,10 @@ private def removeCurrent (path : System.FilePath) : IO Unit := do
 
 def capture (projectRoot : System.FilePath) (identity : String) : IO Baseline := do
   let (kind, path) ← configuredPath projectRoot identity
-  let existed ← path.pathExists
+  let metadata? ← symlinkMetadata? path
+  let existed := metadata?.isSome
   let mut nodes := []
-  if existed then
-    let metadata ← path.symlinkMetadata
+  if let some metadata := metadata? then
     match kind, metadata.type with
     | .file, .file =>
         nodes := [{
