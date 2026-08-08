@@ -309,6 +309,38 @@ def run : IO Unit := do
     expect (match entry.payload with | .task value => !value.closed | _ => false)
       s!"Plan replacement preserved dependent Task {taskId} after its dependency became stale"
 
+  -- A Task can become stale after materialization when another legitimate Task changes a
+  -- declared input. Recovery stays within Task state: no artificial replacement Plan is needed.
+  expect (operationApplicable dependencyState
+      [TargetObservation.mk criterion.target "blake3:old-evidence-b"] [] .taskReopenStale)
+    "stale closed Task did not expose the semantic recovery operation"
+  let reopened ← fromExcept <| reopenStaleTasks dependencyState
+    [TargetObservation.mk criterion.target "blake3:old-evidence-b"]
+  for lineage in [s!"{work.id}:a", s!"{work.id}:b"] do
+    let current ← match reopened.ledgerEntries.find? fun entry =>
+        !entryIsSuperseded reopened entry && match entry.payload with
+        | .task task => task.lineageId == some lineage
+        | _ => false with
+      | some value => pure value
+      | none => throw (IO.userError s!"stale recovery omitted Task lineage {lineage}")
+    expect (match current.payload with
+      | .task task => !task.closed && task.verificationEvidenceEntryIds.isEmpty &&
+          task.verificationTaskEntryId.isNone
+      | _ => false)
+      s!"stale recovery retained closed state or inherited evidence for {lineage}"
+  expect (reopened.currentPlanFor? work.id |>.any (·.id == oldPlan.id))
+    "stale Task recovery replaced Plan authority"
+  let openDependentState : ProjectState := { dependencyState with
+    ledgerEntries := dependencyState.ledgerEntries.filter fun entry =>
+      entry.id != "old-evidence-b" && entry.id != "old-task-b" }
+  fromExcept (validateState openDependentState)
+  let reopenedWithOpenDependent ← fromExcept <| reopenStaleTasks openDependentState []
+  let retainedOpenDependent ← match reopenedWithOpenDependent.entry? "old-task-b-open" with
+    | some value => pure value
+    | none => throw (IO.userError "open dependent fixture lost its current Task")
+  expect (!entryIsSuperseded reopenedWithOpenDependent retainedOpenDependent)
+    "stale recovery replaced a transitive dependent that was already open"
+
   let reorderedPlan : ImplementationPlan := { oldPlan with
     id := "plan-reordered", predecessorPlanId := some oldPlan.id
     status := .candidate, contentDigest := "blake3:reordered"

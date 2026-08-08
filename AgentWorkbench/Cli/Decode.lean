@@ -75,6 +75,7 @@ def decodeMutation? (command : List String) : IO (Option Mutation) :=
       let input ← readInput (α := IdInput) "plan materialize"
       pure (some (.planMaterialize input.id))
   | some .taskClose => return some (.taskClose (← readInput "task close"))
+  | some .taskReopenStale => pure (some .taskReopenStale)
   | some .profileDefine => return some (.profileDefine (← readInput "profile define"))
   | some .profileReplace => return some (.profileReplace (← readInput "profile replace"))
   | some .commandRun => return some (.commandRun (← readInput "command run"))
@@ -170,7 +171,7 @@ def decodeQuery? (command : List String) : IO (Option Query) :=
   | some .designReject | some .workStart | some .workFocus | some .workSuspend
   | some .workResume | some .workHandoff | some .workAdoptDesign | some .workWithdraw
   | some .workComplete | some .planPropose | some .planReplace | some .planMaterialize
-  | some .taskClose | some .profileDefine | some .profileReplace | some .artifactObserve
+  | some .taskClose | some .taskReopenStale | some .profileDefine | some .profileReplace | some .artifactObserve
   | some .correctionRecord | some .correctionSupersede | some .correctionResolve
   | some .correctionIncorporate | some .kptRecord | some .kptApply | some .reviewStart
   | some .reviewResume | some .reviewHandoff | some .reviewFinding

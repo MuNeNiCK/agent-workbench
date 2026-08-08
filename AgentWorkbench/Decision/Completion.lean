@@ -94,6 +94,30 @@ def taskClosedWithCurrentEvidence
           evidence.target == some contract.target
       | _ => false)
 
+def currentPlanTaskEntries
+    (state : ProjectState) (projection : CurrentProjection) : List LedgerEntry :=
+  match state.currentPlanFor? projection.work.id with
+  | none => []
+  | some plan => projection.entries.filter fun entry => match entry.payload with
+    | .task task => task.planId == some plan.id && task.required && !task.retired
+    | _ => false
+
+def staleClosedTaskLineages
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (tasks : List LedgerEntry) : List String :=
+  tasks.filterMap fun entry => match entry.payload with
+    | .task task =>
+        if task.closed && !taskClosedWithCurrentEvidence projection observations task then
+          task.lineageId
+        else none
+    | _ => none
+
+def hasStaleClosedTasks
+    (state : ProjectState) (observations : List TargetObservation) : Bool :=
+  currentProjection? state |>.any fun projection =>
+    let tasks := currentPlanTaskEntries state projection
+    !(staleClosedTaskLineages projection observations tasks).isEmpty
+
 def requiredTasksClosed
     (projection : CurrentProjection) (observations : List TargetObservation) : Bool :=
   projection.entries.all (fun entry =>

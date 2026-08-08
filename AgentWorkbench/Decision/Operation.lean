@@ -112,6 +112,7 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .workComplete => completionStructurallyReady state
   | .reviewStart => current || (focusedWork && state.designRevisions.any fun design =>
       design.status == .candidate && design.workId == state.focusedWorkId)
+  | .taskReopenStale => current
   | .profileDefine => hasDependencyReadyTask state
   | .taskClose => hasDependencyReadyTask state
   | .profileReplace | .commandShow | .commandRun =>
@@ -150,6 +151,7 @@ def operationApplicable
   | .planMaterialize =>
       currentProjection? state |>.any fun projection =>
         projection.design.leanClaims.all (claimHasReceipt projection digests)
+  | .taskReopenStale => hasStaleClosedTasks state observations
   | .workComplete => completionReady state observations digests
   | _ => true
 

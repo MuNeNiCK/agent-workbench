@@ -140,6 +140,15 @@ private def closeTaskRequest
   commitOperation store .taskClose prior.revision next
   pure next
 
+private def reopenStaleTasksRequest
+    (projectRoot : System.FilePath) (store : WriteStore) : IO ProjectState := do
+  let prior ← loadState store
+  let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
+  let next ← fromExcept
+    ((AgentWorkbench.PreparedMutation.taskReopenStale inputs.observations).executeApplicable prior)
+  commitOperation store .taskReopenStale prior.revision next
+  pure next
+
 private def observeArtifact
     (projectRoot : System.FilePath) (store : WriteStore)
     (request : AgentWorkbench.ArtifactObserveRequest) : IO ProjectState := do
@@ -310,6 +319,7 @@ private def executeMutationUnlocked
       return .plan (← proposePlanRequest projectRoot store .planReplace request)
   | .planMaterialize planId => return .state (← materializePlanRequest projectRoot store planId)
   | .taskClose request => return .state (← closeTaskRequest projectRoot store request)
+  | .taskReopenStale => return .state (← reopenStaleTasksRequest projectRoot store)
   | .commandRun request =>
       return .command (← runCommandProfile projectRoot store request postCommitVerification)
   | .artifactObserve request => return .state (← observeArtifact projectRoot store request)

@@ -142,6 +142,8 @@ def operationContracts : List OperationContract :=
   , noInput "work complete" "complete focused Work only when derived readiness is true"
   , contract "task close" "close and supersede a current Task"
       ({ entryId := "task-closed", taskEntryId := "task-1" } : TaskCloseRequest)
+  , noInput "task reopen-stale"
+      "atomically reopen Tasks whose closing evidence is stale and their dependents"
   , contract "profile define" "define a current-bound Command Profile"
       ({ entryId := "profile-1", purpose := "verify artifact"
          taskEntryId := "task-plan-1-step-1", inputTargets := []

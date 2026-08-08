@@ -16,7 +16,7 @@ private def positiveRouteSuite : Operation → Option Suite
   | .correctionIncorporate => some .publicDesignWorkRoute
   | .init | .designPropose | .designAccept | .workStart | .workSuspend | .workResume
   | .workHandoff | .workComplete | .planPropose | .planReplace | .planMaterialize
-  | .taskClose | .profileDefine | .profileReplace | .commandRun | .artifactObserve
+  | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .commandRun | .artifactObserve
   | .proofRun | .correctionRecord | .correctionSupersede | .correctionResolve
   | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
   | .reviewFinding | .reviewDisposition | .reviewConclude | .reviewVerify => some .publicRoute

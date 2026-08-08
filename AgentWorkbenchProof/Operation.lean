@@ -23,7 +23,8 @@ def externalEffectClass : Mutation → ExternalEffectClass
   | .init => .workspaceInitialization
   | .designPropose _ | .designAmend _ => .designSourceCaptureAndProof
   | .planPropose _ | .planReplace _ => .planSourceCapture
-  | .planMaterialize _ | .taskClose _ | .workComplete => .currentInputObservation
+  | .planMaterialize _ | .taskClose _ | .taskReopenStale |
+      .workComplete => .currentInputObservation
   | .artifactObserve _ => .artifactObservation
   | .commandRun _ => .commandExecution
   | .proofRun _ => .proofExecution
@@ -98,7 +99,7 @@ theorem every_prepared_mutation_is_classified_as_mutating (prepared : PreparedMu
   cases prepared with
   | direct mutation => exact every_mutation_is_classified_as_mutating mutation
   | designPropose | designAmend | planPropose | planReplace
-  | planMaterialize | taskClose | workComplete | artifactObservation | commandExecution
+  | planMaterialize | taskClose | taskReopenStale | workComplete | artifactObservation | commandExecution
   | proofReceipt | reviewStart | reviewResume => rfl
 
 theorem successful_prepared_mutation_is_valid

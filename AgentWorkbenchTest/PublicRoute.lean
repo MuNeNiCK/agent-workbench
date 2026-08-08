@@ -396,6 +396,43 @@ def run : IO Unit := do
     let _ ← invokeJson root ["task", "close"] ({
       entryId := "task-closed-route", taskEntryId := taskId } : TaskCloseRequest)
 
+    -- A declared input can change after a Plan replacement legitimately inherited a closed Task.
+    -- The public Task-state transition must make re-verification reachable without inventing
+    -- another Plan revision.
+    IO.FS.writeFile (root / "command-input.txt") "changed after Task closure\n"
+    let staleContext ← invokeOk root ["context"]
+    expect ((staleContext.splitOn "task reopen-stale").length > 1)
+      s!"context did not expose the stale closed-Task recovery transition: {staleContext}"
+    let _ ← invokeOk root ["task", "reopen-stale"]
+    let reopenedState ← Store.loadState (← Store.openReadOnly database)
+    let reopenedTask ← match reopenedState.ledgerEntries.find? fun entry =>
+        !entryIsSuperseded reopenedState entry && match entry.payload with
+        | .task task => task.lineageId == some s!"work-route:{routeStep.id}" && !task.closed
+        | _ => false with
+      | some value => pure value
+      | none => throw (IO.userError "stale Task recovery did not create a current open Task")
+    let _ ← invokeJson root ["profile", "replace"] ({
+      entryId := "profile-route-reopened", profileEntryId := "profile-route-current"
+      purpose := "produce the Task output after an input change"
+      taskEntryId := reopenedTask.id, inputTargets := ["file:command-input.txt"]
+      outputScope := criterion.target, criterionIds := [commandCriterion.id]
+      command := successfulCommand } : ProfileReplaceRequest)
+    let _ ← invokeJson root ["command", "run"] ({
+      profileEntryId := "profile-route-reopened", entryId := "command-route-reopened"
+      criterionId := some commandCriterion.id } : CommandRunRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "evidence-route-reopened", taskEntryId := reopenedTask.id
+      criterionId := criterion.id, operation := "inspect regenerated artifact"
+      result := "artifact exists", successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["task", "close"] ({
+      entryId := "task-reclosed-route", taskEntryId := reopenedTask.id } : TaskCloseRequest)
+    let beforeCurrentReopen ← Store.loadState (← Store.openReadOnly database)
+    let rejectedCurrentReopen ← invoke root ["task", "reopen-stale"]
+    expect (rejectedCurrentReopen.exitCode != 0)
+      "Task recovery acted as a generic reopen while all closing evidence was current"
+    expect ((← Store.loadState (← Store.openReadOnly database)) == beforeCurrentReopen)
+      "rejected current-Task reopen changed authoritative state or revision"
+
     let beforeEmptyReviewer ← Store.loadState (← Store.openReadOnly database)
     let emptyReviewer ← invoke root ["review", "start"]
       (some (Lean.toJson ({

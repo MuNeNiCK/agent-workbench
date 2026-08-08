@@ -8,7 +8,7 @@ inductive Operation where
   | workHandoff | workAdoptDesign | workAdoptionImpact | workWithdraw | workComplete
   | planPropose | planReplace | planMaterialize | planGet | planInspectSources
   | planSource | planDiff | planExport
-  | taskClose
+  | taskClose | taskReopenStale
   | profileDefine | profileReplace
   | artifactObserve
   | correctionRecord | correctionSupersede | correctionResolve | correctionIncorporate
@@ -28,7 +28,7 @@ def Operation.kind : Operation → OperationKind
   | .init | .designPropose | .designAmend | .designAccept | .designReject
   | .workStart | .workFocus | .workSuspend | .workResume | .workHandoff
   | .workAdoptDesign | .workWithdraw | .workComplete
-  | .planPropose | .planReplace | .planMaterialize | .taskClose
+  | .planPropose | .planReplace | .planMaterialize | .taskClose | .taskReopenStale
   | .profileDefine | .profileReplace | .artifactObserve
   | .correctionRecord | .correctionSupersede | .correctionResolve | .correctionIncorporate
   | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
@@ -55,7 +55,7 @@ def Operation.name : Operation → String
   | .planMaterialize => "plan materialize" | .planGet => "plan get"
   | .planInspectSources => "plan inspect-sources" | .planSource => "plan source"
   | .planDiff => "plan diff" | .planExport => "plan export"
-  | .taskClose => "task close"
+  | .taskClose => "task close" | .taskReopenStale => "task reopen-stale"
   | .profileDefine => "profile define" | .profileReplace => "profile replace"
   | .artifactObserve => "artifact observe"
   | .correctionRecord => "correction record"
@@ -79,7 +79,7 @@ def Operation.all : List Operation :=
       .workSuspend, .workResume, .workHandoff, .workAdoptDesign, .workAdoptionImpact,
       .workWithdraw, .workComplete,
       .planPropose, .planReplace, .planMaterialize, .planGet, .planInspectSources,
-      .planSource, .planDiff, .planExport, .taskClose, .profileDefine,
+      .planSource, .planDiff, .planExport, .taskClose, .taskReopenStale, .profileDefine,
       .profileReplace, .artifactObserve, .correctionRecord, .correctionSupersede,
       .correctionResolve, .correctionIncorporate, .kptRecord, .kptApply, .reviewStart,
       .reviewResume, .reviewHandoff, .reviewFinding, .reviewDisposition, .reviewConclude,

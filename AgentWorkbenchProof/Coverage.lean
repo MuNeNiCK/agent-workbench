@@ -75,7 +75,8 @@ def mutationInvariantCoverage : Mutation → List InvariantFamily
   | .workStart _ | .workFocus _ | .workSuspend _ _ | .workResume _
   | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workWithdraw _ | .workComplete =>
       [.workLifecycle, .ledgerAuthority]
-  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ =>
+  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ |
+      .taskReopenStale =>
       [.planTask, .ledgerAuthority]
   | .profileDefine _ | .profileReplace _ | .commandRun _ | .artifactObserve _ | .proofRun _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _
