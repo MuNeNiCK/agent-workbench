@@ -28,6 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Fix documentation test identity
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          printf '%s\n' "$EXPECTED_COMMIT" > "$RUNNER_TEMP/tested-commit.txt"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -35,6 +44,12 @@ jobs:
           cache-dependency-path: docs/requirements.txt
       - run: python -m pip install -r docs/requirements.txt
       - run: mkdocs build --config-file docs/mkdocs.yml --strict
+      - name: Attest tested commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-commit-docs
+          path: ${{ runner.temp }}/tested-commit.txt
+          if-no-files-found: error
       - if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v6
       - if: github.event_name != 'pull_request'

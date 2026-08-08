@@ -14,13 +14,27 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
+            target: linux-x86_64
           - runner: ubuntu-24.04-arm
+            target: linux-aarch64
           - runner: macos-15-intel
+            target: macos-x86_64
           - runner: macos-15
+            target: macos-aarch64
           - runner: windows-2025
+            target: windows-x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Fix native test identity
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          printf '%s\n' "$EXPECTED_COMMIT" > "$RUNNER_TEMP/tested-commit.txt"
       - uses: leanprover/lean-action@v1
         with:
           auto-config: false
@@ -59,6 +73,12 @@ jobs:
           grep -F -- '--source-ref "refs/tags/$release_version"' skills/agent-workbench/scripts/setup.sh
           grep -F -- '--source-ref "refs/tags/$releaseVersion"' skills/agent-workbench/scripts/setup.ps1
           ! grep -R "releases/latest" skills/agent-workbench
+      - name: Attest tested commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-commit-${{ matrix.target }}
+          path: ${{ runner.temp }}/tested-commit.txt
+          if-no-files-found: error
 
   required:
     if: always()

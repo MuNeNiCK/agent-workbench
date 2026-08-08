@@ -28,10 +28,27 @@ git -C "$project" init -q
 git -C "$project" config user.email fixture@example.invalid
 git -C "$project" config user.name fixture
 mkdir -p "$project/src"
+mkdir -p "$project/runtime" "$project/dist"
 printf '%s\n' 'product source independent of Workbench' > "$project/src/Product.txt"
 printf '%s\n' 'product build input independent of Workbench' > "$project/product.build"
-git -C "$project" add src/Product.txt product.build
+printf '%s\n' 'product persisted state independent of Workbench' > "$project/runtime/product.state"
+printf '%s\n' 'product artifact independent of Workbench' > "$project/dist/product.artifact"
+printf '%s\n' '#!/bin/sh' "printf '%s\\n' 'product behavior independent of Workbench'" \
+  > "$project/product-command.sh"
+chmod +x "$project/product-command.sh"
+git -C "$project" add src/Product.txt product.build runtime/product.state \
+  dist/product.artifact product-command.sh
 git -C "$project" commit -qm 'product fixture before Workbench'
+product_behavior_before=$(sh "$project/product-command.sh")
+git_config_before=$(git -C "$project" config --local --list)
+
+assert_product_invariant() {
+  git -C "$project" diff --quiet HEAD -- src/Product.txt product.build runtime/product.state \
+    dist/product.artifact product-command.sh
+  git -C "$project" diff --cached --quiet
+  [[ "$(sh "$project/product-command.sh")" == "$product_behavior_before" ]]
+  [[ "$(git -C "$project" config --local --list)" == "$git_config_before" ]]
+}
 if [[ -n "${AGENT_WORKBENCH_SKILL_REPOSITORY:-}" ]]; then
   [[ -n "${AGENT_WORKBENCH_SKILL_REF:-}" ]]
   (cd "$project" && gh skill install "$AGENT_WORKBENCH_SKILL_REPOSITORY" agent-workbench \
@@ -118,7 +135,7 @@ after=$("$awb" --project "$project" context)
 outside_workbench_status=$(git -C "$project" status --porcelain --untracked-files=all -- . \
   ':(exclude).agents/**' ':(exclude).agent-workbench/**')
 [[ -z "$outside_workbench_status" ]]
-git -C "$project" diff --quiet HEAD -- src/Product.txt product.build
+assert_product_invariant
 
 "$awb" --project "$project" describe | python3 -c '
 import json,sys
@@ -264,3 +281,9 @@ printf '%s\n' '{"afterOrder":0,"limit":100}' \
 import json,sys
 assert all(entry["id"] != "proof-stale" for entry in json.load(sys.stdin))
 '
+
+assert_product_invariant
+rm -rf "$project/.agents" "$project/.agent-workbench"
+[[ ! -e "$project/.agents" && ! -e "$project/.agent-workbench" ]]
+assert_product_invariant
+[[ -z "$(git -C "$project" status --porcelain --untracked-files=all)" ]]
