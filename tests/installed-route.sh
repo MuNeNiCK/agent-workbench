@@ -332,7 +332,12 @@ if AGENT_WORKBENCH_SETUP_FAULT_POINT=after-native-activation \
   echo "post-migration activation fault did not interrupt setup" >&2
   exit 1
 fi
-grep -F 'injected interruption after native Agent Workbench activation' "$migration_fault_log"
+if ! grep -F 'injected interruption after native Agent Workbench activation' \
+    "$migration_fault_log"; then
+  sed -n '1,160p' "$migration_fault_log" >&2
+  echo "post-migration activation did not reach the injected interruption" >&2
+  exit 1
+fi
 [[ -e "$migration_activation_project/.agent-workbench/.bin.activation-pending" ]]
 [[ ! -e "$migration_activation_project/.agent-workbench/.bin.activation-committed" ]]
 [[ -e "$migration_activation_project/.agent-workbench/.bin.previous" ]]
