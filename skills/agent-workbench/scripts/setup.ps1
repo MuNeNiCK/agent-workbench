@@ -206,8 +206,15 @@ try {
     }
   }
   if (Test-Path (Join-Path $ProjectRoot ".agent-workbench/state.db")) {
-    $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0) {
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
+      $contextExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($contextExitCode -eq 0) {
       $contextOutput
     } elseif ($contextOutput -match 'unsupported schema revision 1; expected 2') {
       & $runtime --project $ProjectRoot init
