@@ -59,6 +59,20 @@ $requiredDirectories = @(
   "skill/agent-workbench/scripts"
 )
 
+function Get-BundleRelativePath([string]$BundleRoot, [string]$EntryPath) {
+  $trimCharacters = [char[]]@(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $root = [System.IO.Path]::GetFullPath($BundleRoot).TrimEnd($trimCharacters)
+  $entry = [System.IO.Path]::GetFullPath($EntryPath)
+  $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $entry.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Runtime bundle entry escapes its root: $EntryPath"
+  }
+  return $entry.Substring($prefix.Length).Replace('\', '/')
+}
+
 function Test-RuntimeBundle([string]$BundleRoot) {
   if (-not (Test-Path -LiteralPath $BundleRoot -PathType Container)) { return $false }
   $marker = Join-Path $BundleRoot "skill/agent-workbench/release-version"
@@ -69,10 +83,10 @@ function Test-RuntimeBundle([string]$BundleRoot) {
       ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
     }) { return $false }
   $actualFiles = @($entries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
-    [System.IO.Path]::GetRelativePath($BundleRoot, $_.FullName).Replace('\', '/')
+    Get-BundleRelativePath $BundleRoot $_.FullName
   } | Sort-Object)
   $actualDirectories = @(".") + @($entries | Where-Object { $_.PSIsContainer } | ForEach-Object {
-    [System.IO.Path]::GetRelativePath($BundleRoot, $_.FullName).Replace('\', '/')
+    Get-BundleRelativePath $BundleRoot $_.FullName
   } | Sort-Object)
   if ((Compare-Object $requiredFiles $actualFiles).Count -ne 0) { return $false }
   if ((Compare-Object $requiredDirectories $actualDirectories).Count -ne 0) { return $false }
