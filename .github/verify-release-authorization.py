@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import pathlib
 import posixpath
@@ -29,6 +30,7 @@ REQUIRED_FIELDS = {
     "implementation-review-clean",
 }
 DIGEST = re.compile(r"blake3:[0-9a-f]{64}")
+OPENPGP_FINGERPRINT = re.compile(r"[0-9A-F]{40}")
 
 
 class AuthorizationError(ValueError):
@@ -41,18 +43,52 @@ def verify_signer(verification: str, allowed_signer: str) -> None:
         marker = "[GNUPG:] VALIDSIG "
         if line.startswith(marker):
             fields = line[len(marker) :].split()
-            if fields:
-                records.append(fields)
+            records.append(fields)
     if len(records) != 1:
         raise AuthorizationError("tag signature is absent, invalid, or from an untrusted signer")
     fields = records[0]
+    if len(fields) not in {9, 10}:
+        raise AuthorizationError("VALIDSIG status record has an invalid field count")
+    if not OPENPGP_FINGERPRINT.fullmatch(fields[0]):
+        raise AuthorizationError("VALIDSIG signing-key fingerprint is malformed")
+    try:
+        datetime.date.fromisoformat(fields[1])
+    except ValueError as error:
+        raise AuthorizationError("VALIDSIG signature date is malformed") from error
+    if any(not field.isdigit() for field in fields[2:8]):
+        raise AuthorizationError("VALIDSIG numeric status field is malformed")
+    if not re.fullmatch(r"[0-9A-Fa-f]{2}", fields[8]):
+        raise AuthorizationError("VALIDSIG signature class is malformed")
+    if len(fields) == 10 and not OPENPGP_FINGERPRINT.fullmatch(fields[9]):
+        raise AuthorizationError("VALIDSIG primary-key fingerprint is malformed")
     signing_key_fingerprint = fields[0]
     if signing_key_fingerprint != allowed_signer:
         raise AuthorizationError("signing key is not the pinned primary key")
     # GnuPG appends primary-key-fpr after the fixed VALIDSIG fields when available.
     # A primary-key signature must name the same pinned identity in both positions.
-    if len(fields) >= 10 and fields[-1] != allowed_signer:
+    if len(fields) == 10 and fields[9] != allowed_signer:
         raise AuthorizationError("VALIDSIG primary-key fingerprint conflicts with the pinned key")
+
+
+def verify_release_workflow_wiring(workflow: str) -> None:
+    required_fragments = {
+        "dedicated fetched tag ref": 'verification_ref="refs/agent-workbench-release-tags/$TAG_NAME"',
+        "remote tag fetch": '"refs/tags/$TAG_NAME:$verification_ref"',
+        "annotated object-type capture": 'git cat-file -t "$verification_ref"',
+        "signature verification": 'git verify-tag --raw "$verification_ref"',
+        "signed payload capture": 'git cat-file tag "$verification_ref"',
+        "authoritative authorization record": 'git notes --ref=refs/notes/agent-workbench-release show "$TARGET_COMMIT"',
+        "shared verifier invocation": 'python3 .github/verify-release-authorization.py verify',
+        "object-type verifier input": '--tag-object-type-file "$RUNNER_TEMP/release-tag-object-type.txt"',
+        "signature verifier input": '--verification-file "$RUNNER_TEMP/release-signature.txt"',
+        "payload verifier input": '--tag-file "$RUNNER_TEMP/release-tag.txt"',
+        "authorization verifier input": '--authorization-record-file "$RUNNER_TEMP/release-authorization.txt"',
+        "package authorization dependency": "  package:\n    needs: authorize",
+        "publication authorization dependency": "  publish:\n    needs: [authorize, package]",
+    }
+    for label, fragment in required_fragments.items():
+        if workflow.count(fragment) != 1:
+            raise AuthorizationError(f"release workflow lacks exact {label} wiring")
 
 
 def parse_message(message: str) -> dict[str, str]:
@@ -352,6 +388,11 @@ def self_test() -> None:
     expect_rejected("signing subkey", lambda: verify(tag, valid.replace(signer, subkey, 1), record, commit, signer))
     expect_rejected("duplicate VALIDSIG", lambda: verify(tag, valid + "\n" + valid, record, commit, signer))
     expect_rejected("conflicting primary", lambda: verify(tag, valid[: valid.rfind(signer)] + "3" * 40, record, commit, signer))
+    expect_rejected("truncated VALIDSIG", lambda: verify(tag, f"[GNUPG:] VALIDSIG {signer}", record, commit, signer))
+    expect_rejected("malformed VALIDSIG date", lambda: verify(tag, valid.replace("2026-08-08", "not-a-date"), record, commit, signer))
+    expect_rejected("malformed VALIDSIG timestamp", lambda: verify(tag, valid.replace("1786147200", "timestamp"), record, commit, signer))
+    expect_rejected("malformed VALIDSIG class", lambda: verify(tag, valid.replace(" 00 ", " xyz "), record, commit, signer))
+    expect_rejected("extra VALIDSIG field", lambda: verify(tag, valid + " unexpected", record, commit, signer))
     expect_rejected("target commit", lambda: verify(tag, valid, record, "2" * 40, signer))
     for field in sorted(REQUIRED_FIELDS):
         value = parse_message(record)[field]
@@ -366,6 +407,24 @@ def self_test() -> None:
     expect_rejected("missing field", lambda: verify(tag.replace("work-id: work-release\n", ""), valid, record, commit, signer))
     expect_rejected("extra field", lambda: verify(tag.replace("work-id: work-release", "work-id: work-release\nextra: value"), valid, record, commit, signer))
     expect_rejected("tampered unsigned payload", lambda: verify(tag.replace("review-design", "review-tampered", 1).replace("-----BEGIN PGP SIGNATURE-----", ""), "", record, commit, signer))
+
+    workflow_path = pathlib.Path(__file__).with_name("workflows") / "release.yml"
+    workflow = workflow_path.read_text()
+    verify_release_workflow_wiring(workflow)
+    for fragment in (
+        'verification_ref="refs/agent-workbench-release-tags/$TAG_NAME"',
+        '"refs/tags/$TAG_NAME:$verification_ref"',
+        'git cat-file -t "$verification_ref"',
+        'git verify-tag --raw "$verification_ref"',
+        'git cat-file tag "$verification_ref"',
+        '--authorization-record-file "$RUNNER_TEMP/release-authorization.txt"',
+        "  package:\n    needs: authorize",
+        "  publish:\n    needs: [authorize, package]",
+    ):
+        expect_rejected(
+            f"release workflow wiring without {fragment}",
+            lambda fragment=fragment: verify_release_workflow_wiring(workflow.replace(fragment, "", 1)),
+        )
 
     digest = "blake3:" + "b" * 64
     ready = {

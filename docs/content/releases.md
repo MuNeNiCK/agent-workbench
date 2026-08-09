@@ -95,7 +95,9 @@ do not become release inputs merely because they exist in the same repository.
 
 Release CI imports the repository-pinned public key and requires exactly one GnuPG `VALIDSIG`
 record whose signing-key fingerprint is that pinned primary key. Signing subkeys are intentionally
-rejected; when GnuPG also emits a primary-key fingerprint, it must name the same key. CI fetches the
+rejected; the fixed status fields must have their documented shape, and when GnuPG also emits a
+primary-key fingerprint, it must name the same key. Truncated or extended status records are
+rejected. CI fetches the
 remote annotated-tag object into a dedicated verification ref before checking its type and
 signature. The checkout-selected commit and any checkout-local tag name are not signature
 authority. CI then loads the separately transported record from
@@ -105,6 +107,12 @@ missing, duplicate, extra, or malformed authorization fields. Thus a passing bui
 `v*` tag cannot publish a release. A Finding disposition can resolve Work
 authority but cannot make a finding-bearing Review clean. The signed digests bind both immutable
 targets without publishing `.agent-workbench` state.
+
+The verifier self-test also checks the shipped release workflow itself: the authorization job must
+fetch and inspect the dedicated tag-object ref, pass its object type, signature, signed payload, and
+separate record to this verifier, and remain a dependency of archive upload and publication. Local
+archive staging and tests may run as readiness evidence; authorization is required before upload or
+publication.
 
 These checks establish the tested distribution boundary. They do not turn external platform,
 network, filesystem, or natural-language properties into Lean theorems; see
