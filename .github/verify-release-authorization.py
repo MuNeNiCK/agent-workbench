@@ -98,13 +98,20 @@ def parse_authorization(tag_object: str, target_commit: str) -> tuple[str, dict[
     return message, fields
 
 
+def verify_tag_object_type(tag_object_type: str) -> None:
+    if tag_object_type.strip() != "tag":
+        raise AuthorizationError("release authorization ref is not an immutable annotated tag object")
+
+
 def verify(
     tag_object: str,
     verification: str,
     authorization_record: str,
     target_commit: str,
     allowed_signer: str,
+    tag_object_type: str = "tag",
 ) -> None:
+    verify_tag_object_type(tag_object_type)
     verify_signer(verification, allowed_signer)
     message, signed_fields = parse_authorization(tag_object, target_commit)
     record = authorization_record.strip()
@@ -334,6 +341,10 @@ def self_test() -> None:
     valid = f"[GNUPG:] VALIDSIG {signer} 2026-08-08 1786147200 0 4 0 1 10 00 {signer}"
     record = tag.split("\n\n", 1)[1].split("-----BEGIN PGP SIGNATURE-----", 1)[0].strip()
     verify(tag, valid, record, commit, signer)
+    expect_rejected(
+        "checkout-local lightweight tag substitution",
+        lambda: verify(tag, valid, record, commit, signer, "commit"),
+    )
     expect_rejected("unsigned", lambda: verify(tag, "", record, commit, signer))
     expect_rejected("bad signature", lambda: verify(tag, "[GNUPG:] BADSIG fixture", record, commit, signer))
     expect_rejected("untrusted signer", lambda: verify(tag, valid.replace(signer, "0" * 40), record, commit, signer))
@@ -527,6 +538,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--tag-file", required=True)
+    verify_parser.add_argument("--tag-object-type-file", required=True)
     verify_parser.add_argument("--verification-file", required=True)
     verify_parser.add_argument("--authorization-record-file", required=True)
     verify_parser.add_argument("--target-commit", required=True)
@@ -557,6 +569,7 @@ def main() -> None:
         pathlib.Path(arguments.authorization_record_file).read_text(),
         arguments.target_commit,
         arguments.allowed_signer,
+        pathlib.Path(arguments.tag_object_type_file).read_text(),
     )
 
 

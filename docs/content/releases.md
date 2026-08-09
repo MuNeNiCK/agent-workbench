@@ -95,9 +95,12 @@ do not become release inputs merely because they exist in the same repository.
 
 Release CI imports the repository-pinned public key and requires exactly one GnuPG `VALIDSIG`
 record whose signing-key fingerprint is that pinned primary key. Signing subkeys are intentionally
-rejected; when GnuPG also emits a primary-key fingerprint, it must name the same key. CI then
-loads the separately transported record from `refs/notes/agent-workbench-release`, requires the
-signed tag message to match it exactly, requires both to name the workflow commit, and rejects
+rejected; when GnuPG also emits a primary-key fingerprint, it must name the same key. CI fetches the
+remote annotated-tag object into a dedicated verification ref before checking its type and
+signature. The checkout-selected commit and any checkout-local tag name are not signature
+authority. CI then loads the separately transported record from
+`refs/notes/agent-workbench-release`, requires the signed tag message to match it exactly, requires
+both to name the workflow commit, and rejects
 missing, duplicate, extra, or malformed authorization fields. Thus a passing build from an arbitrary
 `v*` tag cannot publish a release. A Finding disposition can resolve Work
 authority but cannot make a finding-bearing Review clean. The signed digests bind both immutable
