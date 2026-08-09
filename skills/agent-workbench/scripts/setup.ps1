@@ -223,8 +223,8 @@ try {
     if ($env:AGENT_WORKBENCH_SETUP_FAULT_POINT -eq "after-native-activation") {
       [Console]::Error.WriteLine(
         "injected interruption after native Agent Workbench activation")
-      [System.Diagnostics.Process]::GetCurrentProcess().Kill()
-      exit 137
+      [System.Environment]::FailFast(
+        "injected interruption after native Agent Workbench activation")
     }
     New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
     Complete-RuntimeActivation
