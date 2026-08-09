@@ -325,12 +325,14 @@ migration_release="$migration_activation_project/.agent-workbench/bin/skill/agen
 printf '%s\n' 'v0.2.8' > "$migration_release"
 printf '%s\n' 'old runtime must remain quarantined after migration' > \
   "$migration_activation_project/.agent-workbench/bin/old-runtime-sentinel"
+migration_fault_log="$package_dir/migration-activation-fault.log"
 if AGENT_WORKBENCH_SETUP_FAULT_POINT=after-native-activation \
     setup_archive_for "$migration_activation_project" "$archive" "$checksum" \
-    >/dev/null 2>&1; then
+    >"$migration_fault_log" 2>&1; then
   echo "post-migration activation fault did not interrupt setup" >&2
   exit 1
 fi
+grep -F 'injected interruption after native Agent Workbench activation' "$migration_fault_log"
 [[ -e "$migration_activation_project/.agent-workbench/.bin.activation-pending" ]]
 [[ ! -e "$migration_activation_project/.agent-workbench/.bin.activation-committed" ]]
 [[ -e "$migration_activation_project/.agent-workbench/.bin.previous" ]]

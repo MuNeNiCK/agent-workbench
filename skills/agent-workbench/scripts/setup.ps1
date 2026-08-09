@@ -223,8 +223,9 @@ try {
     if ($env:AGENT_WORKBENCH_SETUP_FAULT_POINT -eq "after-native-activation") {
       [Console]::Error.WriteLine(
         "injected interruption after native Agent Workbench activation")
-      [System.Environment]::FailFast(
-        "injected interruption after native Agent Workbench activation")
+      $taskkill = Join-Path $env:SystemRoot "System32/taskkill.exe"
+      & $taskkill /F /PID $PID | Out-Null
+      throw "Injected interruption failed to terminate setup"
     }
     New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
     Complete-RuntimeActivation
