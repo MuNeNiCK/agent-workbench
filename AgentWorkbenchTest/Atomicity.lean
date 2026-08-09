@@ -26,6 +26,15 @@ private def installFault
 private def clearFault (connection : AgentWorkbench.SQLite.Connection) : IO Unit :=
   AgentWorkbench.SQLite.runScript connection "DROP TRIGGER IF EXISTS injected_write_fault;"
 
+private def installAfterPlanDemotionFault
+    (connection : AgentWorkbench.SQLite.Connection) : IO Unit :=
+  AgentWorkbench.SQLite.runScript connection "
+    DROP TRIGGER IF EXISTS injected_write_fault;
+    CREATE TRIGGER injected_write_fault
+    AFTER UPDATE ON implementation_plans
+    WHEN OLD.status = 'current' AND NEW.status <> 'current'
+    BEGIN SELECT RAISE(ABORT, 'injected write fault after Plan demotion'); END;"
+
 private def designProposal
     (target : String) (units : List DesignSourceUnit) : DesignProposalRequest :=
   let statement : Statement := {
@@ -172,7 +181,28 @@ def run : IO Unit := do
         s!"SQLite fault at {table} left a partial current Plan or Task graph"
 
     let _ ← Store.executeMutation root database (.planMaterialize candidatePlan.id)
-    let taskId := s!"task-{candidatePlan.id}-atomic-step"
+    let mut currentPlanId := candidatePlan.id
+    for _ in List.range 8 do
+      let replacement ← planResult (← Store.executeMutation root database
+        (.planReplace (planProposal planTarget planUnits (some currentPlanId))))
+      let _ ← Store.executeMutation root database (.planMaterialize replacement.id)
+      currentPlanId := replacement.id
+    expect (currentPlanId == "plan-9")
+      "Plan fixture did not reach the Plan 9 side of the lexicographic boundary"
+    let plan10 ← planResult (← Store.executeMutation root database
+      (.planReplace (planProposal planTarget planUnits (some currentPlanId))))
+    expect (plan10.id == "plan-10")
+      "Plan fixture did not create the lexicographically earlier successor"
+    let beforePlan10Materialize ← Store.loadState (← Store.openReadOnly database)
+    installAfterPlanDemotionFault connection
+    expectMutationFailure root database (.planMaterialize plan10.id)
+    clearFault connection
+    let afterPlan10Failure ← Store.loadState (← Store.openReadOnly database)
+    expect (afterPlan10Failure == beforePlan10Materialize)
+      "fault after Plan 9 demotion did not roll the complete transaction back"
+    let _ ← Store.executeMutation root database (.planMaterialize plan10.id)
+    currentPlanId := plan10.id
+    let taskId := s!"task-{currentPlanId}-atomic-step"
     IO.FS.writeFile (root / "atomic-artifact.txt") "atomic artifact\n"
     let _ ← Store.executeMutation root database (.artifactObserve {
       entryId := "atomic-evidence", taskEntryId := taskId

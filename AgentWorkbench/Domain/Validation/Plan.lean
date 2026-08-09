@@ -38,9 +38,14 @@ def validatePlan
   for step in plan.steps do
     ensure (!step.id.isEmpty && !step.description.isEmpty &&
       !step.outputScopes.isEmpty && uniqueStrings step.outputScopes &&
-      !step.verificationCriterionIds.isEmpty &&
+      !(step.verificationCriterionIds.isEmpty && step.taskVerificationContracts.isEmpty) &&
       uniqueStrings step.dependsOnStepIds && uniqueStrings step.requiredClaimIds &&
       uniqueStrings step.verificationCriterionIds &&
+      uniqueStrings (step.taskVerificationContracts.map (·.id)) &&
+      step.taskVerificationContracts.all (fun contract =>
+        !contract.id.isEmpty && !contract.target.isEmpty &&
+        step.outputScopes.contains contract.target &&
+        !step.verificationCriterionIds.contains contract.id) &&
       uniqueStrings step.acceptedFindingEntryIds)
       s!"Plan step {step.id} is incomplete"
     ensure (plan.sourceUnitDispositions.any (·.stepId == some step.id))
@@ -62,8 +67,11 @@ def validatePlan
       let _ ← requireSome (design.claim? claimId)
         s!"Plan step {step.id} references missing Claim {claimId}"
     for criterionId in step.verificationCriterionIds do
-      let _ ← requireSome (design.criterion? criterionId)
+      let criterion ← requireSome (design.criterion? criterionId)
         s!"Plan step {step.id} references missing Criterion {criterionId}"
+      if plan.status != .superseded then
+        ensure (step.outputScopes.contains criterion.target)
+          s!"Plan step {step.id} has no output route for Criterion {criterionId}"
     for findingId in step.acceptedFindingEntryIds do
       ensure (acceptedFindingIds.contains findingId)
         s!"Plan step {step.id} references a Finding outside the accepted Implementation Review"

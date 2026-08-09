@@ -37,7 +37,7 @@ theorem completion_ready_has_complete_current_authority
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) = true ∧
       projection.design.leanClaims.all (claimHasReceipt projection digests) = true ∧
-      noBlockingEntries projection observations = true := by
+      noBlockingEntries state projection observations = true := by
   unfold completionReady at ready
   split at ready
   · simp at ready
@@ -129,11 +129,12 @@ theorem current_evidence_has_exact_work_and_design
 
 /-- Completion's blocker decision cannot hide an unresolved current User Correction. -/
 theorem no_blockers_resolves_every_current_correction
-    (projection : CurrentProjection) (observations : List TargetObservation)
+    (state : ProjectState) (projection : CurrentProjection)
+    (observations : List TargetObservation)
     (entry : LedgerEntry) (correction : UserCorrectionRecord)
     (member : entry ∈ projection.entries)
     (payload : entry.payload = .userCorrection correction)
-    (clear : noBlockingEntries projection observations = true) :
+    (clear : noBlockingEntries state projection observations = true) :
     correction.resolvedByEntryId.isSome = true ∨
       correction.incorporatedIn = some projection.design.id := by
   simp only [noBlockingEntries, List.all_eq_true] at clear

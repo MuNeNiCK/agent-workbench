@@ -142,6 +142,8 @@ def operationContracts : List OperationContract :=
   , noInput "work complete" "complete focused Work only when derived readiness is true"
   , contract "task close" "close and supersede a current Task"
       ({ entryId := "task-closed", taskEntryId := "task-1" } : TaskCloseRequest)
+  , noInput "task reopen-stale"
+      "atomically reopen Tasks whose closing evidence is stale and their dependents"
   , contract "profile define" "define a current-bound Command Profile"
       ({ entryId := "profile-1", purpose := "verify artifact"
          taskEntryId := "task-plan-1-step-1", inputTargets := []
@@ -225,6 +227,72 @@ def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIn
 
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
+
+/-- The recursive field shape accepted by one native JSON operation. `.value` deliberately makes
+no claim about scalar representation; objects and array elements retain their own field shape. -/
+inductive InputSchema where
+  | value
+  | object (fields : List (String × InputSchema))
+  | array (item : InputSchema)
+  deriving Repr, Inhabited
+
+private partial def schemaFromExample : Lean.Json → InputSchema
+  | .obj fields => .object (fields.toList.map fun (key, value) => (key, schemaFromExample value))
+  | .arr items => .array (items[0]?.map schemaFromExample |>.getD .value)
+  | _ => .value
+
+private def typedSchema [Lean.ToJson α] (value : α) : InputSchema :=
+  schemaFromExample (Lean.toJson value)
+
+/-- A type-checked recursive schema for strict JSON field validation. The human-facing examples
+stay concise. Structured arrays are populated only in this schema witness, so an empty example can
+never erase the object fields accepted for an array element. -/
+def operationInputSchema? (operation : String) : Option InputSchema :=
+  let designSchema : DesignProposalRequest := {
+    producerAgentRun := "agent-run-1"
+    changeRationale := "record the Design"
+    changeBasisEntryIds := ["correction-1"]
+    amendsCandidate := some "design-1"
+    sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
+    sourceUnitDispositions := [{
+      unitId := "source-unit-1", role := .requirement, reason := some "authoritative requirement" }]
+    assumptions := [{
+      id := "assumption-1", text := "the service is available"
+      sourceUnitIds := ["source-unit-1"] }]
+    statements := [{ statement with assumptions := ["assumption-1"] }]
+    statementCoverage := [{
+      statementId := statement.id, sourceUnitIds := ["source-unit-1"]
+      leanClaims := { selectedIds := [claim.id] }
+      acceptanceCriteria := { selectedIds := [criterion.id] }
+      implementationRequired := true }]
+    removedStatements := [{
+      statementId := "removed-statement", statementText := "superseded requirement"
+      implementationRequired := false, noImplementationReason := some "removed by the successor" }]
+    acceptanceCriteria := [criterion, artifactCriterion]
+    leanClaims := [claim] }
+  let planSchema : PlanProposalRequest := {
+    predecessorPlanId := some "plan-1"
+    producerAgentRun := "agent-run-1"
+    reason := "implement the complete Design delta"
+    changeBasisEntryIds := ["finding-1"]
+    sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"]
+    sourceUnitDispositions := [{
+      unitId := "plan-source-unit-1", stepId := some "step-1" }]
+    statementDispositions := [{
+      statementId := statement.id, statementText := statement.text
+      deltaKind := .added, stepIds := ["step-1"] }]
+    steps := [{
+      id := "step-1", description := "implement the Statement"
+      outputScopes := [criterion.target]
+      requiredClaimIds := [claim.id]
+      verificationCriterionIds := [criterion.id]
+      taskVerificationContracts := [{
+        id := "verify-step-output", kind := .command, target := criterion.target }]
+      acceptedFindingEntryIds := ["finding-1"] }] }
+  match operation with
+  | "design propose" | "design amend" => some (typedSchema designSchema)
+  | "plan propose" | "plan replace" => some (typedSchema planSchema)
+  | _ => (operationContract? operation).bind (·.inputExample) |>.map schemaFromExample
 
 def describedOperation?
     (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=

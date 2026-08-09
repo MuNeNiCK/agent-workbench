@@ -34,6 +34,12 @@ no manual Task-add route. Replacing a Plan preserves unaffected lineages and reo
 step and transitive dependent. Required open Tasks block completion, and closing one requires current
 post-materialization evidence for that exact Task and output scope.
 
+When the accepted Design intentionally selects no project-wide Acceptance Criterion for an
+implementation-required Statement, the Plan must declare a Task-local verification contract for
+each affected output. The contract names a concrete `command` or `artifact` check; evidence is bound
+to that exact Task, kind, and target. This avoids inventing a Design criterion while still making an
+unverified implementation Task impossible to close.
+
 Successful completion creates one immutable Work-completion record in the authoritative ledger. It
 binds the Work, adopted Design, current Plan, responsible run, prior state revision, and canonical
 completion-input digest. Work status alone is not completion authority.

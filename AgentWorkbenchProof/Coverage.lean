@@ -19,10 +19,11 @@ def payloadInvariantCoverage : EntryPayload → InvariantFamily
 /-- Positional payload-record coverage. A field added to any persisted payload makes this match
 fail to compile until its authority meaning is assigned. -/
 def payloadFieldCoverage : EntryPayload → List String
-  | .task (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
+  | .task (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
       ["planId", "planStepId", "lineageId", "dependencyLineageIds", "outputScopes",
-       "verificationCriterionIds", "verificationEvidenceEntryIds", "verificationTaskEntryId",
-       "materializedAtOrder", "retired", "criterionId", "description", "required", "closed"]
+       "verificationCriterionIds", "taskVerificationContracts", "verificationEvidenceEntryIds",
+       "verificationTaskEntryId", "materializedAtOrder", "retired", "criterionId", "description",
+       "required", "closed"]
   | .workDesignAdoption (.mk _ _ _ _) =>
       ["predecessor", "successor", "impactDisposition", "adoptedByRun"]
   | .workHandoff (.mk _ _ _) => ["predecessorRun", "successorRun", "reason"]
@@ -31,18 +32,20 @@ def payloadFieldCoverage : EntryPayload → List String
   | .workCompletion (.mk _ _ _ _ _ _) =>
       ["workId", "designRevision", "planId", "inputRevision", "inputDigest", "completedByRun"]
   | .designRejection (.mk _ _ _) => ["designId", "reason", "rejectedByRun"]
-  | .commandProfile (.mk _ _ _ _ _ _ _) =>
-      ["purpose", "taskEntryId", "inputTargets", "outputScope", "criterionIds", "target", "command"]
-  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
-      ["profileEntryId", "taskEntryId", "outputScope", "criterionId", "inputSnapshots",
-       "environmentSnapshots", "target", "snapshot",
+  | .commandProfile (.mk _ _ _ _ _ _ _ _) =>
+      ["purpose", "taskEntryId", "inputTargets", "outputScope", "criterionIds",
+       "taskVerificationIds", "target", "command"]
+  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
+      ["profileEntryId", "taskEntryId", "outputScope", "criterionId", "taskVerificationId",
+       "inputSnapshots", "environmentSnapshots", "target", "snapshot",
        "command", "exitCode", "stdoutDigest", "stderrDigest", "successful", "producerAgentRun"]
-  | .artifactObservation (.mk _ _ _ _ _ _ _ _ _) =>
-      ["taskEntryId", "outputScope", "criterionId", "target", "snapshot", "operation", "result",
-       "successful", "producerAgentRun"]
-  | .review (.mk _ _ _ _ _ _ _ _ _ _) =>
+  | .artifactObservation (.mk _ _ _ _ _ _ _ _ _ _) =>
+      ["taskEntryId", "outputScope", "criterionId", "taskVerificationId", "target", "snapshot",
+       "operation", "result", "successful", "producerAgentRun"]
+  | .review (.mk _ _ _ _ _ _ _ _ _ _ _) =>
       ["reviewId", "purpose", "context", "continuesEntryId", "targetSourceId", "target",
-       "targetSnapshot", "targetManifest", "producerAgentRuns", "reviewerAgentRun"]
+       "targetSnapshot", "targetManifestVersion", "targetManifest", "producerAgentRuns",
+       "reviewerAgentRun"]
   | .finding (.mk _ _ _ _ _ _ _) =>
       ["reviewId", "subject", "targetSourceId", "target", "targetSnapshot", "producerAgentRuns",
        "summary"]
@@ -72,7 +75,8 @@ def mutationInvariantCoverage : Mutation → List InvariantFamily
   | .workStart _ | .workFocus _ | .workSuspend _ _ | .workResume _
   | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workWithdraw _ | .workComplete =>
       [.workLifecycle, .ledgerAuthority]
-  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ =>
+  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ |
+      .taskReopenStale =>
       [.planTask, .ledgerAuthority]
   | .profileDefine _ | .profileReplace _ | .commandRun _ | .artifactObserve _ | .proofRun _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _

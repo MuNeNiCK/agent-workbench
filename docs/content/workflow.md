@@ -29,7 +29,9 @@ For a project with no accepted Design, the agent follows the discoverable state 
    and receipts.
 7. Write the Work-specific implementation source below
    `.agent-workbench/design/plans/<work-id>/`, propose the complete Plan, and materialize it. This
-   creates the exact Task dependency graph; agents cannot add unrelated Tasks manually.
+   creates the exact Task dependency graph; agents cannot add unrelated Tasks manually. Every step
+   selects Design Criteria, or declares concrete Task-local command/artifact verification when the
+   Design intentionally has no applicable Criterion.
 8. Implement dependency-ready Tasks and obtain their Task-bound command or artifact evidence.
 9. Close each Task only after its current post-materialization evidence exists.
 10. Use `ready`; complete the Work only when every current gap is closed. Completion atomically

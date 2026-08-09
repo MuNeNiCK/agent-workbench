@@ -10,6 +10,20 @@ for every change unless the accepted design selects it.
 - **Implementation Review** examines a fixed Design/Plan/Task/evidence manifest together with the
   current snapshots of its planned output targets.
 
+The implementation manifest contains the current Task graph and the evidence selected by those
+Tasks, one current receipt per selected Claim, current Corrections, and accepted-Finding
+dispositions. Re-running a command does not append unselected execution history to every later
+Review. This keeps the only fresh-review input bounded by current Design and Plan cardinality.
+
+The Design, current Plan, immutable Work identity, and their producer provenance are derived from
+the authoritative project state when the target is captured. A caller cannot substitute a
+superseded Plan, rewrite the Work identity, or choose different structural producers while keeping
+an otherwise self-consistent manifest.
+
+A later Work handoff or successor-Design adoption does not rewrite or invalidate an older fixed
+Review. Historical authorship is checked at the entry's capture order; the new responsible run and
+new Design apply only to later operations.
+
 `fresh` and `resume` describe reviewer context. They are not additional review types.
 
 ## Fresh review
@@ -56,9 +70,16 @@ output-changing Finding must be included in a replacement Plan before materializ
 through current evidence in the same resumed Review lineage. Only an accepted unresolved Finding in
 current implementation authority blocks completion.
 
+A recorded verification remains valid history after a later Plan replacement, but it stops
+resolving the Finding when its remediation Task or evidence is no longer current. The replacement
+Plan must carry the Finding again and obtain new evidence before another resumed verification.
+
 ## Diagnosing review state
 
 Use `review context` with a Review entry ID. Fresh context has an empty lineage. Resumed context
-contains only that same Review lineage. If the target, producer, reviewer, or lineage is unexpected,
+contains only that same Review lineage plus separate IDs of Finding-bound remediation Plans and the
+exact Task/evidence entries selected by those Plans. Remediation entries are not discarded by the
+lineage limit. The bounded Review lineage is newest-first, so recent
+remediation is retained when older Review history is truncated. If the target, producer, reviewer, or lineage is unexpected,
 do not work around it by creating an unrelated fresh review; inspect the fixed target source and the
 relevant Review entries first.

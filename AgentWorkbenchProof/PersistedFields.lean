@@ -1,5 +1,7 @@
 import AgentWorkbench.Application.Mutation
 import AgentWorkbench.Adapter.StoreSchemaInventory
+import AgentWorkbench.Adapter.ManagedOutput
+import AgentWorkbench.Adapter.ProofBuild
 import AgentWorkbenchProof.InvariantFamily
 
 namespace AgentWorkbenchProof.PersistedFields
@@ -80,9 +82,13 @@ def planStatementDisposition : PlanStatementDisposition → List FieldCoverage
   | .mk _ _ _ _ _ =>
       cover .planTask ["statementId", "statementText", "deltaKind", "stepIds", "noActionReason"]
 
+def taskVerificationContract : TaskVerificationContract → List FieldCoverage
+  | .mk _ _ _ => cover .planTask ["id", "kind", "target"]
+
 def planStep : PlanStep → List FieldCoverage
-  | .mk _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
-      "requiredClaimIds", "verificationCriterionIds", "acceptedFindingEntryIds"]
+  | .mk _ _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
+      "requiredClaimIds", "verificationCriterionIds", "taskVerificationContracts",
+      "acceptedFindingEntryIds"]
 
 def implementationPlan : ImplementationPlan → List FieldCoverage
   | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ => cover .planTask ["id", "workId", "designRevision",
@@ -112,6 +118,21 @@ def projectState : ProjectState → List FieldCoverage
        { field := "works", owner := .workLifecycle },
        { field := "implementationPlans", owner := .planTask },
        { field := "ledgerEntries", owner := .ledgerAuthority }]
+
+/-- Recovery manifests are serialized inside one SQLite column, but their authority-bearing
+structure is still covered positionally. A field change must update this release proof. -/
+def managedOutputNode : ManagedOutput.Node → List FieldCoverage
+  | .mk _ _ _ => cover .ledgerAuthority ["relativePath", "directory", "contentBytes"]
+
+def managedOutputBaseline : ManagedOutput.Baseline → List FieldCoverage
+  | .mk _ _ _ _ _ => cover .ledgerAuthority ["identity", "kind", "existed", "nodes", "digest"]
+
+def proofOutputLayout : ProofBuild.OutputLayout → List FieldCoverage
+  | .mk _ _ _ _ _ _ => cover .ledgerAuthority
+      ["original", "existed", "parentExisted", "backup", "isolated", "baselineDigest"]
+
+def proofManagedOutputManifest : ProofBuild.ManagedOutputManifest → List FieldCoverage
+  | .mk _ => cover .ledgerAuthority ["layouts"]
 
 /-- Exhaustive ownership for every authoritative SQLite column. The actual schema is checked
 against `PersistedColumn.all` by the product test suite. -/

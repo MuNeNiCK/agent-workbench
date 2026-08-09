@@ -17,6 +17,7 @@ private def runSuite : IO Unit := do
   AgentWorkbenchTest.PublicDesignWorkRoute.run
   AgentWorkbenchTest.BuildBoundary.run
   AgentWorkbenchTest.Migration.run
+  AgentWorkbenchTest.Operation.verifyPositiveRouteReceipts
   AgentWorkbenchTest.BinaryProtocol.run
   AgentWorkbenchTest.DesignClaim.run
   IO.println "agent-workbench-tests: pass"

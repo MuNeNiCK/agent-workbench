@@ -68,9 +68,13 @@ private def activeReviewerRun (state : ProjectState) (review : ReviewRecord) : S
 
 def startReview
     (projectRoot : System.FilePath) (state : ProjectState)
+    (observations : List TargetObservation) (digests : List CurrentClaimDigest)
     (request : ReviewStartRequest) : IO ProjectState := do
+  if request.reviewerAgentRun.isEmpty then
+    throw (IO.userError "Review requires a nonempty reviewer agent run")
   let _ := projectRoot
-  let fixed ← match ← ReviewTarget.freeze projectRoot state request.purpose request.targetDesignRevision with
+  let fixed ← match ← ReviewTarget.freeze projectRoot state request.purpose
+      request.targetDesignRevision observations digests with
     | .ok value => pure value
     | .error message => throw (IO.userError message)
   let (designId, work) ← match request.purpose with
@@ -96,6 +100,7 @@ def startReview
     payload := .review {
       reviewId := request.reviewId, purpose := request.purpose, context := .fresh
       targetSourceId := fixed.sourceId, target := fixed.target, targetSnapshot := fixed.snapshot
+      targetManifestVersion := fixed.manifestVersion
       targetManifest := fixed.manifest, producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := request.reviewerAgentRun } })
 
@@ -119,6 +124,7 @@ def resumeReview
       reviewId := prior.reviewId, purpose := prior.purpose, context := .resume
       continuesEntryId := some priorEntry.id, targetSourceId := prior.targetSourceId
       target := prior.target, targetSnapshot := fixed.snapshot, targetManifest := fixed.manifest
+      targetManifestVersion := fixed.manifestVersion
       producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := reviewerRun } })
 

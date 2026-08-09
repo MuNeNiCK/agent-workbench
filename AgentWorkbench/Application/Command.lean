@@ -11,6 +11,7 @@ structure CommandRunRequest where
   profileEntryId : String
   entryId : String
   criterionId : Option String := none
+  taskVerificationId : Option String := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure CommandRunResult where
@@ -32,6 +33,11 @@ def runCommandProfile
   if let some criterionId := request.criterionId then
     unless resolved.criterionIds.contains criterionId do
       throw (IO.userError s!"criterion {criterionId} is not bound to the Command Profile")
+  if let some verificationId := request.taskVerificationId then
+    unless resolved.taskVerificationIds.contains verificationId do
+      throw (IO.userError s!"Task verification {verificationId} is not bound to the Command Profile")
+  unless request.criterionId.isSome != request.taskVerificationId.isSome do
+    throw (IO.userError "command run requires exactly one Criterion or Task verification")
   let inputs ← evaluateCurrentInputs projectRoot state
   unless commandAuthorized state inputs.claimDigests resolved do
     throw (IO.userError
@@ -48,7 +54,8 @@ def runCommandProfile
   let snapshot ← match resolved.target with
     | some identity =>
         if identity.startsWith "design:" then
-          pure (some (← ReviewTarget.currentSnapshot projectRoot state .design identity))
+          pure (some (← ReviewTarget.currentSnapshot projectRoot state .design identity
+            inputs.observations inputs.claimDigests))
         else
           pure (some (← Snapshot.target projectRoot identity))
     | none => pure none
@@ -63,6 +70,7 @@ def runCommandProfile
         taskEntryId := resolved.taskEntryId
         outputScope := resolved.outputScope
         criterionId := request.criterionId
+        taskVerificationId := request.taskVerificationId
         inputSnapshots := some inputSnapshots
         environmentSnapshots := some environmentSnapshots
         target := resolved.target

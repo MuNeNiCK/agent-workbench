@@ -1,5 +1,6 @@
 import AgentWorkbench.Application.Common
 import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Domain.Validation.OutputScope
 
 namespace AgentWorkbench
 
@@ -29,9 +30,15 @@ def PlanProposalRequest.plan
     sourceUnitDispositions := request.sourceUnitDispositions
     statementDispositions := request.statementDispositions, steps := request.steps }
 
+private def validateManagedOutputScopes (plan : ImplementationPlan) : Except String Unit := do
+  for step in plan.steps do
+    for outputScope in step.outputScopes do
+      Validation.validateManagedOutputScope outputScope
+
 def proposePlan
     (state : ProjectState) (candidate : ImplementationPlan) : Except String ProjectState := do
   let (_, work) ← currentBinding state
+  validateManagedOutputScopes candidate
   if (state.plan? candidate.id).isSome then throw s!"Plan id {candidate.id} already exists"
   if candidate.status != .candidate || candidate.workId != work.id ||
       candidate.designRevision != work.designRevision.getD "" then
@@ -64,12 +71,8 @@ private def currentTaskEntries
 private def taskLineage (workId stepId : String) : String :=
   s!"{workId}:{stepId}"
 
-private def affectedStepIds
-    (prior : Option ImplementationPlan) (candidate : ImplementationPlan) : List String :=
-  let direct := candidate.steps.filterMap fun step =>
-    match prior.bind fun plan => uniqueBy? plan.steps (·.id) step.id with
-    | some old => if old == step then none else some step.id
-    | none => some step.id
+private def closeAffectedStepIds
+    (candidate : ImplementationPlan) (seeds : List String) : List String :=
   let rec close (fuel : Nat) (affected : List String) : List String :=
     match fuel with
     | 0 => affected
@@ -78,15 +81,60 @@ private def affectedStepIds
           if found.contains step.id || !step.dependsOnStepIds.any found.contains then found
           else found ++ [step.id]) affected
         if expanded.length == affected.length then affected else close remaining expanded
-  close candidate.steps.length direct
+  close candidate.steps.length seeds
+
+private def sourceBindingsFor
+    (plan : ImplementationPlan) (stepId : String) : List PlanSourceUnitDisposition :=
+  plan.sourceUnitDispositions.filter (·.stepId == some stepId)
+    |>.mergeSort (fun left right => left.unitId < right.unitId)
+
+private def statementBindingsFor
+    (plan : ImplementationPlan) (stepId : String) : List PlanStatementDisposition :=
+  (plan.statementDispositions.filter (·.stepIds.contains stepId)
+    |>.map fun disposition =>
+      -- The signature records this Statement-to-step edge. Assignments to sibling
+      -- steps are their authority, not part of this retained step's authority.
+      { disposition with stepIds := [stepId] }
+  ).mergeSort (fun left right => left.statementId < right.statementId)
+
+private structure StepObligationSignature where
+  sourceUnits : List PlanSourceUnitDisposition
+  statementDeltas : List PlanStatementDisposition
+  acceptedFindings : List String
+  deriving DecidableEq
+
+private def obligationSignature
+    (plan : ImplementationPlan) (step : PlanStep) : StepObligationSignature :=
+  { sourceUnits := sourceBindingsFor plan step.id
+    statementDeltas := statementBindingsFor plan step.id
+    acceptedFindings := step.acceptedFindingEntryIds.mergeSort (· < ·) }
+
+private def stepDefinition (step : PlanStep) : PlanStep :=
+  { step with acceptedFindingEntryIds := [] }
+
+private def affectedStepIds
+    (prior : Option ImplementationPlan) (candidate : ImplementationPlan) : List String :=
+  let direct := candidate.steps.filterMap fun step =>
+    match prior with
+    | some oldPlan => match uniqueBy? oldPlan.steps (·.id) step.id with
+      | some old =>
+          if stepDefinition old == stepDefinition step &&
+              obligationSignature oldPlan old == obligationSignature candidate step then
+            none
+          else some step.id
+      | none => some step.id
+    | none => some step.id
+  closeAffectedStepIds candidate direct
 
 def materializePlan
-    (state : ProjectState) (planId : String) (digests : List CurrentClaimDigest) :
+    (state : ProjectState) (planId : String) (observations : List TargetObservation)
+    (digests : List CurrentClaimDigest) :
     Except String ProjectState := do
   let (design, work) ← currentBinding state
   let candidate ← match state.plan? planId with
     | some value => pure value
     | none => throw s!"no Plan {planId}"
+  validateManagedOutputScopes candidate
   if candidate.status != .candidate || candidate.workId != work.id ||
       candidate.designRevision != design.id then
     throw "only a current-bound Plan candidate can be materialized"
@@ -104,7 +152,21 @@ def materializePlan
     throw "Plan materialization omits an accepted Implementation Review Finding"
   let priorPlan := state.materializedPlanFor? work.id
   let priorTasks := currentTaskEntries state work priorPlan
-  let affected := affectedStepIds priorPlan candidate
+  let structurallyAffected := affectedStepIds priorPlan candidate
+  let staleClosedSteps := candidate.steps.filterMap fun step =>
+    let lineage := taskLineage work.id step.id
+    match priorTasks.find? fun entry => match entry.payload with
+      | .task task => task.lineageId == some lineage
+      | _ => false with
+    | some entry => match entry.payload, priorPlan with
+      | .task task, some oldPlan =>
+          if task.closed && oldPlan.steps.any (· == step) &&
+              !taskClosedWithCurrentEvidence projection observations task then
+            some step.id
+          else none
+      | _, _ => none
+    | none => none
+  let affected := closeAffectedStepIds candidate (structurallyAffected ++ staleClosedSteps).eraseDups
   let plans := state.implementationPlans.map fun plan =>
     if plan.id == candidate.id then { plan with status := .current }
     else if priorPlan.map (·.id) == some plan.id then { plan with status := .superseded }
@@ -120,7 +182,8 @@ def materializePlan
     let preservedClosed := priorTask.any fun entry =>
       match entry.payload, priorPlan with
       | .task task, some oldPlan =>
-          task.closed && !affected.contains step.id && oldPlan.steps.any fun oldStep => oldStep == step
+          taskClosedWithCurrentEvidence projection observations task &&
+            !affected.contains step.id && oldPlan.steps.any fun oldStep => oldStep == step
       | _, _ => false
     let preservedEvidence := if preservedClosed then
       priorTask.map (fun entry => match entry.payload with
@@ -142,6 +205,7 @@ def materializePlan
         dependencyLineageIds := step.dependsOnStepIds.map (taskLineage work.id)
         outputScopes := step.outputScopes
         verificationCriterionIds := step.verificationCriterionIds
+        taskVerificationContracts := step.taskVerificationContracts
         verificationEvidenceEntryIds := preservedEvidence
         verificationTaskEntryId := preservedTaskEntryId
         materializedAtOrder := firstOrder, description := step.description

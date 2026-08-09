@@ -125,7 +125,8 @@ private def materializePlanRequest
   let prior ← loadState store
   let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
   let next ← fromExcept
-    ((AgentWorkbench.PreparedMutation.planMaterialize planId inputs.claimDigests).executeApplicable prior)
+    ((AgentWorkbench.PreparedMutation.planMaterialize
+      planId inputs.observations inputs.claimDigests).executeApplicable prior)
   commitOperation store .planMaterialize prior.revision next
   pure next
 
@@ -137,6 +138,15 @@ private def closeTaskRequest
   let next ← fromExcept
     ((AgentWorkbench.PreparedMutation.taskClose request inputs.observations).executeApplicable prior)
   commitOperation store .taskClose prior.revision next
+  pure next
+
+private def reopenStaleTasksRequest
+    (projectRoot : System.FilePath) (store : WriteStore) : IO ProjectState := do
+  let prior ← loadState store
+  let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
+  let next ← fromExcept
+    ((AgentWorkbench.PreparedMutation.taskReopenStale inputs.observations).executeApplicable prior)
+  commitOperation store .taskReopenStale prior.revision next
   pure next
 
 private def observeArtifact
@@ -156,7 +166,9 @@ private def startReview
     (projectRoot : System.FilePath) (store : WriteStore)
     (request : AgentWorkbench.ReviewStartRequest) : IO ProjectState := do
   let prior ← loadState store
-  let observed ← AgentWorkbench.startReview projectRoot prior request
+  let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
+  let observed ← AgentWorkbench.startReview projectRoot prior
+    inputs.observations inputs.claimDigests request
   let entry ← match observed.ledgerEntries.getLast? with
     | some value => pure value
     | none => fail "fresh Review produced no Ledger entry"
@@ -178,7 +190,8 @@ private def resumeReview
 
 private def runCommandProfile
     (projectRoot : System.FilePath) (store : WriteStore)
-    (request : AgentWorkbench.CommandRunRequest) : IO AgentWorkbench.CommandRunResult := do
+    (request : AgentWorkbench.CommandRunRequest)
+    (postCommitVerification : IO Unit := pure ()) : IO AgentWorkbench.CommandRunResult := do
   let prior ← loadState store
   let resolved ← match AgentWorkbench.resolveCommandProfile? projectRoot prior request.profileEntryId with
     | some value => pure value
@@ -213,8 +226,13 @@ private def runCommandProfile
     fail s!"Command Profile {request.entryId} exited with code {exitCode} without recording successful evidence"
   try
     commitOperation store .commandRun prior.revision next (some operationId)
+      postCommitVerification
   catch error =>
-    try cleanupUncommitted catch _ => pure ()
+    let definitelyUncommitted ← try
+        managedOperationDefinitelyUncommitted store operationId
+      catch _ => pure false
+    if definitelyUncommitted then
+      try cleanupUncommitted catch _ => pure ()
     throw error
   try
     clearManagedOperation store operationId
@@ -286,7 +304,8 @@ private def executeInitMutation (store : WriteStore) : IO AgentWorkbench.Mutatio
   pure (.state next)
 
 private def executeMutationUnlocked
-    (projectRoot : System.FilePath) (store : WriteStore) :
+    (projectRoot : System.FilePath) (store : WriteStore)
+    (postCommitVerification : IO Unit := pure ()) :
     AgentWorkbench.Mutation → IO AgentWorkbench.MutationResult
   | .init => executeInitMutation store
   | .designPropose request =>
@@ -300,7 +319,9 @@ private def executeMutationUnlocked
       return .plan (← proposePlanRequest projectRoot store .planReplace request)
   | .planMaterialize planId => return .state (← materializePlanRequest projectRoot store planId)
   | .taskClose request => return .state (← closeTaskRequest projectRoot store request)
-  | .commandRun request => return .command (← runCommandProfile projectRoot store request)
+  | .taskReopenStale => return .state (← reopenStaleTasksRequest projectRoot store)
+  | .commandRun request =>
+      return .command (← runCommandProfile projectRoot store request postCommitVerification)
   | .artifactObserve request => return .state (← observeArtifact projectRoot store request)
   | .proofRun request => return .proof (← runProofClaim projectRoot store request)
   | .reviewStart request => return .state (← startReview projectRoot store request)
@@ -328,9 +349,10 @@ private def executeMutationUnlocked
   | mutation@(.reviewConclude _) => executePureMutation store mutation
   | mutation@(.reviewVerify _) => executePureMutation store mutation
 
-def executeMutation
+def executeMutationWithPostCommitVerification
     (projectRoot database : System.FilePath)
-  (mutation : AgentWorkbench.Mutation) : IO AgentWorkbench.MutationResult :=
+    (mutation : AgentWorkbench.Mutation)
+    (postCommitVerification : IO Unit) : IO AgentWorkbench.MutationResult :=
   AgentWorkbench.OperationLock.withProjectMutationLock projectRoot do
     match mutation with
     | .init => AgentWorkbench.Runtime.initializeProject projectRoot
@@ -338,7 +360,12 @@ def executeMutation
     IO.FS.createDirAll (projectRoot / ".agent-workbench")
     let store ← AgentWorkbench.Store.open database
     recoverManagedOperations projectRoot store
-    executeMutationUnlocked projectRoot store mutation
+    executeMutationUnlocked projectRoot store postCommitVerification mutation
+
+def executeMutation
+    (projectRoot database : System.FilePath)
+    (mutation : AgentWorkbench.Mutation) : IO AgentWorkbench.MutationResult :=
+  executeMutationWithPostCommitVerification projectRoot database mutation (pure ())
 
 
 end AgentWorkbench.Store

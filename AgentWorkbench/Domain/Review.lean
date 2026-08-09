@@ -27,12 +27,27 @@ structure ReviewRecord where
   targetSourceId : String
   target : String
   targetSnapshot : String
+  targetManifestVersion : Nat := 0
   targetManifest : List ReviewTargetComponent := []
   producerAgentRuns : List String := []
   reviewerAgentRun : String
   deriving Repr, DecidableEq, Lean.ToJson
 
 private structure PersistedReviewRecord where
+  reviewId : String
+  purpose : ReviewPurpose
+  context : ReviewContext
+  continuesEntryId : Option String := none
+  targetSourceId : String
+  target : String
+  targetSnapshot : String
+  targetManifestVersion : Nat := 0
+  targetManifest : List ReviewTargetComponent
+  producerAgentRuns : List String
+  reviewerAgentRun : String
+  deriving Lean.FromJson
+
+private structure PersistedReviewRecordV0 where
   reviewId : String
   purpose : ReviewPurpose
   context : ReviewContext
@@ -64,18 +79,28 @@ instance : Lean.FromJson ReviewRecord where
         reviewId := value.reviewId, purpose := value.purpose, context := value.context
         continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
         target := value.target, targetSnapshot := value.targetSnapshot
+        targetManifestVersion := value.targetManifestVersion
         targetManifest := value.targetManifest, producerAgentRuns := value.producerAgentRuns
         reviewerAgentRun := value.reviewerAgentRun }
     | .error currentError =>
-        match (Lean.fromJson? json : Except String LegacyReviewRecord) with
+        match (Lean.fromJson? json : Except String PersistedReviewRecordV0) with
         | .ok value => pure {
             reviewId := value.reviewId, purpose := value.purpose, context := value.context
             continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
             target := value.target, targetSnapshot := value.targetSnapshot
-            producerAgentRuns := [value.producerAgentRun]
+            targetManifest := value.targetManifest, producerAgentRuns := value.producerAgentRuns
             reviewerAgentRun := value.reviewerAgentRun }
-        | .error legacyError =>
-            throw s!"invalid Review: {currentError}; legacy: {legacyError}"
+        | .error persistedV0Error =>
+            match (Lean.fromJson? json : Except String LegacyReviewRecord) with
+            | .ok value => pure {
+                reviewId := value.reviewId, purpose := value.purpose, context := value.context
+                continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
+                target := value.target, targetSnapshot := value.targetSnapshot
+                producerAgentRuns := [value.producerAgentRun]
+                reviewerAgentRun := value.reviewerAgentRun }
+            | .error legacyError =>
+                throw (s!"invalid Review: {currentError}; persisted v0: {persistedV0Error}; " ++
+                  s!"legacy: {legacyError}" : String)
 
 inductive FindingSubjectKind where
   | statement

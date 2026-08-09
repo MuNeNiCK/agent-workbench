@@ -1,4 +1,5 @@
 import AgentWorkbenchTest.Lifecycle
+import AgentWorkbenchTest.RouteReceipt
 import AgentWorkbenchTest.Completion
 import AgentWorkbenchTest.Plan
 import AgentWorkbenchTest.Review
