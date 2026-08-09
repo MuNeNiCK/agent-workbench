@@ -1,0 +1,13 @@
+agent-workbench release authorization v1
+work-id: work-v029-release-tag-checkout-fix
+target-commit: 99ef5dd53685de384635d799664ccac617a9ded2
+ready-state-revision: 3231
+ready-digest: blake3:405e91db68c6a01b533557e674358673c5bc1690c38b908df723f8b4b9cd793c
+design-review-entry-id: review-v029-design70-fresh-start
+design-review-conclusion-entry-id: review-v029-design70-fresh-conclusion
+design-review-target-snapshot: blake3:86b6128bc785b9b1cddf3c5a666495c0496e34a673c58a144d6a51248219ab3d
+design-review-clean: true
+implementation-review-entry-id: review-v029-release49-final-fresh-start
+implementation-review-conclusion-entry-id: review-v029-release49-final-fresh-conclusion
+implementation-review-target-snapshot: blake3:a4c54bef9ea8e5f326a6474a180cdabc10974ed150de5b472c513fef1fa67145
+implementation-review-clean: true
