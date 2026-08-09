@@ -1,0 +1,13 @@
+agent-workbench release authorization v1
+work-id: work-v0-2-8-assurance
+target-commit: 56c591a7ebb39d100d0adc94c494065453eca68c
+ready-state-revision: 3041
+ready-digest: blake3:bece5d5ff8edbdf67e76a3d56cd587fb1a62b39ae726dd898f6f2d614ae7c914
+design-review-entry-id: review-v029-design67-fresh-start
+design-review-conclusion-entry-id: review-v029-design67-fresh-conclusion
+design-review-target-snapshot: blake3:c2d9fa81707ad352bca1e4ec4972da416641a5f6e201150bd7c7697570360d43
+design-review-clean: true
+implementation-review-entry-id: review-v029-plan45-final-independent-start
+implementation-review-conclusion-entry-id: conclusion-v029-plan45-final-independent-clean
+implementation-review-target-snapshot: blake3:0948a4ad5a34390aeb46e396df4b9c17b5f711760ef1fa14a776e57255b2b1b7
+implementation-review-clean: true
