@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'status=$?; printf "installed-route failed at line %s (status %s)\n" "$LINENO" "$status" >&2; exit "$status"' ERR
 
 staging=${1:?staged release directory is required}
 skill_source=${2:?distributed Skill directory is required}
