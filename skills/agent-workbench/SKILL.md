@@ -11,10 +11,17 @@ the Skill or shell.
 ## Enter a project
 
 1. Find the project root.
-2. If `.agent-workbench/bin/agent-workbench` is absent, invoke this Skill's setup script as
+2. Always invoke this Skill's setup script as
    `sh SKILL_DIR/scripts/setup.sh PROJECT_ROOT` on POSIX or
    `SKILL_DIR/scripts/setup.ps1 -ProjectRoot PROJECT_ROOT` on Windows. Do not depend on the
-   installed POSIX script retaining an executable mode.
+   installed POSIX script retaining an executable mode. Setup compares this Skill's
+   `release-version` with the runtime bundle's embedded `skill/agent-workbench/release-version`;
+   it acquires the pinned runtime when the executable or marker is absent or different, and is a
+   read-only context check when they already match. During replacement, the prior complete bundle
+   remains recoverable until the new native runtime successfully completes `context` or `init`.
+   Setup then records a distinct activation commit before removing that prior bundle. A failure
+   before native activation restores the prior bundle; an interruption after activation retains
+   the new runtime that can read any state it migrated, and the next setup completes cleanup.
 3. Run `.agent-workbench/bin/agent-workbench --project PROJECT_ROOT context`.
 4. Run `... describe` and select only from `applicableOperations`. Before using an unfamiliar
    mutation, run `... describe OPERATION`; require `applicable: true` and use only its
@@ -41,7 +48,7 @@ describe [operation]
 design inspect-sources | propose | amend | accept | reject | get | source | diff | export
 work start | focus | resume | suspend | handoff | adoption-impact | adopt-design | withdraw | complete | get
 plan inspect-sources | propose | replace | materialize | get | source | diff | export
-task close
+task close | reopen-stale
 profile define | replace
 artifact observe
 correction record | supersede | resolve | incorporate
@@ -57,10 +64,25 @@ proof digest | run
 There is no generic mutation or `entry append`. System-owned order, scope, Work/Design binding,
 supersession, status, and Design ancestry are derived by the native semantic operation.
 
+Keep product implementation invariant under Workbench use. Never add, rename, restructure, import,
+persist, or branch product source, build inputs, runtime state, or shipped artifacts solely to make
+Workbench evidence, Review, proof, or self-application convenient. A helper used only by a Command
+Profile remains private below `.agent-workbench` and is declared as a snapshotted Profile input. Put
+a verifier in the ordinary tracked project structure only when it has an independent project
+verification or release purpose beyond recording Workbench evidence.
+
 For an initial outcome, keep one Work from empty baseline through private Design-source capture,
 candidate acceptance, selected Claim receipts, Work-specific Plan proposal/materialization, derived
 Tasks, evidence, and completion. Never create Tasks manually or split Design/proof/planning into
 replacement Works. A Plan candidate has no productive authority until materialization.
+
+When `context` exposes `task reopen-stale`, invoke that no-input semantic operation before trying to
+replace a Profile or record new evidence. It is available only when closing evidence for a current,
+required, closed Task has become stale. Workbench atomically reopens those Task lineages and every
+closed transitive dependent, clears inherited closing evidence, and preserves the current Plan and
+Task contracts. Then use the existing Profile/artifact route to produce current evidence and close
+the reopened Tasks in dependency order. Do not create a replacement Plan merely to make stale-Task
+re-verification reachable, and do not treat this as a generic manual reopen.
 
 When selecting a Lean Claim, place its proposition, witness, and complete local Lean source closure
 below `.agent-workbench/design/proofs/` before `design propose`. Declare every local source; do not
@@ -100,8 +122,18 @@ criterion.
 Review has exactly two purposes: Design Review and Implementation Review. `fresh` and `resume` are
 reviewer-context modes, not review types.
 
+Review is a final audit, not a way to construct assurance. Design Review starts only after the
+target's Assurance Contract matrix and selected Claim receipts are current. Fresh Implementation
+Review starts only after independent completion readiness. If an accepted Finding is an assurance
+omission, stop productive work and return through a strict successor Design, fresh assurance,
+adoption, and Plan materialization. Only an implementation defect already covered by a current
+Contract is Plan-remediable.
+
 - Use `fresh` for an immutable design or implementation snapshot with no prior review,
   finding, or remediation context. The reviewer run must differ from the target producer run.
+- For Implementation Review, treat the returned Design, current Plan, immutable Work identity, and
+  producer provenance as one fixed target derived by Workbench. Do not reconstruct or substitute
+  these components from conversation or prior state.
 - Give a reviewer only `review context` for its Review entry. A fresh result has an empty lineage;
   do not supply ordinary Current Context or a prior conversation to that reviewer.
 - Use `resume` to continue the same review identifier and exact target, including verification of an

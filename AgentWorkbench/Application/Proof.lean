@@ -161,7 +161,9 @@ def runProofClaim
         toolchain := ProofToolchain.identifier
         exitCode
         outputDigest := outputDigest stdout stderr
-        kernelAccepted := accepted } }
+        kernelAccepted := accepted
+        assuranceBinding := some <| projection.design.assuranceBindingForClaim
+          projection.work.responsibleAgentRun claim.id } }
   let next ← match appendEntry state entry with
     | .ok value => pure value
     | .error message => throw (IO.userError message)

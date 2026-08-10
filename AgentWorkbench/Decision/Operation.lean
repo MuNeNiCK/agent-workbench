@@ -15,6 +15,8 @@ private def hasDependencyReadyTask (state : ProjectState) : Bool :=
   match currentProjection? state with
   | none => false
   | some projection =>
+      designAssuranceStructurallyCurrent state projection.design &&
+      projection.design.leanClaims.all (claimReceiptRecorded projection) &&
       (state.currentPlanFor? projection.work.id).isSome && projection.entries.any fun entry =>
         match entry.payload with
         | .task task => task.planId.isSome && task.required && !task.closed && !task.retired &&
@@ -26,10 +28,20 @@ private def hasDependencyReadyTask (state : ProjectState) : Bool :=
               | _ => false
         | _ => false
 
+private def hasArtifactVerificationRoute (state : ProjectState) : Bool :=
+  state.currentDesign?.any (fun design =>
+    design.acceptanceCriteria.any (·.evidenceKind == "artifact")) ||
+  (currentProjection? state).any fun projection => projection.entries.any fun entry =>
+    match entry.payload with
+    | .task task => task.planId.isSome && task.required && !task.closed && !task.retired &&
+        task.taskVerificationContracts.any (·.kind == .artifact)
+    | _ => false
+
 def planMaterializationStructurallyReady (state : ProjectState) : Bool :=
   match currentProjection? state with
   | none => false
   | some projection =>
+      if !designAssuranceStructurallyCurrent state projection.design then false else
       match state.implementationPlans.find? fun plan =>
           plan.workId == projection.work.id && plan.designRevision == projection.design.id &&
             plan.status == .candidate &&
@@ -48,6 +60,7 @@ def completionStructurallyReady (state : ProjectState) : Bool :=
   | none => false
   | some projection =>
       projection.design.sourceArchiveAvailable &&
+      designAssuranceStructurallyCurrent state projection.design &&
       (state.currentPlanFor? projection.work.id).isSome &&
       projection.entries.all (fun entry => match entry.payload with
         | .task task => !task.required || (task.closed &&
@@ -112,13 +125,13 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .workComplete => completionStructurallyReady state
   | .reviewStart => current || (focusedWork && state.designRevisions.any fun design =>
       design.status == .candidate && design.workId == state.focusedWorkId)
+  | .taskReopenStale => current
   | .profileDefine => hasDependencyReadyTask state
   | .taskClose => hasDependencyReadyTask state
   | .profileReplace | .commandShow | .commandRun =>
       current && hasDependencyReadyTask state &&
         currentHasEntry state (fun | .commandProfile _ => true | _ => false)
-  | .artifactObserve => hasDependencyReadyTask state && state.currentDesign?.any (fun design =>
-      design.acceptanceCriteria.any (·.evidenceKind == "artifact"))
+  | .artifactObserve => hasDependencyReadyTask state && hasArtifactVerificationRoute state
   | .correctionSupersede | .correctionResolve | .correctionIncorporate =>
       current && currentHasEntry state (fun
       | .userCorrection correction => correction.resolvedByEntryId.isNone &&
@@ -133,8 +146,13 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .reviewFinding => reviewFindingApplicable state
   | .reviewHandoff | .reviewConclude => focusedWork && state.ledgerEntries.any (fun entry =>
       entry.workId == state.focusedWorkId && match entry.payload with | .review _ => true | _ => false)
-  | .reviewDisposition => focusedWork && state.ledgerEntries.any (fun entry =>
-      entry.workId == state.focusedWorkId && match entry.payload with | .finding _ => true | _ => false)
+  | .reviewDisposition =>
+      (focusedWork && state.ledgerEntries.any (fun entry =>
+        entry.workId == state.focusedWorkId && match entry.payload with
+        | .finding _ => true | _ => false)) ||
+      (unfocused && state.ledgerEntries.any (fun entry => match entry.payload, entry.workId with
+        | .finding _, some workId => (state.work? workId).any (·.status == .completed)
+        | _, _ => false))
   | .reviewVerify => current && currentHasEntry state (fun
       | .review review => review.context == .resume
       | _ => false)
@@ -150,6 +168,7 @@ def operationApplicable
   | .planMaterialize =>
       currentProjection? state |>.any fun projection =>
         projection.design.leanClaims.all (claimHasReceipt projection digests)
+  | .taskReopenStale => hasStaleClosedTasks state observations
   | .workComplete => completionReady state observations digests
   | _ => true
 

@@ -14,13 +14,20 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
+            target: linux-x86_64
           - runner: ubuntu-24.04-arm
+            target: linux-aarch64
           - runner: macos-15-intel
+            target: macos-x86_64
           - runner: macos-15
+            target: macos-aarch64
           - runner: windows-2025
+            target: windows-x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: leanprover/lean-action@v1
         with:
           auto-config: false
@@ -41,6 +48,43 @@ jobs:
       - name: Run isolated proof-build integration tests
         shell: bash
         run: .lake/build/bin/agent-workbench-proof-tests${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Test Windows PowerShell installation route
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ELAN_ASSET: elan-x86_64-pc-windows-msvc.zip
+          ELAN_SHA256: be5e92a2dfdd8176099b2db0b810c27237c9054f1e5db1126f4f2a1134773b25
+        run: |
+          curl -fL --retry 3 -o "$ELAN_ASSET" \
+            "https://github.com/leanprover/elan/releases/download/v4.2.3/$ELAN_ASSET"
+          curl -fL --retry 3 -o elan-LICENSE-APACHE \
+            "https://raw.githubusercontent.com/leanprover/elan/v4.2.3/LICENSE-APACHE"
+          curl -fL --retry 3 -o elan-LICENSE-MIT \
+            "https://raw.githubusercontent.com/leanprover/elan/v4.2.3/LICENSE-MIT"
+          python3 - "$ELAN_ASSET" "$ELAN_SHA256" <<'PY'
+          import hashlib, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          if hashlib.sha256(path.read_bytes()).hexdigest() != sys.argv[2]:
+              raise SystemExit("Elan checksum mismatch")
+          PY
+          mkdir -p stage elan-extract stage/skill stage/docs
+          unzip -q "$ELAN_ASSET" -d elan-extract
+          cp .lake/build/bin/agent-workbench.exe stage/agent-workbench.exe
+          cp elan-extract/elan-init.exe stage/elan.exe
+          cp LICENSE stage/LICENSE-agent-workbench
+          cp .lake/packages/leansqlite/LICENSE stage/LICENSE-leansqlite
+          cp .lake/packages/Blake3/LICENSE stage/LICENSE-Blake3-lean
+          cp .lake/packages/Blake3/blake3-source/LICENSE_A2 stage/LICENSE-BLAKE3-APACHE-2.0
+          cp .lake/packages/Blake3/blake3-source/LICENSE_A2LLVM stage/LICENSE-BLAKE3-APACHE-2.0-LLVM
+          cp .lake/packages/Blake3/blake3-source/LICENSE_CC0 stage/LICENSE-BLAKE3-CC0-1.0
+          cp "$(lean --print-prefix)/LICENSE" stage/LICENSE-lean4
+          cp "$(lean --print-prefix)/LICENSES" stage/LICENSES-lean4
+          cp elan-LICENSE-APACHE stage/LICENSE-elan-APACHE
+          cp elan-LICENSE-MIT stage/LICENSE-elan-MIT
+          cp -R skills/agent-workbench stage/skill/agent-workbench
+          cp README.md stage/README.md
+          cp docs/content/*.md stage/docs/
+          tests/installed-route.sh stage skills/agent-workbench
       - name: Check bootstrap script syntax
         if: runner.os != 'Windows'
         run: sh -n skills/agent-workbench/scripts/setup.sh
@@ -59,7 +103,6 @@ jobs:
           grep -F -- '--source-ref "refs/tags/$release_version"' skills/agent-workbench/scripts/setup.sh
           grep -F -- '--source-ref "refs/tags/$releaseVersion"' skills/agent-workbench/scripts/setup.ps1
           ! grep -R "releases/latest" skills/agent-workbench
-
   required:
     if: always()
     needs: native

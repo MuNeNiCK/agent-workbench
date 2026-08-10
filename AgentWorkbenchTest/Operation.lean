@@ -1,31 +1,45 @@
 import AgentWorkbenchTest.Fixture
+import AgentWorkbenchTest.RouteReceipt
+import AgentWorkbenchTest.Assurance
 import AgentWorkbench.Cli.Describe
 
 namespace AgentWorkbenchTest.Operation
 
 open AgentWorkbench AgentWorkbenchTest
 
-private inductive PositiveRouteSuite where
-  | installedArchive
-  | publicRoute
-  | publicDesignWorkRoute
-  | migratedPublicRoute
+open RouteReceipt
 
-/-- Closed constructor-to-positive-route bridge. It uses the production Mutation type rather than
-operation names: adding a mutation makes this release-test assignment fail to compile until an
-actual successful binary scenario owns it. -/
-private def positiveRouteSuite : Mutation → PositiveRouteSuite
-  | .init | .proofRun _ => .installedArchive
-  | .workFocus _ => .migratedPublicRoute
-  | .designAmend _ | .designReject _ | .workAdoptDesign _ | .workWithdraw _
-  | .correctionIncorporate _ => .publicDesignWorkRoute
-  | .designPropose _ | .designAccept _ | .workStart _ | .workSuspend _ _ | .workResume _
-  | .workHandoff _ _ _ _ | .workComplete | .planPropose _ | .planReplace _
-  | .planMaterialize _ | .taskClose _ | .profileDefine _ | .profileReplace _
-  | .commandRun _ | .artifactObserve _ | .correctionRecord _ | .correctionSupersede _
-  | .correctionResolve _ | .kptRecord _ | .kptApply _ | .reviewStart _ | .reviewResume _
-  | .reviewHandoff _ | .reviewFinding _ | .reviewDisposition _ | .reviewConclude _
-  | .reviewVerify _ => .publicRoute
+def runAssurance : IO Unit := Assurance.run
+
+/-- The expected owning suite is exhaustive over the independent public Operation universe.
+Queries have no mutation receipt. Adding a mutation operation creates a new explicit case here. -/
+private def positiveRouteSuite : Operation → Option Suite
+  | .workFocus => some .migratedPublicRoute
+  | .designAmend | .designReject | .workAdoptDesign | .workWithdraw
+  | .correctionIncorporate => some .publicDesignWorkRoute
+  | .init | .designPropose | .designAccept | .workStart | .workSuspend | .workResume
+  | .workHandoff | .workComplete | .planPropose | .planReplace | .planMaterialize
+  | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .commandRun | .artifactObserve
+  | .proofRun | .correctionRecord | .correctionSupersede | .correctionResolve
+  | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
+  | .reviewFinding | .reviewDisposition | .reviewConclude | .reviewVerify => some .publicRoute
+  | .describe | .designGet | .designInspectSources | .designSource | .designDiff
+  | .designExport | .workGet | .workAdoptionImpact | .planGet | .planInspectSources
+  | .planSource | .planDiff | .planExport | .reviewContext | .reviewInspect
+  | .entryGet | .history | .context | .ready | .commandShow | .proofDigest => none
+
+/-- Mutation payload constructors cannot escape the typed Operation-to-suite assignment. -/
+private theorem mutation_has_positive_route (mutation : Mutation) :
+    (positiveRouteSuite mutation.operation).isSome := by
+  cases mutation <;> rfl
+
+def verifyPositiveRouteReceipts : IO Unit := do
+  let actual ← RouteReceipt.recorded
+  let expected := Operation.all.filterMap fun operation =>
+    (positiveRouteSuite operation).map fun suite => ({ suite, operation } : Receipt)
+  for receipt in expected do
+    expect (actual.contains receipt)
+      s!"public mutation has no successful linked-binary route receipt: {receipt.operation.name}"
 
 def run : IO Unit := do
   let initialized ← fromExcept <| Mutation.init.executePure ProjectState.empty
@@ -48,7 +62,7 @@ def run : IO Unit := do
       declaredSources := [{ path := "Applicability.lean", expectedDigest := some "blake3:source" }]
       check := { executable := "lake", arguments := #["build"] }
       toolchain := ProofToolchain.identifier } }
-  let claimDesign : DesignRevision := { design with
+  let claimDesign : DesignRevision := withCurrentAssurance { design with
     leanClaims := [claim]
     statementCoverage := [{
       statementId := statement.id, sourceUnitIds := [sourceUnit.id]
@@ -62,7 +76,9 @@ def run : IO Unit := do
     assumptionDependencies := [], inputDigest := "blake3:old-input"
     sourceDigests := [{ path := "Applicability.lean", digest := "blake3:source" }]
     toolchain := ProofToolchain.identifier, exitCode := 0
-    outputDigest := "blake3:output", kernelAccepted := true }
+    outputDigest := "blake3:output", kernelAccepted := true
+    assuranceBinding := some <| claimDesign.assuranceBindingForClaim
+      work.responsibleAgentRun claim.id }
   let receiptEntry : LedgerEntry := {
     id := "receipt-applicability", order := 2, scope := work.scope
     workId := some work.id, designRevision := some claimDesign.id
@@ -71,6 +87,10 @@ def run : IO Unit := do
   let staleState : ProjectState := { baseState with
     designRevisions := [claimDesign], implementationPlans := [candidate]
     ledgerEntries := [receiptEntry] }
+  let unboundReceiptEntry : LedgerEntry := { receiptEntry with
+    payload := .leanProofReceipt { receipt with assuranceBinding := none } }
+  expectError (validateState { staleState with ledgerEntries := [unboundReceiptEntry] })
+    "schema-one Lean receipt without an Assurance binding remained valid in the ledger"
   let currentDigest : CurrentClaimDigest := {
     claimId := claim.id, claimInput := claim.input
     elaboratedPropositionDigest := claim.elaboratedPropositionDigest
@@ -102,5 +122,6 @@ def run : IO Unit := do
   expect (contracts.length == names.length && names.all contracts.contains &&
     contracts.all names.contains)
     "public operation inventory and native contracts do not cover the same closed route"
+  runAssurance
 
 end AgentWorkbenchTest.Operation

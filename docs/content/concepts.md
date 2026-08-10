@@ -34,9 +34,18 @@ no manual Task-add route. Replacing a Plan preserves unaffected lineages and reo
 step and transitive dependent. Required open Tasks block completion, and closing one requires current
 post-materialization evidence for that exact Task and output scope.
 
-Successful completion creates one immutable Work-completion record in the authoritative ledger. It
-binds the Work, adopted Design, current Plan, responsible run, prior state revision, and canonical
-completion-input digest. Work status alone is not completion authority.
+When the accepted Design intentionally selects no project-wide Acceptance Criterion for an
+implementation-required Statement, the Plan must declare a Task-local verification contract for
+each affected output. The contract names a concrete `command` or `artifact` check; evidence is bound
+to that exact Task, kind, and target. This avoids inventing a Design criterion while still making an
+unverified implementation Task impossible to close.
+
+Each successful completion creates one immutable Work-completion record in the authoritative
+ledger. It binds the Work, adopted Design, current Plan, responsible run, prior state revision, and
+canonical completion-input digest. If a later accepted implementation Finding invalidates that
+completion, the historical record remains and same-Work recovery may create a new record; exactly
+one non-invalidated record is the current completion authority. Work status alone is not completion
+authority.
 
 ## Acceptance criterion and evidence
 
@@ -90,6 +99,21 @@ explicitly applies it.
 A Review examines an immutable design or fixed implementation snapshot. A Finding is the reviewer's
 advisory observation. The responsible work agent records whether it is accepted, rejected, or
 replaced and why. See [Reviews](reviews.md) for context independence and fix verification.
+
+## Assurance Contracts
+
+Every Statement has one immutable Assurance Contract. It repeats the exact Statement text,
+assumptions, source units, selected Claims and Criteria, and implementation choice. A Contract whose
+Statement requires implementation additionally has independently identified witnesses and the
+closed counterexample partition before Plan materialization. This deliberate duplication lets
+validation reject missing, extra, duplicate, copied, or stale scope before implementation.
+
+Current proposals persist schema version 1 and require explicit Contract inputs for trusted
+boundaries, witness independence and producer boundaries, and counterexample bindings. Workbench
+derives only the same-Design scope, witness input closure, and cryptographic identities; it does not
+manufacture those assurance judgments from the requirement being checked. Schema version 0 is only
+the deterministic read boundary for Designs stored before Assurance Contracts existed; the current
+proposal route never emits it.
 
 ## Lean claim and proof receipt
 

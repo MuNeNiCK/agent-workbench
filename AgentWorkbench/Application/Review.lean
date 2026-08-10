@@ -28,6 +28,7 @@ structure DispositionRecordRequest where
   entryId : String
   findingEntryId : String
   decision : DispositionDecision
+  impact : FindingImpactClass := .implementationDefect
   reason : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
@@ -68,9 +69,26 @@ private def activeReviewerRun (state : ProjectState) (review : ReviewRecord) : S
 
 def startReview
     (projectRoot : System.FilePath) (state : ProjectState)
+    (observations : List TargetObservation) (digests : List CurrentClaimDigest)
     (request : ReviewStartRequest) : IO ProjectState := do
+  if request.reviewerAgentRun.isEmpty then
+    throw (IO.userError "Review requires a nonempty reviewer agent run")
+  match request.purpose with
+  | .design =>
+      let designId ← match request.targetDesignRevision with
+        | some value => pure value
+        | none => throw (IO.userError "Design Review requires targetDesignRevision")
+      let design ← match state.design? designId with
+        | some value => pure value
+        | none => throw (IO.userError s!"no DesignRevision {designId}")
+      if !designAssuranceCurrent state design digests then
+        throw (IO.userError "Design Review requires current closed pre-implementation assurance")
+  | .implementation =>
+      if !completionReady state observations digests then
+        throw (IO.userError "Implementation Review requires independent completion readiness")
   let _ := projectRoot
-  let fixed ← match ← ReviewTarget.freeze projectRoot state request.purpose request.targetDesignRevision with
+  let fixed ← match ← ReviewTarget.freeze projectRoot state request.purpose
+      request.targetDesignRevision observations digests with
     | .ok value => pure value
     | .error message => throw (IO.userError message)
   let (designId, work) ← match request.purpose with
@@ -96,6 +114,7 @@ def startReview
     payload := .review {
       reviewId := request.reviewId, purpose := request.purpose, context := .fresh
       targetSourceId := fixed.sourceId, target := fixed.target, targetSnapshot := fixed.snapshot
+      targetManifestVersion := fixed.manifestVersion
       targetManifest := fixed.manifest, producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := request.reviewerAgentRun } })
 
@@ -119,6 +138,7 @@ def resumeReview
       reviewId := prior.reviewId, purpose := prior.purpose, context := .resume
       continuesEntryId := some priorEntry.id, targetSourceId := prior.targetSourceId
       target := prior.target, targetSnapshot := fixed.snapshot, targetManifest := fixed.manifest
+      targetManifestVersion := fixed.manifestVersion
       producerAgentRuns := fixed.producerAgentRuns
       reviewerAgentRun := reviewerRun } })
 
@@ -158,20 +178,42 @@ def recordDisposition
   let finding ← match state.entry? request.findingEntryId with
     | some value => pure value
     | none => throw s!"no Finding entry {request.findingEntryId}"
+  let findingRecord ← match finding.payload with
+    | .finding value => pure value
+    | _ => throw s!"entry {request.findingEntryId} is not a Finding"
   let workId ← match finding.workId with
     | some value => pure value
     | none => throw "Finding is not Work-bound"
   let work ← match state.work? workId with
     | some value => pure value
     | none => throw s!"no Work {workId}"
+  if request.decision == .accepted && request.impact == .noChange then
+    throw "an accepted Finding must classify its implementation or assurance impact"
+  if request.decision == .accepted && request.impact == .implementationDefect &&
+      !findingCoveredByAssurance state finding findingRecord then
+    throw "implementation-defect Finding is outside every current Assurance Contract"
   let priorDispositionIds := (state.findingDisposition? finding.id work.id).toList.map (·.id)
-  appendEntry state {
+  let dispositionEntry : LedgerEntry := {
     id := request.entryId, order := nextEntryOrder state, scope := finding.scope
     workId := finding.workId, designRevision := finding.designRevision
     supersedes := priorDispositionIds
     payload := .reviewDisposition {
       findingEntryId := request.findingEntryId, decision := request.decision
-      reason := request.reason, decidedByRun := work.responsibleAgentRun } }
+      impact := request.impact, impactSchemaVersion := 1, reason := request.reason
+      decidedByRun := work.responsibleAgentRun } }
+  let reopensCompletedWork := work.status == .completed &&
+    request.decision == .accepted && request.impact == .implementationDefect
+  let works := if reopensCompletedWork then state.works.map fun candidate =>
+      if candidate.id == work.id then { candidate with
+        status := .suspended
+        resumeCondition := some s!"resume after accepted post-completion Finding {finding.id}" }
+      else candidate
+    else state.works
+  validated { state with
+    revision := state.revision + 1
+    focusedWorkId := if reopensCompletedWork then none else state.focusedWorkId
+    works
+    ledgerEntries := state.ledgerEntries ++ [dispositionEntry] }
 
 def recordVerification
     (state : ProjectState) (request : VerificationRecordRequest) : Except String ProjectState := do

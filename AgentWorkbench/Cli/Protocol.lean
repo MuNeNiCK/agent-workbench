@@ -77,6 +77,7 @@ structure ReadinessResult where
   stateRevision : Nat
   ready : Bool
   context : Option ProjectContext
+  digest : String
   deriving Lean.ToJson
 
 end AgentWorkbench.Cli

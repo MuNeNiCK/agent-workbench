@@ -27,12 +27,27 @@ structure ReviewRecord where
   targetSourceId : String
   target : String
   targetSnapshot : String
+  targetManifestVersion : Nat := 0
   targetManifest : List ReviewTargetComponent := []
   producerAgentRuns : List String := []
   reviewerAgentRun : String
   deriving Repr, DecidableEq, Lean.ToJson
 
 private structure PersistedReviewRecord where
+  reviewId : String
+  purpose : ReviewPurpose
+  context : ReviewContext
+  continuesEntryId : Option String := none
+  targetSourceId : String
+  target : String
+  targetSnapshot : String
+  targetManifestVersion : Nat := 0
+  targetManifest : List ReviewTargetComponent
+  producerAgentRuns : List String
+  reviewerAgentRun : String
+  deriving Lean.FromJson
+
+private structure PersistedReviewRecordV0 where
   reviewId : String
   purpose : ReviewPurpose
   context : ReviewContext
@@ -64,24 +79,40 @@ instance : Lean.FromJson ReviewRecord where
         reviewId := value.reviewId, purpose := value.purpose, context := value.context
         continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
         target := value.target, targetSnapshot := value.targetSnapshot
+        targetManifestVersion := value.targetManifestVersion
         targetManifest := value.targetManifest, producerAgentRuns := value.producerAgentRuns
         reviewerAgentRun := value.reviewerAgentRun }
     | .error currentError =>
-        match (Lean.fromJson? json : Except String LegacyReviewRecord) with
+        match (Lean.fromJson? json : Except String PersistedReviewRecordV0) with
         | .ok value => pure {
             reviewId := value.reviewId, purpose := value.purpose, context := value.context
             continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
             target := value.target, targetSnapshot := value.targetSnapshot
-            producerAgentRuns := [value.producerAgentRun]
+            targetManifest := value.targetManifest, producerAgentRuns := value.producerAgentRuns
             reviewerAgentRun := value.reviewerAgentRun }
-        | .error legacyError =>
-            throw s!"invalid Review: {currentError}; legacy: {legacyError}"
+        | .error persistedV0Error =>
+            match (Lean.fromJson? json : Except String LegacyReviewRecord) with
+            | .ok value => pure {
+                reviewId := value.reviewId, purpose := value.purpose, context := value.context
+                continuesEntryId := value.continuesEntryId, targetSourceId := value.targetSourceId
+                target := value.target, targetSnapshot := value.targetSnapshot
+                producerAgentRuns := [value.producerAgentRun]
+                reviewerAgentRun := value.reviewerAgentRun }
+            | .error legacyError =>
+                throw (s!"invalid Review: {currentError}; persisted v0: {persistedV0Error}; " ++
+                  s!"legacy: {legacyError}" : String)
 
 inductive FindingSubjectKind where
   | statement
   | criterion
   | assumption
   | implementationComponent
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
+inductive FindingImpactClass where
+  | implementationDefect
+  | assuranceOmission
+  | noChange
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure FindingSubject where
@@ -141,9 +172,55 @@ instance : Lean.FromJson FindingRecord where
 structure ReviewDispositionRecord where
   findingEntryId : String
   decision : DispositionDecision
+  impact : FindingImpactClass := .implementationDefect
+  impactSchemaVersion : Nat := 0
   reason : String
   decidedByRun : String
-  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+  deriving Repr, DecidableEq
+
+private structure PersistedReviewDispositionRecord where
+  findingEntryId : String
+  decision : DispositionDecision
+  impact : FindingImpactClass
+  impactSchemaVersion : Nat
+  reason : String
+  decidedByRun : String
+  deriving Lean.ToJson, Lean.FromJson
+
+private structure PersistedReviewDispositionRecordV0 where
+  findingEntryId : String
+  decision : DispositionDecision
+  reason : String
+  decidedByRun : String
+  deriving Lean.ToJson, Lean.FromJson
+
+instance : Lean.ToJson ReviewDispositionRecord where
+  toJson value :=
+    if value.impactSchemaVersion == 0 then Lean.toJson ({
+      findingEntryId := value.findingEntryId, decision := value.decision
+      reason := value.reason, decidedByRun := value.decidedByRun
+    } : PersistedReviewDispositionRecordV0)
+    else Lean.toJson ({
+      findingEntryId := value.findingEntryId, decision := value.decision
+      impact := value.impact, impactSchemaVersion := value.impactSchemaVersion
+      reason := value.reason, decidedByRun := value.decidedByRun
+    } : PersistedReviewDispositionRecord)
+
+instance : Lean.FromJson ReviewDispositionRecord where
+  fromJson? json :=
+    match (Lean.fromJson? json : Except String PersistedReviewDispositionRecord) with
+    | .ok value => pure {
+        findingEntryId := value.findingEntryId, decision := value.decision
+        impact := value.impact, impactSchemaVersion := value.impactSchemaVersion
+        reason := value.reason, decidedByRun := value.decidedByRun }
+    | .error currentError =>
+        match (Lean.fromJson? json : Except String PersistedReviewDispositionRecordV0) with
+        | .ok value => pure {
+            findingEntryId := value.findingEntryId, decision := value.decision
+            impact := .implementationDefect, reason := value.reason
+            decidedByRun := value.decidedByRun }
+        | .error previousError =>
+            throw s!"invalid Review disposition: {currentError}; previous: {previousError}"
 
 structure ReviewVerificationRecord where
   reviewId : String

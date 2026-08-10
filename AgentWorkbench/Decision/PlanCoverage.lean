@@ -1,4 +1,4 @@
-import AgentWorkbench.Domain.Lookup
+import AgentWorkbench.Decision.Finding
 
 namespace AgentWorkbench
 
@@ -105,17 +105,29 @@ def expectedStatementDeltas
 def acceptedImplementationFindingIds
     (state : ProjectState) (workId designId : String) : List String :=
   state.ledgerEntries.filterMap fun findingEntry =>
-    if findingEntry.workId != some workId || findingEntry.designRevision != some designId then none
+    if findingEntry.workId != some workId then none
     else match findingEntry.payload with
     | .finding finding =>
+        let designCurrent := findingEntry.designRevision.any fun findingDesignId =>
+          findingDesignId == designId ||
+            (state.designDescendsFrom findingDesignId designId &&
+              (state.design? designId).any
+                (findingCoveredByAssuranceInDesign state findingEntry finding))
         let implementationRoot := state.ledgerEntries.any fun reviewEntry =>
-          reviewEntry.workId == some workId && reviewEntry.designRevision == some designId &&
+          reviewEntry.workId == some workId &&
+            reviewEntry.designRevision == findingEntry.designRevision &&
           match reviewEntry.payload with
           | .review review => review.reviewId == finding.reviewId &&
               review.context == .fresh && review.purpose == .implementation
           | _ => false
-        let accepted := state.findingAccepted findingEntry.id workId
-        if implementationRoot && accepted then some findingEntry.id else none
+        let implementationDefect := (state.findingDisposition? findingEntry.id workId).any fun entry =>
+          match entry.payload with
+          | .reviewDisposition disposition =>
+              disposition.decision == .accepted &&
+                disposition.impact == .implementationDefect
+          | _ => false
+        if designCurrent && implementationRoot && implementationDefect then some findingEntry.id
+        else none
     | _ => none
 
 end AgentWorkbench

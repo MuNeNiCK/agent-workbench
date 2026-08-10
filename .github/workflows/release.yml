@@ -8,7 +8,43 @@ permissions:
   contents: write
 
 jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify signed Workbench release authorization
+        shell: bash
+        env:
+          ALLOWED_SIGNER: 90D71F220DD653AA1C66FA23F8195A7A5BD1D5AF
+          TAG_NAME: ${{ github.ref_name }}
+          TARGET_COMMIT: ${{ github.sha }}
+        run: |
+          verification_ref="refs/agent-workbench-release-tags/$TAG_NAME"
+          git fetch --no-tags origin \
+            "refs/tags/$TAG_NAME:$verification_ref"
+          git cat-file -t "$verification_ref" \
+            > "$RUNNER_TEMP/release-tag-object-type.txt"
+          gpg --batch --import .github/release-signers/munenick.asc
+          git verify-tag --raw "$verification_ref" > "$RUNNER_TEMP/release-signature.txt" 2>&1
+          git cat-file tag "$verification_ref" > "$RUNNER_TEMP/release-tag.txt"
+          git fetch origin \
+            refs/notes/agent-workbench-release:refs/notes/agent-workbench-release
+          git notes --ref=refs/notes/agent-workbench-release show "$TARGET_COMMIT" \
+            > "$RUNNER_TEMP/release-authorization.txt"
+          python3 .github/verify-release-authorization.py verify \
+            --tag-file "$RUNNER_TEMP/release-tag.txt" \
+            --tag-object-type-file "$RUNNER_TEMP/release-tag-object-type.txt" \
+            --verification-file "$RUNNER_TEMP/release-signature.txt" \
+            --authorization-record-file "$RUNNER_TEMP/release-authorization.txt" \
+            --target-commit "$TARGET_COMMIT" \
+            --allowed-signer "$ALLOWED_SIGNER"
+
   package:
+    needs: authorize
     permissions:
       contents: read
       id-token: write
@@ -170,7 +206,7 @@ jobs:
             agent-workbench-${{ matrix.target }}.*
 
   publish:
-    needs: package
+    needs: [authorize, package]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

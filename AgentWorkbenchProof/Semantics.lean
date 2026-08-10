@@ -1,8 +1,61 @@
 import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Domain.Validation
 
 namespace AgentWorkbenchProof
 
 open AgentWorkbench
+
+theorem structurally_current_assurance_is_closed_and_has_no_accepted_omission
+    (state : ProjectState) (design : DesignRevision)
+    (current : designAssuranceStructurallyCurrent state design = true) :
+    design.assuranceClosed = true ∧
+      acceptedAssuranceOmissionForDesign state design.id = false := by
+  simpa [designAssuranceStructurallyCurrent] using current
+
+theorem accepted_assurance_omission_blocks_structural_assurance
+    (state : ProjectState) (design : DesignRevision)
+    (omitted : acceptedAssuranceOmissionForDesign state design.id = true) :
+    designAssuranceStructurallyCurrent state design = false := by
+  simp [designAssuranceStructurallyCurrent, omitted]
+
+theorem schema_zero_design_is_not_structurally_assured
+    (state : ProjectState) (design : DesignRevision)
+    (legacy : design.assuranceSchemaVersion = 0) :
+    designAssuranceStructurallyCurrent state design = false := by
+  simp [designAssuranceStructurallyCurrent, DesignRevision.assuranceClosed, legacy]
+
+theorem closed_assurance_uses_the_exact_statement_contract_universe
+    (design : DesignRevision) (closed : design.assuranceClosed = true) :
+    design.effectiveAssuranceContracts.map (·.statementId) =
+      design.statementCoverage.map (·.statementId) := by
+  simp [DesignRevision.assuranceClosed] at closed
+  grind
+
+theorem closed_critical_contract_has_complete_failure_partition
+    (design : DesignRevision) (contract : AssuranceContract)
+    (closed : design.assuranceClosed = true)
+    (member : contract ∈ design.effectiveAssuranceContracts)
+    (critical : contract.implementationRequired = true) :
+    contract.counterexamples.map (·.failureClass) = AssuranceFailureClass.all := by
+  simp [DesignRevision.assuranceClosed, List.all_eq_true] at closed
+  have contractClosed := closed.2 contract member
+  simp [critical] at contractClosed
+  grind
+
+theorem current_artifact_evidence_has_exact_assurance_binding
+    (projection : CurrentProjection) (observations : List TargetObservation)
+    (entry : LedgerEntry) (record : ArtifactObservationRecord)
+    (payload : entry.payload = .artifactObservation record)
+    (current : evidenceEntryCurrent projection observations entry = true) :
+    match record.criterionId with
+    | some id => projection.design.assuranceBindingCurrentForCriterion
+        record.producerAgentRun id record.assuranceBinding = true
+    | none => projection.design.assuranceBindingCurrentForTask
+        record.producerAgentRun record.assuranceBinding = true := by
+  simp [evidenceEntryCurrent, payload] at current
+  cases criterion : record.criterionId with
+  | none => simpa [criterion] using current.2.1.2
+  | some id => simpa [criterion] using current.2.1.2
 
 /-- A reusable receipt is current only when every production identity component agrees. -/
 theorem reusable_receipt_has_complete_current_identity
@@ -33,11 +86,12 @@ theorem completion_ready_has_complete_current_authority
       currentProjection? state = some projection ∧
       state.currentPlanFor? projection.work.id = some plan ∧
       projection.design.sourceArchiveAvailable = true ∧
+      designAssuranceStructurallyCurrent state projection.design = true ∧
       requiredTasksClosed projection observations = true ∧
       projection.design.acceptanceCriteria.all
         (criterionHasEvidence projection observations) = true ∧
       projection.design.leanClaims.all (claimHasReceipt projection digests) = true ∧
-      noBlockingEntries projection observations = true := by
+      noBlockingEntries state projection observations = true := by
   unfold completionReady at ready
   split at ready
   · simp at ready
@@ -48,6 +102,21 @@ theorem completion_ready_has_complete_current_authority
         refine ⟨projection, plan, projectionEq, planEq, ?_⟩
         simp [planEq] at ready
         grind
+
+/-- Historical completion records remain immutable, but none can remain in the current authority
+set after a later accepted implementation Finding invalidates it. -/
+theorem current_completion_authority_is_not_invalidated
+    (state : ProjectState) (work : Work) (completion : LedgerEntry)
+    (member : completion ∈ currentWorkCompletionAuthorities state work) :
+    workCompletionInvalidated state work completion = false := by
+  simp [currentWorkCompletionAuthorities] at member
+  exact member.2
+
+theorem invalidated_completion_is_not_current
+    (state : ProjectState) (work : Work) (completion : LedgerEntry)
+    (invalidated : workCompletionInvalidated state work completion = true) :
+    completion ∉ currentWorkCompletionAuthorities state work := by
+  simp [currentWorkCompletionAuthorities, invalidated]
 
 /-- A Review entry is advisory: it is never current artifact or command evidence by itself. -/
 theorem review_entry_is_not_current_evidence
@@ -129,11 +198,12 @@ theorem current_evidence_has_exact_work_and_design
 
 /-- Completion's blocker decision cannot hide an unresolved current User Correction. -/
 theorem no_blockers_resolves_every_current_correction
-    (projection : CurrentProjection) (observations : List TargetObservation)
+    (state : ProjectState) (projection : CurrentProjection)
+    (observations : List TargetObservation)
     (entry : LedgerEntry) (correction : UserCorrectionRecord)
     (member : entry ∈ projection.entries)
     (payload : entry.payload = .userCorrection correction)
-    (clear : noBlockingEntries projection observations = true) :
+    (clear : noBlockingEntries state projection observations = true) :
     correction.resolvedByEntryId.isSome = true ∨
       correction.incorporatedIn = some projection.design.id := by
   simp only [noBlockingEntries, List.all_eq_true] at clear

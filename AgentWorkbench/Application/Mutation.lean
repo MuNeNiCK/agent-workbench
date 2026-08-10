@@ -33,6 +33,7 @@ inductive Mutation where
   | planReplace (request : PlanProposalRequest)
   | planMaterialize (planId : String)
   | taskClose (request : TaskCloseRequest)
+  | taskReopenStale
   | profileDefine (request : ProfileDefineRequest)
   | profileReplace (request : ProfileReplaceRequest)
   | commandRun (request : CommandRunRequest)
@@ -71,6 +72,7 @@ def Mutation.operation : Mutation → Operation
   | .planReplace _ => .planReplace
   | .planMaterialize _ => .planMaterialize
   | .taskClose _ => .taskClose
+  | .taskReopenStale => .taskReopenStale
   | .profileDefine _ => .profileDefine
   | .profileReplace _ => .profileReplace
   | .commandRun _ => .commandRun
@@ -118,7 +120,7 @@ def Mutation.pureTransition? : Mutation → Option (ProjectState → Except Stri
   | .reviewConclude request => some (fun state => concludeReview state request)
   | .reviewVerify request => some (fun state => recordVerification state request)
   | .designPropose _ | .designAmend _ | .workComplete
-  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _
+  | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ | .taskReopenStale
   | .commandRun _ | .artifactObserve _ | .proofRun _
   | .reviewStart _ | .reviewResume _ => none
 
@@ -129,7 +131,7 @@ inductive MutationResultShape where
 def Mutation.pureResultShape : Mutation → MutationResultShape
   | .workStart _ | .workFocus _ | .workResume _ | .workHandoff _ _ _ _ => .context
   | .designAccept _ | .designReject _ | .workSuspend _ _ | .workAdoptDesign _
-  | .workWithdraw _ | .taskClose _ | .profileDefine _ | .profileReplace _
+  | .workWithdraw _ | .taskClose _ | .taskReopenStale | .profileDefine _ | .profileReplace _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _
   | .correctionIncorporate _ | .kptRecord _ | .kptApply _ | .reviewHandoff _
   | .reviewFinding _ | .reviewDisposition _ | .reviewConclude _ | .reviewVerify _
@@ -174,11 +176,12 @@ def Operation.permittedStateComponents : Operation → List StateComponent
   | .workWithdraw | .workComplete => [.focusedWork, .works, .ledger]
   | .planPropose | .planReplace => [.plans]
   | .planMaterialize => [.plans, .ledger]
-  | .taskClose | .profileDefine | .profileReplace | .artifactObserve
+  | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .artifactObserve
   | .correctionRecord | .correctionSupersede | .correctionResolve | .correctionIncorporate
   | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
-  | .reviewFinding | .reviewDisposition | .reviewConclude | .reviewVerify
+  | .reviewFinding | .reviewConclude | .reviewVerify
   | .commandRun | .proofRun => [.ledger]
+  | .reviewDisposition => [.focusedWork, .works, .ledger]
   | .describe | .designGet | .designInspectSources | .designSource | .designDiff
   | .designExport | .workGet | .workAdoptionImpact | .planGet | .planInspectSources
   | .planSource | .planDiff | .planExport | .reviewContext | .reviewInspect
@@ -221,8 +224,10 @@ inductive PreparedMutation where
   | designAmend (candidate : DesignRevision)
   | planPropose (candidate : ImplementationPlan)
   | planReplace (candidate : ImplementationPlan)
-  | planMaterialize (planId : String) (claimDigests : List CurrentClaimDigest)
+  | planMaterialize (planId : String) (observations : List TargetObservation)
+      (claimDigests : List CurrentClaimDigest)
   | taskClose (request : TaskCloseRequest) (observations : List TargetObservation)
+  | taskReopenStale (observations : List TargetObservation)
   | workComplete (observations : List TargetObservation) (claimDigests : List CurrentClaimDigest)
       (inputDigest : String)
   | artifactObservation (entry : LedgerEntry)
@@ -238,8 +243,9 @@ def PreparedMutation.operation : PreparedMutation → Operation
   | .designAmend _ => .designAmend
   | .planPropose _ => .planPropose
   | .planReplace _ => .planReplace
-  | .planMaterialize _ _ => .planMaterialize
+  | .planMaterialize _ _ _ => .planMaterialize
   | .taskClose _ _ => .taskClose
+  | .taskReopenStale _ => .taskReopenStale
   | .workComplete _ _ _ => .workComplete
   | .artifactObservation _ => .artifactObserve
   | .commandExecution _ => .commandRun
@@ -259,8 +265,10 @@ def PreparedMutation.transition
   | .direct mutation => mutation.executePure state
   | .designPropose candidate | .designAmend candidate => proposeDesign state candidate
   | .planPropose candidate | .planReplace candidate => proposePlan state candidate
-  | .planMaterialize planId digests => materializePlan state planId digests
+  | .planMaterialize planId observations digests =>
+      materializePlan state planId observations digests
   | .taskClose request observations => closeTask state observations request
+  | .taskReopenStale observations => reopenStaleTasks state observations
   | .workComplete observations digests inputDigest =>
       completeFocusedWork state observations digests inputDigest
   | .artifactObservation entry =>
@@ -283,11 +291,12 @@ def PreparedMutation.execute
       else .error "prepared mutation violated its revision, authority, history, or effect boundary"
 
 def PreparedMutation.currentObservations : PreparedMutation → List TargetObservation
-  | .taskClose _ values | .workComplete values _ _ => values
+  | .planMaterialize _ values _ | .taskClose _ values | .taskReopenStale values |
+      .workComplete values _ _ => values
   | _ => []
 
 def PreparedMutation.currentClaimDigests : PreparedMutation → List CurrentClaimDigest
-  | .planMaterialize _ values | .workComplete _ values _ => values
+  | .planMaterialize _ _ values | .workComplete _ values _ => values
   | _ => []
 
 def PreparedMutation.executeApplicable

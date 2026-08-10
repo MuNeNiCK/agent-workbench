@@ -125,10 +125,19 @@ private def updatePlanStatus (store : WriteStore) (plan : ImplementationPlan) : 
 
 private def persistPlanChanges
     (store : WriteStore) (prior next : ProjectState) : IO Unit := do
+  -- Release the partial unique index before promoting a successor. StoreRead
+  -- orders IDs lexicographically, so plan-10 may otherwise be visited before
+  -- plan-9 and collide while both rows are momentarily current.
+  for plan in next.implementationPlans do
+    match prior.implementationPlans.find? (fun old => old.id == plan.id) with
+    | some old =>
+        if old.status == .current && plan.status != .current then updatePlanStatus store plan
+    | none => pure ()
   for plan in next.implementationPlans do
     match prior.implementationPlans.find? (fun old => old.id == plan.id) with
     | none => insertPlan store plan
-    | some old => if old.status != plan.status then updatePlanStatus store plan
+    | some old =>
+        if old.status != plan.status && old.status != .current then updatePlanStatus store plan
 
 private def insertPlanSource
     (store : WriteStore) (planId : String) (ordinal : Nat)
@@ -182,7 +191,8 @@ private def insertEntry (store : WriteStore) (entry : LedgerEntry) : IO Unit :=
 def commitOperation
     (store : WriteStore) (operation : Operation)
     (expectedRevision : Nat) (next : ProjectState)
-    (managedOperationId : Option String := none) : IO Unit := do
+    (managedOperationId : Option String := none)
+    (postCommitVerification : IO Unit := pure ()) : IO Unit := do
   fromExcept (validateState next)
   if next.revision != expectedRevision + 1 then
     fail s!"transition revision must advance exactly once from {expectedRevision}"
@@ -216,8 +226,30 @@ def commitOperation
         #[toString next.revision, operationId, toString expectedRevision]
       if (← AgentWorkbench.SQLite.changes (writeConnection store)) != 1 then
         fail "managed operation commit marker was not advanced atomically"
+  postCommitVerification
   let committed ← loadState store
-  if committed != next then fail "committed state differs from the validated transition result"
+  if committed != next then
+    let fields := [
+      ("revision", committed.revision == next.revision),
+      ("acceptedDesignId", committed.acceptedDesignId == next.acceptedDesignId),
+      ("focusedWorkId", committed.focusedWorkId == next.focusedWorkId),
+      ("designRevisions", committed.designRevisions == next.designRevisions),
+      ("works", committed.works == next.works),
+      ("implementationPlans", committed.implementationPlans == next.implementationPlans),
+      ("ledgerEntries", committed.ledgerEntries == next.ledgerEntries)]
+    let differing := fields.filterMap fun (name, equal) => if equal then none else some name
+    fail s!"committed state differs from the validated transition result: {differing}"
+
+/-- Returns true only when the durable managed-operation row proves that its authority transaction
+has not committed. Errors and missing rows are deliberately not interpreted as an uncommitted
+operation: after the commit boundary, cleanup must be conservative and recovery-led. -/
+def managedOperationDefinitelyUncommitted
+    (store : WriteStore) (operationId : String) : IO Bool := do
+  let rows ← AgentWorkbench.SQLite.queryTextRows (writeConnection store)
+    "SELECT COALESCE(CAST(committed_state_revision AS TEXT), '')
+     FROM managed_operations WHERE operation_id = ?1"
+    #[operationId] 1
+  pure <| rows.size == 1 && rows[0]![0]!.isEmpty
 
 def commitDesignProposal
     (store : WriteStore) (operation : Operation) (expectedRevision : Nat) (next : ProjectState)

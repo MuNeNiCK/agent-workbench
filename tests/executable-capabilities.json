@@ -1,0 +1,60 @@
+[
+  {
+    "executable": "agent-workbench",
+    "released": true,
+    "entryDeclarations": ["AgentWorkbench.Cli.main"],
+    "allowedGeneratedLeanObjects": [
+      "Blake3/Blake3",
+      "Blake3/Blake3/C",
+      "MD4Lean/MD4Lean",
+      "MD4Lean/MD4Lean/Basic",
+      "MD4Lean/MD4Lean/FFI",
+      "leansqlite/SQLite",
+      "leansqlite/SQLite/Blob",
+      "leansqlite/SQLite/Blob/Classes",
+      "leansqlite/SQLite/Blob/Deriving",
+      "leansqlite/SQLite/Blob/Instances",
+      "leansqlite/SQLite/FFI",
+      "leansqlite/SQLite/Interpolation",
+      "leansqlite/SQLite/LowLevel",
+      "leansqlite/SQLite/QueryParam",
+      "leansqlite/SQLite/QueryResult",
+      "leansqlite/SQLite/QueryResult/Deriving"
+    ],
+    "allowedCapabilities": ["blake3-ffi", "filesystem", "markdown-ffi", "process", "sqlite", "store-adapter", "store-mutation"]
+  },
+  {
+    "executable": "agent-workbench-tests",
+    "released": false,
+    "allowedGeneratedLeanObjects": [],
+    "entryDeclarations": [
+      "AgentWorkbenchTest.Lifecycle.run",
+      "AgentWorkbenchTest.Completion.run",
+      "AgentWorkbenchTest.Plan.run",
+      "AgentWorkbenchTest.Review.run",
+      "AgentWorkbenchTest.Operation.run",
+      "AgentWorkbenchTest.ManagedRecovery.run",
+      "AgentWorkbenchTest.Concurrency.run",
+      "AgentWorkbenchTest.Atomicity.run",
+      "AgentWorkbenchTest.Schema.run",
+      "AgentWorkbenchTest.Markdown.run",
+      "AgentWorkbenchTest.DesignArchive.run",
+      "AgentWorkbenchTest.Guidance.run",
+      "AgentWorkbenchTest.PublicRoute.run",
+      "AgentWorkbenchTest.PublicDesignWorkRoute.run",
+      "AgentWorkbenchTest.BuildBoundary.run",
+      "AgentWorkbenchTest.Migration.run",
+      "AgentWorkbenchTest.BinaryProtocol.run",
+      "AgentWorkbenchTest.DesignClaim.run",
+      "AgentWorkbenchTest.Assurance.run"
+    ],
+    "allowedCapabilities": ["blake3-ffi", "filesystem", "markdown-ffi", "process", "sqlite", "store-adapter", "store-mutation"]
+  },
+  {
+    "executable": "agent-workbench-proof-tests",
+    "released": false,
+    "allowedGeneratedLeanObjects": [],
+    "entryDeclarations": ["AgentWorkbenchTest.ProofBuild.run"],
+    "allowedCapabilities": ["filesystem"]
+  }
+]

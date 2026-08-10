@@ -1,4 +1,5 @@
 import AgentWorkbenchTest.Lifecycle
+import AgentWorkbenchTest.RouteReceipt
 import AgentWorkbenchTest.Completion
 import AgentWorkbenchTest.Plan
 import AgentWorkbenchTest.Review
@@ -16,3 +17,4 @@ import AgentWorkbenchTest.BuildBoundary
 import AgentWorkbenchTest.Migration
 import AgentWorkbenchTest.BinaryProtocol
 import AgentWorkbenchTest.DesignClaim
+import AgentWorkbenchTest.Assurance

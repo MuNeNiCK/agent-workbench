@@ -30,7 +30,7 @@ Lean is acquired and operated by Workbench; the user does not need to install or
 Install the Skill into the repository:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.8 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.10 \
   --agent codex --scope project
 ```
 

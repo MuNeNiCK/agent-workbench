@@ -37,11 +37,13 @@ private def statement : Statement :=
   { id := "statement-1", text := "artifact must exist" }
 
 private def criterion : AcceptanceCriterion :=
-  { id := "criterion-command", statement := "artifact command succeeds"
+  { id := "criterion-command", statementId := some statement.id
+    statement := "artifact command succeeds"
     target := "file:artifact.txt", evidenceKind := "command" }
 
 private def artifactCriterion : AcceptanceCriterion :=
-  { id := "criterion-artifact", statement := "artifact observation succeeds"
+  { id := "criterion-artifact", statementId := some statement.id
+    statement := "artifact observation succeeds"
     target := "file:observed.txt", evidenceKind := "artifact" }
 
 private def findingSubject : FindingSubject :=
@@ -58,6 +60,21 @@ private def claim : LeanClaim :=
       check := { executable := "lake", arguments := #["build"] }
       toolchain := Runtime.toolchain } }
 
+private def assuranceInput : AssuranceContractInput :=
+  let witnesses : List AssuranceWitnessInput := [
+    { id := claim.id, independenceClass := "pinned-kernel"
+      producerBoundary := s!"claim:{claim.id}:pinned-kernel:{claim.input.toolchain}" },
+    { id := criterion.id, independenceClass := "isolated-command-runner"
+      producerBoundary := s!"criterion:{criterion.id}:current-task-evidence-producer" },
+    { id := artifactCriterion.id, independenceClass := "external-artifact-observer"
+      producerBoundary :=
+        s!"criterion:{artifactCriterion.id}:current-task-evidence-producer" }]
+  { statementId := statement.id
+    witnesses
+    counterexamples := AssuranceFailureClass.all.map fun failureClass => {
+      failureClass, rejectedCondition := failureClass.rejectedCondition
+      positiveProperty := statement.text, witnessIds := witnesses.map (·.id) } }
+
 def operationContracts : List OperationContract :=
   [ noInput "init" "initialize project-local runtime and state"
   , noInput "describe" "list operations; append an operation name for its contract"
@@ -67,13 +84,14 @@ def operationContracts : List OperationContract :=
          sourceUnitDispositions := [], statementCoverage := []
          statements := [statement]
          acceptanceCriteria := [criterion, artifactCriterion]
-         leanClaims := [claim] } : DesignProposalRequest)
+         leanClaims := [claim], assuranceContracts := some [assuranceInput] } : DesignProposalRequest)
   , contract "design amend" "replace a candidate with an immutable amended candidate"
       ({ producerAgentRun := "agent-run-1", changeRationale := "address the accepted correction"
          amendsCandidate := some "design-1", sourceUnitDispositions := []
          sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
          statementCoverage := [], statements := [statement]
-         acceptanceCriteria := [criterion, artifactCriterion], leanClaims := [claim] } :
+         acceptanceCriteria := [criterion, artifactCriterion], leanClaims := [claim]
+         assuranceContracts := some [assuranceInput] } :
         DesignProposalRequest)
   , contract "design accept" "accept a candidate while no Work is focused"
       ({ id := "design-1" } : IdInput)
@@ -142,6 +160,8 @@ def operationContracts : List OperationContract :=
   , noInput "work complete" "complete focused Work only when derived readiness is true"
   , contract "task close" "close and supersede a current Task"
       ({ entryId := "task-closed", taskEntryId := "task-1" } : TaskCloseRequest)
+  , noInput "task reopen-stale"
+      "atomically reopen Tasks whose closing evidence is stale and their dependents"
   , contract "profile define" "define a current-bound Command Profile"
       ({ entryId := "profile-1", purpose := "verify artifact"
          taskEntryId := "task-plan-1-step-1", inputTargets := []
@@ -225,6 +245,73 @@ def operationIndex (state : ProjectState) (inputs : CurrentInputs) : OperationIn
 
 def operationContract? (operation : String) : Option OperationContract :=
   operationContracts.find? (·.operation == operation)
+
+/-- The recursive field shape accepted by one native JSON operation. `.value` deliberately makes
+no claim about scalar representation; objects and array elements retain their own field shape. -/
+inductive InputSchema where
+  | value
+  | object (fields : List (String × InputSchema))
+  | array (item : InputSchema)
+  deriving Repr, Inhabited
+
+private partial def schemaFromExample : Lean.Json → InputSchema
+  | .obj fields => .object (fields.toList.map fun (key, value) => (key, schemaFromExample value))
+  | .arr items => .array (items[0]?.map schemaFromExample |>.getD .value)
+  | _ => .value
+
+private def typedSchema [Lean.ToJson α] (value : α) : InputSchema :=
+  schemaFromExample (Lean.toJson value)
+
+/-- A type-checked recursive schema for strict JSON field validation. The human-facing examples
+stay concise. Structured arrays are populated only in this schema witness, so an empty example can
+never erase the object fields accepted for an array element. -/
+def operationInputSchema? (operation : String) : Option InputSchema :=
+  let designSchema : DesignProposalRequest := {
+    producerAgentRun := "agent-run-1"
+    changeRationale := "record the Design"
+    changeBasisEntryIds := ["correction-1"]
+    amendsCandidate := some "design-1"
+    sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
+    sourceUnitDispositions := [{
+      unitId := "source-unit-1", role := .requirement, reason := some "authoritative requirement" }]
+    assumptions := [{
+      id := "assumption-1", text := "the service is available"
+      sourceUnitIds := ["source-unit-1"] }]
+    statements := [{ statement with assumptions := ["assumption-1"] }]
+    statementCoverage := [{
+      statementId := statement.id, sourceUnitIds := ["source-unit-1"]
+      leanClaims := { selectedIds := [claim.id] }
+      acceptanceCriteria := { selectedIds := [criterion.id] }
+      implementationRequired := true }]
+    removedStatements := [{
+      statementId := "removed-statement", statementText := "superseded requirement"
+      implementationRequired := false, noImplementationReason := some "removed by the successor" }]
+    acceptanceCriteria := [criterion, artifactCriterion]
+    leanClaims := [claim]
+    assuranceContracts := some [assuranceInput] }
+  let planSchema : PlanProposalRequest := {
+    predecessorPlanId := some "plan-1"
+    producerAgentRun := "agent-run-1"
+    reason := "implement the complete Design delta"
+    changeBasisEntryIds := ["finding-1"]
+    sourceDocumentTargets := ["file:.agent-workbench/design/plans/work-1/plan.md"]
+    sourceUnitDispositions := [{
+      unitId := "plan-source-unit-1", stepId := some "step-1" }]
+    statementDispositions := [{
+      statementId := statement.id, statementText := statement.text
+      deltaKind := .added, stepIds := ["step-1"] }]
+    steps := [{
+      id := "step-1", description := "implement the Statement"
+      outputScopes := [criterion.target]
+      requiredClaimIds := [claim.id]
+      verificationCriterionIds := [criterion.id]
+      taskVerificationContracts := [{
+        id := "verify-step-output", kind := .command, target := criterion.target }]
+      acceptedFindingEntryIds := ["finding-1"] }] }
+  match operation with
+  | "design propose" | "design amend" => some (typedSchema designSchema)
+  | "plan propose" | "plan replace" => some (typedSchema planSchema)
+  | _ => (operationContract? operation).bind (·.inputExample) |>.map schemaFromExample
 
 def describedOperation?
     (state : ProjectState) (inputs : CurrentInputs) (operation : String) : Option OperationContract :=

@@ -1,5 +1,7 @@
 import AgentWorkbench.Application.Mutation
 import AgentWorkbench.Adapter.StoreSchemaInventory
+import AgentWorkbench.Adapter.ManagedOutput
+import AgentWorkbench.Adapter.ProofBuild
 import AgentWorkbenchProof.InvariantFamily
 
 namespace AgentWorkbenchProof.PersistedFields
@@ -37,6 +39,29 @@ def leanClaim : LeanClaim → List FieldCoverage
   | .mk _ _ _ _ =>
       cover .designHistory ["id", "input", "elaboratedPropositionDigest", "propositionDependencies"]
 
+def assuranceScopeMember : AssuranceScopeMember → List FieldCoverage
+  | .mk _ _ _ => cover .designHistory ["kind", "id", "binding"]
+
+def assuranceWitness : AssuranceWitness → List FieldCoverage
+  | .mk _ _ _ _ _ _ => cover .designHistory
+      ["id", "kind", "checkpoint", "independenceClass", "dependencyIds", "producerBoundary"]
+
+def assuranceCounterexample : AssuranceCounterexample → List FieldCoverage
+  | .mk _ _ _ _ => cover .designHistory
+      ["failureClass", "rejectedCondition", "positiveProperty", "witnessIds"]
+
+def assuranceContract : AssuranceContract → List FieldCoverage
+  | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ => cover .designHistory
+      ["designRevisionId", "assuranceEpoch", "statementId", "statementText",
+       "statementTextDigest", "assumptionIds",
+       "trustedBoundaryAssumptionIds", "sourceUnitIds", "claimIds", "criterionIds",
+       "implementationRequired", "scope", "scopeDigest", "witnesses", "counterexamples"]
+
+def assuranceEvidenceBinding : AssuranceEvidenceBinding → List FieldCoverage
+  | .mk _ _ _ _ _ _ _ => cover .ledgerAuthority
+      ["designRevisionId", "assuranceEpoch", "contractStatementIds", "scopeDigests",
+       "witnessIds", "counterexampleBindings", "producerAgentRun"]
+
 def sourceUnit : DesignSourceUnit → List FieldCoverage
   | .mk _ _ _ _ _ _ _ =>
       cover .designHistory ["id", "target", "path", "kind", "headingAncestry", "text", "digest"]
@@ -59,12 +84,12 @@ def removedStatement : RemovedStatementTombstone → List FieldCoverage
       cover .designHistory ["statementId", "statementText", "implementationRequired", "noImplementationReason"]
 
 def designRevision : DesignRevision → List FieldCoverage
-  | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ =>
+  | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ =>
       cover .designHistory ["id", "workId", "parent", "amendsCandidate", "createdAfterEntryOrder", "status",
        "producerAgentRun", "changeRationale", "changeBasisEntryIds", "revisionContentDigest",
        "sourceArchiveAvailable", "sourceDocuments", "sourceUnits", "sourceUnitDispositions",
        "assumptions", "statements", "statementCoverage", "removedStatements",
-       "acceptanceCriteria", "leanClaims"]
+       "acceptanceCriteria", "leanClaims", "assuranceSchemaVersion", "assuranceContracts"]
 
 def work : Work → List FieldCoverage
   | .mk _ _ _ _ _ _ _ _ _ => cover .workLifecycle ["id", "outcome", "scope", "baselineDesignRevision",
@@ -80,9 +105,13 @@ def planStatementDisposition : PlanStatementDisposition → List FieldCoverage
   | .mk _ _ _ _ _ =>
       cover .planTask ["statementId", "statementText", "deltaKind", "stepIds", "noActionReason"]
 
+def taskVerificationContract : TaskVerificationContract → List FieldCoverage
+  | .mk _ _ _ => cover .planTask ["id", "kind", "target"]
+
 def planStep : PlanStep → List FieldCoverage
-  | .mk _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
-      "requiredClaimIds", "verificationCriterionIds", "acceptedFindingEntryIds"]
+  | .mk _ _ _ _ _ _ _ _ => cover .planTask ["id", "description", "dependsOnStepIds", "outputScopes",
+      "requiredClaimIds", "verificationCriterionIds", "taskVerificationContracts",
+      "acceptedFindingEntryIds"]
 
 def implementationPlan : ImplementationPlan → List FieldCoverage
   | .mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ => cover .planTask ["id", "workId", "designRevision",
@@ -95,6 +124,10 @@ def reviewTargetComponent : ReviewTargetComponent → List FieldCoverage
 
 def findingSubject : FindingSubject → List FieldCoverage
   | .mk _ _ _ => cover .ledgerAuthority ["kind", "id", "exactQuote"]
+
+def reviewDisposition : ReviewDispositionRecord → List FieldCoverage
+  | .mk _ _ _ _ _ _ => cover .ledgerAuthority
+      ["findingEntryId", "decision", "impact", "impactSchemaVersion", "reason", "decidedByRun"]
 
 def proofSourceDigest : ProofSourceDigest → List FieldCoverage
   | .mk _ _ => cover .ledgerAuthority ["path", "digest"]
@@ -112,6 +145,21 @@ def projectState : ProjectState → List FieldCoverage
        { field := "works", owner := .workLifecycle },
        { field := "implementationPlans", owner := .planTask },
        { field := "ledgerEntries", owner := .ledgerAuthority }]
+
+/-- Recovery manifests are serialized inside one SQLite column, but their authority-bearing
+structure is still covered positionally. A field change must update this release proof. -/
+def managedOutputNode : ManagedOutput.Node → List FieldCoverage
+  | .mk _ _ _ => cover .ledgerAuthority ["relativePath", "directory", "contentBytes"]
+
+def managedOutputBaseline : ManagedOutput.Baseline → List FieldCoverage
+  | .mk _ _ _ _ _ => cover .ledgerAuthority ["identity", "kind", "existed", "nodes", "digest"]
+
+def proofOutputLayout : ProofBuild.OutputLayout → List FieldCoverage
+  | .mk _ _ _ _ _ _ => cover .ledgerAuthority
+      ["original", "existed", "parentExisted", "backup", "isolated", "baselineDigest"]
+
+def proofManagedOutputManifest : ProofBuild.ManagedOutputManifest → List FieldCoverage
+  | .mk _ => cover .ledgerAuthority ["layouts"]
 
 /-- Exhaustive ownership for every authoritative SQLite column. The actual schema is checked
 against `PersistedColumn.all` by the product test suite. -/
