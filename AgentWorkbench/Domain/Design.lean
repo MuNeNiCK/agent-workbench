@@ -321,23 +321,41 @@ def DesignRevision.derivedAssuranceContracts (design : DesignRevision) : List As
           witnessIds := witnesses.map (·.id) }
         else [] }
 
-/-- Combine system-derived closed scope with the independently authored assurance judgments.  A
-missing or duplicate input is retained as an incomplete matrix and rejected by Design validation. -/
+/-- Combine system-derived closed scope with the independently authored assurance judgments.
+Authored Contract and witness identifiers must be an exact permutation of the derived universes;
+rejecting here prevents an extra input from being normalized away before Design validation. -/
 def DesignRevision.assuranceContractsFromInputs
-    (design : DesignRevision) (inputs : List AssuranceContractInput) : List AssuranceContract :=
-  design.derivedAssuranceContracts.filterMap fun contract => do
-    if inputs.countP (·.statementId == contract.statementId) != 1 then none else
-      let input : AssuranceContractInput ← inputs.find? (·.statementId == contract.statementId)
-      let witnesses := contract.witnesses.filterMap fun expected => do
-        if input.witnesses.countP (·.id == expected.id) != 1 then none else
-          let authored : AssuranceWitnessInput ← input.witnesses.find? (·.id == expected.id)
-          some { expected with
-            independenceClass := authored.independenceClass
-            producerBoundary := authored.producerBoundary }
-      some { contract with
+    (design : DesignRevision) (inputs : List AssuranceContractInput) :
+    Except String (List AssuranceContract) := do
+  let derived := design.derivedAssuranceContracts
+  let expectedStatementIds := derived.map (·.statementId)
+  let authoredStatementIds := inputs.map (·.statementId)
+  if authoredStatementIds.mergeSort (· < ·) != expectedStatementIds.mergeSort (· < ·) ||
+      authoredStatementIds.eraseDups != authoredStatementIds then
+    throw "Assurance Contract inputs must contain every derived Statement ID exactly once and no others"
+  let mut contracts := []
+  for contract in derived do
+    let input ← match inputs.find? (·.statementId == contract.statementId) with
+      | some value => pure value
+      | none => throw s!"missing Assurance Contract input {contract.statementId}"
+    let expectedWitnessIds := contract.witnesses.map (·.id)
+    let authoredWitnessIds := input.witnesses.map (·.id)
+    if authoredWitnessIds.mergeSort (· < ·) != expectedWitnessIds.mergeSort (· < ·) ||
+        authoredWitnessIds.eraseDups != authoredWitnessIds then
+      throw s!"Assurance Contract {contract.statementId} must contain every derived witness ID exactly once and no others"
+    let mut witnesses := []
+    for expected in contract.witnesses do
+      let authored ← match input.witnesses.find? (·.id == expected.id) with
+        | some value => pure value
+        | none => throw s!"missing Assurance witness input {expected.id}"
+      witnesses := witnesses ++ [{ expected with
+        independenceClass := authored.independenceClass
+        producerBoundary := authored.producerBoundary }]
+    contracts := contracts ++ [{ contract with
         trustedBoundaryAssumptionIds := input.trustedBoundaryAssumptionIds
         witnesses := witnesses
-        counterexamples := input.counterexamples }
+        counterexamples := input.counterexamples }]
+  pure contracts
 
 /-- Replace the proof-friendly digest placeholders with the production digest of each exact
 canonical input.  Production adapters call this with the pinned BLAKE3 implementation. -/

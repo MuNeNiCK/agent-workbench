@@ -33,7 +33,7 @@ private def nextDesignId (state : ProjectState) : String :=
 def DesignProposalRequest.design
     (state : ProjectState) (workId : String) (sources : List DesignSource)
     (units : List DesignSourceUnit)
-    (request : DesignProposalRequest) : DesignRevision :=
+    (request : DesignProposalRequest) : Except String DesignRevision := do
   let base : DesignRevision :=
   { id := nextDesignId state, workId := some workId, parent := state.acceptedDesignId
     amendsCandidate := request.amendsCandidate
@@ -48,8 +48,8 @@ def DesignProposalRequest.design
     removedStatements := request.removedStatements
     acceptanceCriteria := request.acceptanceCriteria, leanClaims := request.leanClaims
     assuranceSchemaVersion := 1 }
-  { base with assuranceContracts :=
-      base.assuranceContractsFromInputs (request.assuranceContracts.getD []) }
+  let contracts ← base.assuranceContractsFromInputs (request.assuranceContracts.getD [])
+  pure { base with assuranceContracts := contracts }
 
 def proposeDesign
     (state : ProjectState) (candidate : DesignRevision) : Except String ProjectState := do

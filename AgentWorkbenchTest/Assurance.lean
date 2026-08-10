@@ -277,7 +277,7 @@ def run : IO Unit := do
         id := witness.id, independenceClass := witness.independenceClass
         producerBoundary := witness.producerBoundary }
       counterexamples := expectedFixtureContract.counterexamples }] }
-  let proposed := request.design baseState work.id design.sourceDocuments [sourceUnit]
+  let proposed ← fromExcept (request.design baseState work.id design.sourceDocuments [sourceUnit])
   expect (proposed.assuranceSchemaVersion == 1 &&
     proposed.assuranceContracts.head?.any (fun contract =>
       contract.trustedBoundaryAssumptionIds == expectedFixtureContract.trustedBoundaryAssumptionIds &&
@@ -286,6 +286,21 @@ def run : IO Unit := do
     proposed.assuranceContracts != proposed.derivedAssuranceContracts &&
     proposed.assuranceClosed)
     "current proposal route did not preserve the independently authored Contract input"
+
+  let extraContractInputs := request.assuranceContracts.map fun inputs => inputs ++ [{
+    statementId := "statement-extra", witnesses := [], counterexamples := [] }]
+  let extraContractRequest := { request with assuranceContracts := extraContractInputs }
+  expectError
+    (extraContractRequest.design baseState work.id design.sourceDocuments [sourceUnit])
+    "proposal input accepted an extra Assurance Contract Statement ID"
+  let extraWitnessInputs := request.assuranceContracts.map fun inputs => inputs.map fun input =>
+    { input with witnesses := input.witnesses ++ [{
+      id := "criterion-extra", independenceClass := "extra-observer",
+      producerBoundary := "authored:extra-observer" }] }
+  let extraWitnessRequest := { request with assuranceContracts := extraWitnessInputs }
+  expectError
+    (extraWitnessRequest.design baseState work.id design.sourceDocuments [sourceUnit])
+    "proposal input accepted an extra Assurance witness ID"
 
   expect (!operationStructurallyApplicable (stateWithDesign { closed with
       assuranceContracts := [] }) .planMaterialize)

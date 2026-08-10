@@ -64,7 +64,10 @@ implementation-review-target-snapshot: blake3:<exact release candidate target di
 implementation-review-clean: true
 ```
 
-After the candidate commit is fixed, the maintainer generates the record with the native runtime:
+After the candidate commit is fixed and `ready` succeeds, the maintainer starts and concludes the
+fresh Implementation Review first, then starts and concludes the fresh Design Review. The
+maintainer generates the record with the native runtime only after those ordered zero-Finding
+audits:
 
 ```sh
 commit=$(git rev-parse HEAD)
@@ -85,8 +88,9 @@ git push origin <version>
 
 `prepare` reads `ready` and both exact Review records itself. It rejects a non-ready Work, any
 remaining gap, the wrong Work or Design target, a non-fresh or non-independent Review, a Review with
-a Finding, or a non-clean/missing conclusion. The Git note transports that checked record without
-changing the already reviewed commit; it is not an alternative source of release facts.
+a Finding, a non-clean/missing conclusion, or a Design Review whose ledger order is not later than
+the ready-gated Implementation Review. The Git note transports that checked record without changing
+the already reviewed commit; it is not an alternative source of release facts.
 
 Before emitting the record, `prepare` also derives the exact source/build target set from the fixed
 Implementation Review manifest. For each declared target it rejects tracked, staged, untracked, or

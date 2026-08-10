@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import json
 import pathlib
@@ -230,7 +231,7 @@ def clean_review_facts(
     expected_purpose: str,
     expected_work_id: str,
     expected_target: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, int]:
     review = inspection.get("review", {}).get("payload", {}).get("review", {}).get("value", {})
     if review.get("context") != "fresh" or review.get("purpose") != expected_purpose:
         raise AuthorizationError(f"{entry_id} is not a fresh {expected_purpose} Review")
@@ -262,7 +263,10 @@ def clean_review_facts(
         raise AuthorizationError(f"{entry_id} has no immutable target snapshot")
     if inspection.get("currentTargetSnapshot") != target_snapshot:
         raise AuthorizationError(f"{entry_id} current target snapshot differs")
-    return conclusion["id"], target_snapshot
+    review_order = inspection.get("review", {}).get("order")
+    if type(review_order) is not int:
+        raise AuthorizationError(f"{entry_id} has no canonical ledger order")
+    return conclusion["id"], target_snapshot, review_order
 
 
 def authorization_record_from_facts(
@@ -287,12 +291,16 @@ def authorization_record_from_facts(
     digest = ready.get("digest")
     if not isinstance(work_id, str) or not isinstance(design_id, str) or not isinstance(revision, int) or not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AuthorizationError("Workbench ready result lacks canonical identity")
-    design_conclusion, design_snapshot = clean_review_facts(
+    design_conclusion, design_snapshot, design_order = clean_review_facts(
         design_inspection, design_review_entry_id, "design", work_id, f"design:{design_id}"
     )
-    implementation_conclusion, implementation_snapshot = clean_review_facts(
+    implementation_conclusion, implementation_snapshot, implementation_order = clean_review_facts(
         implementation_inspection, implementation_review_entry_id, "implementation", work_id, f"work:{work_id}"
     )
+    if design_order <= implementation_order:
+        raise AuthorizationError(
+            "final Design Review must follow the ready-gated Implementation Review"
+        )
     return "\n".join([
         HEADER,
         f"work-id: {work_id}",
@@ -442,7 +450,9 @@ def self_test() -> None:
         }},
     }
 
-    def review_fixture(entry_id: str, purpose: str, target: str) -> dict[str, object]:
+    def review_fixture(
+        entry_id: str, purpose: str, target: str, order: int
+    ) -> dict[str, object]:
         manifest = []
         manifest_version = 0
         if purpose == "implementation":
@@ -462,7 +472,7 @@ def self_test() -> None:
             "workId": "work-release",
             "currentTargetSnapshot": digest,
             "targetCurrent": True,
-            "review": {"payload": {"review": {"value": {
+            "review": {"order": order, "payload": {"review": {"value": {
                 "context": "fresh",
                 "purpose": purpose,
                 "reviewerAgentRun": f"reviewer-{purpose}",
@@ -482,15 +492,22 @@ def self_test() -> None:
             }],
         }
 
-    design_review = review_fixture("review-design", "design", "design:design-release")
+    design_review = review_fixture("review-design", "design", "design:design-release", 101)
     implementation_review = review_fixture(
-        "review-implementation", "implementation", "work:work-release"
+        "review-implementation", "implementation", "work:work-release", 100
     )
     authorization_record_from_facts(
         ready, design_review, implementation_review, commit,
         "review-design", "review-implementation",
     )
-    import copy
+    inverse_order_design = copy.deepcopy(design_review)
+    inverse_order_design["review"]["order"] = 99
+    expect_rejected("Design Review preceding Implementation Review", lambda:
+        authorization_record_from_facts(
+            ready, inverse_order_design, implementation_review, commit,
+            "review-design", "review-implementation",
+        )
+    )
     invalid_ready = copy.deepcopy(ready)
     invalid_ready["ready"] = False
     expect_rejected("non-ready Work", lambda: authorization_record_from_facts(
