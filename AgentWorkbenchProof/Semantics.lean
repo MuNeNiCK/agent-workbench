@@ -1,4 +1,5 @@
 import AgentWorkbench.Decision.Completion
+import AgentWorkbench.Domain.Validation
 
 namespace AgentWorkbenchProof
 
@@ -101,6 +102,21 @@ theorem completion_ready_has_complete_current_authority
         refine ⟨projection, plan, projectionEq, planEq, ?_⟩
         simp [planEq] at ready
         grind
+
+/-- Historical completion records remain immutable, but none can remain in the current authority
+set after a later accepted implementation Finding invalidates it. -/
+theorem current_completion_authority_is_not_invalidated
+    (state : ProjectState) (work : Work) (completion : LedgerEntry)
+    (member : completion ∈ currentWorkCompletionAuthorities state work) :
+    workCompletionInvalidated state work completion = false := by
+  simp [currentWorkCompletionAuthorities] at member
+  exact member.2
+
+theorem invalidated_completion_is_not_current
+    (state : ProjectState) (work : Work) (completion : LedgerEntry)
+    (invalidated : workCompletionInvalidated state work completion = true) :
+    completion ∉ currentWorkCompletionAuthorities state work := by
+  simp [currentWorkCompletionAuthorities, invalidated]
 
 /-- A Review entry is advisory: it is never current artifact or command evidence by itself. -/
 theorem review_entry_is_not_current_evidence

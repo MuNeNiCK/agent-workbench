@@ -106,6 +106,8 @@ immutable target; the old Design Review remains readable but cannot authorize th
 closed verified Tasks, current Criteria evidence, Corrections, and accepted Findings. A clean Git
 tree, commit, review message, KPT entry, or agent statement cannot substitute for a missing gap.
 
-After completion, the immutable Work-completion record is the authority that completion occurred;
-the status field is only its lifecycle projection. The record is committed in the same SQLite
-transaction as the status change and focus removal.
+After completion, the current immutable Work-completion record is the authority that completion
+occurred; the status field is only its lifecycle projection. The record is committed in the same
+SQLite transaction as the status change and focus removal. A later accepted implementation Finding
+invalidates that authority without deleting it. Recompletion of the same recovered Work appends a
+new current authority, while all earlier completion records remain as incident history.

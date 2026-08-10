@@ -63,6 +63,29 @@ def validateDesignHistoryInvariant (state : ProjectState) : Except String Unit :
     validateDesign design
     validateDesignRelations state design
 
+def workCompletionEntries (state : ProjectState) (work : Work) : List LedgerEntry :=
+  state.ledgerEntries.filter fun entry =>
+    entry.workId == some work.id && match entry.payload with
+    | .workCompletion value => value.workId == work.id
+    | _ => false
+
+def workCompletionInvalidated
+    (state : ProjectState) (work : Work) (completion : LedgerEntry) : Bool :=
+  state.ledgerEntries.any fun dispositionEntry =>
+    dispositionEntry.order > completion.order &&
+      dispositionEntry.workId == some work.id && match dispositionEntry.payload with
+      | .reviewDisposition disposition =>
+          disposition.decision == .accepted &&
+            disposition.impact == .implementationDefect &&
+            (state.entry? disposition.findingEntryId).any fun findingEntry =>
+              findingEntry.order > completion.order && findingEntry.workId == some work.id
+      | _ => false
+
+def currentWorkCompletionAuthorities
+    (state : ProjectState) (work : Work) : List LedgerEntry :=
+  (workCompletionEntries state work).filter fun completion =>
+    !workCompletionInvalidated state work completion
+
 def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit := do
   let accepted := state.designRevisions.filter (·.status == .accepted)
   match state.acceptedDesignId with
@@ -83,29 +106,16 @@ def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit :
     ensure (!work.id.isEmpty && !work.outcome.isEmpty && !work.scope.isEmpty &&
       !work.responsibleAgentRun.isEmpty)
       s!"work {work.id} is incomplete"
-    let completions := state.ledgerEntries.filter fun entry =>
-      entry.workId == some work.id && match entry.payload with
-      | .workCompletion value => value.workId == work.id
-      | .workResume _ => false
-      | _ => false
-    let prospectivelyInvalidated := completions.length == 1 && completions.any fun completion =>
-      state.ledgerEntries.any fun dispositionEntry =>
-        dispositionEntry.order > completion.order &&
-          dispositionEntry.workId == some work.id && match dispositionEntry.payload with
-          | .reviewDisposition disposition =>
-              disposition.decision == .accepted &&
-                disposition.impact == .implementationDefect &&
-                (state.entry? disposition.findingEntryId).any fun findingEntry =>
-                  findingEntry.order > completion.order && findingEntry.workId == some work.id
-          | _ => false
+    let completions := workCompletionEntries state work
+    let currentCompletions := currentWorkCompletionAuthorities state work
     if work.status == .completed then
       let legacyUnavailable := work.designRevision.any fun designId =>
         (state.design? designId).any fun design => !design.sourceArchiveAvailable
-      ensure (completions.length == 1 || (completions.isEmpty && legacyUnavailable))
+      ensure (currentCompletions.length == 1 || (completions.isEmpty && legacyUnavailable))
         s!"completed Work {work.id} does not have exactly one completion authority"
     else
       ensure (completions.isEmpty ||
-        ((work.status == .suspended || work.status == .active) && prospectivelyInvalidated))
+        ((work.status == .suspended || work.status == .active) && currentCompletions.isEmpty))
         s!"non-completed Work {work.id} has completion authority"
 
 def validatePlanTaskInvariant (state : ProjectState) : Except String Unit := do

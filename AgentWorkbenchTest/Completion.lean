@@ -164,6 +164,14 @@ def run : IO Unit := do
 
     let completed ← fromExcept <| completeFocusedWork closed observations []
       "blake3:post-completion-input"
+    let firstCompletion ← match completed.ledgerEntries.find? fun entry => match entry.payload with
+      | .workCompletion _ => true
+      | _ => false with
+      | some value => pure value
+      | none => throw (IO.userError "completed fixture has no completion authority")
+    expectError (appendEntry completed { firstCompletion with
+      id := "forged-second-current-completion", order := nextEntryOrder completed })
+      "validation accepted two simultaneously current completion authorities"
     let postReviewed ← fromExcept <| appendEntry completed {
       id := "review-after-completion", order := nextEntryOrder completed, scope := work.scope
       workId := some work.id, designRevision := some design.id
@@ -225,6 +233,54 @@ def run : IO Unit := do
       implementationPlans := resumed.implementationPlans.map fun value =>
         if value.id == plan.id then { value with status := .superseded } else value }
     fromExcept (validateState replacementReady)
+    let recoveryStep : PlanStep := { step with
+      id := "same-work-recompletion"
+      description := "repair and verify the recovered Work completion transition"
+      acceptedFindingEntryIds := ["finding-after-completion"] }
+    let recoveryUnit : DesignSourceUnit := { planUnit with
+      id := "same-work-recompletion-unit", text := recoveryStep.description }
+    let recoveryPlan : ImplementationPlan := { plan with
+      id := "plan-same-work-recompletion", predecessorPlanId := some plan.id
+      status := .candidate, contentDigest := "blake3:same-work-recompletion"
+      sourceUnits := [recoveryUnit]
+      sourceUnitDispositions := [{ unitId := recoveryUnit.id, stepId := some recoveryStep.id }]
+      statementDispositions := [{
+        statementId := statement.id, statementText := statement.text, deltaKind := .added
+        stepIds := [recoveryStep.id] }]
+      steps := [recoveryStep] }
+    let recoveryCandidate : ProjectState := { resumed with
+      implementationPlans := resumed.implementationPlans ++ [recoveryPlan] }
+    fromExcept (validateState recoveryCandidate)
+    let materialized ← fromExcept <| materializePlan recoveryCandidate recoveryPlan.id observations []
+    let recoveryTaskId := s!"task-{recoveryPlan.id}-{recoveryStep.id}"
+    IO.FS.writeFile (root / "artifact.txt") "recovered completion output"
+    let observed ← observeArtifact root materialized {
+      entryId := "evidence-same-work-recompletion", taskEntryId := recoveryTaskId
+      criterionId := criterion.id, operation := "inspect recovered completion output"
+      result := "the recovered output satisfies the Criterion", successful := true }
+    let recoverySnapshot ← match observed.entry? "evidence-same-work-recompletion" with
+      | some { payload := .artifactObservation value, .. } => pure value.snapshot
+      | _ => throw (IO.userError "same-Work recovery evidence was not recorded")
+    let recoveryClosed ← fromExcept <| closeTask observed
+      [{ target := criterion.target, snapshot := recoverySnapshot }]
+      { entryId := "task-same-work-recompletion-closed", taskEntryId := recoveryTaskId }
+    let recoveryReviewed ← resumeReview root recoveryClosed {
+      entryId := "review-same-work-recompletion-resume"
+      continuesEntryId := "review-after-completion" }
+    let recoveryVerified ← fromExcept <| recordVerification recoveryReviewed {
+      entryId := "verification-same-work-recompletion"
+      findingEntryId := "finding-after-completion"
+      reviewEntryId := "review-same-work-recompletion-resume"
+      evidenceEntryId := "evidence-same-work-recompletion" }
+    let recompleted ← fromExcept <| completeFocusedWork recoveryVerified
+      [{ target := criterion.target, snapshot := recoverySnapshot }] []
+      "blake3:same-work-recompletion-input"
+    fromExcept (validateState recompleted)
+    expect ((recompleted.work? work.id).any (·.status == .completed) &&
+      (recompleted.ledgerEntries.filter fun entry => match entry.payload with
+        | .workCompletion value => value.workId == work.id
+        | _ => false).length == 2)
+      "same-Work recompletion did not retain history and establish the new completion authority"
 
   let claim : LeanClaim := {
     id := "claim-completion-gap"

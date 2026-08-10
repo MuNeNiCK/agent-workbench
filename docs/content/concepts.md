@@ -40,9 +40,12 @@ each affected output. The contract names a concrete `command` or `artifact` chec
 to that exact Task, kind, and target. This avoids inventing a Design criterion while still making an
 unverified implementation Task impossible to close.
 
-Successful completion creates one immutable Work-completion record in the authoritative ledger. It
-binds the Work, adopted Design, current Plan, responsible run, prior state revision, and canonical
-completion-input digest. Work status alone is not completion authority.
+Each successful completion creates one immutable Work-completion record in the authoritative
+ledger. It binds the Work, adopted Design, current Plan, responsible run, prior state revision, and
+canonical completion-input digest. If a later accepted implementation Finding invalidates that
+completion, the historical record remains and same-Work recovery may create a new record; exactly
+one non-invalidated record is the current completion authority. Work status alone is not completion
+authority.
 
 ## Acceptance criterion and evidence
 
