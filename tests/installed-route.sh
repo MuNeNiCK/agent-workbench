@@ -493,6 +493,16 @@ value={
   "assumptions":[],
   "removedStatements":[],
   "acceptanceCriteria":[],
+  "assuranceContracts":[{
+    "statementId":"statement-route",
+    "trustedBoundaryAssumptionIds":[],
+    "witnesses":[{
+      "id":"claim-route",
+      "independenceClass":"installed-route-pinned-kernel",
+      "producerBoundary":"claim:claim-route:pinned-kernel:leanprover/lean4:v4.32.2"
+    }],
+    "counterexamples":[]
+  }],
   "leanClaims":[{
     "id":"claim-route",
     "elaboratedPropositionDigest":"",
