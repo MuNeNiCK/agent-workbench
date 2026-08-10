@@ -1,5 +1,6 @@
 import AgentWorkbenchTest.Fixture
 import AgentWorkbenchTest.RouteReceipt
+import AgentWorkbenchTest.Assurance
 import AgentWorkbench.Cli.Describe
 
 namespace AgentWorkbenchTest.Operation
@@ -7,6 +8,8 @@ namespace AgentWorkbenchTest.Operation
 open AgentWorkbench AgentWorkbenchTest
 
 open RouteReceipt
+
+def runAssurance : IO Unit := Assurance.run
 
 /-- The expected owning suite is exhaustive over the independent public Operation universe.
 Queries have no mutation receipt. Adding a mutation operation creates a new explicit case here. -/
@@ -59,7 +62,7 @@ def run : IO Unit := do
       declaredSources := [{ path := "Applicability.lean", expectedDigest := some "blake3:source" }]
       check := { executable := "lake", arguments := #["build"] }
       toolchain := ProofToolchain.identifier } }
-  let claimDesign : DesignRevision := { design with
+  let claimDesign : DesignRevision := withCurrentAssurance { design with
     leanClaims := [claim]
     statementCoverage := [{
       statementId := statement.id, sourceUnitIds := [sourceUnit.id]
@@ -73,7 +76,9 @@ def run : IO Unit := do
     assumptionDependencies := [], inputDigest := "blake3:old-input"
     sourceDigests := [{ path := "Applicability.lean", digest := "blake3:source" }]
     toolchain := ProofToolchain.identifier, exitCode := 0
-    outputDigest := "blake3:output", kernelAccepted := true }
+    outputDigest := "blake3:output", kernelAccepted := true
+    assuranceBinding := some <| claimDesign.assuranceBindingForClaim
+      work.responsibleAgentRun claim.id }
   let receiptEntry : LedgerEntry := {
     id := "receipt-applicability", order := 2, scope := work.scope
     workId := some work.id, designRevision := some claimDesign.id
@@ -82,6 +87,10 @@ def run : IO Unit := do
   let staleState : ProjectState := { baseState with
     designRevisions := [claimDesign], implementationPlans := [candidate]
     ledgerEntries := [receiptEntry] }
+  let unboundReceiptEntry : LedgerEntry := { receiptEntry with
+    payload := .leanProofReceipt { receipt with assuranceBinding := none } }
+  expectError (validateState { staleState with ledgerEntries := [unboundReceiptEntry] })
+    "schema-one Lean receipt without an Assurance binding remained valid in the ledger"
   let currentDigest : CurrentClaimDigest := {
     claimId := claim.id, claimInput := claim.input
     elaboratedPropositionDigest := claim.elaboratedPropositionDigest
@@ -113,5 +122,6 @@ def run : IO Unit := do
   expect (contracts.length == names.length && names.all contracts.contains &&
     contracts.all names.contains)
     "public operation inventory and native contracts do not cover the same closed route"
+  runAssurance
 
 end AgentWorkbenchTest.Operation

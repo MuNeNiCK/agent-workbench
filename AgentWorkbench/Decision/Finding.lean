@@ -88,10 +88,82 @@ def implementationComponentTargets (state : ProjectState) (componentId : String)
     | _ => [componentId]
   | none => [componentId]
 
+def implementationComponentCriterionIds
+    (state : ProjectState) (componentId : String) : List String :=
+  match state.entry? componentId with
+  | some entry => match entry.payload with
+    | .commandExecution value => value.criterionId.toList
+    | .artifactObservation value => value.criterionId.toList
+    | .commandProfile value => value.criterionIds.getD []
+    | .task value => value.verificationCriterionIds
+    | _ => []
+  | none => []
+
 def implementationComponentTargetCovers
     (state : ProjectState) (evidenceTarget componentId : String) : Bool :=
   (implementationComponentTargets state componentId).any fun componentTarget =>
     implementationTargetCovers evidenceTarget componentTarget
+
+def findingAssuranceContractIds
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : List String :=
+  match findingEntry.designRevision.bind state.design? with
+  | none => []
+  | some design =>
+      let contracts := design.effectiveAssuranceContracts
+      match finding.subject.kind with
+      | .statement => contracts.filterMap fun contract =>
+          if contract.statementId == finding.subject.id then some contract.statementId else none
+      | .criterion => contracts.filterMap fun contract =>
+          if contract.criterionIds.contains finding.subject.id then some contract.statementId else none
+      | .assumption => contracts.filterMap fun contract =>
+          if contract.assumptionIds.contains finding.subject.id then some contract.statementId else none
+      | .implementationComponent =>
+          let criterionIds := implementationComponentCriterionIds state finding.subject.id
+          let targets := implementationComponentTargets state finding.subject.id
+          contracts.filterMap fun contract =>
+            if (!criterionIds.isEmpty && contract.criterionIds.any criterionIds.contains) ||
+                (criterionIds.isEmpty && contract.criterionIds.any (fun criterionId =>
+                  (design.criterion? criterionId).any fun criterion =>
+                    targets.any fun target => implementationTargetCovers criterion.target target))
+            then some contract.statementId else none
+
+def findingAssuranceContractId?
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : Option String :=
+  match findingAssuranceContractIds state findingEntry finding with
+  | [contractId] => some contractId
+  | _ => none
+
+private def remediationShapeEqual
+    (left right : AssuranceContract) : Bool :=
+  left.statementId == right.statementId && left.statementText == right.statementText &&
+    left.assumptionIds == right.assumptionIds &&
+    left.trustedBoundaryAssumptionIds == right.trustedBoundaryAssumptionIds &&
+    left.sourceUnitIds == right.sourceUnitIds && left.claimIds == right.claimIds &&
+    left.criterionIds == right.criterionIds &&
+    left.implementationRequired == right.implementationRequired &&
+    left.witnesses == right.witnesses && left.counterexamples == right.counterexamples
+
+/-- A source-history-only successor may carry an accepted implementation defect when the exact
+Contract judgment covering the immutable Finding is unchanged.  Design identity and epoch are
+intentionally excluded; every authority-bearing Contract relation must remain equal. -/
+def findingCoveredByAssuranceInDesign
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
+    (currentDesign : DesignRevision) : Bool :=
+  match findingEntry.designRevision.bind state.design?,
+      findingAssuranceContractId? state findingEntry finding with
+  | some findingDesign, some contractId =>
+      (findingDesign.effectiveAssuranceContracts.find? (·.statementId == contractId)).bind
+        (fun original => currentDesign.effectiveAssuranceContracts.find?
+          (·.statementId == contractId) |>.map fun current =>
+            remediationShapeEqual original current) |>.getD false
+  | _, _ => false
+
+/-- An implementation defect is already covered only when its immutable Review subject derives one
+exact current Contract.  Zero matches are outside the Design; multiple matches are ambiguous and
+cannot be promoted to Plan authority as if one existing Contract had covered the failure. -/
+def findingCoveredByAssurance
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : Bool :=
+  (findingAssuranceContractId? state findingEntry finding).isSome
 
 private def findingTargetMatches
     (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)

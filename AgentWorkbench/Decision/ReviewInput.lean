@@ -76,7 +76,8 @@ def acceptedImplementationFindingIdsIn
     | .finding _ =>
         if (findingDispositionIn? entries entry.id workId).any fun dispositionEntry =>
           match dispositionEntry.payload with
-          | .reviewDisposition value => value.decision == .accepted
+          | .reviewDisposition value => value.decision == .accepted &&
+              value.impact == .implementationDefect
           | _ => false
         then some entry.id else none
     | _ => none

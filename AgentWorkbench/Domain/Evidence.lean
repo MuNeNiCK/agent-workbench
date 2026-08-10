@@ -46,6 +46,7 @@ structure CommandExecutionRecord where
   stderrDigest : String
   successful : Bool
   producerAgentRun : String
+  assuranceBinding : Option AssuranceEvidenceBinding := none
   deriving Repr, DecidableEq
 
 instance : Lean.ToJson CommandExecutionRecord where
@@ -65,7 +66,9 @@ instance : Lean.ToJson CommandExecutionRecord where
      ("stdoutDigest", Lean.toJson value.stdoutDigest),
      ("stderrDigest", Lean.toJson value.stderrDigest),
      ("successful", Lean.toJson value.successful),
-     ("producerAgentRun", Lean.toJson value.producerAgentRun)]
+     ("producerAgentRun", Lean.toJson value.producerAgentRun)] ++
+    (value.assuranceBinding.toList.map fun binding =>
+      ("assuranceBinding", Lean.toJson binding))
 
 private structure PersistedCommandExecutionRecord where
   profileEntryId : String
@@ -83,6 +86,7 @@ private structure PersistedCommandExecutionRecord where
   stderrDigest : String
   successful : Bool
   producerAgentRun : String
+  assuranceBinding : Option AssuranceEvidenceBinding := none
   deriving Lean.FromJson
 
 private structure LegacyCommandExecutionRecord where
@@ -118,7 +122,8 @@ instance : Lean.FromJson CommandExecutionRecord where
         target := value.target, snapshot := value.snapshot
         command := value.command, exitCode := value.exitCode
         stdoutDigest := value.stdoutDigest, stderrDigest := value.stderrDigest
-        successful := value.successful, producerAgentRun := value.producerAgentRun }
+        successful := value.successful, producerAgentRun := value.producerAgentRun
+        assuranceBinding := value.assuranceBinding }
     | .error currentError =>
         match (Lean.fromJson? json : Except String LegacyCommandExecutionRecord) with
         | .ok value =>
@@ -149,6 +154,7 @@ structure ArtifactObservationRecord where
   result : String
   successful : Bool
   producerAgentRun : String
+  assuranceBinding : Option AssuranceEvidenceBinding := none
   deriving Repr, DecidableEq, Lean.FromJson
 
 instance : Lean.ToJson ArtifactObservationRecord where
@@ -163,7 +169,9 @@ instance : Lean.ToJson ArtifactObservationRecord where
      ("operation", Lean.toJson value.operation),
      ("result", Lean.toJson value.result),
      ("successful", Lean.toJson value.successful),
-     ("producerAgentRun", Lean.toJson value.producerAgentRun)]
+     ("producerAgentRun", Lean.toJson value.producerAgentRun)] ++
+    (value.assuranceBinding.toList.map fun binding =>
+      ("assuranceBinding", Lean.toJson binding))
 
 structure ProofSourceDigest where
   path : String
@@ -182,7 +190,24 @@ structure LeanProofReceiptRecord where
   exitCode : Nat
   outputDigest : String
   kernelAccepted : Bool
-  deriving Repr, DecidableEq, Lean.ToJson
+  assuranceBinding : Option AssuranceEvidenceBinding := none
+  deriving Repr, DecidableEq
+
+instance : Lean.ToJson LeanProofReceiptRecord where
+  toJson value := Lean.Json.mkObj <|
+    [("claimId", Lean.toJson value.claimId),
+     ("claimInput", Lean.toJson value.claimInput),
+     ("elaboratedPropositionDigest", Lean.toJson value.elaboratedPropositionDigest),
+     ("propositionDependencies", Lean.toJson value.propositionDependencies),
+     ("assumptionDependencies", Lean.toJson value.assumptionDependencies),
+     ("inputDigest", Lean.toJson value.inputDigest),
+     ("sourceDigests", Lean.toJson value.sourceDigests),
+     ("toolchain", Lean.toJson value.toolchain),
+     ("exitCode", Lean.toJson value.exitCode),
+     ("outputDigest", Lean.toJson value.outputDigest),
+     ("kernelAccepted", Lean.toJson value.kernelAccepted)] ++
+    (value.assuranceBinding.toList.map fun binding =>
+      ("assuranceBinding", Lean.toJson binding))
 
 private structure PersistedLeanProofReceiptRecord where
   claimId : String
@@ -196,6 +221,7 @@ private structure PersistedLeanProofReceiptRecord where
   exitCode : Nat
   outputDigest : String
   kernelAccepted : Bool
+  assuranceBinding : Option AssuranceEvidenceBinding := none
   deriving Lean.FromJson
 
 private structure LegacyLeanProofReceiptRecord where
@@ -218,7 +244,8 @@ instance : Lean.FromJson LeanProofReceiptRecord where
         propositionDependencies := value.propositionDependencies
         assumptionDependencies := value.assumptionDependencies, inputDigest := value.inputDigest
         sourceDigests := value.sourceDigests, toolchain := value.toolchain, exitCode := value.exitCode
-        outputDigest := value.outputDigest, kernelAccepted := value.kernelAccepted }
+        outputDigest := value.outputDigest, kernelAccepted := value.kernelAccepted
+        assuranceBinding := value.assuranceBinding }
     | .error currentError =>
         match (Lean.fromJson? json : Except String LegacyLeanProofReceiptRecord) with
         | .ok value => pure {

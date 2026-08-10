@@ -8,7 +8,7 @@ not require a global Workbench CLI, Elan, Lean, Docker, or QEMU.
 From the repository root:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.9 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.10 \
   --agent codex --scope project
 ```
 

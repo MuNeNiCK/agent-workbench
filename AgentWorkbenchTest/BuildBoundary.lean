@@ -128,6 +128,17 @@ private def verifyReleaseAuthorizationBoundary : IO Unit := do
   unless result.exitCode == 0 do
     throw (IO.userError s!"release authorization fixture matrix failed: {result.stdout}{result.stderr}")
 
+private def verifyOrdinaryCiEvidenceBoundary : IO Unit := do
+  for path in [".github/workflows/ci.yml", ".github/workflows/docs.yml"] do
+    let workflow ← readRequired path
+    for forbidden in ["tested-commit", "Attest tested commit", "RUNNER_TEMP/tested-commit.txt"] do
+      expect (!containsText workflow forbidden)
+        s!"ordinary CI contains Workbench-only evidence transport {forbidden}: {path}"
+  let release ← readRequired ".github/workflows/release.yml"
+  expect (containsText release "actions/upload-artifact" &&
+    containsText release "agent-workbench-${{ matrix.target }}")
+    "release artifact publication was removed with ordinary Workbench evidence transport"
+
 private def generatedLeanObject? (path : String) : Option String := do
   let [_, packageInput] := normalized path |>.splitOn "/.lake/packages/" | none
   let [package, object] := packageInput.splitOn "/.lake/build/ir/" | none
@@ -247,6 +258,7 @@ def run : IO Unit := do
   verifyExecutableRoots
   verifyDeclarationCapabilityGraph
   verifyReleaseAuthorizationBoundary
+  verifyOrdinaryCiEvidenceBoundary
   verifyProductLinkResponse
   verifyQueryStoreCapability
 

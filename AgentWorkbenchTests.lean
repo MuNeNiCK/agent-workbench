@@ -20,7 +20,21 @@ private def runSuite : IO Unit := do
   AgentWorkbenchTest.Operation.verifyPositiveRouteReceipts
   AgentWorkbenchTest.BinaryProtocol.run
   AgentWorkbenchTest.DesignClaim.run
+  AgentWorkbenchTest.Assurance.run
   IO.println "agent-workbench-tests: pass"
+
+private def runNamedSuite : String → IO Unit
+  | "lifecycle" => AgentWorkbenchTest.Lifecycle.run
+  | "completion" => AgentWorkbenchTest.Completion.run
+  | "plan" => AgentWorkbenchTest.Plan.run
+  | "review" => AgentWorkbenchTest.Review.run
+  | "operation" => AgentWorkbenchTest.Operation.run
+  | "atomicity" => AgentWorkbenchTest.Atomicity.run
+  | "migration" => AgentWorkbenchTest.Migration.run
+  | "design-archive" => AgentWorkbenchTest.DesignArchive.run
+  | "public-route" => AgentWorkbenchTest.PublicRoute.run
+  | "assurance" => AgentWorkbenchTest.Assurance.run
+  | name => throw (IO.userError s!"unknown test suite: {name}")
 
 def main (arguments : List String) : IO Unit := do
   match arguments with
@@ -29,5 +43,6 @@ def main (arguments : List String) : IO Unit := do
   | ["write-artifact-fail", path, content] =>
       IO.FS.writeFile path content
       throw (IO.userError "intentional command failure")
+  | ["suite", name] => runNamedSuite name
   | [] => runSuite
   | _ => throw (IO.userError "unknown test-helper arguments")

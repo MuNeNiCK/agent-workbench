@@ -35,13 +35,14 @@ def payloadFieldCoverage : EntryPayload → List String
   | .commandProfile (.mk _ _ _ _ _ _ _ _) =>
       ["purpose", "taskEntryId", "inputTargets", "outputScope", "criterionIds",
        "taskVerificationIds", "target", "command"]
-  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
+  | .commandExecution (.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) =>
       ["profileEntryId", "taskEntryId", "outputScope", "criterionId", "taskVerificationId",
        "inputSnapshots", "environmentSnapshots", "target", "snapshot",
-       "command", "exitCode", "stdoutDigest", "stderrDigest", "successful", "producerAgentRun"]
-  | .artifactObservation (.mk _ _ _ _ _ _ _ _ _ _) =>
+       "command", "exitCode", "stdoutDigest", "stderrDigest", "successful", "producerAgentRun",
+       "assuranceBinding"]
+  | .artifactObservation (.mk _ _ _ _ _ _ _ _ _ _ _) =>
       ["taskEntryId", "outputScope", "criterionId", "taskVerificationId", "target", "snapshot",
-       "operation", "result", "successful", "producerAgentRun"]
+       "operation", "result", "successful", "producerAgentRun", "assuranceBinding"]
   | .review (.mk _ _ _ _ _ _ _ _ _ _ _) =>
       ["reviewId", "purpose", "context", "continuesEntryId", "targetSourceId", "target",
        "targetSnapshot", "targetManifestVersion", "targetManifest", "producerAgentRuns",
@@ -49,8 +50,8 @@ def payloadFieldCoverage : EntryPayload → List String
   | .finding (.mk _ _ _ _ _ _ _) =>
       ["reviewId", "subject", "targetSourceId", "target", "targetSnapshot", "producerAgentRuns",
        "summary"]
-  | .reviewDisposition (.mk _ _ _ _) =>
-      ["findingEntryId", "decision", "reason", "decidedByRun"]
+  | .reviewDisposition (.mk _ _ _ _ _ _) =>
+      ["findingEntryId", "decision", "impact", "impactSchemaVersion", "reason", "decidedByRun"]
   | .reviewVerification (.mk _ _ _ _ _ _ _ _) =>
       ["reviewId", "findingEntryId", "reviewEntryId", "evidenceEntryId", "target", "snapshot",
        "verifiedByRun", "resolved"]
@@ -62,10 +63,10 @@ def payloadFieldCoverage : EntryPayload → List String
       ["content", "resolvedByEntryId", "resolutionReason", "incorporatedIn"]
   | .kpt (.mk _ _ _ _ _) =>
       ["keep", "problem", "tryNext", "appliesKptEntryId", "appliedByEntryId"]
-  | .leanProofReceipt (.mk _ _ _ _ _ _ _ _ _ _ _) =>
+  | .leanProofReceipt (.mk _ _ _ _ _ _ _ _ _ _ _ _) =>
       ["claimId", "claimInput", "elaboratedPropositionDigest", "propositionDependencies",
        "assumptionDependencies", "inputDigest", "sourceDigests", "toolchain", "exitCode",
-       "outputDigest", "kernelAccepted"]
+       "outputDigest", "kernelAccepted", "assuranceBinding"]
 
 /-- Every mutation effect is assigned to the product invariant families it may change. -/
 def mutationInvariantCoverage : Mutation → List InvariantFamily
@@ -81,8 +82,9 @@ def mutationInvariantCoverage : Mutation → List InvariantFamily
   | .profileDefine _ | .profileReplace _ | .commandRun _ | .artifactObserve _ | .proofRun _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _
   | .correctionIncorporate _ | .kptRecord _ | .kptApply _ | .reviewStart _
-  | .reviewResume _ | .reviewHandoff _ | .reviewFinding _ | .reviewDisposition _
+  | .reviewResume _ | .reviewHandoff _ | .reviewFinding _
   | .reviewConclude _ | .reviewVerify _ => [.ledgerAuthority]
+  | .reviewDisposition _ => [.workLifecycle, .ledgerAuthority]
 
 theorem every_mutation_has_invariant_coverage (mutation : Mutation) :
     (mutationInvariantCoverage mutation).isEmpty = false := by

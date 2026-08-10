@@ -17,3 +17,4 @@ import AgentWorkbenchTest.BuildBoundary
 import AgentWorkbenchTest.Migration
 import AgentWorkbenchTest.BinaryProtocol
 import AgentWorkbenchTest.DesignClaim
+import AgentWorkbenchTest.Assurance

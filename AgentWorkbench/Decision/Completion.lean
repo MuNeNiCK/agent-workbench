@@ -37,6 +37,26 @@ def completionInput
 def currentSnapshot? (observations : List TargetObservation) (target : String) : Option String :=
   uniqueBy? observations (·.target) target |>.map (·.snapshot)
 
+def commandEvidenceMatchesCurrentProfile
+    (projection : CurrentProjection) (evidence : CommandExecutionRecord) : Bool :=
+  projection.entries.any fun candidate =>
+    candidate.id == evidence.profileEntryId &&
+    match candidate.payload with
+    | .commandProfile profile =>
+        profile.command.executable == evidence.command.executable &&
+        profile.command.arguments == evidence.command.arguments &&
+        profile.command.environment == evidence.command.environment &&
+        profile.taskEntryId == evidence.taskEntryId &&
+        profile.outputScope == evidence.outputScope &&
+        profile.target == evidence.target &&
+        evidence.inputSnapshots.any (fun snapshots =>
+          snapshots.map (·.target) == profile.inputTargets.getD []) &&
+        evidence.environmentSnapshots.any (fun snapshots =>
+          snapshots.map (·.target) == profile.command.environment.toList.map ("env:" ++ ·)) &&
+        evidence.criterionId.all (profile.criterionIds.getD []).contains &&
+        evidence.taskVerificationId.all (profile.taskVerificationIds.getD []).contains
+    | _ => false
+
 def evidenceEntryCurrent
     (projection : CurrentProjection) (observations : List TargetObservation)
     (entry : LedgerEntry) : Bool :=
@@ -45,19 +65,27 @@ def evidenceEntryCurrent
   match entry.payload with
   | .artifactObservation evidence =>
       evidence.successful &&
+      (match evidence.criterionId with
+        | some id => projection.design.assuranceBindingCurrentForCriterion
+            evidence.producerAgentRun id evidence.assuranceBinding
+        | none => projection.design.assuranceBindingCurrentForTask
+            evidence.producerAgentRun evidence.assuranceBinding) &&
       currentSnapshot? observations evidence.target == some evidence.snapshot
   | .commandExecution evidence =>
       match evidence.target, evidence.snapshot with
       | some target, some snapshot =>
           evidence.successful &&
+          (match evidence.criterionId with
+            | some id => projection.design.assuranceBindingCurrentForCriterion
+                evidence.producerAgentRun id evidence.assuranceBinding
+            | none => projection.design.assuranceBindingCurrentForTask
+                evidence.producerAgentRun evidence.assuranceBinding) &&
           currentSnapshot? observations target == some snapshot &&
           evidence.environmentSnapshots.any (fun environment => environment.all fun input =>
             currentSnapshot? observations input.target == some input.snapshot) &&
           evidence.inputSnapshots.any (fun inputs => inputs.all fun input =>
             currentSnapshot? observations input.target == some input.snapshot) &&
-          projection.entries.any (fun candidate =>
-            candidate.id == evidence.profileEntryId &&
-            match candidate.payload with | .commandProfile _ => true | _ => false)
+          commandEvidenceMatchesCurrentProfile projection evidence
       | _, _ => false
   | _ => false
 
@@ -190,13 +218,17 @@ def criterionEvidenceRecorded
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
         evidence.criterionId == some criterion.id && evidence.target == criterion.target &&
-        evidence.successful && evidenceBoundToCurrentTaskCriterion projection entry criterion
+        evidence.successful && projection.design.assuranceBindingCurrentForCriterion
+          evidence.producerAgentRun criterion.id evidence.assuranceBinding &&
+        evidenceBoundToCurrentTaskCriterion projection entry criterion
     | .commandExecution evidence =>
         criterion.evidenceKind == "command" &&
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
         evidence.criterionId == some criterion.id && evidence.target == some criterion.target &&
-        evidence.successful && evidenceBoundToCurrentTaskCriterion projection entry criterion
+        evidence.successful && projection.design.assuranceBindingCurrentForCriterion
+          evidence.producerAgentRun criterion.id evidence.assuranceBinding &&
+        evidenceBoundToCurrentTaskCriterion projection entry criterion
     | _ => false)
 
 def claimReceiptRecorded (projection : CurrentProjection) (claim : LeanClaim) : Bool :=
@@ -205,7 +237,9 @@ def claimReceiptRecorded (projection : CurrentProjection) (claim : LeanClaim) : 
     | .leanProofReceipt receipt =>
         entry.workId == some projection.work.id &&
         entry.designRevision == some projection.design.id &&
-        receipt.claimId == claim.id && receipt.kernelAccepted
+        receipt.claimId == claim.id && receipt.kernelAccepted &&
+        projection.design.assuranceBindingCurrentForClaim
+          projection.work.responsibleAgentRun claim.id receipt.assuranceBinding
     | _ => false)
 
 def criterionHasEvidence
@@ -239,8 +273,44 @@ def claimHasReceipt
       | .leanProofReceipt receipt =>
           entry.workId == some projection.work.id &&
           entry.designRevision == some projection.design.id &&
-          canReuseReceipt claim current receipt
+          canReuseReceipt claim current receipt &&
+          projection.design.assuranceBindingCurrentForClaim
+            projection.work.responsibleAgentRun claim.id receipt.assuranceBinding
       | _ => false)
+
+def designClaimHasReceipt
+    (state : ProjectState) (design : DesignRevision) (digests : List CurrentClaimDigest)
+    (claim : LeanClaim) : Bool :=
+  match uniqueBy? digests (·.claimId) claim.id with
+  | none => false
+  | some current => state.ledgerEntries.any fun entry =>
+      entry.designRevision == some design.id && match entry.payload with
+      | .leanProofReceipt receipt =>
+          let producer := receipt.assuranceBinding.map (·.producerAgentRun) |>.getD ""
+          canReuseReceipt claim current receipt &&
+            design.assuranceBindingCurrentForClaim producer claim.id receipt.assuranceBinding
+      | _ => false
+
+def acceptedAssuranceOmissionForDesign
+    (state : ProjectState) (designId : String) : Bool :=
+  state.ledgerEntries.any fun findingEntry =>
+    findingEntry.designRevision == some designId && match findingEntry.payload with
+    | .finding _ => findingEntry.workId.any fun workId =>
+        (state.findingDisposition? findingEntry.id workId).any fun dispositionEntry =>
+          match dispositionEntry.payload with
+          | .reviewDisposition disposition =>
+              disposition.decision == .accepted && disposition.impact == .assuranceOmission
+          | _ => false
+    | _ => false
+
+def designAssuranceStructurallyCurrent
+    (state : ProjectState) (design : DesignRevision) : Bool :=
+  design.assuranceClosed && !acceptedAssuranceOmissionForDesign state design.id
+
+def designAssuranceCurrent
+    (state : ProjectState) (design : DesignRevision) (digests : List CurrentClaimDigest) : Bool :=
+  designAssuranceStructurallyCurrent state design &&
+    design.leanClaims.all (designClaimHasReceipt state design digests)
 
 theorem criterionHasEvidence_implies_recorded
     (projection : CurrentProjection) (observations : List TargetObservation)
@@ -317,6 +387,7 @@ def completionReady
   | none => false
   | some projection =>
       projection.design.sourceArchiveAvailable &&
+      designAssuranceStructurallyCurrent state projection.design &&
       (state.currentPlanFor? projection.work.id).isSome &&
       requiredTasksClosed projection observations &&
       projection.design.acceptanceCriteria.all

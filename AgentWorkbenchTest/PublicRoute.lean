@@ -136,7 +136,9 @@ private def exerciseInitAndProofRoute : IO Unit :=
         acceptanceCriteria := { noSelectionReason := some "the route has no external criterion" }
         implementationRequired := false
         noImplementationReason := some "the public proof route verifies the Claim itself" }]
-      acceptanceCriteria := [], leanClaims := [routeClaim] } : DesignProposalRequest)
+      acceptanceCriteria := [], leanClaims := [routeClaim]
+      assuranceContracts := some [fixtureAssuranceInput statement [routeClaim] [] false] }
+      : DesignProposalRequest)
     let candidate : DesignRevision ← decodeOutput proposed
     let _ ← invokeJson root ["design", "accept"]
       ({ id := candidate.id } : AgentWorkbench.Cli.IdInput)
@@ -156,6 +158,12 @@ private def exerciseTaskLocalContractRoute : IO Unit :=
     let contractStatement : Statement := {
       id := "statement-contract-route"
       text := "the implementation provides the local behavior" }
+    let artifactTarget := "file:contract-artifact.txt"
+    let commandTarget := "file:contract-command.txt"
+    let contractCriterion : AcceptanceCriterion := {
+      id := "criterion-contract-route", statementId := some contractStatement.id
+      statement := "the implementation artifact provides the local behavior"
+      target := artifactTarget, evidenceKind := "artifact" }
     let designTarget := "file:.agent-workbench/design/product/design.md"
     let designUnits := (← DesignSource.captureAll root [designTarget]).flatMap (·.units)
     let _ ← invokeJson root ["work", "start"] ({
@@ -170,19 +178,19 @@ private def exerciseTaskLocalContractRoute : IO Unit :=
       statementCoverage := [{
         statementId := contractStatement.id, sourceUnitIds := designUnits.map (·.id)
         leanClaims := { noSelectionReason := some "no Design-time logical Claim is selected" }
-        acceptanceCriteria := {
-          noSelectionReason := some "verification is local to the implementation Task" }
+        acceptanceCriteria := { selectedIds := [contractCriterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [] } : DesignProposalRequest)
+      acceptanceCriteria := [contractCriterion]
+      assuranceContracts := some [fixtureAssuranceInput contractStatement [] [contractCriterion]] }
+      : DesignProposalRequest)
     let contractDesign : DesignRevision ← decodeOutput proposed
     let _ ← invokeJson root ["design", "accept"]
       ({ id := contractDesign.id } : AgentWorkbench.Cli.IdInput)
 
-    let artifactTarget := "file:contract-artifact.txt"
-    let commandTarget := "file:contract-command.txt"
     let contractStep : PlanStep := {
       id := "contract-step", description := "implement and verify the local behavior"
       outputScopes := [artifactTarget, commandTarget]
+      verificationCriterionIds := [contractCriterion.id]
       taskVerificationContracts := [
         { id := "contract-artifact", kind := .artifact, target := artifactTarget },
         { id := "contract-command", kind := .command, target := commandTarget }] }
@@ -222,6 +230,11 @@ private def exerciseTaskLocalContractRoute : IO Unit :=
       taskVerificationId := some "contract-artifact"
       operation := "inspect Task-local artifact", result := "artifact exists"
       successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "artifact-contract-criterion", taskEntryId := taskId
+      criterionId := contractCriterion.id
+      operation := "check the predeclared Design Criterion", result := "artifact exists"
+      successful := true } : ArtifactObserveRequest)
     let _ ← invokeJson root ["task", "close"] ({
       entryId := "task-contract-closed", taskEntryId := taskId } : TaskCloseRequest)
     let ready ← invokeOk root ["ready"]
@@ -254,6 +267,11 @@ private def exerciseTaskLocalContractRoute : IO Unit :=
       entryId := "artifact-contract-route-reopened", taskEntryId := reopenedTask.id
       taskVerificationId := some "contract-artifact"
       operation := "reinspect Task-local artifact", result := "artifact exists"
+      successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "artifact-contract-criterion-reopened", taskEntryId := reopenedTask.id
+      criterionId := contractCriterion.id
+      operation := "recheck the predeclared Design Criterion", result := "artifact exists"
       successful := true } : ArtifactObserveRequest)
     let _ ← invokeJson root ["task", "close"] ({
       entryId := "task-contract-reclosed", taskEntryId := reopenedTask.id } : TaskCloseRequest)
@@ -320,7 +338,9 @@ def run : IO Unit := do
         leanClaims := { noSelectionReason := some "the route has no Design-time logical Claim" }
         acceptanceCriteria := { selectedIds := [criterion.id, commandCriterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [criterion, commandCriterion] } : DesignProposalRequest)
+      acceptanceCriteria := [criterion, commandCriterion]
+      assuranceContracts := some [fixtureAssuranceInput statement [] [criterion, commandCriterion]] }
+      : DesignProposalRequest)
     let candidate : DesignRevision ← decodeOutput designResult
     let candidateId := candidate.id
     let _ ← invokeJson root ["design", "accept"]

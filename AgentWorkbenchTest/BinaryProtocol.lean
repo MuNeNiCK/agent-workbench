@@ -83,7 +83,8 @@ private def nestedDesignInput : DesignProposalRequest :=
     removedStatements := [{
       statementId := "removed-statement", statementText := "old requirement"
       implementationRequired := false, noImplementationReason := some "superseded" }]
-    acceptanceCriteria := [criterion], leanClaims := [claim] }
+    acceptanceCriteria := [criterion], leanClaims := [claim]
+    assuranceContracts := some [fixtureAssuranceInput statement [claim] [criterion]] }
 
 private def nestedPlanInput : PlanProposalRequest := {
   predecessorPlanId := some "plan-1", producerAgentRun := "agent-run-1"
@@ -113,6 +114,11 @@ private def designArrayCases : List NestedArrayCase := [
   { path := ["removedStatements"], renderedPath := "removedStatements[0]" },
   { path := ["acceptanceCriteria"], renderedPath := "acceptanceCriteria[0]" },
   { path := ["leanClaims"], renderedPath := "leanClaims[0]" },
+  { path := ["assuranceContracts"], renderedPath := "assuranceContracts[0]" },
+  { path := ["assuranceContracts", "witnesses"],
+    renderedPath := "assuranceContracts[0].witnesses[0]" },
+  { path := ["assuranceContracts", "counterexamples"],
+    renderedPath := "assuranceContracts[0].counterexamples[0]" },
   { path := ["leanClaims", "input", "declaredSources"],
     renderedPath := "leanClaims[0].input.declaredSources[0]" }
 ]

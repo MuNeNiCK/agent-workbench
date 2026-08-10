@@ -6,8 +6,9 @@ for every change unless the accepted design selects it.
 
 ## The two review purposes
 
-- **Design Review** examines an immutable DesignRevision before or independently of implementation.
-- **Implementation Review** examines a fixed Design/Plan/Task/evidence manifest together with the
+- **Design Review** examines an immutable DesignRevision only after its Assurance Contracts and
+  selected Claim receipts are current.
+- **Implementation Review** starts only after independent completion readiness, then examines a fixed Design/Plan/Task/evidence manifest together with the
   current snapshots of its planned output targets.
 
 The implementation manifest contains the current Task graph and the evidence selected by those
@@ -57,22 +58,37 @@ The request cannot select separate evidence, target, snapshot, or producer prove
 inapplicable, inspect the current Work/Design binding and Review entry; do not create unrelated
 evidence or a replacement Review to force the operation.
 
-A Finding is advisory. The responsible work agent records an allowed disposition with a reason:
+A Finding is advisory. The responsible work agent records a decision, impact class, and reason. The
+impact is `implementationDefect`, `assuranceOmission`, or `noChange`; `noChange` cannot accompany an
+accepted decision:
 
 - `accepted` means the mismatch becomes a causal obligation;
 - `rejected` means it is not adopted under the accepted design;
 - `replaced` means a later disposition supersedes it.
 
-A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. For a Design
+A reviewer cannot silently add a Task, criterion, mechanism, or product requirement. An accepted
+implementation defect must already be covered by a current Assurance Contract. For a Design
 Review, candidate amendment must name the accepted Finding as a change basis; the old Review remains
 immutable and cannot authorize the new candidate. For an Implementation Review, an accepted
 output-changing Finding must be included in a replacement Plan before materialization and is resolved
 through current evidence in the same resumed Review lineage. Only an accepted unresolved Finding in
 current implementation authority blocks completion.
 
+An accepted assurance omission is different: it closes Plan materialization and every productive
+Task, Profile, Command, and completion route for that Design. Output work becomes reachable only
+through a strict successor Design with a fresh closed matrix, adoption, and materialized Plan.
+
 A recorded verification remains valid history after a later Plan replacement, but it stops
 resolving the Finding when its remediation Task or evidence is no longer current. The replacement
 Plan must carry the Finding again and obtain new evidence before another resumed verification.
+
+If an implementation defect is accepted after Work completion, Workbench preserves the original
+completion, Review, Finding, and evidence as incident history, prospectively changes that Work to
+`suspended`, and exposes the accepted disposition as the immutable basis for resuming the same Work
+under the same Design. A strict source-history successor may carry that basis only when the complete
+covering Contract judgment is unchanged. The resumed Work must replace its Plan with a
+Finding-bound remediation step; the old completion record never becomes evidence that the
+remediation is complete.
 
 ## Diagnosing review state
 

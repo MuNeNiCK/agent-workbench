@@ -179,8 +179,9 @@ def Operation.permittedStateComponents : Operation → List StateComponent
   | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .artifactObserve
   | .correctionRecord | .correctionSupersede | .correctionResolve | .correctionIncorporate
   | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
-  | .reviewFinding | .reviewDisposition | .reviewConclude | .reviewVerify
+  | .reviewFinding | .reviewConclude | .reviewVerify
   | .commandRun | .proofRun => [.ledger]
+  | .reviewDisposition => [.focusedWork, .works, .ledger]
   | .describe | .designGet | .designInspectSources | .designSource | .designDiff
   | .designExport | .workGet | .workAdoptionImpact | .planGet | .planInspectSources
   | .planSource | .planDiff | .planExport | .reviewContext | .reviewInspect

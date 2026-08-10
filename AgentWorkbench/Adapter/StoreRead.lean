@@ -126,8 +126,7 @@ private def validateDesignArchives [ReadableStore S]
         if source.target != row[0]! || source.mediaKind != row[1]! ||
             source.snapshot != row[2]! || ContentDigest.bytes content != row[2]! then
           fail s!"Design {design.id} source archive differs from its immutable manifest"
-      let material := Lean.toJson {
-        design with revisionContentDigest := "", status := .candidate }
+      let material := Codec.designDigestMaterial design
       if ContentDigest.string material.compress != design.revisionContentDigest then
         fail s!"Design {design.id} immutable content digest is invalid"
 

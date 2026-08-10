@@ -118,6 +118,25 @@ private def validateTaskEvidenceBinding
         contract.id == id && contract.target == scope && evidenceKind.all (contract.kind == ·)))
       s!"evidence {entry.id} differs from its current materialized Task"
 
+private def validateAssuranceEvidenceBinding
+    (state : ProjectState) (entry : LedgerEntry) (producerAgentRun : String)
+    (criterionId taskVerificationId : Option String)
+    (binding : Option AssuranceEvidenceBinding) : Except String Unit := do
+  let design ← requireSome (entryDesign? state entry) s!"evidence {entry.id} has no design"
+  if design.assuranceSchemaVersion == 1 then
+    let workId ← requireSome entry.workId s!"evidence {entry.id} is not Work-bound"
+    let work ← requireSome (state.work? workId) s!"evidence {entry.id} has no Work"
+    let expectedProducer := responsibleWorkAgentRunAt state work entry.order
+    ensure (producerAgentRun == expectedProducer)
+      s!"evidence {entry.id} changes its derived producer provenance"
+    let current := match criterionId, taskVerificationId with
+      | some id, none =>
+          design.assuranceBindingCurrentForCriterion expectedProducer id binding
+      | none, some _ =>
+          design.assuranceBindingCurrentForTask expectedProducer binding
+      | _, _ => false
+    ensure current s!"evidence {entry.id} has a missing or stale Assurance binding"
+
 private def priorReview? (state : ProjectState) (entryId : String) : Option (LedgerEntry × ReviewRecord) := do
   let entry ← state.entry? entryId
   match entry.payload with
@@ -303,7 +322,8 @@ private def validateReview
           review.targetManifest.filter fun component => !structuralKinds.contains component.kind
         ensure (actualLedgerComponents == expectedLedgerComponents)
           (s!"review {entry.id} changes the exact current implementation component projection: " ++
-            s!"recorded={actualLedgerComponents.map (·.id)}, expected={expectedLedgerComponents.map (·.id)}")
+            s!"recorded={(Lean.toJson actualLedgerComponents).compress}, " ++
+            s!"expected={(Lean.toJson expectedLedgerComponents).compress}")
         if review.targetManifestVersion >= 3 then
           ensure (design.leanClaims.all fun claim =>
             (actualLedgerComponents.filter fun component =>
@@ -394,8 +414,8 @@ private def validateDisposition
     (disposition : ReviewDispositionRecord) : Except String Unit := do
   let finding ← requireSome (state.entry? disposition.findingEntryId)
     s!"disposition {entry.id} references missing finding"
-  match finding.payload with
-  | .finding _ => pure ()
+  let findingRecord ← match finding.payload with
+  | .finding value => pure value
   | _ => throw s!"disposition {entry.id} references a non-finding entry"
   ensure (finding.order < entry.order && finding.scope == entry.scope &&
     finding.workId == entry.workId && finding.designRevision == entry.designRevision)
@@ -407,6 +427,19 @@ private def validateDisposition
   ensure (disposition.decidedByRun == responsibleWorkAgentRunAt state work entry.order)
     s!"disposition {entry.id} was not made by the responsible Work agent"
   ensure (!disposition.reason.isEmpty) s!"disposition {entry.id} has no grounded reason"
+  ensure (disposition.decision != .accepted || disposition.impact != .noChange)
+    s!"accepted disposition {entry.id} has no classified impact"
+  ensure (disposition.impactSchemaVersion <= 1)
+    s!"disposition {entry.id} has an unsupported impact schema"
+  let design ← requireSome (entryDesign? state entry)
+    s!"disposition {entry.id} has no Design"
+  if design.assuranceSchemaVersion == 1 then
+    ensure (disposition.impactSchemaVersion == 1)
+      s!"disposition {entry.id} has no current Finding impact classification"
+  if disposition.impactSchemaVersion == 1 && disposition.decision == .accepted &&
+      disposition.impact == .implementationDefect then
+    ensure (findingCoveredByAssurance state finding findingRecord)
+      s!"implementation-defect disposition {entry.id} is outside its Assurance Contract"
 
 private def validateVerification
     (state : ProjectState) (entry : LedgerEntry)
@@ -516,10 +549,26 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
       let work ← requireSome (state.work? workId) s!"Work completion {entry.id} has missing Work"
       let plan ← requireSome (state.plan? value.planId)
         s!"Work completion {entry.id} has missing Plan"
-      ensure (work.status == .completed && value.workId == work.id &&
+      let prospectivelyInvalidated := state.ledgerEntries.any fun dispositionEntry =>
+        dispositionEntry.order > entry.order && dispositionEntry.workId == some work.id &&
+          match dispositionEntry.payload with
+          | .reviewDisposition disposition =>
+              disposition.decision == .accepted &&
+                disposition.impact == .implementationDefect &&
+                (state.entry? disposition.findingEntryId).any fun findingEntry =>
+                  findingEntry.order > entry.order && findingEntry.workId == some work.id
+          | _ => false
+      ensure ((work.status == .completed ||
+          ((work.status == .suspended || work.status == .active) && prospectivelyInvalidated)) &&
+        value.workId == work.id &&
         entry.designRevision == some value.designRevision &&
-        work.designRevision == some value.designRevision && plan.workId == work.id &&
-        plan.designRevision == value.designRevision && plan.status == .current &&
+        (work.designRevision == some value.designRevision ||
+          (prospectivelyInvalidated && work.designRevision.any fun currentDesignId =>
+            state.designDescendsFrom value.designRevision currentDesignId)) &&
+        plan.workId == work.id &&
+        plan.designRevision == value.designRevision &&
+        (plan.status == .current ||
+          (prospectivelyInvalidated && plan.status == .superseded)) &&
         value.inputRevision < state.revision && validContentDigest value.inputDigest &&
         value.completedByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Work completion {entry.id} has invalid authority or input identity"
@@ -569,6 +618,8 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
         validateEvidenceBinding state entry criterionId target "command"
       ensure (value.criterionId.isSome != value.taskVerificationId.isSome)
         s!"command evidence {entry.id} has an ambiguous verification binding"
+      validateAssuranceEvidenceBinding state entry value.producerAgentRun
+        value.criterionId value.taskVerificationId value.assuranceBinding
       validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope
         value.criterionId.toList value.taskVerificationId.toList (some .command)
   | .artifactObservation value =>
@@ -578,6 +629,8 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
         validateEvidenceBinding state entry criterionId value.target "artifact"
       ensure (value.criterionId.isSome != value.taskVerificationId.isSome)
         s!"artifact evidence {entry.id} has an ambiguous verification binding"
+      validateAssuranceEvidenceBinding state entry value.producerAgentRun
+        value.criterionId value.taskVerificationId value.assuranceBinding
       validateTaskEvidenceBinding state entry value.taskEntryId value.outputScope
         value.criterionId.toList value.taskVerificationId.toList (some .artifact)
   | .review value => validateReview state entry value
@@ -703,6 +756,13 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
       let design ← requireSome (entryDesign? state entry) s!"proof receipt {entry.id} has no design"
       let claim ← requireSome (design.claim? value.claimId)
         s!"proof receipt {entry.id} references missing claim"
+      if design.assuranceSchemaVersion == 1 then
+        let workId ← requireSome entry.workId s!"proof receipt {entry.id} is not Work-bound"
+        let work ← requireSome (state.work? workId) s!"proof receipt {entry.id} has no Work"
+        let expectedProducer := responsibleWorkAgentRunAt state work entry.order
+        ensure (design.assuranceBindingCurrentForClaim expectedProducer claim.id
+          value.assuranceBinding)
+          s!"proof receipt {entry.id} has a missing or stale Assurance binding"
       let currentIdentity :=
         value.elaboratedPropositionDigest == claim.elaboratedPropositionDigest &&
         value.propositionDependencies == claim.propositionDependencies &&

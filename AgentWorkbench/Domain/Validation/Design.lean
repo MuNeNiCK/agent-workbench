@@ -69,6 +69,8 @@ def validateDesign (design : DesignRevision) : Except String Unit := do
     s!"design {design.id} has duplicate criterion ids"
   ensure (uniqueStrings (design.leanClaims.map (·.id)))
     s!"design {design.id} has duplicate claim ids"
+  ensure (design.assuranceSchemaVersion <= 1)
+    s!"design {design.id} uses an unsupported assurance schema"
   if design.sourceArchiveAvailable then
     ensure (design.workId.isSome && !design.changeRationale.isEmpty &&
       validContentDigest design.revisionContentDigest && !design.sourceDocuments.isEmpty)
@@ -147,6 +149,15 @@ def validateDesign (design : DesignRevision) : Except String Unit := do
       for assumptionId in statement.assumptions do
         let _ ← requireSome (design.assumption? assumptionId)
           s!"Statement {statement.id} references missing assumption {assumptionId}"
+    if design.assuranceSchemaVersion == 1 then
+      ensure design.assuranceClosed
+        s!"design {design.id} has an incomplete or stale Assurance Contract matrix"
+      ensure (!design.assuranceContracts.isEmpty ||
+        !design.statementCoverage.any (·.implementationRequired))
+        s!"design {design.id} omits its persisted Assurance Contract matrix"
+    else
+      ensure design.assuranceContracts.isEmpty
+        s!"legacy design {design.id} persists unsupported Assurance Contracts"
     for claim in design.leanClaims do
       ensure (design.statementCoverage.countP (fun coverage =>
         coverage.statementId == claim.input.statementId &&
@@ -243,6 +254,25 @@ def validateDesignRelations
     if design.sourceArchiveAvailable then
       ensure design.workId.isSome
         s!"Design {design.id} is not Work-bound"
+      let acceptedAssuranceOmissions := state.ledgerEntries.filterMap fun findingEntry =>
+        if findingEntry.designRevision != some parentId ||
+            findingEntry.workId != design.workId ||
+            findingEntry.order > design.createdAfterEntryOrder then none
+        else match findingEntry.payload with
+        | .finding _ =>
+            let disposition? := findingDispositionIn?
+              (state.ledgerEntries.filter (·.order <= design.createdAfterEntryOrder))
+              findingEntry.id (design.workId.getD "")
+            if disposition?.any fun dispositionEntry =>
+                match dispositionEntry.payload with
+                | .reviewDisposition disposition =>
+                    disposition.decision == .accepted &&
+                      disposition.impact == .assuranceOmission
+                | _ => false
+            then some findingEntry.id else none
+        | _ => none
+      ensure (acceptedAssuranceOmissions.all design.changeBasisEntryIds.contains)
+        s!"Design {design.id} omits an accepted assurance-omission Finding causal basis"
       let expectedRemoved := parent.statements.filter fun statement =>
         (design.statement? statement.id).isNone
       ensure (expectedRemoved.length == design.removedStatements.length &&

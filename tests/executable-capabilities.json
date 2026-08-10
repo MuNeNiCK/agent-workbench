@@ -45,7 +45,8 @@
       "AgentWorkbenchTest.BuildBoundary.run",
       "AgentWorkbenchTest.Migration.run",
       "AgentWorkbenchTest.BinaryProtocol.run",
-      "AgentWorkbenchTest.DesignClaim.run"
+      "AgentWorkbenchTest.DesignClaim.run",
+      "AgentWorkbenchTest.Assurance.run"
     ],
     "allowedCapabilities": ["blake3-ffi", "filesystem", "markdown-ffi", "process", "sqlite", "store-adapter", "store-mutation"]
   },

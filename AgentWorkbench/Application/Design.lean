@@ -16,6 +16,9 @@ structure DesignProposalRequest where
   removedStatements : List RemovedStatementTombstone := []
   acceptanceCriteria : List AcceptanceCriterion
   leanClaims : List LeanClaim := []
+  /-- Explicit judgment-bearing Contract inputs.  Workbench supplies only derived scope and
+  cryptographic identities; absence is rejected for a current Design. -/
+  assuranceContracts : Option (List AssuranceContractInput) := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure DesignRejectRequest where
@@ -31,6 +34,7 @@ def DesignProposalRequest.design
     (state : ProjectState) (workId : String) (sources : List DesignSource)
     (units : List DesignSourceUnit)
     (request : DesignProposalRequest) : DesignRevision :=
+  let base : DesignRevision :=
   { id := nextDesignId state, workId := some workId, parent := state.acceptedDesignId
     amendsCandidate := request.amendsCandidate
     producerAgentRun := request.producerAgentRun
@@ -42,7 +46,10 @@ def DesignProposalRequest.design
     assumptions := request.assumptions
     statements := request.statements, statementCoverage := request.statementCoverage
     removedStatements := request.removedStatements
-    acceptanceCriteria := request.acceptanceCriteria, leanClaims := request.leanClaims }
+    acceptanceCriteria := request.acceptanceCriteria, leanClaims := request.leanClaims
+    assuranceSchemaVersion := 1 }
+  { base with assuranceContracts :=
+      base.assuranceContractsFromInputs (request.assuranceContracts.getD []) }
 
 def proposeDesign
     (state : ProjectState) (candidate : DesignRevision) : Except String ProjectState := do

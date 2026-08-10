@@ -59,6 +59,7 @@ def commandAuthorized
                     predecessor.closed && !predecessor.retired
                 | _ => false
           | _, _ => false
-      taskReady && projection.design.leanClaims.all (claimHasReceipt projection digests)
+      taskReady && designAssuranceStructurallyCurrent state projection.design &&
+        projection.design.leanClaims.all (claimHasReceipt projection digests)
 
 end AgentWorkbench

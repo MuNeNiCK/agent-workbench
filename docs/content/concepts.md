@@ -97,6 +97,21 @@ A Review examines an immutable design or fixed implementation snapshot. A Findin
 advisory observation. The responsible work agent records whether it is accepted, rejected, or
 replaced and why. See [Reviews](reviews.md) for context independence and fix verification.
 
+## Assurance Contracts
+
+Every Statement has one immutable Assurance Contract. It repeats the exact Statement text,
+assumptions, source units, selected Claims and Criteria, and implementation choice. A Contract whose
+Statement requires implementation additionally has independently identified witnesses and the
+closed counterexample partition before Plan materialization. This deliberate duplication lets
+validation reject missing, extra, duplicate, copied, or stale scope before implementation.
+
+Current proposals persist schema version 1 and require explicit Contract inputs for trusted
+boundaries, witness independence and producer boundaries, and counterexample bindings. Workbench
+derives only the same-Design scope, witness input closure, and cryptographic identities; it does not
+manufacture those assurance judgments from the requirement being checked. Schema version 0 is only
+the deterministic read boundary for Designs stored before Assurance Contracts existed; the current
+proposal route never emits it.
+
 ## Lean claim and proof receipt
 
 A Lean claim selects one proposition about the accepted design, its explicit assumptions, source

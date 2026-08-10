@@ -65,7 +65,8 @@ private def proposal
       acceptanceCriteria := { noSelectionReason := some "this route is the direct observation" }
       implementationRequired := false
       noImplementationReason := some "the route itself is the completed behavior" }]
-    acceptanceCriteria := [] }
+    acceptanceCriteria := []
+    assuranceContracts := some [fixtureAssuranceInput statement [] [] false] }
 
 private def proposedDesign (source : String) : IO DesignRevision :=
   decode source
@@ -264,7 +265,10 @@ private def exerciseStructuredAssumptionFinding : IO Unit :=
         acceptanceCriteria := { noSelectionReason := some "the Review route is the observation" }
         implementationRequired := false
         noImplementationReason := some "the route itself is the completed behavior" }]
-      acceptanceCriteria := [] } : DesignProposalRequest))
+      acceptanceCriteria := []
+      assuranceContracts := some [{
+        fixtureAssuranceInput designStatement [] [] false with
+        trustedBoundaryAssumptionIds := [assumption.id] }] } : DesignProposalRequest))
     let _ ← invokeJson root .reviewStart ({
       entryId := "review-assumption", reviewId := "review-assumption"
       purpose := .design, targetDesignRevision := some candidate.id

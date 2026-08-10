@@ -28,13 +28,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Fix native test identity
-        shell: bash
-        env:
-          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          printf '%s\n' "$EXPECTED_COMMIT" > "$RUNNER_TEMP/tested-commit.txt"
       - uses: leanprover/lean-action@v1
         with:
           auto-config: false
@@ -110,13 +103,6 @@ jobs:
           grep -F -- '--source-ref "refs/tags/$release_version"' skills/agent-workbench/scripts/setup.sh
           grep -F -- '--source-ref "refs/tags/$releaseVersion"' skills/agent-workbench/scripts/setup.ps1
           ! grep -R "releases/latest" skills/agent-workbench
-      - name: Attest tested commit
-        uses: actions/upload-artifact@v4
-        with:
-          name: tested-commit-${{ matrix.target }}
-          path: ${{ runner.temp }}/tested-commit.txt
-          if-no-files-found: error
-
   required:
     if: always()
     needs: native

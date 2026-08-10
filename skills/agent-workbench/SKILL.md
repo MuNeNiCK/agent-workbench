@@ -122,6 +122,13 @@ criterion.
 Review has exactly two purposes: Design Review and Implementation Review. `fresh` and `resume` are
 reviewer-context modes, not review types.
 
+Review is a final audit, not a way to construct assurance. Design Review starts only after the
+target's Assurance Contract matrix and selected Claim receipts are current. Fresh Implementation
+Review starts only after independent completion readiness. If an accepted Finding is an assurance
+omission, stop productive work and return through a strict successor Design, fresh assurance,
+adoption, and Plan materialization. Only an implementation defect already covered by a current
+Contract is Plan-remediable.
+
 - Use `fresh` for an immutable design or implementation snapshot with no prior review,
   finding, or remediation context. The reviewer run must differ from the target producer run.
 - For Implementation Review, treat the returned Design, current Plan, immutable Work identity, and

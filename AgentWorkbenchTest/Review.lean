@@ -10,12 +10,27 @@ private def startCurrentReview
   let inputs ← evaluateCurrentInputs root state
   startReview root state inputs.observations inputs.claimDigests request
 
-private def startedReview (root : System.FilePath) : IO ProjectState :=
+private def startedReview (root : System.FilePath) : IO ProjectState := do
   let predecessor := { plan with
     id := "plan-0", status := .superseded, contentDigest := "blake3:superseded-plan" }
-  startCurrentReview root { baseState with implementationPlans := [predecessor, plan] } {
-    entryId := "review-1", reviewId := "review-lineage-1", purpose := .implementation
-    reviewerAgentRun := "reviewer-1" }
+  let state := { baseState with implementationPlans := [predecessor, plan] }
+  -- Most tests in this module validate immutable Review mechanics against deliberately incomplete
+  -- historical fixtures.  Construct that historical root below the public final-audit gate; the
+  -- public start route and its readiness rejection are tested independently.
+  let inputs ← evaluateCurrentInputs root state
+  let fixed ← match ← ReviewTarget.freeze root state .implementation none
+      inputs.observations inputs.claimDigests with
+    | .ok value => pure value
+    | .error message => throw (IO.userError message)
+  fromExcept <| appendEntry state {
+    id := "review-1", order := nextEntryOrder state, scope := work.scope
+    workId := some work.id, designRevision := some design.id
+    payload := .review {
+      reviewId := "review-lineage-1", purpose := .implementation, context := .fresh
+      targetSourceId := fixed.sourceId, target := fixed.target
+      targetSnapshot := fixed.snapshot, targetManifestVersion := fixed.manifestVersion
+      targetManifest := fixed.manifest, producerAgentRuns := fixed.producerAgentRuns
+      reviewerAgentRun := "reviewer-1" } }
 
 private def historicalReviewSurvivesWorkHandoff (root : System.FilePath) : IO Unit := do
   let reviewed ← startedReview root
@@ -42,7 +57,7 @@ private def historicalReviewSurvivesWorkHandoff (root : System.FilePath) : IO Un
 private def historicalReviewSurvivesDesignAdoption (root : System.FilePath) : IO Unit := do
   let reviewed ← startedReview root
   let predecessor : DesignRevision := { design with status := .superseded }
-  let successor : DesignRevision := {
+  let successor : DesignRevision := withCurrentAssurance {
     design with
     id := "design-review-successor"
     parent := some design.id
@@ -133,7 +148,7 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
     (← IO.getEnv environmentName)
   let commandCriterion : AcceptanceCriterion := {
     criterion with evidenceKind := "command" }
-  let commandDesign : DesignRevision := {
+  let commandDesign : DesignRevision := withCurrentAssurance {
     design with acceptanceCriteria := [commandCriterion] }
   let commandStep : PlanStep := {
     step with verificationCriterionIds := [commandCriterion.id] }
@@ -162,7 +177,9 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
       target := some commandCriterion.target, snapshot := some artifactSnapshot
       command := { profileCommand with workingDirectory := some root.toString }
       exitCode := 0, stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
-      successful := true, producerAgentRun := work.responsibleAgentRun } }
+      successful := true, producerAgentRun := work.responsibleAgentRun
+      assuranceBinding := some <| commandDesign.assuranceBindingForCriterion
+        work.responsibleAgentRun commandCriterion.id } }
   let closedTask : LedgerEntry := {
     id := "task-review-currency-closed", order := 4, scope := work.scope
     workId := some work.id, designRevision := some commandDesign.id
@@ -198,16 +215,22 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
     .implementation currentRecord.target stalePrivateInputs.observations stalePrivateInputs.claimDigests
   expect (stalePrivateSnapshot != currentRecord.targetSnapshot)
     "private input drift left the fixed Review target current"
-  let stalePrivateReview ← startReview root commandState stalePrivateInputs.observations
-    stalePrivateInputs.claimDigests {
-      entryId := "review-stale-private", reviewId := "review-stale-private"
-      purpose := .implementation, reviewerAgentRun := "reviewer-stale-private" }
-  let stalePrivateRecord ← match stalePrivateReview.entry? "review-stale-private" with
-    | some { payload := .review value, .. } => pure value
-    | _ => throw (IO.userError "stale-private Review was not recorded")
-  expect (!stalePrivateRecord.targetManifest.any (·.id == commandEntry.id) &&
-      stalePrivateRecord.targetSnapshot == stalePrivateSnapshot)
-    "fresh Review retained stale private-input evidence or used a different current projection"
+  let stalePrivateFixed ← match ← ReviewTarget.freeze root commandState .implementation none
+      stalePrivateInputs.observations stalePrivateInputs.claimDigests with
+    | .ok value => pure value
+    | .error message => throw (IO.userError message)
+  expect (!stalePrivateFixed.manifest.any (·.id == commandEntry.id) &&
+      stalePrivateFixed.snapshot == stalePrivateSnapshot)
+    "Review projection retained stale private-input evidence"
+  let stalePrivateRejected ← try
+    let _ ← startReview root commandState stalePrivateInputs.observations
+      stalePrivateInputs.claimDigests {
+        entryId := "review-stale-private", reviewId := "review-stale-private"
+        purpose := .implementation, reviewerAgentRun := "reviewer-stale-private" }
+    pure false
+  catch _ => pure true
+  expect stalePrivateRejected
+    "Implementation Review started after private-input drift invalidated readiness"
 
   let staleEnvironmentObservations := currentInputs.observations.map fun observation =>
     if observation.target == environmentIdentity.1 then
@@ -241,7 +264,7 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
   let proofCoverage := design.statementCoverage.map fun coverage =>
     { coverage with leanClaims := {
         selectedIds := [claim.id], noSelectionReason := none } }
-  let proofDesign : DesignRevision := {
+  let proofDesign : DesignRevision := withCurrentAssurance {
     design with
     sourceDocuments := design.sourceDocuments ++ [{
       target := "file:.agent-workbench/design/proofs/review-currency/ReviewCurrency.lean"
@@ -256,7 +279,9 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
       assumptionDependencies := []
       inputDigest, sourceDigests := [{ path := "ReviewCurrency.lean", digest := sourceDigest }]
       toolchain := ProofToolchain.identifier, exitCode := 0
-      outputDigest := s!"blake3:output-{id}", kernelAccepted := true } }
+      outputDigest := s!"blake3:output-{id}", kernelAccepted := true
+      assuranceBinding := some <| proofDesign.assuranceBindingForClaim
+        work.responsibleAgentRun claim.id } }
   let staleReceipt := receipt "proof-review-stale" 2 "blake3:stale-source" "blake3:stale-input"
   let currentReceipt := receipt "proof-review-current" 3 proofSourceDigest "blake3:current-input"
   let proofState : ProjectState := {
@@ -270,28 +295,22 @@ private def freshReviewUsesCurrentEvidenceAndClaimInputs (root : System.FilePath
     propositionDependencies := claim.propositionDependencies
     sourceDigests := [{ path := "ReviewCurrency.lean", digest := proofSourceDigest }]
     inputDigest := "blake3:current-input" }
-  let proofReview ← startReview root proofState [] [currentDigest] {
-    entryId := "review-current-proof", reviewId := "review-current-proof"
-    purpose := .implementation, reviewerAgentRun := "reviewer-current-proof" }
-  let proofRecord ← match proofReview.entry? "review-current-proof" with
-    | some { payload := .review value, .. } => pure value
-    | _ => throw (IO.userError "current-proof Review was not recorded")
-  expect (proofRecord.targetManifest.any (·.id == currentReceipt.id) &&
-      !proofRecord.targetManifest.any (·.id == staleReceipt.id))
+  let proofFixed ← match ← ReviewTarget.freeze root proofState .implementation none [] [currentDigest] with
+    | .ok value => pure value
+    | .error message => throw (IO.userError message)
+  expect (proofFixed.manifest.any (·.id == currentReceipt.id) &&
+      !proofFixed.manifest.any (·.id == staleReceipt.id))
     "fresh Review selected a stale Lean receipt instead of the current receipt"
   IO.FS.writeFile proofSource "def ReviewCurrency.property : True := by trivial\n"
   let changedSourceDigest ← ContentDigest.file proofSource
   let changedDigest := { currentDigest with
     sourceDigests := [{ path := "ReviewCurrency.lean", digest := changedSourceDigest }]
     inputDigest := "blake3:changed-input" }
-  let staleProofReview ← startReview root proofState [] [changedDigest] {
-    entryId := "review-stale-proof", reviewId := "review-stale-proof"
-    purpose := .implementation, reviewerAgentRun := "reviewer-stale-proof" }
-  let staleProofRecord ← match staleProofReview.entry? "review-stale-proof" with
-    | some { payload := .review value, .. } => pure value
-    | _ => throw (IO.userError "stale-proof Review was not recorded")
-  expect (!staleProofRecord.targetManifest.any (·.kind == "lean_proof_receipt") &&
-      staleProofRecord.targetSnapshot != proofRecord.targetSnapshot)
+  let staleProofFixed ← match ← ReviewTarget.freeze root proofState .implementation none [] [changedDigest] with
+    | .ok value => pure value
+    | .error message => throw (IO.userError message)
+  expect (!staleProofFixed.manifest.any (·.kind == "lean_proof_receipt") &&
+      staleProofFixed.snapshot != proofFixed.snapshot)
     "proof-source drift left a stale Lean receipt in the fresh Review target"
 
 private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO Unit := do
@@ -301,7 +320,9 @@ private def evidenceComponentFindingCanBeVerified (root : System.FilePath) : IO 
     taskEntryId := some "task-open", outputScope := some criterion.target
     criterionId := criterion.id, target := criterion.target, snapshot
     operation := "inspect artifact", result := "artifact exists", successful := true
-    producerAgentRun := work.responsibleAgentRun } }
+    producerAgentRun := work.responsibleAgentRun
+    assuranceBinding := some <| design.assuranceBindingForCriterion
+      work.responsibleAgentRun criterion.id } }
   let closedTask : LedgerEntry := {
     id := "task-evidence-component-closed", order := 3, scope := work.scope
     workId := some work.id, designRevision := some design.id, supersedes := ["task-open"]

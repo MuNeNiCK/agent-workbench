@@ -48,11 +48,15 @@ def observeArtifact
         pure (contract.target, none, some contract.id)
     | _, _ => throw (IO.userError "invalid artifact verification binding")
   let snapshot ← Snapshot.target projectRoot target
+  let assuranceBinding := some <| match criterionId with
+    | some id => design.assuranceBindingForCriterion work.responsibleAgentRun id
+    | none => design.assuranceBindingForTask work.responsibleAgentRun
   match appendCurrentEntry state request.entryId (.artifactObservation {
       taskEntryId := some taskEntry.id, outputScope := some target
       criterionId, taskVerificationId, target, snapshot
       operation := request.operation, result := request.result
-      successful := request.successful, producerAgentRun := work.responsibleAgentRun }) with
+      successful := request.successful, producerAgentRun := work.responsibleAgentRun
+      assuranceBinding }) with
   | .ok next => pure next
   | .error message => throw (IO.userError message)
 

@@ -15,6 +15,8 @@ private def hasDependencyReadyTask (state : ProjectState) : Bool :=
   match currentProjection? state with
   | none => false
   | some projection =>
+      designAssuranceStructurallyCurrent state projection.design &&
+      projection.design.leanClaims.all (claimReceiptRecorded projection) &&
       (state.currentPlanFor? projection.work.id).isSome && projection.entries.any fun entry =>
         match entry.payload with
         | .task task => task.planId.isSome && task.required && !task.closed && !task.retired &&
@@ -39,6 +41,7 @@ def planMaterializationStructurallyReady (state : ProjectState) : Bool :=
   match currentProjection? state with
   | none => false
   | some projection =>
+      if !designAssuranceStructurallyCurrent state projection.design then false else
       match state.implementationPlans.find? fun plan =>
           plan.workId == projection.work.id && plan.designRevision == projection.design.id &&
             plan.status == .candidate &&
@@ -57,6 +60,7 @@ def completionStructurallyReady (state : ProjectState) : Bool :=
   | none => false
   | some projection =>
       projection.design.sourceArchiveAvailable &&
+      designAssuranceStructurallyCurrent state projection.design &&
       (state.currentPlanFor? projection.work.id).isSome &&
       projection.entries.all (fun entry => match entry.payload with
         | .task task => !task.required || (task.closed &&
@@ -142,8 +146,13 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .reviewFinding => reviewFindingApplicable state
   | .reviewHandoff | .reviewConclude => focusedWork && state.ledgerEntries.any (fun entry =>
       entry.workId == state.focusedWorkId && match entry.payload with | .review _ => true | _ => false)
-  | .reviewDisposition => focusedWork && state.ledgerEntries.any (fun entry =>
-      entry.workId == state.focusedWorkId && match entry.payload with | .finding _ => true | _ => false)
+  | .reviewDisposition =>
+      (focusedWork && state.ledgerEntries.any (fun entry =>
+        entry.workId == state.focusedWorkId && match entry.payload with
+        | .finding _ => true | _ => false)) ||
+      (unfocused && state.ledgerEntries.any (fun entry => match entry.payload, entry.workId with
+        | .finding _, some workId => (state.work? workId).any (·.status == .completed)
+        | _, _ => false))
   | .reviewVerify => current && currentHasEntry state (fun
       | .review review => review.context == .resume
       | _ => false)

@@ -49,7 +49,7 @@ private def correctionWithdrawal : IO Unit := do
 
 private def successorAdoptionPreservesHistoricalPlan : IO Unit := do
   let predecessor : DesignRevision := { design with status := .superseded }
-  let successor : DesignRevision := {
+  let successor : DesignRevision := withCurrentAssurance {
     design with
     id := "design-2"
     parent := some design.id

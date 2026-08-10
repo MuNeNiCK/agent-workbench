@@ -88,13 +88,24 @@ def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit :
       | .workCompletion value => value.workId == work.id
       | .workResume _ => false
       | _ => false
+    let prospectivelyInvalidated := completions.length == 1 && completions.any fun completion =>
+      state.ledgerEntries.any fun dispositionEntry =>
+        dispositionEntry.order > completion.order &&
+          dispositionEntry.workId == some work.id && match dispositionEntry.payload with
+          | .reviewDisposition disposition =>
+              disposition.decision == .accepted &&
+                disposition.impact == .implementationDefect &&
+                (state.entry? disposition.findingEntryId).any fun findingEntry =>
+                  findingEntry.order > completion.order && findingEntry.workId == some work.id
+          | _ => false
     if work.status == .completed then
       let legacyUnavailable := work.designRevision.any fun designId =>
         (state.design? designId).any fun design => !design.sourceArchiveAvailable
       ensure (completions.length == 1 || (completions.isEmpty && legacyUnavailable))
         s!"completed Work {work.id} does not have exactly one completion authority"
     else
-      ensure completions.isEmpty
+      ensure (completions.isEmpty ||
+        ((work.status == .suspended || work.status == .active) && prospectivelyInvalidated))
         s!"non-completed Work {work.id} has completion authority"
 
 def validatePlanTaskInvariant (state : ProjectState) : Except String Unit := do

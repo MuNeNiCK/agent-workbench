@@ -54,7 +54,8 @@ private def designProposal
       leanClaims := { noSelectionReason := some "this storage property is externally observed" }
       acceptanceCriteria := { selectedIds := [criterion.id] }
       implementationRequired := true }]
-    acceptanceCriteria := [criterion] }
+    acceptanceCriteria := [criterion]
+    assuranceContracts := some [fixtureAssuranceInput statement [] [criterion]] }
 
 private def planProposal
     (target : String) (units : List DesignSourceUnit)

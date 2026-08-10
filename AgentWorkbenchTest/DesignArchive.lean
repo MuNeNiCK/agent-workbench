@@ -12,6 +12,10 @@ private def proposal
     (units : List DesignSourceUnit) (target rationale : String)
     (amends : Option String := none) (bases : List String := []) : DesignProposalRequest :=
   let statement : Statement := { id := "statement-archive", text := "The archived requirement is authoritative." }
+  let criterion : AcceptanceCriterion := {
+    id := "criterion-archive", statementId := some statement.id
+    statement := "the exact archived bytes are retrievable"
+    target := "tree:AgentWorkbench", evidenceKind := "command" }
   { producerAgentRun := "designer-archive"
     changeRationale := rationale
     changeBasisEntryIds := bases
@@ -24,9 +28,10 @@ private def proposal
       statementId := statement.id
       sourceUnitIds := units.map (·.id)
       leanClaims := { noSelectionReason := some "no logical Claim is selected in this archive fixture" }
-      acceptanceCriteria := { noSelectionReason := some "archive fidelity is checked by the route test" }
+      acceptanceCriteria := { selectedIds := [criterion.id] }
       implementationRequired := true }]
-    acceptanceCriteria := [] }
+    acceptanceCriteria := [criterion]
+    assuranceContracts := some [fixtureAssuranceInput statement [] [criterion]] }
 
 private def proposedDesign (result : MutationResult) : IO DesignRevision :=
   match result with
@@ -50,6 +55,18 @@ def run : IO Unit := do
     IO.FS.writeFile sourcePath original
     let firstInspection ← AgentWorkbench.DesignSource.inspectAll root [target]
     let firstUnits := firstInspection.flatMap (·.units)
+    let beforeMissingAssurance ← Store.loadState (← Store.openReadOnly database)
+    let missingAssuranceRejected ← try
+        let _ ← Store.executeMutation root database (.designPropose {
+          proposal firstUnits target "omit the authored Assurance Contract" with
+          assuranceContracts := none })
+        pure false
+      catch _ => pure true
+    expect missingAssuranceRejected
+      "current Design proposal accepted an omitted authored Assurance Contract input"
+    let afterMissingAssurance ← Store.loadState (← Store.openReadOnly database)
+    expect (afterMissingAssurance == beforeMissingAssurance)
+      "rejected missing-Assurance proposal changed authoritative state"
     let first ← proposedDesign (← Store.executeMutation root database
       (.designPropose (proposal firstUnits target "capture the initial exact source")))
     let _ ← Store.executeMutation root database (.reviewStart {
@@ -121,6 +138,10 @@ def run : IO Unit := do
     let units := captured.flatMap (·.units)
     let statement : Statement := {
       id := "statement-byte-archive", text := "Exact source bytes remain unchanged." }
+    let byteCriterion : AcceptanceCriterion := {
+      id := "criterion-byte-archive", statementId := some statement.id
+      statement := "every byte representation round-trips exactly"
+      target := "tree:AgentWorkbench", evidenceKind := "command" }
     let request : DesignProposalRequest := {
       producerAgentRun := "designer-bytes"
       changeRationale := "exercise every required source byte representation"
@@ -131,9 +152,10 @@ def run : IO Unit := do
       statementCoverage := [{
         statementId := statement.id, sourceUnitIds := units.map (·.id)
         leanClaims := { noSelectionReason := some "byte fidelity is externally observed" }
-        acceptanceCriteria := { noSelectionReason := some "the archive route is direct evidence" }
+        acceptanceCriteria := { selectedIds := [byteCriterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [] }
+      acceptanceCriteria := [byteCriterion]
+      assuranceContracts := some [fixtureAssuranceInput statement [] [byteCriterion]] }
     let design ← proposedDesign (← Store.executeMutation root database (.designPropose request))
     for ((_, expected), target) in fixtures.zip targets do
       let archived ← AgentWorkbench.DesignArchive.source root design.id target

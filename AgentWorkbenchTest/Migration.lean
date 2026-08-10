@@ -227,7 +227,8 @@ def run : IO Unit := do
         leanClaims := { noSelectionReason := some "no logical Claim is selected" }
         acceptanceCriteria := { selectedIds := [criterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [criterion] })
+      acceptanceCriteria := [criterion]
+      assuranceContracts := some [fixtureAssuranceInput statement [] [criterion]] })
     let successor ← match proposed with
       | .design value => pure value
       | _ => throw (IO.userError "successor Design proposal returned the wrong result")

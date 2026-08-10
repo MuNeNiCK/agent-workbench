@@ -253,6 +253,7 @@ theorem advertised_plan_materialization_has_current_request
           !(state.implementationPlans.any fun successor =>
             successor.predecessorPlanId == some plan.id && successor.status == .candidate)) =
         some candidate ∧
+      designAssuranceStructurallyCurrent state projection.design = true ∧
       projection.design.leanClaims.all (claimHasReceipt projection digests) = true := by
   have structural : planMaterializationStructurallyReady state = true := by
     have both : operationStructurallyApplicable state .planMaterialize = true ∧
@@ -273,8 +274,12 @@ theorem advertised_plan_materialization_has_current_request
   · rename_i projection projectionEq
     split at structural
     · simp at structural
-    · rename_i candidate candidateEq
-      refine ⟨projection, candidate, projectionEq, candidateEq, ?_⟩
-      simpa [projectionEq] using current
+    · rename_i assuranceCurrent
+      split at structural
+      · simp at structural
+      · rename_i candidate candidateEq
+        refine ⟨projection, candidate, projectionEq, candidateEq, ?_, ?_⟩
+        · simpa using assuranceCurrent
+        · simpa [projectionEq] using current
 
 end AgentWorkbenchProof

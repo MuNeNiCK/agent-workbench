@@ -60,6 +60,10 @@ def runCommandProfile
           pure (some (← Snapshot.target projectRoot identity))
     | none => pure none
   let entry : LedgerEntry :=
+    let assuranceBinding := some <| match request.criterionId with
+      | some id => projection.design.assuranceBindingForCriterion
+          projection.work.responsibleAgentRun id
+      | none => projection.design.assuranceBindingForTask projection.work.responsibleAgentRun
     { id := request.entryId
       order := nextEntryOrder state
       scope := projection.work.scope
@@ -80,7 +84,8 @@ def runCommandProfile
         stdoutDigest := result.stdoutDigest
         stderrDigest := result.stderrDigest
         successful := result.exitCode == 0
-        producerAgentRun := projection.work.responsibleAgentRun } }
+        producerAgentRun := projection.work.responsibleAgentRun
+        assuranceBinding } }
   let next ← match appendEntry state entry with
     | .ok value => pure value
     | .error message => throw (IO.userError message)

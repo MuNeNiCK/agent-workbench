@@ -87,8 +87,12 @@ private def proposeDesignRequest
        snapshot := source.digest } : AgentWorkbench.DesignSource)
   let units := captured.flatMap (·.units)
   let request := { request with leanClaims := elaboratedClaims }
-  let raw := { request.design prior workId sources units with
+  let structural := { request.design prior workId sources units with
     createdAfterEntryOrder := nextEntryOrder prior - 1 }
+  if request.assuranceContracts.isNone then
+    fail "Design proposal requires explicit Assurance Contract inputs"
+  let materialized := structural.materializeAssuranceContracts ContentDigest.string
+  let raw := materialized
   let digestMaterial := Lean.toJson { raw with revisionContentDigest := "", status := .candidate }
   let candidate := { raw with revisionContentDigest := ContentDigest.string digestMaterial.compress }
   let prepared := if operation == .designPropose then

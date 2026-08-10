@@ -57,7 +57,9 @@ private def dependencyPlanState : ProjectState :=
       taskEntryId := some taskId, outputScope := some criterion.target
       criterionId := criterion.id, target := criterion.target, snapshot := s!"blake3:{id}"
       operation := "verify Plan Task", result := "verified", successful := true
-      producerAgentRun := work.responsibleAgentRun } }
+      producerAgentRun := work.responsibleAgentRun
+      assuranceBinding := some <| design.assuranceBindingForCriterion
+        work.responsibleAgentRun criterion.id } }
   let taskAOpen := task "old-task-a-open" 1 stepA false
   let taskBOpen := task "old-task-b-open" 2 stepB false
   let evidenceA := evidence "old-evidence-a" 3 taskAOpen.id
@@ -87,8 +89,9 @@ def run : IO Unit := do
     successful := true, producerAgentRun := work.responsibleAgentRun }
   expect (!containsText (Lean.toJson legacyCommand).compress "taskVerificationId")
     "an absent Task-local binding changed the immutable legacy command encoding"
-  let baseline : DesignRevision := { design with id := "design-baseline", status := .superseded }
-  let successor : DesignRevision := { design with
+  let baseline : DesignRevision := withCurrentAssurance {
+    design with id := "design-baseline", status := .superseded }
+  let successor : DesignRevision := withCurrentAssurance { design with
     id := "design-successor"
     statements := [{ statement with assumptions := ["the service is online"] }] }
   let changedWork : Work := { work with
@@ -104,10 +107,10 @@ def run : IO Unit := do
     id := assumptionId, text := "the service is online", sourceUnitIds := [sourceUnit.id] }
   let changedAssumption : DesignAssumption := {
     baselineAssumption with text := "the service is online and authenticated" }
-  let assumptionBaseline : DesignRevision := { baseline with
+  let assumptionBaseline : DesignRevision := withCurrentAssurance { baseline with
     assumptions := [baselineAssumption]
     statements := [{ statement with assumptions := [assumptionId] }] }
-  let assumptionSuccessor : DesignRevision := { successor with
+  let assumptionSuccessor : DesignRevision := withCurrentAssurance { successor with
     assumptions := [changedAssumption]
     statements := [{ statement with assumptions := [assumptionId] }] }
   let assumptionWork : Work := { changedWork with
@@ -121,7 +124,7 @@ def run : IO Unit := do
     expectedStatementDeltas assumptionState assumptionWork assumptionSuccessor
   expect (assumptionDeltas.length == 1 && assumptionDeltas.head?.any (·.kind == .modified))
     "Plan delta omitted changed authoritative assumption text with a stable ID"
-  let coverageSuccessor : DesignRevision := { design with
+  let coverageSuccessor : DesignRevision := withCurrentAssurance { design with
     id := "design-coverage-successor"
     acceptanceCriteria := [{ criterion with statement := "the changed artifact is verified" }] }
   let coverageWork : Work := { work with
@@ -155,23 +158,26 @@ def run : IO Unit := do
   expectError (validateState { baseState with implementationPlans := [unreachablePlan] })
     "Plan accepted a Criterion whose target has no Task output route"
 
-  -- An implementation-required Statement may intentionally have no Design Criterion. Its Plan
-  -- must then state the concrete, Task-local command/artifact verification contract instead of
-  -- inventing a Criterion or allowing an unverifiable Task.
-  let localDesign : DesignRevision := { design with
+  -- A Task may combine a Design Criterion with concrete Task-local command/artifact contracts.
+  -- Materialization must preserve both kinds of verification obligation exactly.
+  let commandTarget := "file:task-local-command.txt"
+  let artifactTarget := "file:task-local-artifact.txt"
+  let localCriterion : AcceptanceCriterion := {
+    id := "criterion-task-local", statementId := some statement.id
+    statement := "the Task-local command and artifact contracts are current"
+    target := commandTarget, evidenceKind := "command" }
+  let localDesign : DesignRevision := withCurrentAssurance { design with
     id := "design-task-local"
-    acceptanceCriteria := []
+    acceptanceCriteria := [localCriterion]
     statementCoverage := [{
       statementId := statement.id, sourceUnitIds := [sourceUnit.id]
       leanClaims := { noSelectionReason := some "no logical Claim is selected" }
-      acceptanceCriteria := {
-        noSelectionReason := some "verification is local to the implementation Task" }
+      acceptanceCriteria := { selectedIds := [localCriterion.id] }
       implementationRequired := true }] }
-  let commandTarget := "file:task-local-command.txt"
-  let artifactTarget := "file:task-local-artifact.txt"
   let localStep : PlanStep := {
     id := "task-local-step", description := "implement and verify the local behavior"
     outputScopes := [commandTarget, artifactTarget]
+    verificationCriterionIds := [localCriterion.id]
     taskVerificationContracts := [
       { id := "task-local-command", kind := .command, target := commandTarget },
       { id := "task-local-artifact", kind := .artifact, target := artifactTarget }] }
@@ -190,7 +196,7 @@ def run : IO Unit := do
       planId := some localPlan.id, planStepId := some localStep.id
       lineageId := some s!"{localWork.id}:{localStep.id}"
       outputScopes := localStep.outputScopes
-      verificationCriterionIds := []
+      verificationCriterionIds := localStep.verificationCriterionIds
       taskVerificationContracts := localStep.taskVerificationContracts
       materializedAtOrder := 0, description := localStep.description
       required := true, closed := false } }
@@ -202,7 +208,7 @@ def run : IO Unit := do
     payload := .commandProfile {
       purpose := "verify the Task-local command contract"
       taskEntryId := some localTask.id, inputTargets := some []
-      outputScope := some commandTarget, criterionIds := some []
+      outputScope := some commandTarget, criterionIds := some [localCriterion.id]
       taskVerificationIds := some ["task-local-command"]
       target := some commandTarget, command := localCommand } }
   let commandSnapshot := "blake3:task-local-command"
@@ -217,22 +223,41 @@ def run : IO Unit := do
       target := some commandTarget, snapshot := some commandSnapshot
       command := localCommand, exitCode := 0
       stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
-      successful := true, producerAgentRun := localWork.responsibleAgentRun } }
+      successful := true, producerAgentRun := localWork.responsibleAgentRun
+      assuranceBinding := some <| localDesign.assuranceBindingForTask
+        localWork.responsibleAgentRun } }
+  let localCriterionEvidence : LedgerEntry := {
+    localCommandEvidence with
+    id := "evidence-task-local-criterion"
+    order := 4
+    payload := .commandExecution {
+      profileEntryId := localProfile.id, taskEntryId := some localTask.id
+      outputScope := some commandTarget, criterionId := some localCriterion.id
+      taskVerificationId := none, inputSnapshots := some [], environmentSnapshots := some []
+      target := some commandTarget, snapshot := some commandSnapshot
+      command := localCommand, exitCode := 0
+      stdoutDigest := "blake3:stdout", stderrDigest := "blake3:stderr"
+      successful := true, producerAgentRun := localWork.responsibleAgentRun
+      assuranceBinding := some <| localDesign.assuranceBindingForCriterion
+        localWork.responsibleAgentRun localCriterion.id } }
   let artifactSnapshot := "blake3:task-local-artifact"
   let localArtifactEvidence : LedgerEntry := {
-    id := "evidence-task-local-artifact", order := 4, scope := localWork.scope
+    id := "evidence-task-local-artifact", order := 5, scope := localWork.scope
     workId := some localWork.id, designRevision := some localDesign.id
     payload := .artifactObservation {
       taskEntryId := some localTask.id, outputScope := some artifactTarget
       criterionId := none, taskVerificationId := some "task-local-artifact"
       target := artifactTarget, snapshot := artifactSnapshot
       operation := "inspect Task-local artifact", result := "verified"
-      successful := true, producerAgentRun := localWork.responsibleAgentRun } }
+      successful := true, producerAgentRun := localWork.responsibleAgentRun
+      assuranceBinding := some <| localDesign.assuranceBindingForTask
+        localWork.responsibleAgentRun } }
   let localState : ProjectState := {
-    revision := 4, acceptedDesignId := some localDesign.id
+    revision := 5, acceptedDesignId := some localDesign.id
     focusedWorkId := some localWork.id, designRevisions := [localDesign]
     works := [localWork], implementationPlans := [localPlan]
-    ledgerEntries := [localTask, localProfile, localCommandEvidence, localArtifactEvidence] }
+    ledgerEntries := [localTask, localProfile, localCommandEvidence,
+      localCriterionEvidence, localArtifactEvidence] }
   fromExcept (validateState localState)
   let localClosed ← fromExcept <| closeTask localState [
     TargetObservation.mk commandTarget commandSnapshot,
@@ -243,7 +268,7 @@ def run : IO Unit := do
     | some { payload := .task value, .. } => pure value
     | _ => throw (IO.userError "Task-local verification did not produce a closed Task")
   expect (closedLocalTask.verificationEvidenceEntryIds ==
-      [localCommandEvidence.id, localArtifactEvidence.id])
+      [localCriterionEvidence.id, localCommandEvidence.id, localArtifactEvidence.id])
     "Task-local command and artifact contracts did not bind one exact evidence entry each"
   let noVerificationPlan : ImplementationPlan := { localPlan with
     id := "plan-task-local-missing", steps := [{ localStep with
@@ -259,7 +284,9 @@ def run : IO Unit := do
       target := commandTarget, snapshot := artifactSnapshot
       operation := "misclassify command verification as an artifact"
       result := "invalid", successful := true
-      producerAgentRun := localWork.responsibleAgentRun } }
+      producerAgentRun := localWork.responsibleAgentRun
+      assuranceBinding := some <| localDesign.assuranceBindingForTask
+        localWork.responsibleAgentRun } }
   expectError (validateState { localState with
     ledgerEntries := [localTask, localProfile, wrongKindEvidence] })
     "command evidence satisfied an artifact-only Task-local verification contract"
@@ -366,8 +393,15 @@ def run : IO Unit := do
   let stepA ← match uniqueBy? obligationOld.steps (·.id) "a" with
     | some value => pure value
     | none => throw (IO.userError "obligation fixture omitted step A")
+  let stepB ← match uniqueBy? obligationOld.steps (·.id) "b" with
+    | some value => pure value
+    | none => throw (IO.userError "obligation fixture omitted step B")
   let secondStatement : Statement := {
     id := "statement-2", text := "the second obligation is implemented" }
+  let secondCriterion : AcceptanceCriterion := {
+    id := "criterion-2", statementId := some secondStatement.id
+    statement := "the shared artifact satisfies the second obligation"
+    target := criterion.target, evidenceKind := criterion.evidenceKind }
   let secondSource : DesignSourceUnit := { sourceUnit with
     id := "unit-2"
     path := "requirement/2"
@@ -376,23 +410,28 @@ def run : IO Unit := do
   let primaryCoverage ← match design.statementCoverage.head? with
     | some value => pure value
     | none => throw (IO.userError "obligation fixture omitted primary Statement coverage")
-  let expandedDesign : DesignRevision := { design with
+  let expandedDesign : DesignRevision := withCurrentAssurance { design with
     sourceUnits := [sourceUnit, secondSource]
     sourceUnitDispositions := [
       { unitId := sourceUnit.id, role := .requirement },
       { unitId := secondSource.id, role := .requirement }]
     statements := [statement, secondStatement]
+    acceptanceCriteria := [criterion, secondCriterion]
     statementCoverage := [primaryCoverage, {
       statementId := secondStatement.id, sourceUnitIds := [secondSource.id]
       leanClaims := { noSelectionReason := some "no logical Claim is selected" }
-      acceptanceCriteria := { noSelectionReason := some "verified through the shared implementation output" }
+      acceptanceCriteria := { selectedIds := [secondCriterion.id] }
       implementationRequired := true }] }
+  let stepBExpanded := { stepB with verificationCriterionIds := [secondCriterion.id] }
   let oldWithTwoObligations : ImplementationPlan := { obligationOld with
     statementDispositions := [
       { statementId := statement.id, statementText := statement.text
         deltaKind := .added, stepIds := ["a"] },
       { statementId := secondStatement.id, statementText := secondStatement.text
-        deltaKind := .added, stepIds := ["b"] }] }
+        deltaKind := .added, stepIds := ["b"] }]
+    steps := [stepA, stepBExpanded] }
+  let stepAExpanded := { stepA with
+    verificationCriterionIds := [criterion.id, secondCriterion.id] }
   let reassignedCandidate : ImplementationPlan := { oldWithTwoObligations with
     id := "plan-reassigned", predecessorPlanId := some oldWithTwoObligations.id
     status := .candidate, contentDigest := "blake3:reassigned"
@@ -403,10 +442,24 @@ def run : IO Unit := do
         deltaKind := .added, stepIds := [stepA.id] },
       { statementId := secondStatement.id, statementText := secondStatement.text
         deltaKind := .added, stepIds := [stepA.id] }]
-    steps := [stepA] }
+    steps := [stepAExpanded] }
   let obligationState : ProjectState := { obligationBase with
     designRevisions := [expandedDesign]
-    implementationPlans := [oldWithTwoObligations, reassignedCandidate] }
+    implementationPlans := [oldWithTwoObligations, reassignedCandidate]
+    ledgerEntries := obligationBase.ledgerEntries.map fun entry =>
+      match entry.payload with
+      | .task task => { entry with payload := .task <|
+          if task.planStepId == some stepB.id then
+            { task with verificationCriterionIds := [secondCriterion.id] }
+          else task }
+      | .artifactObservation evidence =>
+        let evidenceCriterion := if entry.id == "old-evidence-b" then secondCriterion else criterion
+        { entry with
+          payload := .artifactObservation { evidence with
+            criterionId := some evidenceCriterion.id
+            assuranceBinding := some <| expandedDesign.assuranceBindingForCriterion
+              work.responsibleAgentRun evidenceCriterion.id } }
+      | _ => entry }
   fromExcept (validateState obligationState)
   let obligationReplaced ← fromExcept <| materializePlan obligationState
     reassignedCandidate.id

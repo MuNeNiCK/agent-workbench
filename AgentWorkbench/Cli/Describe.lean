@@ -37,11 +37,13 @@ private def statement : Statement :=
   { id := "statement-1", text := "artifact must exist" }
 
 private def criterion : AcceptanceCriterion :=
-  { id := "criterion-command", statement := "artifact command succeeds"
+  { id := "criterion-command", statementId := some statement.id
+    statement := "artifact command succeeds"
     target := "file:artifact.txt", evidenceKind := "command" }
 
 private def artifactCriterion : AcceptanceCriterion :=
-  { id := "criterion-artifact", statement := "artifact observation succeeds"
+  { id := "criterion-artifact", statementId := some statement.id
+    statement := "artifact observation succeeds"
     target := "file:observed.txt", evidenceKind := "artifact" }
 
 private def findingSubject : FindingSubject :=
@@ -58,6 +60,21 @@ private def claim : LeanClaim :=
       check := { executable := "lake", arguments := #["build"] }
       toolchain := Runtime.toolchain } }
 
+private def assuranceInput : AssuranceContractInput :=
+  let witnesses : List AssuranceWitnessInput := [
+    { id := claim.id, independenceClass := "pinned-kernel"
+      producerBoundary := s!"claim:{claim.id}:pinned-kernel:{claim.input.toolchain}" },
+    { id := criterion.id, independenceClass := "isolated-command-runner"
+      producerBoundary := s!"criterion:{criterion.id}:current-task-evidence-producer" },
+    { id := artifactCriterion.id, independenceClass := "external-artifact-observer"
+      producerBoundary :=
+        s!"criterion:{artifactCriterion.id}:current-task-evidence-producer" }]
+  { statementId := statement.id
+    witnesses
+    counterexamples := AssuranceFailureClass.all.map fun failureClass => {
+      failureClass, rejectedCondition := failureClass.rejectedCondition
+      positiveProperty := statement.text, witnessIds := witnesses.map (·.id) } }
+
 def operationContracts : List OperationContract :=
   [ noInput "init" "initialize project-local runtime and state"
   , noInput "describe" "list operations; append an operation name for its contract"
@@ -67,13 +84,14 @@ def operationContracts : List OperationContract :=
          sourceUnitDispositions := [], statementCoverage := []
          statements := [statement]
          acceptanceCriteria := [criterion, artifactCriterion]
-         leanClaims := [claim] } : DesignProposalRequest)
+         leanClaims := [claim], assuranceContracts := some [assuranceInput] } : DesignProposalRequest)
   , contract "design amend" "replace a candidate with an immutable amended candidate"
       ({ producerAgentRun := "agent-run-1", changeRationale := "address the accepted correction"
          amendsCandidate := some "design-1", sourceUnitDispositions := []
          sourceDocumentTargets := ["file:.agent-workbench/design/product/design.md"]
          statementCoverage := [], statements := [statement]
-         acceptanceCriteria := [criterion, artifactCriterion], leanClaims := [claim] } :
+         acceptanceCriteria := [criterion, artifactCriterion], leanClaims := [claim]
+         assuranceContracts := some [assuranceInput] } :
         DesignProposalRequest)
   , contract "design accept" "accept a candidate while no Work is focused"
       ({ id := "design-1" } : IdInput)
@@ -269,7 +287,8 @@ def operationInputSchema? (operation : String) : Option InputSchema :=
       statementId := "removed-statement", statementText := "superseded requirement"
       implementationRequired := false, noImplementationReason := some "removed by the successor" }]
     acceptanceCriteria := [criterion, artifactCriterion]
-    leanClaims := [claim] }
+    leanClaims := [claim]
+    assuranceContracts := some [assuranceInput] }
   let planSchema : PlanProposalRequest := {
     predecessorPlanId := some "plan-1"
     producerAgentRun := "agent-run-1"
