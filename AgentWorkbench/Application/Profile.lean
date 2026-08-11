@@ -1,5 +1,6 @@
 import AgentWorkbench.Application.Ledger
 import AgentWorkbench.Decision.Projection
+import AgentWorkbench.Domain.Validation.OutputScope
 
 namespace AgentWorkbench
 
@@ -9,7 +10,8 @@ structure ProfileDefineRequest where
   taskEntryId : String
   inputTargets : List String := []
   outputScope : String
-  criterionIds : List String
+  criterionIds : List String := []
+  taskVerificationIds : List String := []
   command : CommandSpec
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
@@ -20,25 +22,30 @@ structure ProfileReplaceRequest where
   taskEntryId : String
   inputTargets : List String := []
   outputScope : String
-  criterionIds : List String
+  criterionIds : List String := []
+  taskVerificationIds : List String := []
   command : CommandSpec
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 private def payload
     (purpose taskEntryId : String) (inputTargets : List String)
-    (outputScope : String) (criterionIds : List String) (command : CommandSpec) : EntryPayload :=
+    (outputScope : String) (criterionIds taskVerificationIds : List String)
+    (command : CommandSpec) : EntryPayload :=
   .commandProfile {
     purpose, taskEntryId := some taskEntryId, inputTargets := some inputTargets
     outputScope := some outputScope, criterionIds := some criterionIds
+    taskVerificationIds := if taskVerificationIds.isEmpty then none else some taskVerificationIds
     target := some outputScope, command }
 
 def defineProfile
-    (state : ProjectState) (request : ProfileDefineRequest) : Except String ProjectState :=
+    (state : ProjectState) (request : ProfileDefineRequest) : Except String ProjectState := do
+  Validation.validateManagedOutputScope request.outputScope
   appendCurrentEntry state request.entryId (payload request.purpose request.taskEntryId
-    request.inputTargets request.outputScope request.criterionIds request.command)
+    request.inputTargets request.outputScope request.criterionIds request.taskVerificationIds request.command)
 
 def replaceProfile
     (state : ProjectState) (request : ProfileReplaceRequest) : Except String ProjectState := do
+  Validation.validateManagedOutputScope request.outputScope
   let (design, work) ← currentBinding state
   let prior ← match state.entry? request.profileEntryId with
     | some value => pure value
@@ -52,6 +59,6 @@ def replaceProfile
   | _ => throw s!"entry {request.profileEntryId} is not a Command Profile"
   appendCurrentEntry state request.entryId
     (payload request.purpose request.taskEntryId request.inputTargets request.outputScope
-      request.criterionIds request.command) [prior.id]
+      request.criterionIds request.taskVerificationIds request.command) [prior.id]
 
 end AgentWorkbench

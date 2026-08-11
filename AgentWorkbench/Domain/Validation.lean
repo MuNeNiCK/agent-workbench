@@ -63,6 +63,29 @@ def validateDesignHistoryInvariant (state : ProjectState) : Except String Unit :
     validateDesign design
     validateDesignRelations state design
 
+def workCompletionEntries (state : ProjectState) (work : Work) : List LedgerEntry :=
+  state.ledgerEntries.filter fun entry =>
+    entry.workId == some work.id && match entry.payload with
+    | .workCompletion value => value.workId == work.id
+    | _ => false
+
+def currentWorkCompletionAuthorities
+    (state : ProjectState) (work : Work) : List LedgerEntry :=
+  workCompletionEntries state work
+
+/-- Read compatibility for v0.2.10 states whose postcompletion disposition changed only the Work
+projection. Ledger history is untouched; the first successful completion remains the authority. -/
+def restoreCompletionMonotonicProjection (state : ProjectState) : ProjectState :=
+  let completedIds := state.works.filterMap fun work =>
+    if !(workCompletionEntries state work).isEmpty then some work.id else none
+  { state with
+    focusedWorkId := state.focusedWorkId.bind fun id =>
+      if completedIds.contains id then none else some id
+    works := state.works.map fun work =>
+      if completedIds.contains work.id then
+        { work with status := .completed, resumeCondition := none }
+      else work }
+
 def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit := do
   let accepted := state.designRevisions.filter (·.status == .accepted)
   match state.acceptedDesignId with
@@ -83,15 +106,12 @@ def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit :
     ensure (!work.id.isEmpty && !work.outcome.isEmpty && !work.scope.isEmpty &&
       !work.responsibleAgentRun.isEmpty)
       s!"work {work.id} is incomplete"
-    let completions := state.ledgerEntries.filter fun entry =>
-      entry.workId == some work.id && match entry.payload with
-      | .workCompletion value => value.workId == work.id
-      | .workResume _ => false
-      | _ => false
+    let completions := workCompletionEntries state work
+    let currentCompletions := currentWorkCompletionAuthorities state work
     if work.status == .completed then
       let legacyUnavailable := work.designRevision.any fun designId =>
         (state.design? designId).any fun design => !design.sourceArchiveAvailable
-      ensure (completions.length == 1 || (completions.isEmpty && legacyUnavailable))
+      ensure (currentCompletions.length == 1 || (completions.isEmpty && legacyUnavailable))
         s!"completed Work {work.id} does not have exactly one completion authority"
     else
       ensure completions.isEmpty

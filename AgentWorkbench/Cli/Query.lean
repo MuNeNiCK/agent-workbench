@@ -10,6 +10,7 @@ import AgentWorkbench.Application.Proof
 import AgentWorkbench.Application.Current
 import AgentWorkbench.Application.Completion
 import AgentWorkbench.Application.Query
+import AgentWorkbench.Adapter.CompletionPreflight
 import AgentWorkbench.Cli.Describe
 
 namespace AgentWorkbench.Cli
@@ -94,7 +95,18 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .reviewInspect reviewEntryId => do
       let state ← Store.loadState (← openQueryStore projectRoot)
       match reviewInspection? state reviewEntryId with
-      | some value => writeJson value
+      | some value => do
+          let review ← match value.review.payload with
+            | .review review => pure review
+            | _ => fail s!"entry {reviewEntryId} is not a Review"
+          let inputs ← evaluateCurrentInputs projectRoot state
+          let currentTargetSnapshot ← try
+              some <$> ReviewTarget.currentSnapshot projectRoot state review.purpose review.target
+                inputs.observations inputs.claimDigests
+            catch _ => pure none
+          writeJson { value with
+            currentTargetSnapshot
+            targetCurrent := currentTargetSnapshot == some review.targetSnapshot }
       | none => fail s!"no Review entry {reviewEntryId}"
   | .commandShow profileEntryId => do
       let state ← Store.loadState (← openQueryStore projectRoot)
@@ -112,8 +124,16 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .ready => do
       let state ← Store.loadState (← openQueryStore projectRoot)
       let inputs ← evaluateCurrentInputs projectRoot state
-      writeJson (ReadinessResult.mk state.revision
-        (completionReady state inputs.observations inputs.claimDigests)
-        (projectContext? state inputs.observations inputs.claimDigests))
+      let preflightResult := CompletionPreflight.prepare state inputs
+      let preflight := preflightResult.toOption.map (·.identity)
+      let ready := preflight.isSome
+      let context := projectContext? state inputs.observations inputs.claimDigests
+      let canonical := Lean.Json.mkObj [
+        ("stateRevision", Lean.toJson state.revision),
+        ("ready", Lean.toJson ready),
+        ("preflight", Lean.toJson preflight),
+        ("context", Lean.toJson context)]
+      writeJson (ReadinessResult.mk state.revision ready preflight context
+        (ContentDigest.string canonical.compress))
 
 end AgentWorkbench.Cli

@@ -22,7 +22,7 @@ This is an intentional consistency boundary, not a request for the user to edit 
 | `accepted` | Current normative design | `design accept` selects it |
 | `superseded` | Former accepted Design or amended candidate retained as immutable history | Derived by successor acceptance or candidate amendment |
 | `rejected` | Candidate explicitly rejected without changing accepted authority | `design reject` |
-| `replaced` | Legacy decoded status | No new v0.2.8 transition creates it |
+| `replaced` | Legacy decoded status | No new v0.2.10 transition creates it |
 
 `design propose` and `design amend` require a focused Work and capture exact declared Markdown bytes
 from its private Design workspace. The accepted parent, Work binding, identity, digest, and candidate
@@ -37,7 +37,7 @@ or silently replace the immutable candidate stored in SQLite.
 |---|---|---|
 | `active` | Work is eligible to be focused; `focusedWorkId` identifies the one currently performed | `work start`, `work focus`, or `work resume` |
 | `suspended` | Work retained with an explicit return condition | `work suspend` |
-| `completed` | Readiness passed and exactly one matching completion record was committed | `work complete` |
+| `completed` | Readiness passed and the Work's immutable completion record was committed | `work complete`; no later operation reopens it |
 | `withdrawn` | Outcome ended unsuccessfully under an effective User Correction | `work withdraw` |
 
 Important transitions:
@@ -50,7 +50,13 @@ Important transitions:
 | Move retained Work to a successor design | `work adopt-design` | Design binding changes; Work remains unfocused | Work was not suspended, successor is not a descendant, or requester is not responsible |
 | Transfer agent responsibility | `work handoff` | Responsible agent run changes; Work and evidence boundary remain | Work is not focused or successor is already responsible |
 | Complete | `work complete` | Work becomes completed, focus clears, and the exact completion-input digest is recorded atomically | Derived readiness is false |
+| Remediate a later defect | `work start`, then `work bind-remediation` | A distinct focused Work is causally bound to the accepted Finding; the origin Work remains completed | Finding is not an accepted implementation defect on a completed Work, the remediation Work is not distinct/focused, or the responsible run differs |
 | End without success | `work withdraw` | Work becomes withdrawn and focus clears | No effective same-Work User Correction authorizes withdrawal |
+
+A successful completion is terminal for that Work: no public mutation changes it back to active or
+suspended and it cannot be recompleted. Postcompletion Findings and their dispositions remain on the
+completed origin as incident history. Productive repair authority belongs only to the distinct
+Finding-bound remediation Work.
 
 ## Implementation Plan states
 
@@ -100,6 +106,11 @@ records.
 
 The response identifies the corresponding gaps. Correct the underlying project result or use the
 applicable semantic operation; never change private database rows to remove a gap.
+
+When `ready` is true, it also returns the exact current completion-input revision/digest and the
+revision/digest of the completely constructed and validated post-state. `work complete` commits that
+prepared state without reconstructing it. A state or observed-input change invalidates the
+preflight and requires a new `ready` result.
 
 ## Ledger entry currentness
 

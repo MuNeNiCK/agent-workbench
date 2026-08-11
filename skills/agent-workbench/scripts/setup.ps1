@@ -11,38 +11,210 @@ if ($releaseVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
   throw "Invalid Agent Workbench release version"
 }
 $archive = "agent-workbench-windows-x86_64.zip"
-$temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-workbench-setup-" + [guid]::NewGuid())
+$runtimeParent = Join-Path $ProjectRoot ".agent-workbench"
+$destination = Join-Path $runtimeParent "bin"
+$candidate = Join-Path $runtimeParent ".bin.next"
+$previous = Join-Path $runtimeParent ".bin.previous"
+$activationPending = Join-Path $runtimeParent ".bin.activation-pending"
+$activationCommitted = Join-Path $runtimeParent ".bin.activation-committed"
+$runtime = Join-Path $destination "agent-workbench.exe"
+$temporary = ""
+$requiredFiles = @(
+  "LICENSE-BLAKE3-APACHE-2.0",
+  "LICENSE-BLAKE3-APACHE-2.0-LLVM",
+  "LICENSE-BLAKE3-CC0-1.0",
+  "LICENSE-Blake3-lean",
+  "LICENSE-agent-workbench",
+  "LICENSE-elan-APACHE",
+  "LICENSE-elan-MIT",
+  "LICENSE-lean4",
+  "LICENSE-leansqlite",
+  "LICENSES-lean4",
+  "README.md",
+  "agent-workbench.exe",
+  "docs/assurance.md",
+  "docs/concepts.md",
+  "docs/getting-started.md",
+  "docs/index.md",
+  "docs/installation.md",
+  "docs/operation-reference.md",
+  "docs/recovery.md",
+  "docs/releases.md",
+  "docs/reviews.md",
+  "docs/state-reference.md",
+  "docs/workflow.md",
+  "elan.exe",
+  "skill/agent-workbench/SKILL.md",
+  "skill/agent-workbench/agents/openai.yaml",
+  "skill/agent-workbench/release-version",
+  "skill/agent-workbench/scripts/setup.ps1",
+  "skill/agent-workbench/scripts/setup.sh"
+)
+$requiredDirectories = @(
+  ".",
+  "docs",
+  "skill",
+  "skill/agent-workbench",
+  "skill/agent-workbench/agents",
+  "skill/agent-workbench/scripts"
+)
+
+function Get-BundleRelativePath([string]$BundleRoot, [string]$EntryPath) {
+  $trimCharacters = [char[]]@(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $root = [System.IO.Path]::GetFullPath($BundleRoot).TrimEnd($trimCharacters)
+  $entry = [System.IO.Path]::GetFullPath($EntryPath)
+  $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $entry.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Runtime bundle entry escapes its root: $EntryPath"
+  }
+  return $entry.Substring($prefix.Length).Replace('\', '/')
+}
+
+function Test-RuntimeBundle([string]$BundleRoot) {
+  if (-not (Test-Path -LiteralPath $BundleRoot -PathType Container)) { return $false }
+  $marker = Join-Path $BundleRoot "skill/agent-workbench/release-version"
+  if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+  if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $releaseVersion) { return $false }
+  $entries = @(Get-ChildItem -LiteralPath $BundleRoot -Force -Recurse)
+  if ($entries | Where-Object {
+      ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    }) { return $false }
+  $actualFiles = @($entries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+    Get-BundleRelativePath $BundleRoot $_.FullName
+  } | Sort-Object)
+  $actualDirectories = @(".") + @($entries | Where-Object { $_.PSIsContainer } | ForEach-Object {
+    Get-BundleRelativePath $BundleRoot $_.FullName
+  } | Sort-Object)
+  if ((Compare-Object $requiredFiles $actualFiles).Count -ne 0) { return $false }
+  if ((Compare-Object $requiredDirectories $actualDirectories).Count -ne 0) { return $false }
+  return $true
+}
+
+function Remove-PathIfPresent([string]$Path) {
+  if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
+}
+
+function Test-RuntimeActivationUsable {
+  if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot ".agent-workbench/state.db") `
+      -PathType Leaf)) { return $false }
+  if (-not (Test-RuntimeBundle $destination)) { return $false }
+  try {
+    & $runtime --project $ProjectRoot context *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Complete-RuntimeActivation {
+  Remove-PathIfPresent $previous
+  Remove-PathIfPresent $activationPending
+  Remove-PathIfPresent $activationCommitted
+}
+
+function Undo-UncommittedRuntimeActivation {
+  Remove-PathIfPresent $destination
+  if (Test-Path -LiteralPath $previous) {
+    Move-Item -LiteralPath $previous -Destination $destination
+  }
+  Remove-PathIfPresent $activationPending
+}
+
+function Restore-RuntimeSwap {
+  if (Test-Path -LiteralPath $activationCommitted) {
+    if (Test-RuntimeBundle $destination) {
+      Complete-RuntimeActivation
+    } else {
+      # Native activation may already have migrated state. Never expose it to the old runtime.
+      Remove-PathIfPresent $previous
+      Remove-PathIfPresent $destination
+      Remove-PathIfPresent $activationPending
+      Remove-PathIfPresent $activationCommitted
+    }
+  } elseif (Test-Path -LiteralPath $activationPending) {
+    if (Test-RuntimeActivationUsable) {
+      New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+      Complete-RuntimeActivation
+    } else {
+      Undo-UncommittedRuntimeActivation
+    }
+  } elseif (Test-Path -LiteralPath $previous) {
+    if ((Test-Path -LiteralPath $destination) -and (Test-RuntimeBundle $destination)) {
+      Remove-PathIfPresent $previous
+    } else {
+      Remove-PathIfPresent $destination
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+  }
+  Remove-PathIfPresent $candidate
+}
+
+if ((Test-Path -LiteralPath $previous) -or (Test-Path -LiteralPath $candidate) -or
+    (Test-Path -LiteralPath $activationPending) -or
+    (Test-Path -LiteralPath $activationCommitted)) {
+  New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
+  Restore-RuntimeSwap
+}
+$needsInstall = -not (Test-RuntimeBundle $destination)
 
 try {
-  New-Item -ItemType Directory -Path $temporary | Out-Null
-  $archivePath = Join-Path $temporary $archive
-  $checksumPath = "$archivePath.sha256"
-  if ($LocalArchive -or $LocalChecksum) {
-    if (-not $LocalArchive -or -not $LocalChecksum) {
-      throw "LocalArchive and LocalChecksum must be provided together"
+  if ($needsInstall) {
+    $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-workbench-setup-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $temporary | Out-Null
+    $archivePath = Join-Path $temporary $archive
+    $checksumPath = "$archivePath.sha256"
+    if ($LocalArchive -or $LocalChecksum) {
+      if (-not $LocalArchive -or -not $LocalChecksum) {
+        throw "LocalArchive and LocalChecksum must be provided together"
+      }
+      Copy-Item $LocalArchive $archivePath
+      Copy-Item $LocalChecksum $checksumPath
+    } else {
+      Invoke-WebRequest "$repository/releases/download/$releaseVersion/$archive" -OutFile $archivePath
+      Invoke-WebRequest "$repository/releases/download/$releaseVersion/$archive.sha256" -OutFile $checksumPath
+      & gh attestation verify $archivePath `
+        --repo MuNeNiCK/agent-workbench `
+        --signer-workflow MuNeNiCK/agent-workbench/.github/workflows/release.yml `
+        --deny-self-hosted-runners `
+        --source-ref "refs/tags/$releaseVersion" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Agent Workbench archive provenance verification failed" }
     }
-    Copy-Item $LocalArchive $archivePath
-    Copy-Item $LocalChecksum $checksumPath
-  } else {
-    Invoke-WebRequest "$repository/releases/download/$releaseVersion/$archive" -OutFile $archivePath
-    Invoke-WebRequest "$repository/releases/download/$releaseVersion/$archive.sha256" -OutFile $checksumPath
-    & gh attestation verify $archivePath `
-      --repo MuNeNiCK/agent-workbench `
-      --signer-workflow MuNeNiCK/agent-workbench/.github/workflows/release.yml `
-      --deny-self-hosted-runners `
-      --source-ref "refs/tags/$releaseVersion" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Agent Workbench archive provenance verification failed" }
+    $expected = ((Get-Content $checksumPath -Raw) -split '\s+')[0].ToLowerInvariant()
+    $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw "Agent Workbench archive checksum mismatch" }
+
+    New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
+    Remove-PathIfPresent $candidate
+    New-Item -ItemType Directory -Path $candidate | Out-Null
+    Expand-Archive $archivePath $candidate
+    if (-not (Test-RuntimeBundle $candidate)) {
+      throw "Downloaded Agent Workbench archive is not a complete release bundle"
+    }
+
+    Remove-PathIfPresent $previous
+    if (Test-Path -LiteralPath $destination) {
+      Move-Item -LiteralPath $destination -Destination $previous
+    }
+    New-Item -ItemType File -Path $activationPending | Out-Null
+    try {
+      Move-Item -LiteralPath $candidate -Destination $destination
+    } catch {
+      throw "Failed to replace the Agent Workbench runtime bundle: $_"
+    }
   }
-  $expected = ((Get-Content $checksumPath -Raw) -split '\s+')[0].ToLowerInvariant()
-  $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($actual -ne $expected) { throw "Agent Workbench archive checksum mismatch" }
-  $destination = Join-Path $ProjectRoot ".agent-workbench/bin"
-  New-Item -ItemType Directory -Force -Path $destination | Out-Null
-  Expand-Archive -Force $archivePath $destination
-  $runtime = Join-Path $destination "agent-workbench.exe"
   if (Test-Path (Join-Path $ProjectRoot ".agent-workbench/state.db")) {
-    $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0) {
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $contextOutput = (& $runtime --project $ProjectRoot context 2>&1 | Out-String).Trim()
+      $contextExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($contextExitCode -eq 0) {
       $contextOutput
     } elseif ($contextOutput -match 'unsupported schema revision 1; expected 2') {
       & $runtime --project $ProjectRoot init
@@ -54,6 +226,46 @@ try {
     & $runtime --project $ProjectRoot init
     if ($LASTEXITCODE -ne 0) { throw "Agent Workbench initialization failed" }
   }
+  if ($needsInstall) {
+    if ($env:AGENT_WORKBENCH_SETUP_FAULT_POINT -eq "after-native-activation") {
+      [Console]::Error.WriteLine(
+        "injected interruption after native Agent Workbench activation")
+      $taskkill = Join-Path $env:SystemRoot "System32/taskkill.exe"
+      & $taskkill /F /PID $PID | Out-Null
+      throw "Injected interruption failed to terminate setup"
+    }
+    New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+    Complete-RuntimeActivation
+  }
 } finally {
-  if (Test-Path $temporary) { Remove-Item -Recurse -Force $temporary }
+  if (Test-Path -LiteralPath $activationCommitted) {
+    if (Test-RuntimeBundle $destination) {
+      Complete-RuntimeActivation
+    } else {
+      Remove-PathIfPresent $previous
+      Remove-PathIfPresent $destination
+      Remove-PathIfPresent $activationPending
+      Remove-PathIfPresent $activationCommitted
+    }
+  } elseif (Test-Path -LiteralPath $activationPending) {
+    if (Test-RuntimeActivationUsable) {
+      New-Item -ItemType File -Force -Path $activationCommitted | Out-Null
+      Complete-RuntimeActivation
+    } else {
+      Undo-UncommittedRuntimeActivation
+    }
+  } else {
+    if ((-not (Test-Path -LiteralPath $destination)) -and
+        (Test-Path -LiteralPath $previous)) {
+      Move-Item -LiteralPath $previous -Destination $destination
+    }
+    if ((Test-Path -LiteralPath $destination) -and
+        (Test-Path -LiteralPath $previous)) {
+      Remove-PathIfPresent $previous
+    }
+  }
+  Remove-PathIfPresent $candidate
+  if ($temporary -and (Test-Path $temporary)) {
+    Remove-Item -Recurse -Force $temporary
+  }
 }

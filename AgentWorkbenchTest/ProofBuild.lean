@@ -1,4 +1,5 @@
 import AgentWorkbench.Adapter.ProofBuild
+import AgentWorkbenchProof.ProductionGrounding
 
 namespace AgentWorkbenchTest.ProofBuild
 
@@ -132,6 +133,73 @@ private def exerciseLakeImportOutputs : IO Unit := do
   expect (AgentWorkbench.ProofBuild.oleanOutputs outputs == #[build ++ ".olean"])
     "proof discovery treated a non-.olean Lake artifact as an imported module output"
 
+private def exerciseProductionEffectGroundingCounterexamples : IO Unit := do
+  let owner : AgentWorkbenchProof.ProductionEffectOwner := {
+    designRevisionId := "design-current"
+    designRevisionDigest := "blake3:current-design"
+    statementId := "statement-effects"
+    statementText := "every production effect has an exact owner"
+    statementTextDigest := "blake3:current-statement"
+    criterionId := "criterion-effects"
+    criterionBinding := "{\"evidenceKind\":\"command\",\"id\":\"criterion-effects\",\"statement\":\"production proof\",\"statementId\":\"statement-effects\",\"target\":\"tree:AgentWorkbench\"}" }
+  let statement : Statement := {
+    id := owner.statementId, text := owner.statementText }
+  let criterion : AcceptanceCriterion := {
+    id := owner.criterionId, statementId := some owner.statementId
+    statement := "production proof", target := "tree:AgentWorkbench", evidenceKind := "command" }
+  let contract : AssuranceContract := {
+    designRevisionId := owner.designRevisionId
+    assuranceEpoch := "blake3:current-epoch"
+    statementId := owner.statementId
+    statementText := owner.statementText
+    statementTextDigest := owner.statementTextDigest
+    sourceUnitIds := []
+    criterionIds := [owner.criterionId]
+    implementationRequired := true
+    scope := []
+    scopeDigest := "blake3:current-scope"
+    witnesses := []
+    counterexamples := [] }
+  let design : DesignRevision := {
+    id := owner.designRevisionId
+    status := .accepted
+    producerAgentRun := "design-producer"
+    revisionContentDigest := owner.designRevisionDigest
+    statements := [statement]
+    acceptanceCriteria := [criterion]
+    assuranceSchemaVersion := 1
+    assuranceContracts := [contract] }
+  let authorityState : ProjectState := {
+    ProjectState.empty with acceptedDesignId := some design.id, designRevisions := [design] }
+  let firstKey : ProductionEffectKey := {
+    operation := .workComplete, effect := .workActiveCompleted }
+  let secondKey : ProductionEffectKey := {
+    operation := .reviewDisposition, effect := .ledgerAppended }
+  let addedBranch : ProductionEffectKey := {
+    operation := .reviewDisposition, effect := .workActiveSuspended }
+  let effectUniverse := [firstKey, secondKey]
+  let matrix : List AgentWorkbenchProof.ProductionEffectGrounding := [
+    { key := firstKey, owner }, { key := secondKey, owner }]
+  let validFor := AgentWorkbenchProof.validProductionEffectGroundingMatrixFor effectUniverse
+    authorityState owner.statementId owner.criterionId
+  expect (validFor matrix)
+    "independent production-effect grounding fixture is not closed"
+  expect (!validFor matrix.tail)
+    "production-effect grounding accepted a missing effect"
+  expect (!validFor (matrix ++ [{ key := addedBranch, owner }]))
+    "production-effect grounding accepted an extra effect"
+  expect (!validFor (matrix ++ [{ key := firstKey, owner }]))
+    "production-effect grounding accepted a duplicate effect"
+  let crossDesign := { owner with designRevisionId := "design-other" }
+  expect (!validFor (matrix.map fun grounding => { grounding with owner := crossDesign }))
+    "production-effect grounding accepted a cross-Design owner"
+  let stale := { owner with statementTextDigest := "blake3:stale-statement" }
+  expect (!validFor (matrix.map fun grounding => { grounding with owner := stale }))
+    "production-effect grounding accepted a stale owner"
+  expect (!AgentWorkbenchProof.validProductionEffectGroundingMatrixFor
+    (effectUniverse ++ [addedBranch]) authorityState owner.statementId owner.criterionId matrix)
+    "a branch added inside an existing operation bypassed reverse grounding"
+
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     let parent := root / "outputs"
@@ -142,5 +210,6 @@ def run : IO Unit :=
     exerciseCallbackFailure parent
     exerciseAbsentOutputParent root
     exerciseLakeImportOutputs
+    exerciseProductionEffectGroundingCounterexamples
 
 end AgentWorkbenchTest.ProofBuild

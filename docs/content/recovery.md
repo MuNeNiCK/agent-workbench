@@ -40,6 +40,10 @@ without schema-creation or migration capability and do not take the mutation loc
 An older schema is therefore not migrated by `context` or another read operation. Re-run the
 matching installed Skill's setup entry point. It recognizes the explicit v0.2.7 schema response and
 delegates migration to native `init`; it does not reinterpret other database errors as an upgrade.
+During a runtime replacement, setup rolls back an interruption before native activation. Once
+native `context` or `init` succeeds, setup records a separate activation commit; recovery then keeps
+the compatible new runtime and only completes replacement cleanup. Re-running setup is therefore
+safe after an interruption immediately following a successful schema migration.
 
 ## Failed operations
 

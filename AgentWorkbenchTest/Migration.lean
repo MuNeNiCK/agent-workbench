@@ -3,6 +3,7 @@ import AgentWorkbench.Adapter.Store
 import AgentWorkbench.Adapter.SQLite
 import AgentWorkbench.Adapter.DesignSource
 import AgentWorkbench.Adapter.PlanSource
+import AgentWorkbenchTest.RouteReceipt
 
 namespace AgentWorkbenchTest.Migration
 
@@ -124,6 +125,19 @@ private def createV1Database (path : System.FilePath) (focused : Bool := true) :
      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
     #[receiptEntry.id, "3", receiptEntry.scope, "work-v1", "design-v1",
       "lean-proof-receipt", legacyReceiptDocument]
+  let profileEntry : LedgerEntry := {
+    id := "profile-v1", order := 4, scope := "project"
+    workId := some "work-v1", designRevision := some "design-v1"
+    payload := .commandProfile {
+      purpose := "retained legacy verification"
+      target := some "file:legacy"
+      command := { executable := "lake", arguments := #["build"] } } }
+  AgentWorkbench.SQLite.execute connection
+    "INSERT INTO ledger_entries(
+       id, entry_order, scope, work_id, design_revision, payload_kind, document
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+    #[profileEntry.id, "4", profileEntry.scope, "work-v1", "design-v1",
+      "command-profile", (Lean.toJson profileEntry).compress]
   if !focused then
     AgentWorkbench.SQLite.execute connection
       "UPDATE project_metadata SET focused_work_id = NULL WHERE singleton = 1" #[]
@@ -171,6 +185,10 @@ def run : IO Unit := do
           value.assumptionDependencies.isEmpty
       | _ => false)
       "migration could not retain a v0.2.7 proof receipt as stale history"
+    expect (migrated.entry? "profile-v1" |>.any fun entry => match entry.payload with
+      | .commandProfile value => value.taskEntryId.isNone && value.criterionIds.isNone
+      | _ => false)
+      "migration did not retain a task-unbound v0.2.7 profile as stale history"
     let connection ← AgentWorkbench.SQLite.openReadOnly database
     let persistedDesign ← AgentWorkbench.SQLite.queryScalar connection
       "SELECT structured_document FROM design_revisions WHERE id = 'design-v1'" #[]
@@ -209,7 +227,8 @@ def run : IO Unit := do
         leanClaims := { noSelectionReason := some "no logical Claim is selected" }
         acceptanceCriteria := { selectedIds := [criterion.id] }
         implementationRequired := true }]
-      acceptanceCriteria := [criterion] })
+      acceptanceCriteria := [criterion]
+      assuranceContracts := some [fixtureAssuranceInput statement [] [criterion]] })
     let successor ← match proposed with
       | .design value => pure value
       | _ => throw (IO.userError "successor Design proposal returned the wrong result")
@@ -249,6 +268,8 @@ def run : IO Unit := do
       "migrated Work did not obtain its successor Plan"
     expect (advanced.ledgerEntries.any fun entry => entry.id == "task-v1")
       "successor materialization erased legacy Task history"
+    expect (advanced.ledgerEntries.any fun entry => entry.id == "profile-v1")
+      "successor materialization erased legacy Profile history"
     expect (advanced.ledgerEntries.countP (fun entry => match entry.payload with
       | .task task => task.planId == some plan.id && !task.retired
       | _ => false) == plan.steps.length)
@@ -331,9 +352,65 @@ def run : IO Unit := do
       (some "{\"id\":\"work-v1\"}")
     expect (output.exitCode == 0)
       s!"public work focus route did not migrate and focus active Work: {output.stderr}"
+    RouteReceipt.recordSuccessful .migratedPublicRoute .workFocus
     let focused ← Store.loadState (← Store.openReadOnly database)
     expect (focused.focusedWorkId == some "work-v1" &&
       (focused.work? "work-v1").any (·.status == .active))
       "public work focus route did not retain the migrated Work identity"
+
+  -- v0.2.10 could persist a completed Work as suspended while retaining its immutable completion
+  -- entry. Opening schema v2 restores only the projection, keeps the ledger bytes exact, and is
+  -- idempotent on every later open.
+  IO.FS.withTempDir fun root => do
+    let database := root / "state.db"
+    let created ← Store.open database
+    let connection := Store.writeConnection created
+    let rolledBackWork : Work := {
+      id := "work-v0210-rollback", outcome := "retain the completed outcome"
+      scope := "project", designRevision := some "design-v0210"
+      status := .suspended, responsibleAgentRun := "agent-v0210"
+      resumeCondition := some "legacy same-Work remediation" }
+    AgentWorkbench.SQLite.execute connection
+      "INSERT INTO works(
+         id, status, scope, outcome, baseline_design_id, design_revision_id,
+         responsible_run, resume_condition, migration_diagnostic, document
+       ) VALUES (?1, 'suspended', ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7)"
+      #[rolledBackWork.id, rolledBackWork.scope, rolledBackWork.outcome,
+        "design-v0210", rolledBackWork.responsibleAgentRun,
+        rolledBackWork.resumeCondition.getD "", (Lean.toJson rolledBackWork).compress]
+    let completionDocument := "immutable-v0210-completion-ledger-document"
+    AgentWorkbench.SQLite.execute connection
+      "INSERT INTO ledger_entries(
+         id, entry_order, scope, work_id, design_revision, payload_kind, document
+       ) VALUES ('completion-v0210', 1, 'project', ?1, 'design-v0210',
+         'work-completion', ?2)" #[rolledBackWork.id, completionDocument]
+    AgentWorkbench.SQLite.execute connection
+      "UPDATE project_metadata SET state_revision = 10, focused_work_id = ?1
+       WHERE singleton = 1" #[rolledBackWork.id]
+    let migratedStore ← Store.open database
+    expect (Store.wasMigratedFromLegacy migratedStore)
+      "schema-v2 completion rollback projection was not reported as migrated"
+    let inspected ← AgentWorkbench.SQLite.openReadOnly database
+    expect ((← AgentWorkbench.SQLite.queryScalar inspected
+      "SELECT status FROM works WHERE id = 'work-v0210-rollback'" #[]) == "completed")
+      "schema-v2 migration did not restore the completed Work status"
+    expect ((← AgentWorkbench.SQLite.queryScalar inspected
+      "SELECT COALESCE(resume_condition, '') FROM works
+       WHERE id = 'work-v0210-rollback'" #[]).isEmpty)
+      "schema-v2 migration retained same-Work resume authority"
+    expect ((← AgentWorkbench.SQLite.queryScalar inspected
+      "SELECT COALESCE(focused_work_id, '') FROM project_metadata WHERE singleton = 1" #[]).isEmpty)
+      "schema-v2 migration retained focus on a completed Work"
+    expect ((← AgentWorkbench.SQLite.queryScalar inspected
+      "SELECT json_extract(document, '$.status') FROM works
+       WHERE id = 'work-v0210-rollback'" #[]) == "completed")
+      "schema-v2 migration left the Work document projection stale"
+    expect ((← AgentWorkbench.SQLite.queryScalar inspected
+      "SELECT document FROM ledger_entries WHERE id = 'completion-v0210'" #[]) ==
+        completionDocument)
+      "schema-v2 migration rewrote immutable completion ledger bytes"
+    let reopened ← Store.open database
+    expect (!Store.wasMigratedFromLegacy reopened)
+      "schema-v2 completion projection migration was not idempotent"
 
 end AgentWorkbenchTest.Migration

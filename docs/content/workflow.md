@@ -23,18 +23,22 @@ For a project with no accepted Design, the agent follows the discoverable state 
    CommonMark unit is classified, and every Statement records explicit Lean-Claim, observable
    Criterion, and implementation choices. Proposal archives the Lean sources, derives their
    digests, rejects undeclared local dependencies, and pins the elaborated proposition identity.
-5. If the accepted project policy or risk calls for Design Review, review that immutable candidate.
-   Review is otherwise optional.
+5. Before Plan materialization, close the candidate's Assurance Contract matrix and obtain current
+   receipts for every selected Claim. If policy calls for Design Review, it can start only after
+   that check. Review is otherwise optional.
 6. Accept the current candidate head. If it selects Lean Claims, complete their project-local proofs
    and receipts.
 7. Write the Work-specific implementation source below
    `.agent-workbench/design/plans/<work-id>/`, propose the complete Plan, and materialize it. This
-   creates the exact Task dependency graph; agents cannot add unrelated Tasks manually.
+   creates the exact Task dependency graph; agents cannot add unrelated Tasks manually. Every step
+   selects Design Criteria, or declares concrete Task-local command/artifact verification when the
+   Design intentionally has no applicable Criterion.
 8. Implement dependency-ready Tasks and obtain their Task-bound command or artifact evidence.
 9. Close each Task only after its current post-materialization evidence exists.
-10. Use `ready`; complete the Work only when every current gap is closed. Completion atomically
-    stores one immutable record bound to the exact Work, Design, Plan, responsible run, and digest
-    of the pre-commit completion input. A `completed` status without that record is invalid.
+10. Use `ready`; complete the Work only when every current gap is closed. Readiness constructs and
+    validates the exact prospective completion state. Completion atomically commits that prepared
+    state and one immutable record bound to the exact Work, Design, Plan, responsible run, input
+    revision, and input digest. A `completed` status without that record is invalid.
 
 This is a dependency route, not review-driven development. The agent discovers the applicable next
 operation from the current state instead of inventing a phase or reconstructing it from chat.
@@ -81,13 +85,18 @@ If a target, profile, Design, Task materialization epoch, or proof input changes
 longer counts. Failed or interrupted managed commands restore uncommitted output; proof build output
 is isolated, serialized, and restored before another mutation proceeds.
 
+Ordinary product and documentation CI do not upload Workbench-only tested-commit artifacts. A hosted
+agent may observe a run privately and record that observation through the current Workbench evidence
+route, but that private receipt is not added to shipped artifacts or ordinary CI configuration.
+
 ## Use review when it adds evidence
 
-Design Review examines one immutable DesignRevision. Implementation Review examines one fixed
-Design/Plan/Task/evidence manifest. Findings are advisory until the responsible Work agent records a
-disposition. An accepted Design Finding becomes a causal basis for candidate amendment; an accepted
-Implementation Finding that requires output work must be included in the replacement Plan before it
-can be materialized.
+Design Review examines one immutable, currently assured DesignRevision. Implementation Review starts
+only after independent completion readiness and examines one fixed Design/Plan/Task/evidence
+manifest. Findings are advisory until the responsible Work agent records a typed disposition. An
+`implementationDefect` is Plan-remediable only when an existing Contract covers it. An
+`assuranceOmission` closes productive authority and returns through a strict successor Design, fresh
+assurance, adoption, and Plan; it cannot directly enter a predecessor replacement Plan.
 
 Checking a fix for the same implementation target uses `resume`. A newly amended Design is a new
 immutable target; the old Design Review remains readable but cannot authorize the new candidate.
@@ -98,6 +107,9 @@ immutable target; the old Design Review remains readable but cannot authorize th
 closed verified Tasks, current Criteria evidence, Corrections, and accepted Findings. A clean Git
 tree, commit, review message, KPT entry, or agent statement cannot substitute for a missing gap.
 
-After completion, the immutable Work-completion record is the authority that completion occurred;
-the status field is only its lifecycle projection. The record is committed in the same SQLite
-transaction as the status change and focus removal.
+After completion, the current immutable Work-completion record is the authority that completion
+occurred; the status field is only its lifecycle projection. The record is committed in the same
+SQLite transaction as the status change and focus removal. It is terminal for that Work. A later
+accepted implementation Finding remains incident evidence without changing the completed status or
+record. Productive remediation starts a distinct Finding-bound Work with independent Plan, Tasks,
+evidence, Review, and completion.

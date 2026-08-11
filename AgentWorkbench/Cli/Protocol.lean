@@ -1,4 +1,5 @@
 import AgentWorkbench.Decision.ReviewInput
+import AgentWorkbench.Adapter.CompletionPreflight
 
 namespace AgentWorkbench.Cli
 
@@ -76,7 +77,9 @@ structure ContextResult where
 structure ReadinessResult where
   stateRevision : Nat
   ready : Bool
+  preflight : Option CompletionPreflight.Identity
   context : Option ProjectContext
-  deriving Lean.ToJson
+  digest : String
+  deriving Lean.ToJson, Lean.FromJson
 
 end AgentWorkbench.Cli

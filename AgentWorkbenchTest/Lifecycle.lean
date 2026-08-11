@@ -49,7 +49,7 @@ private def correctionWithdrawal : IO Unit := do
 
 private def successorAdoptionPreservesHistoricalPlan : IO Unit := do
   let predecessor : DesignRevision := { design with status := .superseded }
-  let successor : DesignRevision := {
+  let successor : DesignRevision := withCurrentAssurance {
     design with
     id := "design-2"
     parent := some design.id
@@ -88,8 +88,10 @@ private def completionAuthority : IO Unit := do
     [{ target := criterion.target, snapshot := "blake3:artifact" }]
   let closed ← fromExcept <| closeTask evidencedState observations {
     entryId := "task-closed", taskEntryId := "task-open" }
+  let completionDigest := (← fromExcept <| completionInput closed observations []).digest
+  let completionInputValue ← fromExcept <| completionInput closed observations []
   let completed ← fromExcept <| completeFocusedWork closed observations []
-    "blake3:completion-input"
+    completionInputValue completionDigest
   let records := completed.ledgerEntries.filter fun entry => match entry.payload with
     | .workCompletion value => value.workId == work.id
     | _ => false
@@ -97,6 +99,7 @@ private def completionAuthority : IO Unit := do
     | .workCompletion value =>
         value.designRevision == design.id && value.planId == plan.id &&
           value.inputRevision == closed.revision &&
+          value.inputDigest == completionDigest &&
           value.completedByRun == work.responsibleAgentRun
     | _ => false)
     "completion did not atomically persist its exact Work/Design/Plan input authority"
@@ -107,8 +110,11 @@ private def completionAuthority : IO Unit := do
       if candidate.id == work.id then { candidate with status := .completed } else candidate }
   expectError (validateState statusOnly)
     "completed status was accepted without a WorkCompletion authority"
-  expectError (completeFocusedWork closed observations [] "")
+  expectError (completeFocusedWork closed observations [] completionInputValue "")
     "completion accepted an empty canonical input digest"
+  expectError (completeFocusedWork { closed with revision := closed.revision + 1 }
+    observations [] completionInputValue completionDigest)
+    "completion accepted an input captured from another state revision"
 
 def run : IO Unit := do
   fromExcept (validateState baseState)

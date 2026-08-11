@@ -5,14 +5,17 @@ namespace AgentWorkbench
 
 def completeFocusedWork
     (state : ProjectState) (observations : List TargetObservation)
-    (digests : List CurrentClaimDigest) (inputDigest : String) : Except String ProjectState := do
+    (digests : List CurrentClaimDigest) (expectedInput : CompletionInput)
+    (inputDigest : String) : Except String ProjectState := do
   let workId ← match state.focusedWorkId with
     | some value => pure value
     | none => throw "no focused Work"
   if !completionReady state observations digests then
     throw "focused Work is not ready for completion"
-  if inputDigest.isEmpty then throw "completion input digest is empty"
+  if !Validation.validContentDigest inputDigest then throw "completion input digest is invalid"
   let input ← completionInput state observations digests
+  if input != expectedInput then
+    throw "completion input differs from the exact current revision and inputs"
   let completionId := s!"completion-{input.work.id}-{state.revision + 1}"
   if (state.entry? completionId).isSome then throw s!"entry id {completionId} already exists"
   let completion : LedgerEntry := {

@@ -4,7 +4,7 @@ namespace AgentWorkbench.Snapshot
 
 private def ignoredTreeDirectory (path : System.FilePath) : Bool :=
   match path.fileName with
-  | some name => [".git", ".lake", "dist", "site"].contains name
+  | some name => [".git", ".lake", ".agent-workbench", "dist", "site"].contains name
   | none => false
 
 private def frame (value : String) : String :=

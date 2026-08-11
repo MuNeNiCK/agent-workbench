@@ -13,8 +13,8 @@ def findingSubjectCurrent (design : DesignRevision) (subject : FindingSubject) :
       criterion.id == subject.id && criterion.statement == subject.exactQuote)
   | .statement => design.statements.any (fun statement =>
       statement.id == subject.id && statement.text == subject.exactQuote)
-  | .assumption => design.statements.any (fun statement =>
-      statement.id == subject.id && statement.assumptions.contains subject.exactQuote)
+  | .assumption => design.assumptions.any (fun assumption =>
+      assumption.id == subject.id && assumption.text == subject.exactQuote)
   | .implementationComponent => false
 
 def designFindingSubject? (design : DesignRevision) : Option FindingSubject :=
@@ -62,11 +62,115 @@ private def remediationTaskEntryId? (entry : LedgerEntry) : Option String :=
   | .commandExecution value => value.taskEntryId
   | _ => none
 
+/-- Exact files only cover themselves. A tree observation also covers files and
+subtrees below that tree, but never a sibling or parent target. -/
+def implementationTargetCovers (evidenceTarget findingTarget : String) : Bool :=
+  if evidenceTarget == findingTarget then true
+  else if evidenceTarget.startsWith "tree:" then
+    let root := evidenceTarget.drop 5
+    if root == "." then
+      findingTarget.startsWith "tree:" || findingTarget.startsWith "file:"
+    else
+      findingTarget.startsWith s!"tree:{root}/" ||
+        findingTarget.startsWith s!"file:{root}/"
+  else false
+
+/-- Resolve a fixed Implementation Review component to the product output targets it observed.
+Ledger-backed Review components use stable entry IDs, not path-shaped IDs; causal remediation must
+therefore compare against the target recorded by that immutable component. -/
+def implementationComponentTargets (state : ProjectState) (componentId : String) : List String :=
+  match state.entry? componentId with
+  | some entry => match entry.payload with
+    | .commandExecution value => value.target.orElse (fun _ => value.outputScope) |>.toList
+    | .artifactObservation value => [value.target]
+    | .commandProfile value => value.target.orElse (fun _ => value.outputScope) |>.toList
+    | .task value => value.outputScopes
+    | _ => [componentId]
+  | none => [componentId]
+
+def implementationComponentCriterionIds
+    (state : ProjectState) (componentId : String) : List String :=
+  match state.entry? componentId with
+  | some entry => match entry.payload with
+    | .commandExecution value => value.criterionId.toList
+    | .artifactObservation value => value.criterionId.toList
+    | .commandProfile value => value.criterionIds.getD []
+    | .task value => value.verificationCriterionIds
+    | _ => []
+  | none => []
+
+def implementationComponentTargetCovers
+    (state : ProjectState) (evidenceTarget componentId : String) : Bool :=
+  (implementationComponentTargets state componentId).any fun componentTarget =>
+    implementationTargetCovers evidenceTarget componentTarget
+
+def findingAssuranceContractIds
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : List String :=
+  match findingEntry.designRevision.bind state.design? with
+  | none => []
+  | some design =>
+      let contracts := design.effectiveAssuranceContracts
+      match finding.subject.kind with
+      | .statement => contracts.filterMap fun contract =>
+          if contract.statementId == finding.subject.id then some contract.statementId else none
+      | .criterion => contracts.filterMap fun contract =>
+          if contract.criterionIds.contains finding.subject.id then some contract.statementId else none
+      | .assumption => contracts.filterMap fun contract =>
+          if contract.assumptionIds.contains finding.subject.id then some contract.statementId else none
+      | .implementationComponent =>
+          let criterionIds := implementationComponentCriterionIds state finding.subject.id
+          let targets := implementationComponentTargets state finding.subject.id
+          contracts.filterMap fun contract =>
+            if (!criterionIds.isEmpty && contract.criterionIds.any criterionIds.contains) ||
+                (criterionIds.isEmpty && contract.criterionIds.any (fun criterionId =>
+                  (design.criterion? criterionId).any fun criterion =>
+                    targets.any fun target => implementationTargetCovers criterion.target target))
+            then some contract.statementId else none
+
+def findingAssuranceContractId?
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : Option String :=
+  match findingAssuranceContractIds state findingEntry finding with
+  | [contractId] => some contractId
+  | _ => none
+
+private def remediationShapeEqual
+    (left right : AssuranceContract) : Bool :=
+  left.statementId == right.statementId && left.statementText == right.statementText &&
+    left.assumptionIds == right.assumptionIds &&
+    left.trustedBoundaryAssumptionIds == right.trustedBoundaryAssumptionIds &&
+    left.sourceUnitIds == right.sourceUnitIds && left.claimIds == right.claimIds &&
+    left.criterionIds == right.criterionIds &&
+    left.implementationRequired == right.implementationRequired &&
+    left.witnesses == right.witnesses && left.counterexamples == right.counterexamples
+
+/-- A source-history-only successor may carry an accepted implementation defect when the exact
+Contract judgment covering the immutable Finding is unchanged.  Design identity and epoch are
+intentionally excluded; every authority-bearing Contract relation must remain equal. -/
+def findingCoveredByAssuranceInDesign
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
+    (currentDesign : DesignRevision) : Bool :=
+  match findingEntry.designRevision.bind state.design?,
+      findingAssuranceContractId? state findingEntry finding with
+  | some findingDesign, some contractId =>
+      (findingDesign.effectiveAssuranceContracts.find? (·.statementId == contractId)).bind
+        (fun original => currentDesign.effectiveAssuranceContracts.find?
+          (·.statementId == contractId) |>.map fun current =>
+            remediationShapeEqual original current) |>.getD false
+  | _, _ => false
+
+/-- An implementation defect is already covered only when its immutable Review subject derives one
+exact current Contract.  Zero matches are outside the Design; multiple matches are ambiguous and
+cannot be promoted to Plan authority as if one existing Contract had covered the failure. -/
+def findingCoveredByAssurance
+    (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord) : Bool :=
+  (findingAssuranceContractId? state findingEntry finding).isSome
+
 private def findingTargetMatches
     (state : ProjectState) (findingEntry : LedgerEntry) (finding : FindingRecord)
     (target : String) : Bool :=
   match finding.subject.kind with
-  | .implementationComponent => finding.subject.id == target
+  | .implementationComponent =>
+      implementationComponentTargetCovers state target finding.subject.id
   | .criterion =>
       findingEntry.designRevision.bind state.design? |>.bind (·.criterion? finding.subject.id)
         |>.any (·.target == target)
@@ -108,6 +212,49 @@ def findingRemediationBindingCurrent
                       |>.any (·.acceptedFindingEntryIds.contains findingEntry.id))
                 | _ => false
           | _, _ => false)
+  | _, _ => false
+
+/-- Validate the causal remediation chain as it existed when a verification was recorded. Later
+Plan replacement may make that verification non-current, but cannot make its history malformed. -/
+def findingRemediationBindingBefore
+    (state : ProjectState) (findingEntry evidenceEntry : LedgerEntry)
+    (finding : FindingRecord) (target : String) (beforeOrder : Nat) : Bool :=
+  let priorEntries := state.ledgerEntries.filter (·.order < beforeOrder)
+  let supersededBefore (candidate : LedgerEntry) := priorEntries.any fun replacement =>
+    replacement.order > candidate.order && replacement.supersedes.contains candidate.id
+  match findingEntry.workId, remediationTaskEntryId? evidenceEntry with
+  | some workId, some sourceTaskEntryId =>
+      let acceptedDisposition? := findingDispositionIn? priorEntries findingEntry.id workId
+      let sourceTaskEntry? := priorEntries.find? (·.id == sourceTaskEntryId)
+      acceptedDisposition?.any (fun dispositionEntry =>
+        sourceTaskEntry?.any (fun sourceTaskEntry => dispositionEntry.order < sourceTaskEntry.order) &&
+          match dispositionEntry.payload with
+          | .reviewDisposition disposition => disposition.decision == .accepted
+          | _ => false) &&
+      findingTargetMatches state findingEntry finding target &&
+      sourceTaskEntry?.any fun sourceTaskEntry =>
+        let sourceBinding := match sourceTaskEntry.payload with
+          | .task sourceTask =>
+              (sourceTask.planId.bind state.plan?).any (fun (plan : ImplementationPlan) =>
+                plan.workId == workId && some plan.designRevision == findingEntry.designRevision &&
+                (sourceTask.planStepId.bind (fun stepId => uniqueBy? plan.steps (·.id) stepId)
+                  |>.any (·.acceptedFindingEntryIds.contains findingEntry.id)) &&
+                priorEntries.any (fun closedTaskEntry =>
+                  let taskMatches := match closedTaskEntry.payload with
+                    | .task closedTask =>
+                        closedTask.planId == sourceTask.planId &&
+                        closedTask.lineageId == sourceTask.lineageId && closedTask.closed &&
+                        !closedTask.retired && closedTask.outputScopes.contains target &&
+                        closedTask.verificationTaskEntryId == some sourceTaskEntry.id &&
+                        closedTask.verificationEvidenceEntryIds.contains evidenceEntry.id
+                    | _ => false
+                  !supersededBefore closedTaskEntry &&
+                    closedTaskEntry.workId == some workId &&
+                    closedTaskEntry.designRevision == findingEntry.designRevision &&
+                    closedTaskEntry.order > evidenceEntry.order && taskMatches))
+          | _ => false
+        sourceTaskEntry.order > findingEntry.order &&
+          sourceTaskEntry.order < evidenceEntry.order && sourceBinding
   | _, _ => false
 
 end AgentWorkbench

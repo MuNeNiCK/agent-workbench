@@ -104,6 +104,7 @@ def EntryPayload.tag : EntryPayload → String
   | .workWithdrawal _ => "work_withdrawal"
   | .workResume _ => "work_resume"
   | .workCompletion _ => "work_completion"
+  | .workRemediation _ => "work_remediation"
   | .designRejection _ => "design_rejection"
   | .commandProfile _ => "command_profile"
   | .commandExecution _ => "command_execution"

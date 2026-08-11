@@ -1,4 +1,4 @@
-import Lean.Data.Json
+import AgentWorkbench.Domain.Plan
 
 namespace AgentWorkbench
 
@@ -9,6 +9,7 @@ structure TaskRecord where
   dependencyLineageIds : List String := []
   outputScopes : List String := []
   verificationCriterionIds : List String := []
+  taskVerificationContracts : List TaskVerificationContract := []
   /-- Exact evidence entries used to close this Task. Completion revalidates
   these identities; evidence for a sibling Task cannot substitute for them. -/
   verificationEvidenceEntryIds : List String := []
@@ -19,7 +20,26 @@ structure TaskRecord where
   description : String
   required : Bool
   closed : Bool
-  deriving Repr, DecidableEq, Lean.ToJson
+  deriving Repr, DecidableEq
+
+instance : Lean.ToJson TaskRecord where
+  toJson value := Lean.Json.mkObj <|
+    [("planId", Lean.toJson value.planId),
+     ("planStepId", Lean.toJson value.planStepId),
+     ("lineageId", Lean.toJson value.lineageId),
+     ("dependencyLineageIds", Lean.toJson value.dependencyLineageIds),
+     ("outputScopes", Lean.toJson value.outputScopes),
+     ("verificationCriterionIds", Lean.toJson value.verificationCriterionIds)] ++
+    (if value.taskVerificationContracts.isEmpty then [] else
+      [("taskVerificationContracts", Lean.toJson value.taskVerificationContracts)]) ++
+    [("verificationEvidenceEntryIds", Lean.toJson value.verificationEvidenceEntryIds),
+     ("verificationTaskEntryId", Lean.toJson value.verificationTaskEntryId),
+     ("materializedAtOrder", Lean.toJson value.materializedAtOrder),
+     ("retired", Lean.toJson value.retired),
+     ("criterionId", Lean.toJson value.criterionId),
+     ("description", Lean.toJson value.description),
+     ("required", Lean.toJson value.required),
+     ("closed", Lean.toJson value.closed)]
 
 private structure PersistedTaskRecord where
   planId : Option String
@@ -28,6 +48,7 @@ private structure PersistedTaskRecord where
   dependencyLineageIds : List String
   outputScopes : List String
   verificationCriterionIds : List String
+  taskVerificationContracts : Option (List TaskVerificationContract) := none
   verificationEvidenceEntryIds : List String := []
   verificationTaskEntryId : Option String := none
   materializedAtOrder : Nat
@@ -52,6 +73,7 @@ instance : Lean.FromJson TaskRecord where
         planId := value.planId, planStepId := value.planStepId, lineageId := value.lineageId
         dependencyLineageIds := value.dependencyLineageIds, outputScopes := value.outputScopes
         verificationCriterionIds := value.verificationCriterionIds
+        taskVerificationContracts := value.taskVerificationContracts.getD []
         verificationEvidenceEntryIds := value.verificationEvidenceEntryIds
         verificationTaskEntryId := value.verificationTaskEntryId
         materializedAtOrder := value.materializedAtOrder, retired := value.retired

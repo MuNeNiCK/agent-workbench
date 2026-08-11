@@ -26,6 +26,7 @@ private def routeDesignUnit : DesignSourceUnit :=
     text := routeStatement.text, digest := "blake3:design-unit" }
 
 private def routeDesign : DesignRevision :=
+  let base : DesignRevision :=
   { id := "design-1", workId := some "work-route"
     producerAgentRun := "agent-route", changeRationale := "initial Design for the route witness"
     revisionContentDigest := "blake3:design-route", sourceArchiveAvailable := true
@@ -38,7 +39,9 @@ private def routeDesign : DesignRevision :=
       leanClaims := { noSelectionReason := some "the route has no Design-time logical Claim" }
       acceptanceCriteria := { selectedIds := [routeCriterion.id] }
       implementationRequired := true }]
-    acceptanceCriteria := [routeCriterion] }
+    acceptanceCriteria := [routeCriterion]
+    assuranceSchemaVersion := 1 }
+  { base with assuranceContracts := base.derivedAssuranceContracts }
 
 private def routeStepA : PlanStep :=
   { id := "a", description := "produce the dependency"
@@ -81,7 +84,9 @@ private def routeEvidence (taskId : String) : EntryPayload :=
     taskEntryId := some taskId, outputScope := some routeCriterion.target
     criterionId := routeCriterion.id, target := routeCriterion.target
     snapshot := "blake3:artifact", operation := "observe route artifact"
-    result := "artifact exists", successful := true, producerAgentRun := "agent-route" }
+    result := "artifact exists", successful := true, producerAgentRun := "agent-route"
+    assuranceBinding := some <| routeDesign.assuranceBindingForCriterion
+      "agent-route" routeCriterion.id }
 
 /-- A constructive route over the actual production transitions. It starts one Work before a
 Design exists, accepts the initial Design into that Work, materializes a non-empty dependency Plan,
@@ -93,7 +98,7 @@ def constructiveNormalPath : Except String ProjectState := do
   let proposed ← proposeDesign started routeDesign
   let accepted ← acceptDesign proposed routeDesign.id
   let planned ← proposePlan accepted routePlan
-  let materialized ← materializePlan planned routePlan.id []
+  let materialized ← materializePlan planned routePlan.id [] []
   let evidenceA ← appendCurrentEntry materialized "evidence-a"
     (routeEvidence "task-plan-1-a")
   let closedA ← closeTask evidenceA
@@ -104,9 +109,11 @@ def constructiveNormalPath : Except String ProjectState := do
   let closedB ← closeTask evidenceB
     [{ target := routeCriterion.target, snapshot := "blake3:artifact" }]
     { entryId := "task-closed-b", taskEntryId := "task-plan-1-b" }
+  let input ← completionInput closedB
+    [{ target := routeCriterion.target, snapshot := "blake3:artifact" }] []
   completeFocusedWork closedB
     [{ target := routeCriterion.target, snapshot := "blake3:artifact" }] []
-    "blake3:constructive-completion-input"
+    input "blake3:constructive-completion-input"
 
 private def constructiveFinalState : ProjectState :=
   match constructiveNormalPath with
@@ -163,12 +170,14 @@ theorem constructive_normal_path_is_valid :
 
 private def successorDesign
     (id digest rationale : String) (parent amended : Option String := none) : DesignRevision :=
-  { routeDesign with
+  let base := { routeDesign with
     id := id
     parent := parent
     amendsCandidate := amended
     changeRationale := rationale
-    revisionContentDigest := digest }
+    revisionContentDigest := digest
+    assuranceContracts := [] }
+  { base with assuranceContracts := base.derivedAssuranceContracts }
 
 /-- Candidate amendment is a distinct production route: the old candidate is superseded, the
 amendment head is accepted, and accepted-Design ancestry remains separate from drafting lineage. -/

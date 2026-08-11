@@ -304,6 +304,26 @@ private def migrateV1ToV2 (connection : AgentWorkbench.SQLite.Connection) : IO U
       WHERE payload_kind = 'lean-proof-receipt';
     UPDATE project_metadata SET schema_revision = 2 WHERE singleton = 1;"
 
+/-- v0.2.10 briefly projected a completed Work back to an open status after a postcompletion
+Finding. Restore only the projection columns/document; immutable ledger entries are never edited. -/
+private def restoreV2CompletionMonotonicProjection
+    (connection : AgentWorkbench.SQLite.Connection) : IO Unit :=
+  AgentWorkbench.SQLite.runScript connection "
+    UPDATE project_metadata
+      SET focused_work_id = NULL
+      WHERE focused_work_id IN (
+        SELECT DISTINCT work_id FROM ledger_entries WHERE payload_kind = 'work-completion'
+      );
+    UPDATE works
+      SET status = 'completed',
+          resume_condition = NULL,
+          document = json_set(json_set(document, '$.status', 'completed'),
+            '$.resumeCondition', NULL)
+      WHERE status IN ('active', 'suspended')
+        AND id IN (
+          SELECT DISTINCT work_id FROM ledger_entries WHERE payload_kind = 'work-completion'
+        );"
+
 def initializeStoreSchema (connection : AgentWorkbench.SQLite.Connection) : IO OpenResult := do
   AgentWorkbench.SQLite.runScript connection "PRAGMA foreign_keys = ON;"
   let metadataTables ← AgentWorkbench.SQLite.queryScalar connection
@@ -322,7 +342,17 @@ def initializeStoreSchema (connection : AgentWorkbench.SQLite.Connection) : IO O
       pure .migrated
     else if stored != "2" then
       fail s!"unsupported schema revision {stored}; expected 1 or 2"
-    else pure .current
+    else
+      let rollbackProjections ← AgentWorkbench.SQLite.queryScalar connection
+        "SELECT CAST(COUNT(*) AS TEXT) FROM works
+         WHERE status IN ('active', 'suspended') AND id IN (
+           SELECT DISTINCT work_id FROM ledger_entries WHERE payload_kind = 'work-completion'
+         )" #[]
+      if rollbackProjections != "0" then
+        AgentWorkbench.SQLite.immediateTransaction connection do
+          restoreV2CompletionMonotonicProjection connection
+        pure .migrated
+      else pure .current
 
 
 end AgentWorkbench.StoreSchema

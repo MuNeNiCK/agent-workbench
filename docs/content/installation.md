@@ -8,7 +8,7 @@ not require a global Workbench CLI, Elan, Lean, Docker, or QEMU.
 From the repository root:
 
 ```bash
-gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.8 \
+gh skill install MuNeNiCK/agent-workbench agent-workbench@v0.2.11 \
   --agent codex --scope project
 ```
 
@@ -29,6 +29,21 @@ verifies the archive's GitHub build-provenance attestation for the repository, r
 tag, then verifies the published SHA-256 checksum before extracting below `.agent-workbench/bin`.
 Native `init` then uses the bundled official Elan executable to acquire `leanprover/lean4:v4.32.2`
 below `.agent-workbench/toolchains`.
+
+Every project entry runs setup as a cheap version check. It compares the installed Skill's release
+marker with the marker embedded in the private runtime bundle. A missing or different marker causes
+the exact pinned archive to replace the private runtime. Setup extracts into a fresh sibling,
+requires the complete release bundle and matching marker, and then performs a recoverable directory
+swap. The old bundle remains available while the replacement performs the required native
+`context` load or `init`. Failure before native activation restores the exact old bundle, removes
+the failed candidate, and allows the pinned archive to be retried. After `context` or `init`
+succeeds, setup persists a separate activation-commit marker before removing the old bundle. An
+interruption after that point retains the new runtime, including when `init` migrated the database;
+the next setup finishes cleanup instead of exposing the migrated state to the old runtime. Files
+that belonged only to a successfully replaced old bundle cannot survive the replacement. For a
+matching complete runtime, the acquisition and version-check phase performs no download,
+extraction, or runtime-bundle write. This prevents a newly installed Skill from silently continuing
+with an older, partially replaced, or non-activating runtime.
 
 When setup finds a v0.2.7 database, it first attempts a read-only context load. Only the explicit
 schema-revision mismatch is handed to native `init` for migration; other read failures remain
@@ -73,6 +88,11 @@ An unsupported OS/architecture pair is rejected before installation is treated a
 Workbench does not modify `.gitignore`, Git configuration, or the index. The project decides whether
 `.agents` and `.agent-workbench` are tracked, ignored, or provisioned another way. In this repository
 both are intentionally ignored.
+
+Workbench does not add or alter the project's product source, build inputs, runtime state, or
+shipped artifacts. It may operate as a separate development or release gate without becoming a
+product dependency. A verification helper used only to record Workbench evidence belongs below
+`.agent-workbench`. Removing Workbench leaves the project's product implementation unchanged.
 
 ## Source verification for maintainers
 

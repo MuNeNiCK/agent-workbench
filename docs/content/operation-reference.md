@@ -29,9 +29,9 @@ source snapshots unless that field belongs to the returned intent contract.
 |---|---|
 | Setup and discovery | `init`, `describe` |
 | Design | `design propose`, `design amend`, `design accept`, `design reject`, `design get`, `design inspect-sources`, `design source`, `design diff`, `design export` |
-| Work | `work start`, `work get`, `work focus`, `work resume`, `work suspend`, `work handoff`, `work adoption-impact`, `work adopt-design`, `work withdraw`, `work complete` |
+| Work | `work start`, `work get`, `work focus`, `work resume`, `work suspend`, `work handoff`, `work adoption-impact`, `work adopt-design`, `work bind-remediation`, `work withdraw`, `work complete` |
 | Implementation Plan | `plan propose`, `plan replace`, `plan materialize`, `plan get`, `plan inspect-sources`, `plan source`, `plan diff`, `plan export` |
-| Task | `task close` (Tasks are materialized from the current Plan; there is no manual Task creation operation) |
+| Task | `task close`, `task reopen-stale` (Tasks are materialized from the current Plan; there is no manual Task creation operation) |
 | Command Profile | `profile define`, `profile replace`, `command show`, `command run` |
 | Artifact evidence | `artifact observe` |
 | User correction | `correction record`, `correction supersede`, `correction resolve`, `correction incorporate` |
@@ -52,6 +52,19 @@ Workbench.
 4. Require `applicable: true` and use only fields returned by that contract.
 5. For a Command Profile, call `command show` before `command run`.
 6. Use `ready` as the completion decision.
+
+Completion is terminal for that Work. If a later accepted Finding identifies an implementation
+defect already covered by the accepted Design, start a distinct Work and bind it with
+`work bind-remediation`. The completed origin Work and its incident evidence remain unchanged; the
+new Work has independent Plan, Task, evidence, Review, and completion authority.
+
+If evidence bound to a closed current Task later becomes stale, `context` exposes
+`task reopen-stale`. The operation has no request-authored Task ID: Workbench derives every current,
+required, closed Task whose closing evidence is stale, atomically supersedes those Task entries and
+their closed transitive dependents, and clears inherited closing evidence. It preserves the current
+Plan, Task lineages, dependencies, and verification contracts. Recreate current evidence through
+the existing Profile or artifact route and call `task close` again. The operation is inapplicable
+when all closed Task evidence is current; it is not a generic manual reopen.
 
 Declare every file or other observable input on which a Command Profile's result depends. A
 successful `command run` binds its evidence to the observed state of those inputs as well as the
@@ -76,7 +89,9 @@ Review. Its target provenance is derived from that Review rather than supplied b
 ## Read operations
 
 - `context` returns the bounded current projection.
-- `ready` returns the derived completion decision and current gaps.
+- `ready` returns the derived completion decision, current gaps, and—only when ready—the exact
+  completion input and fully validated prospective post-state identity. Any intervening state or
+  observed-input change makes that preflight stale.
 - `design get`, `plan get`, `work get`, and `entry get` return one entity by stable ID.
 - `design source/diff/export` and `plan source/diff/export` read immutable SQLite archives, never
   later draft files.

@@ -126,8 +126,7 @@ private def validateDesignArchives [ReadableStore S]
         if source.target != row[0]! || source.mediaKind != row[1]! ||
             source.snapshot != row[2]! || ContentDigest.bytes content != row[2]! then
           fail s!"Design {design.id} source archive differs from its immutable manifest"
-      let material := Lean.toJson {
-        design with revisionContentDigest := "", status := .candidate }
+      let material := Codec.designDigestMaterial design
       if ContentDigest.string material.compress != design.revisionContentDigest then
         fail s!"Design {design.id} immutable content digest is invalid"
 
@@ -160,7 +159,7 @@ def loadState [ReadableStore S] (store : S) : IO ProjectState := do
   let plans ← loadPlans store
   let entries ← loadDocuments store "ledger entry" "ledger_entries" "entry_order"
   validateReviewManifests entries
-  let state : ProjectState :=
+  let rawState : ProjectState :=
     { revision
       acceptedDesignId := Codec.textOption row[2]!
       focusedWorkId := Codec.textOption row[3]!
@@ -168,6 +167,7 @@ def loadState [ReadableStore S] (store : S) : IO ProjectState := do
       works
       implementationPlans := plans
       ledgerEntries := entries }
+  let state := restoreCompletionMonotonicProjection rawState
   fromExcept (validateState state)
   pure state
 

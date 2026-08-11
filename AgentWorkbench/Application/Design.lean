@@ -16,6 +16,9 @@ structure DesignProposalRequest where
   removedStatements : List RemovedStatementTombstone := []
   acceptanceCriteria : List AcceptanceCriterion
   leanClaims : List LeanClaim := []
+  /-- Explicit judgment-bearing Contract inputs.  Workbench supplies only derived scope and
+  cryptographic identities; absence is rejected for a current Design. -/
+  assuranceContracts : Option (List AssuranceContractInput) := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure DesignRejectRequest where
@@ -30,7 +33,8 @@ private def nextDesignId (state : ProjectState) : String :=
 def DesignProposalRequest.design
     (state : ProjectState) (workId : String) (sources : List DesignSource)
     (units : List DesignSourceUnit)
-    (request : DesignProposalRequest) : DesignRevision :=
+    (request : DesignProposalRequest) : Except String DesignRevision := do
+  let base : DesignRevision :=
   { id := nextDesignId state, workId := some workId, parent := state.acceptedDesignId
     amendsCandidate := request.amendsCandidate
     producerAgentRun := request.producerAgentRun
@@ -42,7 +46,10 @@ def DesignProposalRequest.design
     assumptions := request.assumptions
     statements := request.statements, statementCoverage := request.statementCoverage
     removedStatements := request.removedStatements
-    acceptanceCriteria := request.acceptanceCriteria, leanClaims := request.leanClaims }
+    acceptanceCriteria := request.acceptanceCriteria, leanClaims := request.leanClaims
+    assuranceSchemaVersion := 1 }
+  let contracts ← base.assuranceContractsFromInputs (request.assuranceContracts.getD [])
+  pure { base with assuranceContracts := contracts }
 
 def proposeDesign
     (state : ProjectState) (candidate : DesignRevision) : Except String ProjectState := do
@@ -109,6 +116,9 @@ def acceptDesign (state : ProjectState) (id : String) : Except String ProjectSta
 
 def rejectDesign
     (state : ProjectState) (request : DesignRejectRequest) : Except String ProjectState := do
+  let focusedWork ← match state.currentWork? with
+    | some value => pure value
+    | none => throw "Design rejection requires a focused Work"
   let candidate ← match state.design? request.designId with
     | some value => pure value
     | none => throw s!"design {request.designId} does not exist"
@@ -117,6 +127,8 @@ def rejectDesign
   let workId ← match candidate.workId with
     | some value => pure value
     | none => throw "Design candidate is not Work-bound"
+  if workId != focusedWork.id then
+    throw s!"Design candidate {candidate.id} is not bound to focused Work {focusedWork.id}"
   let work ← match state.work? workId with
     | some value => pure value
     | none => throw s!"no Work {workId}"
