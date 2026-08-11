@@ -5,8 +5,7 @@ namespace AgentWorkbenchProof
 open AgentWorkbench
 
 /-- Exact accepted-Design identity for one production-effect owner and its verification
-obligation. The product proof is generic; repository-private evidence supplies the current
-accepted Design values. -/
+obligation. -/
 structure ProductionEffectOwner where
   designRevisionId : String
   designRevisionDigest : String
@@ -15,7 +14,7 @@ structure ProductionEffectOwner where
   statementTextDigest : String
   criterionId : String
   criterionBinding : String
-  deriving Repr, DecidableEq
+  deriving Repr, DecidableEq, Lean.ToJson
 
 structure ProductionEffectGrounding where
   key : ProductionEffectKey
@@ -32,31 +31,60 @@ def validProductionEffectOwner (owner : ProductionEffectOwner) : Bool :=
     owner.statementTextDigest.startsWith "blake3:" &&
     !owner.criterionId.isEmpty && !owner.criterionBinding.isEmpty
 
+/-- Derive authority from the current accepted Design itself.  The caller selects only stable IDs;
+it cannot supply the Design identity, content digests, Statement text, or Criterion binding that
+the matrix is checked against. -/
+def productionEffectOwnerFor?
+    (state : ProjectState) (statementId criterionId : String) : Option ProductionEffectOwner := do
+  let design ← state.currentDesign?
+  let statement ← design.statements.find? (fun value => value.id == statementId)
+  let criterion ← design.acceptanceCriteria.find? (fun value => value.id == criterionId)
+  let contract ← design.effectiveAssuranceContracts.find?
+    (fun value => value.statementId == statement.id)
+  if criterion.statementId != some statement.id ||
+      !contract.criterionIds.contains criterion.id ||
+      contract.designRevisionId != design.id ||
+      contract.statementText != statement.text then none
+  else pure {
+    designRevisionId := design.id
+    designRevisionDigest := design.revisionContentDigest
+    statementId := statement.id
+    statementText := statement.text
+    statementTextDigest := contract.statementTextDigest
+    criterionId := criterion.id
+    criterionBinding := (Lean.toJson criterion).compress }
+
 /-- Reverse coverage is exact, not merely positive: every derived production pair occurs once,
 every supplied row belongs to that universe, and every row binds the same current accepted-Design
 Statement and verification obligation. -/
 def validProductionEffectGroundingMatrixFor
-    (effectUniverse : List ProductionEffectKey) (currentOwner : ProductionEffectOwner)
-    (matrix : List ProductionEffectGrounding) : Bool :=
-  validProductionEffectOwner currentOwner &&
-    (effectUniverse.all fun key =>
-      effectUniverse.count key == 1 && productionEffectGroundingCount matrix key == 1) &&
-    (matrix.all fun grounding =>
-      effectUniverse.contains grounding.key && grounding.owner == currentOwner
-    )
+    (effectUniverse : List ProductionEffectKey) (state : ProjectState)
+    (statementId criterionId : String) (matrix : List ProductionEffectGrounding) : Bool :=
+  match productionEffectOwnerFor? state statementId criterionId with
+  | none => false
+  | some currentOwner =>
+      validProductionEffectOwner currentOwner &&
+        (effectUniverse.all fun key =>
+          effectUniverse.count key == 1 && productionEffectGroundingCount matrix key == 1) &&
+        (matrix.all fun grounding =>
+          effectUniverse.contains grounding.key && grounding.owner == currentOwner)
 
 def validProductionEffectGroundingMatrix
-    (currentOwner : ProductionEffectOwner)
+    (state : ProjectState) (statementId criterionId : String)
     (matrix : List ProductionEffectGrounding) : Bool :=
-  validProductionEffectGroundingMatrixFor productionEffectUniverse currentOwner matrix
+  validProductionEffectGroundingMatrixFor productionEffectUniverse state statementId criterionId
+    matrix
 
 theorem valid_grounding_has_exactly_one_owner
-    (currentOwner : ProductionEffectOwner) (matrix : List ProductionEffectGrounding)
-    (valid : validProductionEffectGroundingMatrix currentOwner matrix = true)
+    (state : ProjectState) (statementId criterionId : String)
+    (currentOwner : ProductionEffectOwner)
+    (authority : productionEffectOwnerFor? state statementId criterionId = some currentOwner)
+    (matrix : List ProductionEffectGrounding)
+    (valid : validProductionEffectGroundingMatrix state statementId criterionId matrix = true)
     (key : ProductionEffectKey) (member : key ∈ productionEffectUniverse) :
     productionEffectGroundingCount matrix key = 1 := by
   simp only [validProductionEffectGroundingMatrix, validProductionEffectGroundingMatrixFor,
-    Bool.and_eq_true] at valid
+    authority, Bool.and_eq_true] at valid
   have covered := List.all_eq_true.mp valid.1.2 key member
   have coveredBoth : (productionEffectUniverse.count key == 1) = true ∧
       (productionEffectGroundingCount matrix key == 1) = true := by
@@ -64,12 +92,15 @@ theorem valid_grounding_has_exactly_one_owner
   simpa using coveredBoth.2
 
 theorem valid_grounding_rows_are_current_and_in_scope
-    (currentOwner : ProductionEffectOwner) (matrix : List ProductionEffectGrounding)
-    (valid : validProductionEffectGroundingMatrix currentOwner matrix = true)
+    (state : ProjectState) (statementId criterionId : String)
+    (currentOwner : ProductionEffectOwner)
+    (authority : productionEffectOwnerFor? state statementId criterionId = some currentOwner)
+    (matrix : List ProductionEffectGrounding)
+    (valid : validProductionEffectGroundingMatrix state statementId criterionId matrix = true)
     (grounding : ProductionEffectGrounding) (member : grounding ∈ matrix) :
     grounding.key ∈ productionEffectUniverse ∧ grounding.owner = currentOwner := by
   simp only [validProductionEffectGroundingMatrix, validProductionEffectGroundingMatrixFor,
-    Bool.and_eq_true] at valid
+    authority, Bool.and_eq_true] at valid
   have row := List.all_eq_true.mp valid.2 grounding member
   have rowBoth : (productionEffectUniverse.contains grounding.key) = true ∧
       (grounding.owner == currentOwner) = true := by
@@ -84,8 +115,10 @@ current accepted-Design owner. -/
 theorem successful_prepared_mutation_effect_has_exactly_one_owner
     (prepared : PreparedMutation) (prior next : ProjectState)
     (success : prepared.execute prior = .ok next)
-    (currentOwner : ProductionEffectOwner) (matrix : List ProductionEffectGrounding)
-    (valid : validProductionEffectGroundingMatrix currentOwner matrix = true)
+    (statementId criterionId : String) (currentOwner : ProductionEffectOwner)
+    (authority : productionEffectOwnerFor? prior statementId criterionId = some currentOwner)
+    (matrix : List ProductionEffectGrounding)
+    (valid : validProductionEffectGroundingMatrix prior statementId criterionId matrix = true)
     (effect : ProductionEffect) (actual : effect ∈ actualProductionEffects prior next) :
     productionEffectGroundingCount matrix { operation := prepared.operation, effect } = 1 := by
   have permitted := successful_prepared_mutation_respects_production_effect_universe
@@ -93,7 +126,8 @@ theorem successful_prepared_mutation_effect_has_exactly_one_owner
   have effectPermitted : effect ∈ prepared.operation.permittedProductionEffects := by
     have allEffects := List.all_eq_true.mp permitted effect actual
     simpa using allEffects
-  apply valid_grounding_has_exactly_one_owner currentOwner matrix valid
+  apply valid_grounding_has_exactly_one_owner prior statementId criterionId currentOwner authority
+    matrix valid
   simp [productionEffectUniverse, Operation.mem_all prepared.operation, effectPermitted]
 
 end AgentWorkbenchProof

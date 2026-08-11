@@ -141,7 +141,36 @@ private def exerciseProductionEffectGroundingCounterexamples : IO Unit := do
     statementText := "every production effect has an exact owner"
     statementTextDigest := "blake3:current-statement"
     criterionId := "criterion-effects"
-    criterionBinding := "criterion-effects: production proof" }
+    criterionBinding := "{\"evidenceKind\":\"command\",\"id\":\"criterion-effects\",\"statement\":\"production proof\",\"statementId\":\"statement-effects\",\"target\":\"tree:AgentWorkbench\"}" }
+  let statement : Statement := {
+    id := owner.statementId, text := owner.statementText }
+  let criterion : AcceptanceCriterion := {
+    id := owner.criterionId, statementId := some owner.statementId
+    statement := "production proof", target := "tree:AgentWorkbench", evidenceKind := "command" }
+  let contract : AssuranceContract := {
+    designRevisionId := owner.designRevisionId
+    assuranceEpoch := "blake3:current-epoch"
+    statementId := owner.statementId
+    statementText := owner.statementText
+    statementTextDigest := owner.statementTextDigest
+    sourceUnitIds := []
+    criterionIds := [owner.criterionId]
+    implementationRequired := true
+    scope := []
+    scopeDigest := "blake3:current-scope"
+    witnesses := []
+    counterexamples := [] }
+  let design : DesignRevision := {
+    id := owner.designRevisionId
+    status := .accepted
+    producerAgentRun := "design-producer"
+    revisionContentDigest := owner.designRevisionDigest
+    statements := [statement]
+    acceptanceCriteria := [criterion]
+    assuranceSchemaVersion := 1
+    assuranceContracts := [contract] }
+  let authorityState : ProjectState := {
+    ProjectState.empty with acceptedDesignId := some design.id, designRevisions := [design] }
   let firstKey : ProductionEffectKey := {
     operation := .workComplete, effect := .workActiveCompleted }
   let secondKey : ProductionEffectKey := {
@@ -151,24 +180,24 @@ private def exerciseProductionEffectGroundingCounterexamples : IO Unit := do
   let effectUniverse := [firstKey, secondKey]
   let matrix : List AgentWorkbenchProof.ProductionEffectGrounding := [
     { key := firstKey, owner }, { key := secondKey, owner }]
-  let validFor := AgentWorkbenchProof.validProductionEffectGroundingMatrixFor
-  expect (validFor effectUniverse owner matrix)
+  let validFor := AgentWorkbenchProof.validProductionEffectGroundingMatrixFor effectUniverse
+    authorityState owner.statementId owner.criterionId
+  expect (validFor matrix)
     "independent production-effect grounding fixture is not closed"
-  expect (!validFor effectUniverse owner matrix.tail)
+  expect (!validFor matrix.tail)
     "production-effect grounding accepted a missing effect"
-  expect (!validFor effectUniverse owner (matrix ++ [{ key := addedBranch, owner }]))
+  expect (!validFor (matrix ++ [{ key := addedBranch, owner }]))
     "production-effect grounding accepted an extra effect"
-  expect (!validFor effectUniverse owner (matrix ++ [{ key := firstKey, owner }]))
+  expect (!validFor (matrix ++ [{ key := firstKey, owner }]))
     "production-effect grounding accepted a duplicate effect"
   let crossDesign := { owner with designRevisionId := "design-other" }
-  expect (!validFor effectUniverse owner
-    (matrix.map fun grounding => { grounding with owner := crossDesign }))
+  expect (!validFor (matrix.map fun grounding => { grounding with owner := crossDesign }))
     "production-effect grounding accepted a cross-Design owner"
   let stale := { owner with statementTextDigest := "blake3:stale-statement" }
-  expect (!validFor effectUniverse owner
-    (matrix.map fun grounding => { grounding with owner := stale }))
+  expect (!validFor (matrix.map fun grounding => { grounding with owner := stale }))
     "production-effect grounding accepted a stale owner"
-  expect (!validFor (effectUniverse ++ [addedBranch]) owner matrix)
+  expect (!AgentWorkbenchProof.validProductionEffectGroundingMatrixFor
+    (effectUniverse ++ [addedBranch]) authorityState owner.statementId owner.criterionId matrix)
     "a branch added inside an existing operation bypassed reverse grounding"
 
 def run : IO Unit :=
