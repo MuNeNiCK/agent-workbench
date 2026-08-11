@@ -18,7 +18,8 @@ private def positiveRouteSuite : Operation → Option Suite
   | .designAmend | .designReject | .workAdoptDesign | .workWithdraw
   | .correctionIncorporate => some .publicDesignWorkRoute
   | .init | .designPropose | .designAccept | .workStart | .workSuspend | .workResume
-  | .workHandoff | .workComplete | .planPropose | .planReplace | .planMaterialize
+  | .workHandoff | .workBindRemediation | .workComplete
+  | .planPropose | .planReplace | .planMaterialize
   | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .commandRun | .artifactObserve
   | .proofRun | .correctionRecord | .correctionSupersede | .correctionResolve
   | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
@@ -122,6 +123,15 @@ def run : IO Unit := do
   expect (contracts.length == names.length && names.all contracts.contains &&
     contracts.all names.contains)
     "public operation inventory and native contracts do not cover the same closed route"
+  expect (!productionEffectUniverse.contains {
+      operation := .reviewDisposition, effect := .workActiveSuspended })
+    "review disposition regained the unauthorized completed-Work rollback effect"
+  expect (productionEffectUniverse.all fun key =>
+      key.effect != .invalidStateChange && ProductionEffect.authorizable.contains key.effect)
+    "the production effect universe contains an invalid or unauthorizable effect"
+  expect (productionEffectUniverse.all fun key =>
+      productionEffectUniverse.count key == 1)
+    "the derived production effect universe contains duplicate operation-effect pairs"
   runAssurance
 
 end AgentWorkbenchTest.Operation

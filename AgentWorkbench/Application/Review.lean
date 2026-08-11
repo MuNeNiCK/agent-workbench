@@ -201,18 +201,8 @@ def recordDisposition
       findingEntryId := request.findingEntryId, decision := request.decision
       impact := request.impact, impactSchemaVersion := 1, reason := request.reason
       decidedByRun := work.responsibleAgentRun } }
-  let reopensCompletedWork := work.status == .completed &&
-    request.decision == .accepted && request.impact == .implementationDefect
-  let works := if reopensCompletedWork then state.works.map fun candidate =>
-      if candidate.id == work.id then { candidate with
-        status := .suspended
-        resumeCondition := some s!"resume after accepted post-completion Finding {finding.id}" }
-      else candidate
-    else state.works
   validated { state with
     revision := state.revision + 1
-    focusedWorkId := if reopensCompletedWork then none else state.focusedWorkId
-    works
     ledgerEntries := state.ledgerEntries ++ [dispositionEntry] }
 
 def recordVerification

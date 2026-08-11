@@ -1,5 +1,6 @@
 import AgentWorkbench.Application.Mutation
 import AgentWorkbench.Application.Query
+import AgentWorkbench.Adapter.CompletionPreflight
 import AgentWorkbenchProof.State
 
 namespace AgentWorkbenchProof
@@ -31,7 +32,7 @@ def externalEffectClass : Mutation → ExternalEffectClass
   | .reviewStart _ | .reviewResume _ => .reviewTargetCapture
   | .designAccept _ | .designReject _
   | .workStart _ | .workFocus _ | .workSuspend _ _ | .workResume _
-  | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workWithdraw _
+  | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workBindRemediation _ | .workWithdraw _
   | .profileDefine _ | .profileReplace _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _
   | .correctionIncorporate _ | .kptRecord _ | .kptApply _
@@ -133,10 +134,10 @@ theorem successful_prepared_mutation_preserves_authority
           simp [semanticTransitionPostcondition] at semanticNext
           exact semanticNext.1
 
-theorem successful_prepared_mutation_respects_effect_map
+theorem successful_prepared_mutation_respects_production_effect_universe
     (prepared : PreparedMutation) (prior next : ProjectState)
     (success : prepared.execute prior = .ok next) :
-    transitionEffectsPermitted prepared.operation prior next = true := by
+    productionEffectsPermitted prepared.operation prior next = true := by
   cases applied : prepared.transition prior with
   | error message => simp [PreparedMutation.execute, applied] at success
   | ok candidate =>
@@ -157,7 +158,7 @@ theorem successful_prepared_mutation_preserves_every_existing_work_identity
     workIdentityPreserved prior next = true := by
   have post := successful_prepared_mutation_preserves_authority prepared prior next success
   simp [pureTransitionPostcondition] at post
-  exact post.1.2
+  exact post.1.1.2
 
 theorem successful_prepared_mutation_preserves_immutable_history
     (prepared : PreparedMutation) (prior next : ProjectState)
@@ -165,7 +166,53 @@ theorem successful_prepared_mutation_preserves_immutable_history
     immutableHistoryPreserved prior next = true := by
   have post := successful_prepared_mutation_preserves_authority prepared prior next success
   simp [pureTransitionPostcondition] at post
+  exact post.1.2
+
+theorem successful_prepared_mutation_preserves_completed_work_authority
+    (prepared : PreparedMutation) (prior next : ProjectState)
+    (success : prepared.execute prior = .ok next) :
+    completedWorkAuthorityPreserved prior next = true := by
+  have post := successful_prepared_mutation_preserves_authority prepared prior next success
+  simp [pureTransitionPostcondition] at post
   exact post.2
+
+/-- A successful readiness preflight is not a weaker predicate: it is the exact applicable
+completion mutation, fully executed against the same revision and canonical inputs, with the
+validated prospective state and its digest retained as the public identity. -/
+theorem successful_completion_preflight_is_exact_prepared_completion
+    (state : ProjectState) (inputs : CurrentInputs)
+    (result : CompletionPreflight.Result)
+    (success : CompletionPreflight.prepare state inputs = .ok result) :
+    ∃ input,
+      completionInput state inputs.observations inputs.claimDigests = .ok input ∧
+      result.identity.inputRevision = state.revision ∧
+      result.identity.inputDigest = input.digest ∧
+      (PreparedMutation.workComplete inputs.observations inputs.claimDigests
+        input input.digest).executeApplicable state = .ok result.nextState ∧
+      result.identity.prospectiveStateRevision = result.nextState.revision ∧
+      result.identity.prospectiveStateDigest =
+        ContentDigest.string (Lean.toJson result.nextState).compress := by
+  unfold CompletionPreflight.prepare at success
+  cases inputEq : completionInput state inputs.observations inputs.claimDigests with
+  | error message =>
+      simp [inputEq] at success
+  | ok input =>
+      cases transitionEq : (PreparedMutation.workComplete inputs.observations
+          inputs.claimDigests input input.digest).executeApplicable state with
+      | error message =>
+          simp [inputEq, transitionEq] at success
+      | ok next =>
+          have resultEq : ({
+              identity := {
+                inputRevision := state.revision
+                inputDigest := input.digest
+                prospectiveStateRevision := next.revision
+                prospectiveStateDigest :=
+                  ContentDigest.string (Lean.toJson next).compress }
+              nextState := next } : CompletionPreflight.Result) = result := by
+            simpa [inputEq, transitionEq] using success
+          cases resultEq
+          exact ⟨input, rfl, rfl, rfl, transitionEq, rfl, rfl⟩
 
 theorem successful_applicable_mutation_was_advertised
     (prepared : PreparedMutation) (prior next : ProjectState)

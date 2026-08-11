@@ -1,4 +1,5 @@
 import AgentWorkbench.Adapter.ProofBuild
+import AgentWorkbenchProof.ProductionGrounding
 
 namespace AgentWorkbenchTest.ProofBuild
 
@@ -132,6 +133,44 @@ private def exerciseLakeImportOutputs : IO Unit := do
   expect (AgentWorkbench.ProofBuild.oleanOutputs outputs == #[build ++ ".olean"])
     "proof discovery treated a non-.olean Lake artifact as an imported module output"
 
+private def exerciseProductionEffectGroundingCounterexamples : IO Unit := do
+  let owner : AgentWorkbenchProof.ProductionEffectOwner := {
+    designRevisionId := "design-current"
+    designRevisionDigest := "blake3:current-design"
+    statementId := "statement-effects"
+    statementText := "every production effect has an exact owner"
+    statementTextDigest := "blake3:current-statement"
+    criterionId := "criterion-effects"
+    criterionBinding := "criterion-effects: production proof" }
+  let firstKey : ProductionEffectKey := {
+    operation := .workComplete, effect := .workActiveCompleted }
+  let secondKey : ProductionEffectKey := {
+    operation := .reviewDisposition, effect := .ledgerAppended }
+  let addedBranch : ProductionEffectKey := {
+    operation := .reviewDisposition, effect := .workActiveSuspended }
+  let effectUniverse := [firstKey, secondKey]
+  let matrix : List AgentWorkbenchProof.ProductionEffectGrounding := [
+    { key := firstKey, owner }, { key := secondKey, owner }]
+  let validFor := AgentWorkbenchProof.validProductionEffectGroundingMatrixFor
+  expect (validFor effectUniverse owner matrix)
+    "independent production-effect grounding fixture is not closed"
+  expect (!validFor effectUniverse owner matrix.tail)
+    "production-effect grounding accepted a missing effect"
+  expect (!validFor effectUniverse owner (matrix ++ [{ key := addedBranch, owner }]))
+    "production-effect grounding accepted an extra effect"
+  expect (!validFor effectUniverse owner (matrix ++ [{ key := firstKey, owner }]))
+    "production-effect grounding accepted a duplicate effect"
+  let crossDesign := { owner with designRevisionId := "design-other" }
+  expect (!validFor effectUniverse owner
+    (matrix.map fun grounding => { grounding with owner := crossDesign }))
+    "production-effect grounding accepted a cross-Design owner"
+  let stale := { owner with statementTextDigest := "blake3:stale-statement" }
+  expect (!validFor effectUniverse owner
+    (matrix.map fun grounding => { grounding with owner := stale }))
+    "production-effect grounding accepted a stale owner"
+  expect (!validFor (effectUniverse ++ [addedBranch]) owner matrix)
+    "a branch added inside an existing operation bypassed reverse grounding"
+
 def run : IO Unit :=
   IO.FS.withTempDir fun root => do
     let parent := root / "outputs"
@@ -142,5 +181,6 @@ def run : IO Unit :=
     exerciseCallbackFailure parent
     exerciseAbsentOutputParent root
     exerciseLakeImportOutputs
+    exerciseProductionEffectGroundingCounterexamples
 
 end AgentWorkbenchTest.ProofBuild

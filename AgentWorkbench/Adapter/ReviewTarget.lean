@@ -33,6 +33,20 @@ private def implementationLedgerComponents
   currentImplementationReviewLedgerEntries projection observations digests plan
     |>.map fun entry => reviewLedgerComponent state projection.work entry
 
+private def remediationCausalEntries
+    (state : ProjectState) (work : Work) : List LedgerEntry :=
+  let entries := state.ledgerEntries.flatMap fun bindingEntry =>
+    if bindingEntry.workId != some work.id then [] else
+    match bindingEntry.payload with
+    | .workRemediation binding =>
+        let finding := (state.entry? binding.findingEntryId).toList
+        let disposition :=
+          (state.findingDisposition? binding.findingEntryId binding.originWorkId).toList
+        [bindingEntry] ++ finding ++ disposition
+    | _ => []
+  entries.foldl (fun found entry =>
+    if found.any (·.id == entry.id) then found else found ++ [entry]) []
+
 private def plannedTargetComponents
     (projectRoot : System.FilePath) (producerAgentRun : String)
     (entries : List LedgerEntry) : IO (List ReviewTargetComponent) := do
@@ -78,6 +92,8 @@ private def freezeImplementation
         (reviewWorkIdentitySnapshot projection.work)
         (reviewWorkProducerRunsAt state projection.work coverageOrder)
     ] ++ implementationLedgerComponents state projection plan observations digests ++
+      (remediationCausalEntries state projection.work |>.map fun entry =>
+        reviewLedgerComponent state projection.work entry) ++
       plannedComponents)
   let producers := distinctStrings (manifest.flatMap (·.producerAgentRuns))
   pure (.ok {

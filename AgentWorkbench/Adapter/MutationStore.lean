@@ -7,6 +7,7 @@ import AgentWorkbench.Adapter.PlanSource
 import AgentWorkbench.Adapter.ContentDigest
 import AgentWorkbench.Adapter.ProofBuild
 import AgentWorkbench.Adapter.DesignClaim
+import AgentWorkbench.Adapter.CompletionPreflight
 import AgentWorkbench.Application.Design
 import AgentWorkbench.Application.Work
 import AgentWorkbench.Application.Completion
@@ -94,7 +95,7 @@ private def proposeDesignRequest
     createdAfterEntryOrder := nextEntryOrder prior - 1 }
   let materialized := structural.materializeAssuranceContracts ContentDigest.string
   let raw := materialized
-  let digestMaterial := Lean.toJson { raw with revisionContentDigest := "", status := .candidate }
+  let digestMaterial := Codec.designDigestMaterial raw
   let candidate := { raw with revisionContentDigest := ContentDigest.string digestMaterial.compress }
   let prepared := if operation == .designPropose then
       AgentWorkbench.PreparedMutation.designPropose candidate
@@ -172,6 +173,8 @@ private def startReview
     (request : AgentWorkbench.ReviewStartRequest) : IO ProjectState := do
   let prior ← loadState store
   let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
+  if request.purpose == .implementation then
+    let _ ← fromExcept (AgentWorkbench.CompletionPreflight.prepare prior inputs)
   let observed ← AgentWorkbench.startReview projectRoot prior
     inputs.observations inputs.claimDigests request
   let entry ← match observed.ledgerEntries.getLast? with
@@ -284,13 +287,9 @@ private def completeFocusedWork
     (projectRoot : System.FilePath) (store : WriteStore) : IO ProjectState := do
   let prior ← loadState store
   let inputs ← AgentWorkbench.evaluateCurrentInputs projectRoot prior
-  let completionInput ← fromExcept
-    (AgentWorkbench.completionInput prior inputs.observations inputs.claimDigests)
-  let inputDigest := AgentWorkbench.ContentDigest.string (Lean.toJson completionInput).compress
-  let next ← fromExcept ((AgentWorkbench.PreparedMutation.workComplete
-    inputs.observations inputs.claimDigests inputDigest).executeApplicable prior)
-  commitOperation store .workComplete prior.revision next
-  pure next
+  let preflight ← fromExcept (AgentWorkbench.CompletionPreflight.prepare prior inputs)
+  commitOperation store .workComplete prior.revision preflight.nextState
+  pure preflight.nextState
 
 private def executePureMutation
     (store : WriteStore) (mutation : AgentWorkbench.Mutation) : IO AgentWorkbench.MutationResult := do
@@ -339,6 +338,7 @@ private def executeMutationUnlocked
   | mutation@(.workResume _) => executePureMutation store mutation
   | mutation@(.workHandoff _ _ _ _) => executePureMutation store mutation
   | mutation@(.workAdoptDesign _) => executePureMutation store mutation
+  | mutation@(.workBindRemediation _) => executePureMutation store mutation
   | mutation@(.workWithdraw _) => executePureMutation store mutation
   | mutation@(.profileDefine _) => executePureMutation store mutation
   | mutation@(.profileReplace _) => executePureMutation store mutation

@@ -46,7 +46,7 @@ revision change.
 ```text
 describe [operation]
 design inspect-sources | propose | amend | accept | reject | get | source | diff | export
-work start | focus | resume | suspend | handoff | adoption-impact | adopt-design | withdraw | complete | get
+work start | focus | resume | suspend | handoff | adoption-impact | adopt-design | bind-remediation | withdraw | complete | get
 plan inspect-sources | propose | replace | materialize | get | source | diff | export
 task close | reopen-stale
 profile define | replace
@@ -101,6 +101,11 @@ historical only. Never replace a Profile with a guessed command or a shell comma
 Treat `ready` as the completion decision. A verbal done report, commit, clean tree, KPT, or review
 completion cannot override `ready: false` unless the accepted design explicitly makes it a
 criterion.
+
+A completed Work is terminal. A later accepted implementation defect remains incident evidence on
+that Work; never suspend, resume, or recomplete it. Start a distinct Work, then use the applicable
+`work bind-remediation` operation to bind that Work to the accepted postcompletion Finding. The
+remediation Work receives its own Plan, Tasks, evidence, Review, and completion.
 
 ## Preserve authority
 

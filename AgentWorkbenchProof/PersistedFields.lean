@@ -129,6 +129,9 @@ def reviewDisposition : ReviewDispositionRecord → List FieldCoverage
   | .mk _ _ _ _ _ _ => cover .ledgerAuthority
       ["findingEntryId", "decision", "impact", "impactSchemaVersion", "reason", "decidedByRun"]
 
+def workRemediation : WorkRemediationRecord → List FieldCoverage
+  | .mk _ _ _ => cover .workLifecycle ["originWorkId", "findingEntryId", "boundByRun"]
+
 def proofSourceDigest : ProofSourceDigest → List FieldCoverage
   | .mk _ _ => cover .ledgerAuthority ["path", "digest"]
 

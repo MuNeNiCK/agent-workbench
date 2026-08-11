@@ -27,6 +27,7 @@ inductive Mutation where
   | workResume (request : WorkResumeRequest)
   | workHandoff (workId entryId successorRun reason : String)
   | workAdoptDesign (request : WorkAdoptDesignRequest)
+  | workBindRemediation (request : WorkRemediationBindingRequest)
   | workWithdraw (request : WorkWithdrawRequest)
   | workComplete
   | planPropose (request : PlanProposalRequest)
@@ -66,6 +67,7 @@ def Mutation.operation : Mutation → Operation
   | .workResume _ => .workResume
   | .workHandoff _ _ _ _ => .workHandoff
   | .workAdoptDesign _ => .workAdoptDesign
+  | .workBindRemediation _ => .workBindRemediation
   | .workWithdraw _ => .workWithdraw
   | .workComplete => .workComplete
   | .planPropose _ => .planPropose
@@ -105,6 +107,7 @@ def Mutation.pureTransition? : Mutation → Option (ProjectState → Except Stri
   | .workHandoff workId entryId successorRun reason =>
       some (fun state => handoffWork state workId entryId successorRun reason)
   | .workAdoptDesign request => some (fun state => adoptDesignForWork state request)
+  | .workBindRemediation request => some (fun state => bindRemediationWork state request)
   | .workWithdraw request => some (fun state => withdrawWork state request)
   | .profileDefine request => some (fun state => defineProfile state request)
   | .profileReplace request => some (fun state => replaceProfile state request)
@@ -131,6 +134,7 @@ inductive MutationResultShape where
 def Mutation.pureResultShape : Mutation → MutationResultShape
   | .workStart _ | .workFocus _ | .workResume _ | .workHandoff _ _ _ _ => .context
   | .designAccept _ | .designReject _ | .workSuspend _ _ | .workAdoptDesign _
+  | .workBindRemediation _
   | .workWithdraw _ | .taskClose _ | .taskReopenStale | .profileDefine _ | .profileReplace _
   | .correctionRecord _ | .correctionSupersede _ | .correctionResolve _
   | .correctionIncorporate _ | .kptRecord _ | .kptApply _ | .reviewHandoff _
@@ -149,63 +153,116 @@ def immutableHistoryPreserved (prior next : ProjectState) : Bool :=
   prior.designRevisions.all fun old => next.designRevisions.any fun current =>
     current.id == old.id && { old with status := current.status } == current
 
+def completedWorkAuthorityPreserved (prior next : ProjectState) : Bool :=
+  prior.works.all fun old =>
+    old.status != .completed ||
+      ((next.work? old.id).any (·.status == .completed) &&
+        workCompletionEntries next old == workCompletionEntries prior old)
+
 def pureTransitionPostcondition (prior next : ProjectState) : Bool :=
   next.revision == prior.revision + 1 && workIdentityPreserved prior next &&
-    immutableHistoryPreserved prior next
+    immutableHistoryPreserved prior next && completedWorkAuthorityPreserved prior next
 
-/-- Closed top-level authority surface. A mutation may change only components
-listed for its public semantic operation. This is checked before commit and is
-also consumed by the private exhaustive Lean proof. -/
-inductive StateComponent where
-  | acceptedDesign | focusedWork | designs | works | plans | ledger
-  deriving Repr, DecidableEq
+private def designStatusEffect
+    (prior next : DesignStatus) : ProductionEffect :=
+  match prior, next with
+  | .candidate, .accepted => .designCandidateAccepted
+  | .accepted, .superseded => .designAcceptedSuperseded
+  | .candidate, .superseded => .designCandidateSuperseded
+  | .candidate, .rejected => .designCandidateRejected
+  | _, _ => .invalidStateChange
 
-def StateComponent.all : List StateComponent :=
-  [.acceptedDesign, .focusedWork, .designs, .works, .plans, .ledger]
+private def workStatusEffect
+    (prior next : WorkStatus) : ProductionEffect :=
+  match prior, next with
+  | .active, .suspended => .workActiveSuspended
+  | .suspended, .active => .workSuspendedActive
+  | .active, .withdrawn => .workActiveWithdrawn
+  | .suspended, .withdrawn => .workSuspendedWithdrawn
+  | .active, .completed => .workActiveCompleted
+  | _, _ => .invalidStateChange
 
-def Operation.permittedStateComponents : Operation → List StateComponent
-  | .init => []
-  | .designPropose | .designAmend => [.designs]
-  | .designAccept => [.acceptedDesign, .designs, .works]
-  | .designReject => [.designs, .ledger]
-  | .workStart => [.focusedWork, .works]
-  | .workFocus => [.focusedWork]
-  | .workSuspend => [.focusedWork, .works]
-  | .workResume => [.focusedWork, .works, .ledger]
-  | .workHandoff | .workAdoptDesign => [.works, .ledger]
-  | .workWithdraw | .workComplete => [.focusedWork, .works, .ledger]
-  | .planPropose | .planReplace => [.plans]
-  | .planMaterialize => [.plans, .ledger]
-  | .taskClose | .taskReopenStale | .profileDefine | .profileReplace | .artifactObserve
-  | .correctionRecord | .correctionSupersede | .correctionResolve | .correctionIncorporate
-  | .kptRecord | .kptApply | .reviewStart | .reviewResume | .reviewHandoff
-  | .reviewFinding | .reviewConclude | .reviewVerify
-  | .commandRun | .proofRun => [.ledger]
-  | .reviewDisposition => [.focusedWork, .works, .ledger]
-  | .describe | .designGet | .designInspectSources | .designSource | .designDiff
-  | .designExport | .workGet | .workAdoptionImpact | .planGet | .planInspectSources
-  | .planSource | .planDiff | .planExport | .reviewContext | .reviewInspect
-  | .entryGet | .history | .context | .ready | .commandShow | .proofDigest => []
+private def planStatusEffect
+    (prior next : PlanStatus) : ProductionEffect :=
+  match prior, next with
+  | .candidate, .superseded => .planCandidateSuperseded
+  | .candidate, .current => .planCandidateCurrent
+  | .current, .superseded => .planCurrentSuperseded
+  | _, _ => .invalidStateChange
 
-def stateComponentUnchanged
-    (component : StateComponent) (prior next : ProjectState) : Bool :=
-  match component with
-  | .acceptedDesign => prior.acceptedDesignId == next.acceptedDesignId
-  | .focusedWork => prior.focusedWorkId == next.focusedWorkId
-  | .designs => prior.designRevisions == next.designRevisions
-  | .works => prior.works == next.works
-  | .plans => prior.implementationPlans == next.implementationPlans
-  | .ledger => prior.ledgerEntries == next.ledgerEntries
+private def designEffects (prior next : ProjectState) : List ProductionEffect :=
+  let existing := prior.designRevisions.flatMap fun old =>
+    match next.design? old.id with
+    | none => [.invalidStateChange]
+    | some current =>
+        if old == current then []
+        else if { old with status := current.status } == current then
+          [designStatusEffect old.status current.status]
+        else [.invalidStateChange]
+  let inserted := next.designRevisions.filterMap fun current =>
+    if (prior.design? current.id).isSome then none else some .designInserted
+  existing ++ inserted
 
-def transitionEffectsPermitted
+private def workEffects (prior next : ProjectState) : List ProductionEffect :=
+  let existing := prior.works.flatMap fun old =>
+    match next.work? old.id with
+    | none => [.invalidStateChange]
+    | some current =>
+        let normalized := { old with
+          designRevision := current.designRevision
+          status := current.status
+          responsibleAgentRun := current.responsibleAgentRun
+          resumeCondition := current.resumeCondition }
+        if normalized != current then [.invalidStateChange]
+        else
+          (if old.designRevision != current.designRevision then [.workDesignChanged] else []) ++
+          (if old.status != current.status then
+            [workStatusEffect old.status current.status] else []) ++
+          (if old.responsibleAgentRun != current.responsibleAgentRun then
+            [.workResponsibleChanged] else []) ++
+          (if old.resumeCondition != current.resumeCondition then
+            [.workResumeConditionChanged] else [])
+  let inserted := next.works.filterMap fun current =>
+    if (prior.work? current.id).isSome then none else some .workInserted
+  existing ++ inserted
+
+private def planEffects (prior next : ProjectState) : List ProductionEffect :=
+  let existing := prior.implementationPlans.flatMap fun old =>
+    match next.plan? old.id with
+    | none => [.invalidStateChange]
+    | some current =>
+        if old == current then []
+        else if { old with status := current.status } == current then
+          [planStatusEffect old.status current.status]
+        else [.invalidStateChange]
+  let inserted := next.implementationPlans.filterMap fun current =>
+    if (prior.plan? current.id).isSome then none else some .planInserted
+  existing ++ inserted
+
+private def ledgerEffects (prior next : ProjectState) : List ProductionEffect :=
+  if next.ledgerEntries.take prior.ledgerEntries.length != prior.ledgerEntries then
+    [.invalidStateChange]
+  else next.ledgerEntries.drop prior.ledgerEntries.length |>.map fun _ => .ledgerAppended
+
+/-- Actual production effects are derived from complete before/after records, not asserted by the
+operation implementation. Any unclassified mutation of an existing record becomes an invalid
+effect and cannot be committed. -/
+def actualProductionEffects (prior next : ProjectState) : List ProductionEffect :=
+  (if next.revision == prior.revision + 1 then [.stateRevisionAdvanced]
+    else [.invalidStateChange]) ++
+  (if prior.acceptedDesignId != next.acceptedDesignId then [.acceptedDesignChanged] else []) ++
+  (if prior.focusedWorkId != next.focusedWorkId then [.focusedWorkChanged] else []) ++
+  designEffects prior next ++ workEffects prior next ++ planEffects prior next ++
+    ledgerEffects prior next
+
+def productionEffectsPermitted
     (operation : Operation) (prior next : ProjectState) : Bool :=
-  StateComponent.all.all fun component =>
-    operation.permittedStateComponents.contains component ||
-      stateComponentUnchanged component prior next
+  (actualProductionEffects prior next).all
+    operation.permittedProductionEffects.contains
 
 def semanticTransitionPostcondition
     (operation : Operation) (prior next : ProjectState) : Bool :=
-  pureTransitionPostcondition prior next && transitionEffectsPermitted operation prior next
+  pureTransitionPostcondition prior next && productionEffectsPermitted operation prior next
 
 def Mutation.executePure (mutation : Mutation) (state : ProjectState) : Except String ProjectState :=
   match mutation.pureTransition? with
@@ -229,7 +286,7 @@ inductive PreparedMutation where
   | taskClose (request : TaskCloseRequest) (observations : List TargetObservation)
   | taskReopenStale (observations : List TargetObservation)
   | workComplete (observations : List TargetObservation) (claimDigests : List CurrentClaimDigest)
-      (inputDigest : String)
+      (input : CompletionInput) (inputDigest : String)
   | artifactObservation (entry : LedgerEntry)
   | commandExecution (entry : LedgerEntry)
   | proofReceipt (entry : LedgerEntry)
@@ -246,7 +303,7 @@ def PreparedMutation.operation : PreparedMutation → Operation
   | .planMaterialize _ _ _ => .planMaterialize
   | .taskClose _ _ => .taskClose
   | .taskReopenStale _ => .taskReopenStale
-  | .workComplete _ _ _ => .workComplete
+  | .workComplete _ _ _ _ => .workComplete
   | .artifactObservation _ => .artifactObserve
   | .commandExecution _ => .commandRun
   | .proofReceipt _ => .proofRun
@@ -269,8 +326,8 @@ def PreparedMutation.transition
       materializePlan state planId observations digests
   | .taskClose request observations => closeTask state observations request
   | .taskReopenStale observations => reopenStaleTasks state observations
-  | .workComplete observations digests inputDigest =>
-      completeFocusedWork state observations digests inputDigest
+  | .workComplete observations digests input inputDigest =>
+      completeFocusedWork state observations digests input inputDigest
   | .artifactObservation entry =>
       appendObserved state entry (fun | .artifactObservation _ => true | _ => false) "artifact observation"
   | .commandExecution entry =>
@@ -292,11 +349,11 @@ def PreparedMutation.execute
 
 def PreparedMutation.currentObservations : PreparedMutation → List TargetObservation
   | .planMaterialize _ values _ | .taskClose _ values | .taskReopenStale values |
-      .workComplete values _ _ => values
+      .workComplete values _ _ _ => values
   | _ => []
 
 def PreparedMutation.currentClaimDigests : PreparedMutation → List CurrentClaimDigest
-  | .planMaterialize _ _ values | .workComplete _ values _ => values
+  | .planMaterialize _ _ values | .workComplete _ values _ _ => values
   | _ => []
 
 def PreparedMutation.executeApplicable

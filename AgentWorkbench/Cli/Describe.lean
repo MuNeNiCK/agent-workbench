@@ -154,6 +154,10 @@ def operationContracts : List OperationContract :=
          agentRun := "agent-run-1" } : WorkAdoptDesignRequest)
   , contract "work adoption-impact" "derive the exact successor-Design impact before adoption"
       ({ id := "work-1" } : IdInput)
+  , contract "work bind-remediation" "bind a distinct focused Work to an accepted postcompletion Finding"
+      ({ workId := "work-remediation", entryId := "remediation-binding-1"
+         findingEntryId := "finding-on-completed-work"
+         agentRun := "agent-run-1" } : WorkRemediationBindingRequest)
   , contract "work withdraw" "terminate Work unsuccessfully under an effective User Correction"
       ({ workId := "work-1", entryId := "withdrawal-1", correctionEntryId := "correction-1"
          reason := "the user withdrew this outcome" } : WorkWithdrawRequest)

@@ -9,7 +9,7 @@ open AgentWorkbench
 def payloadInvariantCoverage : EntryPayload → InvariantFamily
   | .task _ => .planTask
   | .workDesignAdoption _ | .workHandoff _ | .workWithdrawal _ | .workResume _
-  | .workCompletion _ => .workLifecycle
+  | .workCompletion _ | .workRemediation _ => .workLifecycle
   | .designRejection _ => .designHistory
   | .commandProfile _ | .commandExecution _ | .artifactObservation _
   | .review _ | .finding _ | .reviewDisposition _ | .reviewVerification _
@@ -31,6 +31,7 @@ def payloadFieldCoverage : EntryPayload → List String
   | .workResume (.mk _ _ _ _) => ["condition", "satisfaction", "basisEntryIds", "resumedByRun"]
   | .workCompletion (.mk _ _ _ _ _ _) =>
       ["workId", "designRevision", "planId", "inputRevision", "inputDigest", "completedByRun"]
+  | .workRemediation (.mk _ _ _) => ["originWorkId", "findingEntryId", "boundByRun"]
   | .designRejection (.mk _ _ _) => ["designId", "reason", "rejectedByRun"]
   | .commandProfile (.mk _ _ _ _ _ _ _ _) =>
       ["purpose", "taskEntryId", "inputTargets", "outputScope", "criterionIds",
@@ -74,7 +75,8 @@ def mutationInvariantCoverage : Mutation → List InvariantFamily
   | .designPropose _ | .designAmend _ | .designAccept _ | .designReject _ =>
       [.designHistory, .workLifecycle, .ledgerAuthority]
   | .workStart _ | .workFocus _ | .workSuspend _ _ | .workResume _
-  | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workWithdraw _ | .workComplete =>
+  | .workHandoff _ _ _ _ | .workAdoptDesign _ | .workBindRemediation _ |
+      .workWithdraw _ | .workComplete =>
       [.workLifecycle, .ledgerAuthority]
   | .planPropose _ | .planReplace _ | .planMaterialize _ | .taskClose _ |
       .taskReopenStale =>
@@ -90,18 +92,26 @@ theorem every_mutation_has_invariant_coverage (mutation : Mutation) :
     (mutationInvariantCoverage mutation).isEmpty = false := by
   cases mutation <;> rfl
 
-def stateComponentInvariant : StateComponent → InvariantFamily
-  | .acceptedDesign | .designs => .designHistory
-  | .focusedWork | .works => .workLifecycle
-  | .plans => .planTask
-  | .ledger => .ledgerAuthority
+def productionEffectInvariant : ProductionEffect → Option InvariantFamily
+  | .acceptedDesignChanged | .designInserted | .designCandidateAccepted
+  | .designAcceptedSuperseded | .designCandidateSuperseded
+  | .designCandidateRejected => some .designHistory
+  | .focusedWorkChanged | .workInserted | .workActiveSuspended
+  | .workSuspendedActive | .workActiveWithdrawn | .workSuspendedWithdrawn
+  | .workActiveCompleted | .workDesignChanged | .workResponsibleChanged
+  | .workResumeConditionChanged => some .workLifecycle
+  | .planInserted | .planCandidateSuperseded | .planCandidateCurrent
+  | .planCurrentSuperseded => some .planTask
+  | .stateRevisionAdvanced | .ledgerAppended => some .ledgerAuthority
+  | .invalidStateChange => none
 
 /-- The executable effect boundary and the private theorem-family assignment
 are connected exhaustively. Adding an operation or state component cannot
 leave a permitted effect without an owning invariant family. -/
 theorem every_permitted_mutation_effect_has_invariant_coverage (mutation : Mutation) :
-    mutation.operation.permittedStateComponents.all (fun component =>
-      (mutationInvariantCoverage mutation).contains (stateComponentInvariant component)) = true := by
+    mutation.operation.permittedProductionEffects.all (fun effect =>
+      (productionEffectInvariant effect).any fun invariant =>
+        (mutationInvariantCoverage mutation).contains invariant) = true := by
   cases mutation <;> rfl
 
 end AgentWorkbenchProof

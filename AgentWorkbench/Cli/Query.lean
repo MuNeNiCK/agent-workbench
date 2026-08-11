@@ -10,6 +10,7 @@ import AgentWorkbench.Application.Proof
 import AgentWorkbench.Application.Current
 import AgentWorkbench.Application.Completion
 import AgentWorkbench.Application.Query
+import AgentWorkbench.Adapter.CompletionPreflight
 import AgentWorkbench.Cli.Describe
 
 namespace AgentWorkbench.Cli
@@ -123,13 +124,16 @@ def runQuery (projectRoot : System.FilePath) : Query → IO Unit
   | .ready => do
       let state ← Store.loadState (← openQueryStore projectRoot)
       let inputs ← evaluateCurrentInputs projectRoot state
-      let ready := completionReady state inputs.observations inputs.claimDigests
+      let preflightResult := CompletionPreflight.prepare state inputs
+      let preflight := preflightResult.toOption.map (·.identity)
+      let ready := preflight.isSome
       let context := projectContext? state inputs.observations inputs.claimDigests
       let canonical := Lean.Json.mkObj [
         ("stateRevision", Lean.toJson state.revision),
         ("ready", Lean.toJson ready),
+        ("preflight", Lean.toJson preflight),
         ("context", Lean.toJson context)]
-      writeJson (ReadinessResult.mk state.revision ready context
+      writeJson (ReadinessResult.mk state.revision ready preflight context
         (ContentDigest.string canonical.compress))
 
 end AgentWorkbench.Cli

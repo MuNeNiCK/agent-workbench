@@ -1,5 +1,6 @@
 import AgentWorkbench.Decision.ProofReuse
 import AgentWorkbench.Decision.Finding
+import AgentWorkbench.Domain.ContentDigest
 
 namespace AgentWorkbench
 
@@ -9,6 +10,7 @@ structure TargetObservation where
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure CompletionInput where
+  stateRevision : Nat
   work : Work
   design : DesignRevision
   plan : ImplementationPlan
@@ -27,12 +29,16 @@ def completionInput
     | some value => pure value
     | none => throw "completion input requires a current materialized Plan"
   pure {
+    stateRevision := state.revision
     work := projection.work
     design := projection.design
     plan := plan
     currentEntries := projection.entries
     observations := observations
     claimDigests := digests }
+
+def CompletionInput.digest (input : CompletionInput) : String :=
+  ContentDigest.string (Lean.toJson input).compress
 
 def currentSnapshot? (observations : List TargetObservation) (target : String) : Option String :=
   uniqueBy? observations (·.target) target |>.map (·.snapshot)

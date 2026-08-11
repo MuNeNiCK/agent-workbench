@@ -46,6 +46,14 @@ structure WorkCompletionRecord where
   completedByRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
+/-- Immutable causal edge from a distinct remediation Work to the accepted postcompletion
+Finding on its already-completed origin Work. -/
+structure WorkRemediationRecord where
+  originWorkId : String
+  findingEntryId : String
+  boundByRun : String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
 structure DesignRejectionRecord where
   designId : String
   reason : String
@@ -60,6 +68,7 @@ inductive EntryPayload where
   | workWithdrawal (value : WorkWithdrawalRecord)
   | workResume (value : WorkResumeRecord)
   | workCompletion (value : WorkCompletionRecord)
+  | workRemediation (value : WorkRemediationRecord)
   | designRejection (value : DesignRejectionRecord)
   | commandProfile (value : CommandProfileRecord)
   | commandExecution (value : CommandExecutionRecord)

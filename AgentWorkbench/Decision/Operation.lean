@@ -78,7 +78,8 @@ def completionStructurallyReady (state : ProjectState) : Bool :=
       projection.design.acceptanceCriteria.all (criterionEvidenceRecorded projection) &&
       projection.design.leanClaims.all (claimReceiptRecorded projection)
 
-def operationStructurallyApplicable (state : ProjectState) (operation : Operation) : Bool :=
+def operationStructurallyApplicable
+    (state : ProjectState) (operation : Operation) : Bool :=
   let current := (currentProjection? state).isSome
   let unfocused := state.focusedWorkId.isNone
   let focusedWork := state.currentWork?.isSome
@@ -107,6 +108,18 @@ def operationStructurallyApplicable (state : ProjectState) (operation : Operatio
   | .workAdoptDesign => unfocused && state.acceptedDesignId.isSome &&
       state.works.any (fun work => work.status == .suspended &&
         work.designRevision != state.acceptedDesignId)
+  | .workBindRemediation => focusedWork && state.currentWork?.any fun work =>
+      !state.ledgerEntries.any (fun entry =>
+        entry.workId == some work.id && match entry.payload with
+        | .workRemediation _ => true
+        | _ => false) &&
+      state.ledgerEntries.any fun findingEntry =>
+        match findingEntry.payload, findingEntry.workId with
+        | .finding _, some originWorkId =>
+            originWorkId != work.id && (state.work? originWorkId).any (fun origin =>
+              origin.status == .completed && origin.scope == work.scope) &&
+            state.findingAccepted findingEntry.id originWorkId
+        | _, _ => false
   | .workSuspend | .workHandoff => focusedWork
   | .workWithdraw => state.works.any (fun work =>
       (work.status == .active || work.status == .suspended) &&

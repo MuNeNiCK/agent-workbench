@@ -69,22 +69,22 @@ def workCompletionEntries (state : ProjectState) (work : Work) : List LedgerEntr
     | .workCompletion value => value.workId == work.id
     | _ => false
 
-def workCompletionInvalidated
-    (state : ProjectState) (work : Work) (completion : LedgerEntry) : Bool :=
-  state.ledgerEntries.any fun dispositionEntry =>
-    dispositionEntry.order > completion.order &&
-      dispositionEntry.workId == some work.id && match dispositionEntry.payload with
-      | .reviewDisposition disposition =>
-          disposition.decision == .accepted &&
-            disposition.impact == .implementationDefect &&
-            (state.entry? disposition.findingEntryId).any fun findingEntry =>
-              findingEntry.order > completion.order && findingEntry.workId == some work.id
-      | _ => false
-
 def currentWorkCompletionAuthorities
     (state : ProjectState) (work : Work) : List LedgerEntry :=
-  (workCompletionEntries state work).filter fun completion =>
-    !workCompletionInvalidated state work completion
+  workCompletionEntries state work
+
+/-- Read compatibility for v0.2.10 states whose postcompletion disposition changed only the Work
+projection. Ledger history is untouched; the first successful completion remains the authority. -/
+def restoreCompletionMonotonicProjection (state : ProjectState) : ProjectState :=
+  let completedIds := state.works.filterMap fun work =>
+    if !(workCompletionEntries state work).isEmpty then some work.id else none
+  { state with
+    focusedWorkId := state.focusedWorkId.bind fun id =>
+      if completedIds.contains id then none else some id
+    works := state.works.map fun work =>
+      if completedIds.contains work.id then
+        { work with status := .completed, resumeCondition := none }
+      else work }
 
 def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit := do
   let accepted := state.designRevisions.filter (·.status == .accepted)
@@ -114,8 +114,7 @@ def validateWorkLifecycleInvariant (state : ProjectState) : Except String Unit :
       ensure (currentCompletions.length == 1 || (completions.isEmpty && legacyUnavailable))
         s!"completed Work {work.id} does not have exactly one completion authority"
     else
-      ensure (completions.isEmpty ||
-        ((work.status == .suspended || work.status == .active) && currentCompletions.isEmpty))
+      ensure completions.isEmpty
         s!"non-completed Work {work.id} has completion authority"
 
 def validatePlanTaskInvariant (state : ProjectState) : Except String Unit := do

@@ -109,9 +109,11 @@ def constructiveNormalPath : Except String ProjectState := do
   let closedB ← closeTask evidenceB
     [{ target := routeCriterion.target, snapshot := "blake3:artifact" }]
     { entryId := "task-closed-b", taskEntryId := "task-plan-1-b" }
+  let input ← completionInput closedB
+    [{ target := routeCriterion.target, snapshot := "blake3:artifact" }] []
   completeFocusedWork closedB
     [{ target := routeCriterion.target, snapshot := "blake3:artifact" }] []
-    "blake3:constructive-completion-input"
+    input "blake3:constructive-completion-input"
 
 private def constructiveFinalState : ProjectState :=
   match constructiveNormalPath with

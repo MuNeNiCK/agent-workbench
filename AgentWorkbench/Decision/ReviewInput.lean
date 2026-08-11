@@ -189,6 +189,7 @@ def reviewEntryProducerRunsAt
   | .workWithdrawal value => [value.withdrawnByRun]
   | .workResume value => [value.resumedByRun]
   | .workCompletion value => [value.completedByRun]
+  | .workRemediation value => [value.boundByRun]
   | .designRejection value => [value.rejectedByRun]
   | .workDesignAdoption value => [value.adoptedByRun]
   | .task _ | .commandProfile _ | .userCorrection _ | .kpt _ | .leanProofReceipt _ =>

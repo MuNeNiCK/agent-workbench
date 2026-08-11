@@ -102,7 +102,7 @@ def expectedStatementDeltas
             noActionReason := reason }]
   pure deltas
 
-def acceptedImplementationFindingIds
+private def directlyAcceptedImplementationFindingIds
     (state : ProjectState) (workId designId : String) : List String :=
   state.ledgerEntries.filterMap fun findingEntry =>
     if findingEntry.workId != some workId then none
@@ -129,5 +129,21 @@ def acceptedImplementationFindingIds
         if designCurrent && implementationRoot && implementationDefect then some findingEntry.id
         else none
     | _ => none
+
+/-- A distinct remediation Work may cover the one accepted postcompletion Finding named by its
+immutable causal binding. The Finding remains owned by the completed origin Work; only Plan
+coverage authority crosses the binding. -/
+def acceptedImplementationFindingIds
+    (state : ProjectState) (workId designId : String) : List String :=
+  let direct := directlyAcceptedImplementationFindingIds state workId designId
+  let causal := state.ledgerEntries.filterMap fun bindingEntry =>
+    if bindingEntry.workId != some workId || bindingEntry.designRevision != some designId then none
+    else match bindingEntry.payload with
+    | .workRemediation binding =>
+        if (directlyAcceptedImplementationFindingIds state binding.originWorkId designId).contains
+            binding.findingEntryId then some binding.findingEntryId
+        else none
+    | _ => none
+  (direct ++ causal).eraseDups
 
 end AgentWorkbench

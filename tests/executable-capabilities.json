@@ -55,6 +55,6 @@
     "released": false,
     "allowedGeneratedLeanObjects": [],
     "entryDeclarations": ["AgentWorkbenchTest.ProofBuild.run"],
-    "allowedCapabilities": ["filesystem"]
+    "allowedCapabilities": ["filesystem", "proof-library"]
   }
 ]

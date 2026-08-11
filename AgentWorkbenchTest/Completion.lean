@@ -13,7 +13,8 @@ private def currentClosedState : IO ProjectState :=
 
 private def expectCompletionRejected (state : ProjectState) (message : String) : IO Unit := do
   let before := state
-  expectError (completeFocusedWork state observations [] "blake3:completion-input") message
+  expectError (CompletionPreflight.prepare state {
+    observations := observations, claimDigests := [] }) message
   expect (state == before) s!"{message}; rejected pure completion changed its input state"
 
 private def siblingTaskEvidenceState : ProjectState :=
@@ -82,9 +83,10 @@ def run : IO Unit := do
   expectCompletionRejected baseState "completion accepted an open required Task"
 
   let closed ← currentClosedState
-  expectError (completeFocusedWork closed
-    [{ target := criterion.target, snapshot := "blake3:changed-after-task-close" }] []
-    "blake3:completion-input")
+  expectError (CompletionPreflight.prepare closed {
+    observations := [{
+      target := criterion.target, snapshot := "blake3:changed-after-task-close" }]
+    claimDigests := [] })
     "completion accepted a Task whose exact closing evidence became stale"
   let siblingState := siblingTaskEvidenceState
   fromExcept (validateState siblingState)
@@ -162,8 +164,9 @@ def run : IO Unit := do
     fromExcept (validateState disposed)
     expectCompletionRejected disposed "completion ignored an unresolved accepted Finding"
 
+    let completionInputValue ← fromExcept <| completionInput closed observations []
     let completed ← fromExcept <| completeFocusedWork closed observations []
-      "blake3:post-completion-input"
+      completionInputValue completionInputValue.digest
     let firstCompletion ← match completed.ledgerEntries.find? fun entry => match entry.payload with
       | .workCompletion _ => true
       | _ => false with
@@ -187,28 +190,36 @@ def run : IO Unit := do
       summary := "the completed implementation is nonconforming" }
     expect (operationStructurallyApplicable postFound .reviewDisposition)
       "a post-completion Finding had no disposition route"
-    let invalidated ← fromExcept <| recordDisposition postFound {
+    let retained ← fromExcept <| recordDisposition postFound {
       entryId := "disposition-after-completion"
       findingEntryId := "finding-after-completion"
       decision := .accepted, impact := .implementationDefect
       reason := "the accepted Design already covers this implementation defect" }
-    fromExcept (validateState invalidated)
-    expect (invalidated.focusedWorkId.isNone &&
-      (invalidated.work? work.id).any fun value =>
-        value.status == .suspended && value.resumeCondition.isSome)
-      "an accepted post-completion implementation defect did not prospectively invalidate completion"
-    expect (invalidated.ledgerEntries.any fun entry => match entry.payload with
-      | .workCompletion _ => true
-      | _ => false)
-      "post-completion invalidation deleted the original completion incident"
+    fromExcept (validateState retained)
+    expect (retained.focusedWorkId.isNone &&
+      (retained.work? work.id).any fun value =>
+        value.status == .completed && value.resumeCondition.isNone)
+      "an accepted post-completion implementation defect changed completed Work authority"
+    expect ((retained.ledgerEntries.filter fun entry => match entry.payload with
+      | .workCompletion value => value.workId == work.id
+      | _ => false).length == 1)
+      "post-completion incident did not preserve the unique original completion authority"
+    expectError (resumeWork retained {
+      workId := work.id, entryId := "forbidden-resume-after-completion-defect"
+      satisfaction := "a completed Work cannot regain productive authority"
+      basisEntryIds := ["disposition-after-completion"]
+      agentRun := work.responsibleAgentRun })
+      "a completed Work regained productive authority through resume"
+    expectError (focusWork retained work.id)
+      "a completed Work regained productive authority through focus"
     let parent := { design with status := DesignStatus.superseded }
     let successor := withCurrentAssurance { design with
       id := "design-source-only-successor", parent := some design.id
       status := .accepted }
-    let carriedState : ProjectState := { invalidated with
+    let carriedState : ProjectState := { retained with
       acceptedDesignId := some successor.id
       designRevisions := [parent, successor]
-      works := invalidated.works.map fun value =>
+      works := retained.works.map fun value =>
         if value.id == work.id then { value with designRevision := some successor.id }
         else value }
     expect ((acceptedImplementationFindingIds carriedState work.id successor.id).contains
@@ -220,67 +231,47 @@ def run : IO Unit := do
     expect (!(acceptedImplementationFindingIds changedState work.id changedSuccessor.id).contains
       "finding-after-completion")
       "a changed successor Contract inherited predecessor Finding remediation authority"
-    let resumed ← fromExcept <| resumeWork invalidated {
-      workId := work.id, entryId := "resume-after-completion-defect"
-      satisfaction := "the accepted Finding records the exact same-Design remediation basis"
-      basisEntryIds := ["disposition-after-completion"]
-      agentRun := work.responsibleAgentRun }
-    fromExcept (validateState resumed)
-    expect (resumed.focusedWorkId == some work.id &&
-      (resumed.work? work.id).any (·.status == .active))
-      "the prospectively invalidated Work could not resume under the same Design"
-    let replacementReady : ProjectState := { resumed with
-      implementationPlans := resumed.implementationPlans.map fun value =>
-        if value.id == plan.id then { value with status := .superseded } else value }
-    fromExcept (validateState replacementReady)
-    let recoveryStep : PlanStep := { step with
-      id := "same-work-recompletion"
-      description := "repair and verify the recovered Work completion transition"
-      acceptedFindingEntryIds := ["finding-after-completion"] }
-    let recoveryUnit : DesignSourceUnit := { planUnit with
-      id := "same-work-recompletion-unit", text := recoveryStep.description }
-    let recoveryPlan : ImplementationPlan := { plan with
-      id := "plan-same-work-recompletion", predecessorPlanId := some plan.id
-      status := .candidate, contentDigest := "blake3:same-work-recompletion"
-      sourceUnits := [recoveryUnit]
-      sourceUnitDispositions := [{ unitId := recoveryUnit.id, stepId := some recoveryStep.id }]
-      statementDispositions := [{
-        statementId := statement.id, statementText := statement.text, deltaKind := .added
-        stepIds := [recoveryStep.id] }]
-      steps := [recoveryStep] }
-    let recoveryCandidate : ProjectState := { resumed with
-      implementationPlans := resumed.implementationPlans ++ [recoveryPlan] }
-    fromExcept (validateState recoveryCandidate)
-    let materialized ← fromExcept <| materializePlan recoveryCandidate recoveryPlan.id observations []
-    let recoveryTaskId := s!"task-{recoveryPlan.id}-{recoveryStep.id}"
-    IO.FS.writeFile (root / "artifact.txt") "recovered completion output"
-    let observed ← observeArtifact root materialized {
-      entryId := "evidence-same-work-recompletion", taskEntryId := recoveryTaskId
-      criterionId := criterion.id, operation := "inspect recovered completion output"
-      result := "the recovered output satisfies the Criterion", successful := true }
-    let recoverySnapshot ← match observed.entry? "evidence-same-work-recompletion" with
-      | some { payload := .artifactObservation value, .. } => pure value.snapshot
-      | _ => throw (IO.userError "same-Work recovery evidence was not recorded")
-    let recoveryClosed ← fromExcept <| closeTask observed
-      [{ target := criterion.target, snapshot := recoverySnapshot }]
-      { entryId := "task-same-work-recompletion-closed", taskEntryId := recoveryTaskId }
-    let recoveryReviewed ← resumeReview root recoveryClosed {
-      entryId := "review-same-work-recompletion-resume"
-      continuesEntryId := "review-after-completion" }
-    let recoveryVerified ← fromExcept <| recordVerification recoveryReviewed {
-      entryId := "verification-same-work-recompletion"
-      findingEntryId := "finding-after-completion"
-      reviewEntryId := "review-same-work-recompletion-resume"
-      evidenceEntryId := "evidence-same-work-recompletion" }
-    let recompleted ← fromExcept <| completeFocusedWork recoveryVerified
-      [{ target := criterion.target, snapshot := recoverySnapshot }] []
-      "blake3:same-work-recompletion-input"
-    fromExcept (validateState recompleted)
-    expect ((recompleted.work? work.id).any (·.status == .completed) &&
-      (recompleted.ledgerEntries.filter fun entry => match entry.payload with
-        | .workCompletion value => value.workId == work.id
-        | _ => false).length == 2)
-      "same-Work recompletion did not retain history and establish the new completion authority"
+    let remediationId := "work-after-completion-remediation"
+    let remediating ← fromExcept <| startWorkRequest retained {
+      id := remediationId
+      outcome := "repair the accepted postcompletion implementation defect"
+      scope := work.scope
+      responsibleAgentRun := "agent-remediation"
+      causalFindingEntryId := some "finding-after-completion" }
+    fromExcept (validateState remediating)
+    expect ((remediating.work? work.id).any (·.status == .completed) &&
+      (remediating.work? remediationId).any (·.status == .active) &&
+      remediating.focusedWorkId == some remediationId)
+      "postcompletion remediation did not preserve the origin and activate a distinct Work"
+    let remediationEntries := remediating.ledgerEntries.filter fun entry =>
+      entry.workId == some remediationId && match entry.payload with
+      | .workRemediation value =>
+          value.originWorkId == work.id &&
+          value.findingEntryId == "finding-after-completion" &&
+          value.boundByRun == "agent-remediation"
+      | _ => false
+    expect (remediationEntries.length == 1)
+      "distinct remediation Work lacks its unique immutable Finding binding"
+    expect ((acceptedImplementationFindingIds remediating remediationId design.id).contains
+      "finding-after-completion")
+      "distinct remediation Work did not receive Plan coverage authority from its causal Finding"
+    expectError (bindRemediationWork remediating {
+      workId := remediationId, entryId := "duplicate-remediation-binding"
+      findingEntryId := "finding-after-completion", agentRun := "agent-remediation" })
+      "a remediation Work accepted a duplicate causal Finding binding"
+    let legacyProjection : ProjectState := { completed with
+      focusedWorkId := some work.id
+      works := completed.works.map fun value =>
+        if value.id == work.id then
+          { value with status := .suspended, resumeCondition := some "legacy rollback" }
+        else value }
+    let migrated := restoreCompletionMonotonicProjection legacyProjection
+    expect (migrated.focusedWorkId.isNone &&
+      (migrated.work? work.id).any fun value =>
+        value.status == .completed && value.resumeCondition.isNone)
+      "v0.2.10 rollback projection was not restored to its immutable completion"
+    expect (migrated.ledgerEntries == legacyProjection.ledgerEntries)
+      "completion projection migration rewrote immutable ledger history"
 
   let claim : LeanClaim := {
     id := "claim-completion-gap"

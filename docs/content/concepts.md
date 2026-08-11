@@ -42,10 +42,10 @@ unverified implementation Task impossible to close.
 
 Each successful completion creates one immutable Work-completion record in the authoritative
 ledger. It binds the Work, adopted Design, current Plan, responsible run, prior state revision, and
-canonical completion-input digest. If a later accepted implementation Finding invalidates that
-completion, the historical record remains and same-Work recovery may create a new record; exactly
-one non-invalidated record is the current completion authority. Work status alone is not completion
-authority.
+canonical completion-input digest. Completion is terminal: a later operation cannot reopen,
+suspend, resume, or recomplete that Work. A later accepted implementation Finding remains incident
+evidence on the completed origin; remediation proceeds in a distinct causally Finding-bound Work
+with its own Plan, Tasks, evidence, Review, and completion.
 
 ## Acceptance criterion and evidence
 

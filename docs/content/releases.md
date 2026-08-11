@@ -49,11 +49,15 @@ one authorization: a record generated directly from the ready Workbench state an
 annotated Git tag whose message must be byte-for-byte identical to that record. Its form is:
 
 ```text
-agent-workbench release authorization v1
+agent-workbench release authorization v2
 work-id: <ready Work ID>
 target-commit: <tagged commit SHA>
 ready-state-revision: <revision used for ready>
 ready-digest: blake3:<digest of the canonical ready result>
+completion-input-revision: <same exact ready-state revision>
+completion-input-digest: blake3:<digest of the complete completion input>
+completion-prospective-state-revision: <revision that work complete will commit>
+completion-prospective-state-digest: blake3:<digest of the fully validated post-state>
 design-review-entry-id: <fresh Design Review root entry>
 design-review-conclusion-entry-id: <zero-Finding conclusion entry>
 design-review-target-snapshot: blake3:<immutable Design Review target digest>
@@ -86,7 +90,9 @@ git tag -s -F "$authorization_file" <version>
 git push origin <version>
 ```
 
-`prepare` reads `ready` and both exact Review records itself. It rejects a non-ready Work, any
+`prepare` reads `ready` and both exact Review records itself. It rejects a non-ready Work, a
+missing preflight, an input revision different from the ready revision, a prospective revision
+other than the immediate next revision, an invalid preflight digest, any
 remaining gap, the wrong Work or Design target, a non-fresh or non-independent Review, a Review with
 a Finding, a non-clean/missing conclusion, or a Design Review whose ledger order is not later than
 the ready-gated Implementation Review. The Git note transports that checked record without changing

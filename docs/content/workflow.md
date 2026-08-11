@@ -35,9 +35,10 @@ For a project with no accepted Design, the agent follows the discoverable state 
    Design intentionally has no applicable Criterion.
 8. Implement dependency-ready Tasks and obtain their Task-bound command or artifact evidence.
 9. Close each Task only after its current post-materialization evidence exists.
-10. Use `ready`; complete the Work only when every current gap is closed. Completion atomically
-    stores one immutable record bound to the exact Work, Design, Plan, responsible run, and digest
-    of the pre-commit completion input. A `completed` status without that record is invalid.
+10. Use `ready`; complete the Work only when every current gap is closed. Readiness constructs and
+    validates the exact prospective completion state. Completion atomically commits that prepared
+    state and one immutable record bound to the exact Work, Design, Plan, responsible run, input
+    revision, and input digest. A `completed` status without that record is invalid.
 
 This is a dependency route, not review-driven development. The agent discovers the applicable next
 operation from the current state instead of inventing a phase or reconstructing it from chat.
@@ -108,6 +109,7 @@ tree, commit, review message, KPT entry, or agent statement cannot substitute fo
 
 After completion, the current immutable Work-completion record is the authority that completion
 occurred; the status field is only its lifecycle projection. The record is committed in the same
-SQLite transaction as the status change and focus removal. A later accepted implementation Finding
-invalidates that authority without deleting it. Recompletion of the same recovered Work appends a
-new current authority, while all earlier completion records remain as incident history.
+SQLite transaction as the status change and focus removal. It is terminal for that Work. A later
+accepted implementation Finding remains incident evidence without changing the completed status or
+record. Productive remediation starts a distinct Finding-bound Work with independent Plan, Tasks,
+evidence, Review, and completion.

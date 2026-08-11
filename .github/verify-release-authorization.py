@@ -15,12 +15,16 @@ import sys
 import tempfile
 
 
-HEADER = "agent-workbench release authorization v1"
+HEADER = "agent-workbench release authorization v2"
 REQUIRED_FIELDS = {
     "work-id",
     "target-commit",
     "ready-state-revision",
     "ready-digest",
+    "completion-input-revision",
+    "completion-input-digest",
+    "completion-prospective-state-revision",
+    "completion-prospective-state-digest",
     "design-review-entry-id",
     "design-review-conclusion-entry-id",
     "design-review-target-snapshot",
@@ -95,7 +99,7 @@ def verify_release_workflow_wiring(workflow: str) -> None:
 def parse_message(message: str) -> dict[str, str]:
     lines = message.splitlines()
     if not lines or lines[0] != HEADER:
-        raise AuthorizationError("missing release authorization v1 header")
+        raise AuthorizationError("missing release authorization v2 header")
     fields: dict[str, str] = {}
     for line in lines[1:]:
         if not line.strip():
@@ -108,15 +112,27 @@ def parse_message(message: str) -> dict[str, str]:
         raise AuthorizationError(f"release authorization fields differ: {sorted(fields)}")
     if fields["design-review-clean"] != "true" or fields["implementation-review-clean"] != "true":
         raise AuthorizationError("release authorization does not attest both zero-Finding Reviews")
-    if not fields["ready-state-revision"].isdigit():
-        raise AuthorizationError("ready state revision is not numeric")
+    for name in (
+        "ready-state-revision",
+        "completion-input-revision",
+        "completion-prospective-state-revision",
+    ):
+        if not fields[name].isdigit():
+            raise AuthorizationError(f"release authorization contains a non-numeric {name}")
     for name in (
         "ready-digest",
+        "completion-input-digest",
+        "completion-prospective-state-digest",
         "design-review-target-snapshot",
         "implementation-review-target-snapshot",
     ):
         if not DIGEST.fullmatch(fields[name]):
             raise AuthorizationError(f"release authorization contains an invalid {name}")
+    ready_revision = int(fields["ready-state-revision"])
+    if int(fields["completion-input-revision"]) != ready_revision:
+        raise AuthorizationError("signed completion preflight is stale for the ready state revision")
+    if int(fields["completion-prospective-state-revision"]) != ready_revision + 1:
+        raise AuthorizationError("signed completion preflight names a mismatched prospective revision")
     return fields
 
 
@@ -289,8 +305,23 @@ def authorization_record_from_facts(
     design_id = context.get("design", {}).get("id")
     revision = ready.get("stateRevision")
     digest = ready.get("digest")
-    if not isinstance(work_id, str) or not isinstance(design_id, str) or not isinstance(revision, int) or not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+    if not isinstance(work_id, str) or not isinstance(design_id, str) or type(revision) is not int or not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AuthorizationError("Workbench ready result lacks canonical identity")
+    preflight = ready.get("preflight")
+    if not isinstance(preflight, dict):
+        raise AuthorizationError("Workbench ready result lacks an exact completion preflight")
+    input_revision = preflight.get("inputRevision")
+    input_digest = preflight.get("inputDigest")
+    prospective_revision = preflight.get("prospectiveStateRevision")
+    prospective_digest = preflight.get("prospectiveStateDigest")
+    if input_revision != revision:
+        raise AuthorizationError("completion preflight is stale for the ready state revision")
+    if type(prospective_revision) is not int or prospective_revision != revision + 1:
+        raise AuthorizationError("completion preflight names a mismatched prospective state revision")
+    if not isinstance(input_digest, str) or not DIGEST.fullmatch(input_digest):
+        raise AuthorizationError("completion preflight input digest is invalid")
+    if not isinstance(prospective_digest, str) or not DIGEST.fullmatch(prospective_digest):
+        raise AuthorizationError("completion preflight prospective state digest is invalid")
     design_conclusion, design_snapshot, design_order = clean_review_facts(
         design_inspection, design_review_entry_id, "design", work_id, f"design:{design_id}"
     )
@@ -307,6 +338,10 @@ def authorization_record_from_facts(
         f"target-commit: {target_commit}",
         f"ready-state-revision: {revision}",
         f"ready-digest: {digest}",
+        f"completion-input-revision: {input_revision}",
+        f"completion-input-digest: {input_digest}",
+        f"completion-prospective-state-revision: {prospective_revision}",
+        f"completion-prospective-state-digest: {prospective_digest}",
         f"design-review-entry-id: {design_review_entry_id}",
         f"design-review-conclusion-entry-id: {design_conclusion}",
         f"design-review-target-snapshot: {design_snapshot}",
@@ -357,6 +392,10 @@ def canonical_fixture(commit: str) -> str:
             f"target-commit: {commit}",
             "ready-state-revision: 42",
             f"ready-digest: {digest}",
+            "completion-input-revision: 42",
+            f"completion-input-digest: {digest}",
+            "completion-prospective-state-revision: 43",
+            f"completion-prospective-state-digest: {digest}",
             "design-review-entry-id: review-design",
             "design-review-conclusion-entry-id: conclusion-design",
             f"design-review-target-snapshot: {digest}",
@@ -412,6 +451,32 @@ def self_test() -> None:
         )
     expect_rejected("finding-bearing review", lambda: verify(tag.replace("design-review-clean: true", "design-review-clean: false"), valid, record, commit, signer))
     expect_rejected("invalid ready digest", lambda: verify(tag.replace("ready-digest: blake3:", "ready-digest: invalid-"), valid, record, commit, signer))
+    expect_rejected(
+        "signed stale completion preflight",
+        lambda: verify(
+            tag.replace("completion-input-revision: 42", "completion-input-revision: 41"),
+            valid,
+            record.replace("completion-input-revision: 42", "completion-input-revision: 41"),
+            commit,
+            signer,
+        ),
+    )
+    expect_rejected(
+        "signed mismatched completion post-state",
+        lambda: verify(
+            tag.replace(
+                "completion-prospective-state-revision: 43",
+                "completion-prospective-state-revision: 44",
+            ),
+            valid,
+            record.replace(
+                "completion-prospective-state-revision: 43",
+                "completion-prospective-state-revision: 44",
+            ),
+            commit,
+            signer,
+        ),
+    )
     expect_rejected("missing field", lambda: verify(tag.replace("work-id: work-release\n", ""), valid, record, commit, signer))
     expect_rejected("extra field", lambda: verify(tag.replace("work-id: work-release", "work-id: work-release\nextra: value"), valid, record, commit, signer))
     expect_rejected("tampered unsigned payload", lambda: verify(tag.replace("review-design", "review-tampered", 1).replace("-----BEGIN PGP SIGNATURE-----", ""), "", record, commit, signer))
@@ -439,6 +504,12 @@ def self_test() -> None:
         "ready": True,
         "stateRevision": 42,
         "digest": digest,
+        "preflight": {
+            "inputRevision": 42,
+            "inputDigest": digest,
+            "prospectiveStateRevision": 43,
+            "prospectiveStateDigest": digest,
+        },
         "context": {"focused": {
             "work": {"id": "work-release"},
             "design": {"id": "design-release"},
@@ -512,6 +583,30 @@ def self_test() -> None:
     invalid_ready["ready"] = False
     expect_rejected("non-ready Work", lambda: authorization_record_from_facts(
         invalid_ready, design_review, implementation_review, commit,
+        "review-design", "review-implementation",
+    ))
+    missing_preflight = copy.deepcopy(ready)
+    missing_preflight["preflight"] = None
+    expect_rejected("missing exact completion preflight", lambda: authorization_record_from_facts(
+        missing_preflight, design_review, implementation_review, commit,
+        "review-design", "review-implementation",
+    ))
+    stale_preflight = copy.deepcopy(ready)
+    stale_preflight["preflight"]["inputRevision"] = 41
+    expect_rejected("stale exact completion preflight", lambda: authorization_record_from_facts(
+        stale_preflight, design_review, implementation_review, commit,
+        "review-design", "review-implementation",
+    ))
+    mismatched_preflight = copy.deepcopy(ready)
+    mismatched_preflight["preflight"]["prospectiveStateRevision"] = 44
+    expect_rejected("mismatched exact completion preflight", lambda: authorization_record_from_facts(
+        mismatched_preflight, design_review, implementation_review, commit,
+        "review-design", "review-implementation",
+    ))
+    invalid_preflight = copy.deepcopy(ready)
+    invalid_preflight["preflight"]["prospectiveStateDigest"] = "invalid"
+    expect_rejected("invalid exact completion preflight", lambda: authorization_record_from_facts(
+        invalid_preflight, design_review, implementation_review, commit,
         "review-design", "review-implementation",
     ))
     wrong_design = copy.deepcopy(design_review)

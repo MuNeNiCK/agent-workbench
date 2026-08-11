@@ -159,7 +159,7 @@ def loadState [ReadableStore S] (store : S) : IO ProjectState := do
   let plans ← loadPlans store
   let entries ← loadDocuments store "ledger entry" "ledger_entries" "entry_order"
   validateReviewManifests entries
-  let state : ProjectState :=
+  let rawState : ProjectState :=
     { revision
       acceptedDesignId := Codec.textOption row[2]!
       focusedWorkId := Codec.textOption row[3]!
@@ -167,6 +167,7 @@ def loadState [ReadableStore S] (store : S) : IO ProjectState := do
       works
       implementationPlans := plans
       ledgerEntries := entries }
+  let state := restoreCompletionMonotonicProjection rawState
   fromExcept (validateState state)
   pure state
 

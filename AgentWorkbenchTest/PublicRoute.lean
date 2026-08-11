@@ -242,6 +242,10 @@ private def exerciseTaskLocalContractRoute : IO Unit :=
       s!"contract-only public route was not ready after exact evidence closure: {ready}"
 
     IO.FS.writeFile artifactPath "artifact-v2\n"
+    let staleReady : AgentWorkbench.Cli.ReadinessResult ←
+      decodeOutput (← invokeOk root ["ready"])
+    expect (!staleReady.ready && staleReady.preflight.isNone)
+      "ready exposed a completion preflight after exact Task output drift"
     let stale ← invokeOk root ["context"]
     expect (stale.contains "task reopen-stale")
       s!"contract-only output drift did not expose Task recovery: {stale}"
@@ -792,18 +796,167 @@ def run : IO Unit := do
       entryId := "review-verification-route", findingEntryId := "finding-route"
       reviewEntryId := "review-resume-route", evidenceEntryId := "evidence-remediation" } : VerificationRecordRequest)
 
+    let exactReady : AgentWorkbench.Cli.ReadinessResult ←
+      decodeOutput (← invokeOk root ["ready"])
+    let exactPreflight ← match exactReady.preflight with
+      | some value => pure value
+      | none => throw (IO.userError "ready public route omitted its exact completion preflight")
+    let beforeCompletion ← Store.loadState (← Store.openReadOnly database)
+    expect (exactReady.ready && exactReady.stateRevision == beforeCompletion.revision &&
+      exactPreflight.inputRevision == beforeCompletion.revision)
+      "ready preflight was not bound to the exact persisted input revision"
     let _ ← invokeOk root ["work", "complete"]
     let completed ← Store.loadState (← Store.openReadOnly database)
+    expect (exactPreflight.prospectiveStateRevision == completed.revision &&
+      exactPreflight.prospectiveStateDigest ==
+        ContentDigest.string (Lean.toJson completed).compress)
+      "work complete did not commit the exact state constructed and validated by ready"
     expect (completed.focusedWorkId.isNone &&
       completed.works.head?.any (·.status == .completed))
       "public Store route did not complete the same Work"
     let completionEntries := completed.ledgerEntries.filter fun entry => match entry.payload with
-      | .workCompletion value => value.workId == "work-route" && !value.inputDigest.isEmpty
+      | .workCompletion value => value.workId == "work-route" &&
+          value.inputRevision == exactPreflight.inputRevision &&
+          value.inputDigest == exactPreflight.inputDigest
       | _ => false
     expect (completionEntries.length == 1)
       "public Store route did not create exactly one completion authority"
     let reloaded ← Store.loadState (← Store.openReadOnly database)
     expect (reloaded == completed)
       "SQLite round trip changed the completed public-route state"
+
+    let _ ← invokeJson root ["review", "finding"] ({
+      entryId := "finding-after-completion-route"
+      reviewEntryId := "review-route"
+      subject := findingSubject
+      summary := "the completed implementation has a separately remediated defect" }
+      : FindingRecordRequest)
+    let _ ← invokeJson root ["review", "disposition"] ({
+      entryId := "disposition-after-completion-route"
+      findingEntryId := "finding-after-completion-route"
+      decision := DispositionDecision.accepted
+      impact := FindingImpactClass.implementationDefect
+      reason := "the accepted Design already covers this postcompletion defect" }
+      : DispositionRecordRequest)
+    let _ ← invokeJson root ["work", "start"] ({
+      id := "work-postcompletion-remediation"
+      outcome := "repair the accepted postcompletion defect in a distinct Work"
+      scope := "project"
+      responsibleAgentRun := "agent-remediation-route" } : WorkStartRequest)
+    let _ ← invokeJson root ["work", "bind-remediation"] ({
+      workId := "work-postcompletion-remediation"
+      entryId := "remediation-binding-route"
+      findingEntryId := "finding-after-completion-route"
+      agentRun := "agent-remediation-route" } : WorkRemediationBindingRequest)
+    let remediating ← Store.loadState (← Store.openReadOnly database)
+    expect ((remediating.work? "work-route").any (·.status == .completed) &&
+      (remediating.work? "work-postcompletion-remediation").any (·.status == .active) &&
+      remediating.focusedWorkId == some "work-postcompletion-remediation")
+      "public remediation route changed the completed origin or failed to focus the distinct Work"
+    expect ((remediating.entry? "remediation-binding-route").any fun entry =>
+      match entry.payload with
+      | .workRemediation value =>
+          value.originWorkId == "work-route" &&
+          value.findingEntryId == "finding-after-completion-route"
+      | _ => false)
+      "public remediation route did not persist the exact postcompletion Finding causality"
+
+    let remediationWorkId := "work-postcompletion-remediation"
+    let remediationPlanDirectory :=
+      workbenchRoot / "design" / "plans" / remediationWorkId
+    IO.FS.createDirAll remediationPlanDirectory
+    let remediationPlanPath := remediationPlanDirectory / "plan.md"
+    IO.FS.writeFile remediationPlanPath "Repair and verify the postcompletion defect.\n"
+    let remediationPlanTarget :=
+      s!"file:.agent-workbench/design/plans/{remediationWorkId}/plan.md"
+    let remediationUnits ←
+      PlanSource.captureAll root remediationWorkId [remediationPlanTarget]
+    let remediationUnit ← match remediationUnits.flatMap (·.units) with
+      | [value] => pure value
+      | _ => throw (IO.userError "remediation Plan did not have exactly one source unit")
+    let remediationStep : PlanStep := {
+      id := "postcompletion-remediation-step"
+      description := "repair and verify the postcompletion defect"
+      outputScopes := [criterion.target]
+      verificationCriterionIds := [criterion.id, commandCriterion.id]
+      acceptedFindingEntryIds := ["finding-after-completion-route"] }
+    let remediationPlanResult ← invokeJson root ["plan", "propose"] ({
+      producerAgentRun := "agent-remediation-route"
+      reason := "execute the distinct Work's causally bound remediation"
+      sourceDocumentTargets := [remediationPlanTarget]
+      sourceUnitDispositions := [{ unitId := remediationUnit.id, stepId := some remediationStep.id }]
+      statementDispositions := []
+      steps := [remediationStep] } : PlanProposalRequest)
+    let remediationPlan : ImplementationPlan ← decodeOutput remediationPlanResult
+    let _ ← invokeJson root ["plan", "materialize"]
+      ({ id := remediationPlan.id } : AgentWorkbench.Cli.IdInput)
+    let remediationTaskId := s!"task-{remediationPlan.id}-{remediationStep.id}"
+    let _ ← invokeJson root ["profile", "define"] ({
+      entryId := "profile-postcompletion-remediation"
+      purpose := "produce the distinct remediation Work output"
+      taskEntryId := remediationTaskId
+      inputTargets := ["file:command-input.txt"]
+      outputScope := criterion.target
+      criterionIds := [commandCriterion.id]
+      command := successfulCommand } : ProfileDefineRequest)
+    let _ ← invokeJson root ["command", "run"] ({
+      profileEntryId := "profile-postcompletion-remediation"
+      entryId := "command-postcompletion-remediation"
+      criterionId := some commandCriterion.id } : CommandRunRequest)
+    let _ ← invokeJson root ["artifact", "observe"] ({
+      entryId := "artifact-postcompletion-remediation"
+      taskEntryId := remediationTaskId
+      criterionId := criterion.id
+      operation := "inspect the distinct remediation Work output"
+      result := "the remediated artifact exists"
+      successful := true } : ArtifactObserveRequest)
+    let _ ← invokeJson root ["task", "close"] ({
+      entryId := "task-postcompletion-remediation-closed"
+      taskEntryId := remediationTaskId } : TaskCloseRequest)
+    let remediationReady ← invokeOk root ["ready"]
+    expect (remediationReady.contains "\"ready\":true")
+      s!"distinct remediation Work was not independently ready: {remediationReady}"
+    let _ ← invokeJson root ["review", "start"] ({
+      entryId := "review-postcompletion-remediation"
+      reviewId := "review-postcompletion-remediation"
+      purpose := ReviewPurpose.implementation
+      reviewerAgentRun := "reviewer-postcompletion-remediation" } : ReviewStartRequest)
+    let reviewState ← Store.loadState (← Store.openReadOnly database)
+    expect ((reviewState.entry? "review-postcompletion-remediation").any fun entry =>
+      match entry.payload with
+      | .review review =>
+          let ids := review.targetManifest.map (·.id)
+          ids.contains "remediation-binding-route" &&
+          ids.contains "finding-after-completion-route" &&
+          ids.contains "disposition-after-completion-route"
+      | _ => false)
+      "independent remediation Review target omitted its immutable causal incident chain"
+    let _ ← invokeJson root ["review", "conclude"] ({
+      entryId := "review-postcompletion-remediation-clean"
+      reviewEntryId := "review-postcompletion-remediation"
+      clean := true
+      summary := "the distinct remediation Work target is clean" } : ReviewConclusionRequest)
+    let remediationCompletionReady : AgentWorkbench.Cli.ReadinessResult ←
+      decodeOutput (← invokeOk root ["ready"])
+    let remediationPreflight ← match remediationCompletionReady.preflight with
+      | some value => pure value
+      | none => throw (IO.userError "remediation ready omitted its exact completion preflight")
+    let _ ← invokeOk root ["work", "complete"]
+    let remediated ← Store.loadState (← Store.openReadOnly database)
+    expect (remediationPreflight.prospectiveStateRevision == remediated.revision &&
+      remediationPreflight.prospectiveStateDigest ==
+        ContentDigest.string (Lean.toJson remediated).compress)
+      "distinct remediation completion differed from its exact ready preflight"
+    expect ((remediated.work? "work-route").any (·.status == .completed) &&
+      (remediated.work? remediationWorkId).any (·.status == .completed) &&
+      remediated.focusedWorkId.isNone)
+      "distinct remediation lifecycle changed the origin or did not complete independently"
+    expect ((remediated.ledgerEntries.filter fun entry => match entry.payload with
+      | .workCompletion value => value.workId == "work-route"
+      | _ => false).length == 1 &&
+      (remediated.ledgerEntries.filter fun entry => match entry.payload with
+      | .workCompletion value => value.workId == remediationWorkId
+      | _ => false).length == 1)
+      "origin and remediation Works do not retain separate unique completion authorities"
 
 end AgentWorkbenchTest.PublicRoute

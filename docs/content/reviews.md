@@ -83,12 +83,11 @@ resolving the Finding when its remediation Task or evidence is no longer current
 Plan must carry the Finding again and obtain new evidence before another resumed verification.
 
 If an implementation defect is accepted after Work completion, Workbench preserves the original
-completion, Review, Finding, and evidence as incident history, prospectively changes that Work to
-`suspended`, and exposes the accepted disposition as the immutable basis for resuming the same Work
-under the same Design. A strict source-history successor may carry that basis only when the complete
-covering Contract judgment is unchanged. The resumed Work must replace its Plan with a
-Finding-bound remediation step; the old completion record never becomes evidence that the
-remediation is complete.
+completion, Review, Finding, disposition, and evidence as incident history and leaves that Work
+terminally `completed`. Remediation starts a distinct Work and `work bind-remediation` records the
+exact origin Work and accepted Finding as its causal basis. That Work receives its own Plan, Tasks,
+evidence, fixed-target Review, and completion; the origin completion never becomes remediation
+evidence or productive authority.
 
 ## Diagnosing review state
 

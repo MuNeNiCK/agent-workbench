@@ -9,6 +9,7 @@ structure WorkStartRequest where
   outcome : String
   scope : String
   responsibleAgentRun : String
+  causalFindingEntryId : Option String := none
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
 structure WorkWithdrawRequest where
@@ -29,6 +30,13 @@ structure WorkResumeRequest where
   entryId : String
   satisfaction : String
   basisEntryIds : List String
+  agentRun : String
+  deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
+
+structure WorkRemediationBindingRequest where
+  workId : String
+  entryId : String
+  findingEntryId : String
   agentRun : String
   deriving Repr, DecidableEq, Lean.ToJson, Lean.FromJson
 
@@ -100,9 +108,79 @@ def startWork (state : ProjectState) (work : Work) : Except String ProjectState 
     focusedWorkId := some work.id
     works := (state.works ++ [work]).mergeSort (fun left right => left.id < right.id) }
 
+private def postcompletionFindingOrigin
+    (state : ProjectState) (findingEntryId : String) : Except String (LedgerEntry × Work) := do
+  let finding ← match state.entry? findingEntryId with
+    | some value => pure value
+    | none => throw s!"no postcompletion Finding {findingEntryId}"
+  match finding.payload with
+  | .finding _ => pure ()
+  | _ => throw s!"entry {findingEntryId} is not a Finding"
+  let originWorkId ← match finding.workId with
+    | some value => pure value
+    | none => throw "postcompletion Finding has no origin Work"
+  let origin ← match state.work? originWorkId with
+    | some value => pure value
+    | none => throw s!"postcompletion Finding origin Work {originWorkId} does not exist"
+  if origin.status != .completed then
+    throw "remediation requires an already-completed origin Work"
+  let completionPrecedes := state.ledgerEntries.any fun entry =>
+    entry.order < finding.order && entry.workId == some origin.id &&
+      match entry.payload with | .workCompletion _ => true | _ => false
+  if !completionPrecedes then throw "Finding is not postcompletion incident evidence"
+  let accepted := (state.findingDisposition? finding.id origin.id).any fun entry =>
+    match entry.payload with
+    | .reviewDisposition disposition =>
+        disposition.decision == .accepted && disposition.impact == .implementationDefect
+    | _ => false
+  if !accepted then throw "remediation requires an accepted implementation-defect Finding"
+  pure (finding, origin)
+
+private def remediationBindingExists (state : ProjectState) (workId : String) : Bool :=
+  state.ledgerEntries.any fun entry =>
+    entry.workId == some workId && match entry.payload with
+    | .workRemediation _ => true
+    | _ => false
+
+private def remediationEntry
+    (state : ProjectState) (work : Work) (entryId findingEntryId : String)
+    (origin : Work) : LedgerEntry :=
+  { id := entryId, order := nextEntryOrder state, scope := work.scope
+    workId := some work.id, designRevision := work.designRevision
+    payload := .workRemediation {
+      originWorkId := origin.id, findingEntryId, boundByRun := work.responsibleAgentRun } }
+
 def startWorkRequest
     (state : ProjectState) (request : WorkStartRequest) : Except String ProjectState := do
-  startWork state (request.work state.acceptedDesignId)
+  let work := request.work state.acceptedDesignId
+  match request.causalFindingEntryId with
+  | none => startWork state work
+  | some findingEntryId =>
+      let (_, origin) ← postcompletionFindingOrigin state findingEntryId
+      if origin.id == work.id || origin.scope != work.scope then
+        throw "remediation Work must be distinct from and share scope with its origin Work"
+      let started ← startWork state work
+      let entryId := s!"remediation-{work.id}-{started.revision}"
+      let entry := remediationEntry state work entryId findingEntryId origin
+      validated { started with ledgerEntries := state.ledgerEntries ++ [entry] }
+
+def bindRemediationWork
+    (state : ProjectState) (request : WorkRemediationBindingRequest) : Except String ProjectState := do
+  let work ← match state.work? request.workId with
+    | some value => pure value
+    | none => throw s!"work {request.workId} does not exist"
+  if work.status != .active || state.focusedWorkId != some work.id then
+    throw "only the focused active remediation Work can be bound"
+  if request.agentRun != work.responsibleAgentRun then
+    throw "only the responsible remediation agent may bind its causal Finding"
+  if remediationBindingExists state work.id then
+    throw "remediation Work already has a causal Finding binding"
+  if (state.entry? request.entryId).isSome then throw s!"entry id {request.entryId} already exists"
+  let (_, origin) ← postcompletionFindingOrigin state request.findingEntryId
+  if origin.id == work.id || origin.scope != work.scope then
+    throw "remediation Work must be distinct from and share scope with its origin Work"
+  let entry := remediationEntry state work request.entryId request.findingEntryId origin
+  validated { state with revision := state.revision + 1, ledgerEntries := state.ledgerEntries ++ [entry] }
 
 def suspendWork
     (state : ProjectState) (workId condition : String) : Except String ProjectState := do

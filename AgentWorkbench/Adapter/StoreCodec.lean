@@ -175,6 +175,7 @@ def payloadKind : EntryPayload → String
   | .workWithdrawal _ => "work-withdrawal"
   | .workResume _ => "work-resume"
   | .workCompletion _ => "work-completion"
+  | .workRemediation _ => "work-remediation"
   | .designRejection _ => "design-rejection"
   | .commandProfile _ => "command-profile"
   | .commandExecution _ => "command-execution"

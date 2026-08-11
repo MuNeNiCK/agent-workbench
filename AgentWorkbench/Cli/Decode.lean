@@ -67,6 +67,8 @@ def decodeMutation? (command : List String) : IO (Option Mutation) :=
       pure (some (.workHandoff input.workId input.entryId input.successorRun input.reason))
   | some .workAdoptDesign => do
       pure (some (.workAdoptDesign (← readInput "work adopt-design")))
+  | some .workBindRemediation =>
+      return some (.workBindRemediation (← readInput "work bind-remediation"))
   | some .workWithdraw => return some (.workWithdraw (← readInput "work withdraw"))
   | some .workComplete => pure (some .workComplete)
   | some .planPropose => return some (.planPropose (← readInput "plan propose"))
@@ -169,7 +171,8 @@ def decodeQuery? (command : List String) : IO (Option Query) :=
   | some .describe => pure (some (.describe none))
   | some .init | some .designPropose | some .designAmend | some .designAccept
   | some .designReject | some .workStart | some .workFocus | some .workSuspend
-  | some .workResume | some .workHandoff | some .workAdoptDesign | some .workWithdraw
+  | some .workResume | some .workHandoff | some .workAdoptDesign |
+      some .workBindRemediation | some .workWithdraw
   | some .workComplete | some .planPropose | some .planReplace | some .planMaterialize
   | some .taskClose | some .taskReopenStale | some .profileDefine | some .profileReplace | some .artifactObserve
   | some .correctionRecord | some .correctionSupersede | some .correctionResolve

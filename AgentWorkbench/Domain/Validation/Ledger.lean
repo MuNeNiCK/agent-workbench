@@ -228,6 +228,21 @@ private def validateReview
         let expectedLedgerComponents := normalizeReviewTargetComponents <| match
             review.targetManifestVersion with
           | 3 =>
+              let remediationCausalEntries := priorLedger.foldl (fun found bindingEntry =>
+                if bindingEntry.workId != some work.id ||
+                    supersededBeforeReview bindingEntry then found
+                else match bindingEntry.payload with
+                | .workRemediation binding =>
+                    let finding := priorLedger.filter fun candidate =>
+                      candidate.id == binding.findingEntryId &&
+                        !supersededBeforeReview candidate
+                    let disposition :=
+                      (findingDispositionIn? priorLedger binding.findingEntryId
+                        binding.originWorkId).toList
+                    (finding ++ disposition ++ [bindingEntry]).foldl (fun selected candidate =>
+                      if selected.any (·.id == candidate.id) then selected
+                      else selected ++ [candidate]) found
+                | _ => found) []
               let structuralKinds := ["design", "plan", "work", "implementation_target"]
               let recordedLedgerIds := review.targetManifest.filterMap fun component =>
                 if structuralKinds.contains component.kind then none else some component.id
@@ -265,7 +280,8 @@ private def validateReview
                 match candidate.payload with
                 | .userCorrection value =>
                     value.resolvedByEntryId.isNone && value.incorporatedIn.isNone
-                | _ => false) |>.map (reviewLedgerComponent state work)
+                | _ => false) ++ remediationCausalEntries
+                |>.map (reviewLedgerComponent state work)
           | 2 =>
               (implementationReviewLedgerEntries currentEntries design plan work.id).map
                 (reviewLedgerComponent state work)
@@ -549,7 +565,7 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
       let work ← requireSome (state.work? workId) s!"Work completion {entry.id} has missing Work"
       let plan ← requireSome (state.plan? value.planId)
         s!"Work completion {entry.id} has missing Plan"
-      let prospectivelyInvalidated := state.ledgerEntries.any fun dispositionEntry =>
+      let retainedPostcompletionIncident := state.ledgerEntries.any fun dispositionEntry =>
         dispositionEntry.order > entry.order && dispositionEntry.workId == some work.id &&
           match dispositionEntry.payload with
           | .reviewDisposition disposition =>
@@ -558,20 +574,47 @@ def validateEntry (state : ProjectState) (entry : LedgerEntry) : Except String U
                 (state.entry? disposition.findingEntryId).any fun findingEntry =>
                   findingEntry.order > entry.order && findingEntry.workId == some work.id
           | _ => false
-      ensure ((work.status == .completed ||
-          ((work.status == .suspended || work.status == .active) && prospectivelyInvalidated)) &&
+      ensure (work.status == .completed &&
         value.workId == work.id &&
         entry.designRevision == some value.designRevision &&
         (work.designRevision == some value.designRevision ||
-          (prospectivelyInvalidated && work.designRevision.any fun currentDesignId =>
+          (retainedPostcompletionIncident && work.designRevision.any fun currentDesignId =>
             state.designDescendsFrom value.designRevision currentDesignId)) &&
         plan.workId == work.id &&
         plan.designRevision == value.designRevision &&
-        (plan.status == .current ||
-          (prospectivelyInvalidated && plan.status == .superseded)) &&
+        (plan.status == .current || (retainedPostcompletionIncident && plan.status == .superseded)) &&
         value.inputRevision < state.revision && validContentDigest value.inputDigest &&
         value.completedByRun == responsibleWorkAgentRunAt state work entry.order)
         s!"Work completion {entry.id} has invalid authority or input identity"
+  | .workRemediation value =>
+      let workId ← requireSome entry.workId s!"Work remediation {entry.id} is not Work-bound"
+      let work ← requireSome (state.work? workId) s!"Work remediation {entry.id} has missing Work"
+      let origin ← requireSome (state.work? value.originWorkId)
+        s!"Work remediation {entry.id} has missing origin Work"
+      let findingEntry ← requireSome (state.entry? value.findingEntryId)
+        s!"Work remediation {entry.id} has missing Finding"
+      match findingEntry.payload with
+      | .finding _ => pure ()
+      | _ => throw s!"Work remediation {entry.id} references a non-Finding entry"
+      let disposition? := findingDispositionIn?
+        (state.ledgerEntries.filter (·.order < entry.order)) findingEntry.id origin.id
+      let accepted := disposition?.any fun dispositionEntry =>
+        match dispositionEntry.payload with
+        | .reviewDisposition disposition =>
+            disposition.decision == .accepted && disposition.impact == .implementationDefect
+        | _ => false
+      let postcompletion := state.ledgerEntries.any fun completionEntry =>
+        completionEntry.order < findingEntry.order && completionEntry.workId == some origin.id &&
+          match completionEntry.payload with | .workCompletion _ => true | _ => false
+      ensure (origin.status == .completed && origin.id != work.id && origin.scope == work.scope &&
+        findingEntry.workId == some origin.id && findingEntry.order < entry.order &&
+        postcompletion && accepted &&
+        value.boundByRun == responsibleWorkAgentRunAt state work entry.order &&
+        state.ledgerEntries.countP (fun candidate =>
+          candidate.workId == some work.id && match candidate.payload with
+          | .workRemediation _ => true
+          | _ => false) == 1)
+        s!"Work remediation {entry.id} has invalid postcompletion Finding causality"
   | .designRejection value =>
       let design ← requireSome (state.design? value.designId)
         s!"Design rejection {entry.id} has missing Design"
